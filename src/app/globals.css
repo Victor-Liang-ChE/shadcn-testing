@@ -1,26 +1,139 @@
+/* globals.css or your main CSS file */
+@import url('https://fonts.googleapis.com/css2?family=Merriweather:wght@400;700&family=Merriweather+Sans:wght@400;700&display=swap');
 @import "tailwindcss";
+@import "tw-animate-css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    /* Light Mode Variables - Keep these as they are or adjust if needed */
+    --background: hsl(0, 0%, 100%);
+    --foreground: hsl(222.2, 84%, 4.9%);
+    --card: hsl(210, 40%, 96.1%);
+    --card-foreground: hsl(222.2, 84%, 4.9%);
+    --navbar-background: hsl(210, 40%, 96.1%);
+    --navbar-foreground: hsl(222.2, 84%, 4.9%);
+    --popover: hsl(0, 0%, 100%);
+    --popover-foreground: hsl(222.2, 84%, 4.9%);
+    --primary: hsl(222.2, 47.4%, 11.2%);
+    --primary-foreground: hsl(210, 40%, 98%);
+    --secondary: hsl(210, 40%, 96.1%);
+    --secondary-foreground: hsl(222.2, 47.4%, 11.2%);
+    --muted: hsl(210, 40%, 96.1%);
+    --muted-foreground: hsl(215.4, 16.3%, 46.9%);
+    --accent: hsl(210, 40%, 96.1%);
+    --accent-foreground: hsl(222.2, 47.4%, 11.2%);
+    --destructive: hsl(0, 84.2%, 60.2%);
+    --destructive-foreground: hsl(210, 40%, 98%);
+    --border: hsl(214.3, 31.8%, 91.4%);
+    --input: hsl(214.3, 31.8%, 91.4%);
+    --ring: hsl(222.2, 84%, 4.9%);
+    --radius: 1rem;
+  }
+
+  .dark {
+    /* Dark Mode Variables - MODIFIED FOR TARGET LOOK */
+    --background: hsl(215, 35%, 18%); /* Dark Navy Blue */
+    --foreground: hsl(210, 40%, 98%); /* White/Very Light Gray */
+
+    /* Card Styles */
+    --card: hsl(215, 40%, 30%); /* Medium Blue */
+    --card-foreground: hsl(210, 40%, 98%); /* White/Very Light Gray */
+
+    /* Navbar Styles (Match Background) */
+    --navbar-background: hsl(215, 40%, 30%); /* Medium Blue */
+    --navbar-foreground: hsl(210, 40%, 98%); /* White/Very Light Gray */
+
+    /* Popover Styles */
+    --popover: hsl(215, 35%, 18%); /* Match background */
+    --popover-foreground: hsl(210, 40%, 98%); /* White/Very Light Gray */
+
+    /* Primary Color (Used for links, maybe focus rings) */
+    --primary: hsl(210, 60%, 90%); /* Lighter blue/white for primary elements/links */
+    --primary-foreground: hsl(215, 35%, 18%); /* Darker color for text on primary bg */
+
+    /* Secondary Color (Used for Badges) */
+    --secondary: hsl(215, 30%, 24%); /* Slightly darker blue than card */
+    --secondary-foreground: hsl(210, 40%, 95%); /* White/Very Light Gray */
+
+    /* Muted Styles */
+    --muted: hsl(215, 30%, 24%); /* Match secondary or keep separate gray */
+    --muted-foreground: hsl(215, 20%, 65%); /* Grayish text */
+
+    /* Accent Color (Used for hover states, etc.) */
+    --accent: hsl(215, 40%, 40%); /* Slightly lighter/brighter blue than card for hover */
+    --accent-foreground: hsl(210, 40%, 98%); /* White/Very Light Gray */
+
+    /* Destructive Styles (Standard Red) */
+    --destructive: hsl(0, 62.8%, 50.6%);
+    --destructive-foreground: hsl(210, 40%, 98%);
+
+    /* Border Styles */
+    --border: hsl(215, 30%, 35%); /* A slightly darker or distinct blue for borders */
+
+    /* Input Styles */
+    --input: hsl(215, 30%, 35%); /* Match border */
+
+    /* Ring Styles (Focus Rings) */
+    --ring: hsl(210, 60%, 70%); /* Lighter blue for focus */
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+/* Keep the rest of your CSS file (@theme, @layer base *, body, .equal-spacing) */
+/* ... */
+@theme inline {
+    /* these might just alias the above, ensure they reference correctly */
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --font-sans: var(--font-geist-sans);
+    --font-mono: var(--font-geist-mono);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+  }
+
+  @layer base {
+    * {
+      @apply border-border;
+    }
+    body {
+      @apply bg-background text-foreground;
+      font-family: 'Merriweather Sans', sans-serif; /* Apply Merriweather Sans globally */
+    }
+    .equal-spacing > * {
+      @apply my-3; /* Adjust spacing if needed */
+    }
+  }
