@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -8,7 +9,18 @@ import { Menu, X } from "lucide-react";
 
 function Navbar() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const pageTitle = "Home"; // Placeholder
+  const pathname = usePathname();
+  
+  const getPageTitle = () => {
+    switch (pathname) {
+      case "/simulations":
+        return "Chemical Engineering Simulations";
+      case "/misc":
+        return "Miscellaneous Projects";
+      default:
+        return "Welcome";
+    }
+  };
 
   // Consistent hover style for links and button
   const linkHoverStyle = "hover:text-accent-foreground transition-colors duration-200";
@@ -32,7 +44,7 @@ function Navbar() {
       {/* Center: Page Title */}
       <div className="absolute left-1/2 transform -translate-x-1/2">
         {/* Removed font-semibold, rely on base styles */}
-        <span className="text-lg">{pageTitle}</span>
+        <span className="text-lg font-semibold">{getPageTitle()}</span>
       </div>
 
       {/* Mobile Menu Button */}
@@ -65,12 +77,13 @@ function Navbar() {
       </div>
 
       {/* Mobile Menu Dropdown */}
-      {isMenuOpen && (
-        // Apply background color directly with CSS variable
-        <div 
-          className="absolute top-16 right-0 left-0 z-50 md:hidden p-4 flex flex-col space-y-4 border-b border-border"
-          style={{ backgroundColor: 'var(--navbar-background)' }}
-        >
+      <div 
+        className={`absolute top-16 right-0 w-48 z-50 md:hidden border-border overflow-hidden transition-all duration-200 ease-in-out ${
+          isMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
+        }`}
+        style={{ backgroundColor: 'var(--navbar-background)' }}
+      >
+        <div className="p-4 flex flex-col space-y-4 border-x border-b">
           <Link href="/simulations" legacyBehavior passHref>
             <a className={`text-lg font-semibold ${linkHoverStyle}`}>Simulations</a>
           </Link>
@@ -81,7 +94,7 @@ function Navbar() {
             <ThemeToggle />
           </div>
         </div>
-      )}
+      </div>
     </nav>
   );
 }
