@@ -110,36 +110,33 @@ const DropChanceCalculator = () => {
     let resultText = '';
 
     if (toggleState === 0) {
-       // Ensure desiredDropsValue is not greater than attemptsValue before calculation
-       const currentDesiredDrops = Math.min(desiredDropsValue, attemptsValue);
-       if (currentDesiredDrops < desiredDropsValue) {
-           setDesiredDropsValue(currentDesiredDrops); // Adjust state if needed
-       }
+      // Exact probability calculation
+      const currentDesiredDrops = Math.min(desiredDropsValue, attemptsValue);
+      if (currentDesiredDrops < desiredDropsValue) {
+        setDesiredDropsValue(currentDesiredDrops);
+      }
       const exactProb = calculateCumulativeProbability(attemptsValue, currentDesiredDrops, probability, false);
+      resultText = `Probability of getting exactly ${currentDesiredDrops} ${currentDesiredDrops === 1 ? 'drop' : 'drops'}: <b>${(exactProb * 100).toPrecision(3)}%</b>`;
+    } else if (toggleState === 1) {
+      // At least probability calculation
+      const currentDesiredDrops = Math.min(desiredDropsValue, attemptsValue);
+      if (currentDesiredDrops < desiredDropsValue) {
+        setDesiredDropsValue(currentDesiredDrops);
+      }
       const atLeastProb = calculateCumulativeProbability(attemptsValue, currentDesiredDrops, probability, true);
-
-      resultText = `Probability of getting exactly ${currentDesiredDrops} drops: ${(exactProb * 100).toFixed(4)}%\n`;
-      resultText += `Probability of getting at least ${currentDesiredDrops} drops: ${(atLeastProb * 100).toFixed(4)}%`;
+      resultText = `Probability of getting at least ${currentDesiredDrops} ${currentDesiredDrops === 1 ? 'drop' : 'drops'}: <b>${(atLeastProb * 100).toPrecision(3)}%</b>`;
     } else {
-       // Ensure range values are valid and capped
-       const minDrops = Math.min(desiredDropsRangeValue[0], attemptsValue);
-       const maxDrops = Math.min(desiredDropsRangeValue[1], attemptsValue);
-       if (minDrops !== desiredDropsRangeValue[0] || maxDrops !== desiredDropsRangeValue[1]) {
-           setDesiredDropsRangeValue([minDrops, maxDrops]); // Adjust state if needed
-       }
-
-       // Ensure minDrops is not greater than maxDrops after capping
-       const finalMinDrops = Math.min(minDrops, maxDrops);
-
-       // Calculate probability for the valid range [finalMinDrops, maxDrops]
-       // P(min <= X <= max) = P(X <= max) - P(X < min) = P(X <= max) - P(X <= min - 1)
-       // Using the 'at least' logic: P(min <= X <= max) = P(X >= min) - P(X > max) = P(X >= min) - P(X >= max + 1)
-       const probAtLeastMin = calculateCumulativeProbability(attemptsValue, finalMinDrops, probability, true);
-       const probAtLeastMaxPlusOne = calculateCumulativeProbability(attemptsValue, maxDrops + 1, probability, true);
-       const rangeProb = probAtLeastMin - probAtLeastMaxPlusOne;
-
-
-      resultText = `Probability of getting between ${finalMinDrops} and ${maxDrops} drops: ${(rangeProb * 100).toFixed(4)}%`;
+      // Range probability calculation
+      const minDrops = Math.min(desiredDropsRangeValue[0], attemptsValue);
+      const maxDrops = Math.min(desiredDropsRangeValue[1], attemptsValue);
+      if (minDrops !== desiredDropsRangeValue[0] || maxDrops !== desiredDropsRangeValue[1]) {
+        setDesiredDropsRangeValue([minDrops, maxDrops]);
+      }
+      const finalMinDrops = Math.min(minDrops, maxDrops);
+      const probAtLeastMin = calculateCumulativeProbability(attemptsValue, finalMinDrops, probability, true);
+      const probAtLeastMaxPlusOne = calculateCumulativeProbability(attemptsValue, maxDrops + 1, probability, true);
+      const rangeProb = probAtLeastMin - probAtLeastMaxPlusOne;
+      resultText = `Probability of getting between ${finalMinDrops} and ${maxDrops} ${maxDrops === 1 ? 'drop' : 'drops'}: <b>${(rangeProb * 100).toPrecision(3)}%</b>`;
     }
 
     setResult(resultText);
@@ -173,44 +170,48 @@ const DropChanceCalculator = () => {
 
 
   return (
-    <main className="flex flex-col items-center justify-between pt-12 md:pt-24 px-6 md:px-24"> {/* Reduced top padding */}
-      <Card className="w-full max-w-2xl">
+    <main className="flex flex-col items-center justify-between pt-12 md:pt-24 px-6 md:px-24 pb-12"> {/* Added bottom padding */}
+      <Card className="w-full max-w-4xl">
         <CardHeader>
-          <CardTitle>Drop Chance Calculator</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-6">
-          <Tabs defaultValue="exact" onValueChange={(value) => setToggleState(value === "exact" ? 0 : 1)}>
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="exact">Exact/At Least</TabsTrigger>
+        <CardContent className="space-y-8"> {/* Increased from space-y-6 */}
+          <Tabs defaultValue="exact" onValueChange={(value) => {
+            if (value === "exact") setToggleState(0);
+            else if (value === "atleast") setToggleState(1);
+            else if (value === "range") setToggleState(2);
+          }}>
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="exact">Exact</TabsTrigger>
+              <TabsTrigger value="atleast">At Least</TabsTrigger>
               <TabsTrigger value="range">Range</TabsTrigger>
             </TabsList>
 
             {/* Common Inputs */}
-            <div className="space-y-4 pt-4">
-               <div className="space-y-2">
-                 <Label htmlFor="percent">Drop Chance: {percentValue}%</Label>
+            <div className="space-y-6 pt-6"> {/* Increased from space-y-4 pt-4 */}
+               <div className="space-y-3"> {/* Increased from space-y-2 */}
+                 <Label htmlFor="percent" className="font-bold">Drop Chance: {percentValue}%</Label>
                  <Slider
                    id="percent"
                    min={0}
                    max={100}
-                   step={0.1} // Finer step for percentage
+                   step={0.1}
                    value={[percentValue]}
                    onValueChange={(value) => setPercentValue(value[0])}
                  />
                </div>
-               <div className="space-y-2">
+               <div className="space-y-3"> {/* Increased from space-y-2 */}
                  <div className="flex justify-between items-center">
-                    <Label htmlFor="attempts">Number of Attempts: {attemptsValue}</Label>
+                    <Label htmlFor="attempts" className="font-bold">Number of Attempts: {attemptsValue}</Label>
                     <div className="flex items-center gap-2">
-                       <Label htmlFor="max-attempts" className="text-sm text-muted-foreground whitespace-nowrap">Max:</Label>
+                       <Label htmlFor="max-attempts" className="text-sm text-muted-foreground whitespace-nowrap font-bold">Max:</Label>
                        <Input
                          id="max-attempts"
                          type="number"
                          min="1"
-                         max="1000000" // Set a reasonable upper limit
+                         max="1000000"
                          value={maxAttemptsValue}
                          onChange={handleMaxAttemptsChange}
-                         className="h-8 w-24" // Smaller input for max
+                         className="h-8 w-24"
                        />
                     </div>
                  </div>
@@ -225,42 +226,56 @@ const DropChanceCalculator = () => {
                </div>
             </div>
 
-            <TabsContent value="exact" className="space-y-4 pt-4 border-t mt-4">
-               <div className="space-y-2">
-                 <Label htmlFor="drops">Desired Drops (At Least): {desiredDropsValue}</Label>
+            <TabsContent value="exact" className="space-y-6 pt-6 mt-4"> {/* Removed border-t, increased spacing */}
+               <div className="space-y-3"> {/* Increased from space-y-2 */}
+                 <Label htmlFor="drops" className="font-bold">Desired {desiredDropsValue === 1 ? 'Drop' : 'Drops'}: {desiredDropsValue}</Label>
                  <Slider
                    id="drops"
                    min={0}
-                   max={attemptsValue} // Dynamic max based on attempts
+                   max={attemptsValue}
                    step={1}
                    value={[desiredDropsValue]}
                    onValueChange={(value) => setDesiredDropsValue(value[0])}
-                   disabled={attemptsValue === 0} // Disable if 0 attempts
+                   disabled={attemptsValue === 0}
                  />
                </div>
             </TabsContent>
-            <TabsContent value="range" className="space-y-4 pt-4 border-t mt-4">
-               <div className="space-y-2">
-                 <Label>Desired Drops Range: {desiredDropsRangeValue[0]} to {desiredDropsRangeValue[1]}</Label>
-                 <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                       <Label htmlFor="min-drops" className="text-sm">Min: {desiredDropsRangeValue[0]}</Label>
+            <TabsContent value="atleast" className="space-y-6 pt-6 mt-4"> {/* Removed border-t, increased spacing */}
+               <div className="space-y-3"> {/* Increased from space-y-2 */}
+                 <Label htmlFor="drops-atleast" className="font-bold">Desired {desiredDropsValue === 1 ? 'Drop' : 'Drops'}: {desiredDropsValue}</Label>
+                 <Slider
+                   id="drops-atleast"
+                   min={0}
+                   max={attemptsValue}
+                   step={1}
+                   value={[desiredDropsValue]}
+                   onValueChange={(value) => setDesiredDropsValue(value[0])}
+                   disabled={attemptsValue === 0}
+                 />
+               </div>
+            </TabsContent>
+            <TabsContent value="range" className="space-y-6 pt-6 mt-4"> {/* Removed border-t, increased spacing */}
+               <div className="space-y-3"> {/* Increased from space-y-2 */}
+                 <Label className="font-bold">Desired Range: {desiredDropsRangeValue[0]} to {desiredDropsRangeValue[1]} {desiredDropsRangeValue[1] === 1 ? 'Drop' : 'Drops'}</Label>
+                 <div className="grid grid-cols-2 gap-6"> {/* Increased from gap-4 */}
+                    <div className="space-y-2"> {/* Increased from space-y-1 */}
+                       <Label htmlFor="min-drops" className="text-sm font-bold">Min: {desiredDropsRangeValue[0]}</Label>
                        <Slider
                          id="min-drops"
                          min={0}
-                         max={attemptsValue} // Dynamic max
+                         max={attemptsValue}
                          step={1}
                          value={[desiredDropsRangeValue[0]]}
                          onValueChange={(value) => handleRangeChange(0, value[0])}
                          disabled={attemptsValue === 0}
                        />
                     </div>
-                    <div className="space-y-1">
-                       <Label htmlFor="max-drops" className="text-sm">Max: {desiredDropsRangeValue[1]}</Label>
+                    <div className="space-y-2"> {/* Increased from space-y-1 */}
+                       <Label htmlFor="max-drops" className="text-sm font-bold">Max: {desiredDropsRangeValue[1]}</Label>
                        <Slider
                          id="max-drops"
                          min={0}
-                         max={attemptsValue} // Dynamic max
+                         max={attemptsValue}
                          step={1}
                          value={[desiredDropsRangeValue[1]]}
                          onValueChange={(value) => handleRangeChange(1, value[0])}
@@ -272,8 +287,8 @@ const DropChanceCalculator = () => {
             </TabsContent>
           </Tabs>
 
-          <div className="mt-6 p-4 bg-muted rounded-md whitespace-pre-line text-sm"> {/* Smaller text for result */}
-            {result || "Adjust sliders to calculate probability"}
+          <div className="mt-8 p-6 bg-muted rounded-md whitespace-pre-line"> {/* Increased padding and margin */}
+            <div dangerouslySetInnerHTML={{ __html: result || "Adjust sliders to calculate probability" }} />
           </div>
         </CardContent>
       </Card>

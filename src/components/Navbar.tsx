@@ -17,6 +17,8 @@ function Navbar() {
         return "Chemical Engineering Simulations";
       case "/misc":
         return "Miscellaneous Projects";
+      case "/misc/drop-chance":
+        return "Drop Chance Calculator";
       default:
         return "Welcome";
     }
