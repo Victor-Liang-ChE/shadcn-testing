@@ -23,6 +23,7 @@ const typescriptLogoPath = "/logos/typescript.svg";
 const dockerLogoPath = "/logos/docker.svg";
 const reactLogoPath = "/logos/react.svg";
 const dashLogoPath = "/logos/dash.svg"; // You'll need to add this logo
+const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png"; // Add path for the thumbnail
 
 export default function Home() {
   return (
@@ -109,10 +110,14 @@ export default function Home() {
       <div className="simulations-showcase mt-8">
         <h2 className="text-2xl font-bold mb-4 text-center">Featured Simulations</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
-          <Link href="/kinetics" passHref>
+          <Link href="/simulations/kinetics" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                <div className="bg-muted h-32 w-full rounded-md mb-4 flex items-center justify-center text-muted-foreground">Kinetics Simulator</div>
+                {/* Make container square and centered */}
+                <div className="relative aspect-square h-32 mx-auto bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground overflow-hidden">
+                  {/* Placeholder text */}
+                  <span>Kinetics Simulator</span> 
+                </div>
                 <CardTitle>Reaction Kinetics</CardTitle>
               </CardHeader>
               <CardContent className="flex-grow">
@@ -121,10 +126,19 @@ export default function Home() {
             </Card>
           </Link>
 
-          <Link href="/mccabe" passHref>
+          <Link href="/simulations/mccabe-thiele" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                <div className="bg-muted h-32 w-full rounded-md mb-4 flex items-center justify-center text-muted-foreground">McCabe-Thiele Method</div>
+                <div className="relative mx-auto overflow-hidden mb-4">
+                  <div className="aspect-square w-64 h-64 overflow-hidden rounded-3xl relative"> 
+                    <Image 
+                      src={mccabeThumbnailPath} 
+                      alt="McCabe-Thiele Thumbnail" 
+                      layout="fill" 
+                      objectFit="contain" 
+                    />
+                  </div>
+                </div>
                 <CardTitle>McCabe-Thiele</CardTitle>
               </CardHeader>
               <CardContent className="flex-grow">
@@ -133,10 +147,14 @@ export default function Home() {
             </Card>
           </Link>
 
-          <Link href="/process-control" passHref>
+          <Link href="/simulations/process-control" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                <div className="bg-muted h-32 w-full rounded-md mb-4 flex items-center justify-center text-muted-foreground">Process Control</div>
+                 {/* Make container square and centered */}
+                <div className="relative aspect-square h-32 mx-auto bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground overflow-hidden">
+                  {/* Placeholder text */}
+                  <span>Process Control</span>
+                </div>
                 <CardTitle>Process Control</CardTitle>
               </CardHeader>
               <CardContent className="flex-grow">
@@ -145,10 +163,14 @@ export default function Home() {
             </Card>
           </Link>
 
-          <Link href="/pid-tuning" passHref>
+          <Link href="/simulations/pid-tuning" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                <div className="bg-muted h-32 w-full rounded-md mb-4 flex items-center justify-center text-muted-foreground">PID Tuning</div>
+                 {/* Make container square and centered */}
+                 <div className="relative aspect-square h-32 mx-auto bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground overflow-hidden">
+                   {/* Placeholder text */}
+                   <span>PID Tuning</span>
+                 </div>
                 <CardTitle>PID Tuning</CardTitle>
               </CardHeader>
               <CardContent className="flex-grow">

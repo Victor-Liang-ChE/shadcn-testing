@@ -15,12 +15,25 @@ function Navbar() {
     switch (pathname) {
       case "/simulations":
         return "Chemical Engineering Simulations";
+        
       case "/misc":
         return "Miscellaneous Projects";
+
       case "/misc/drop-chance":
         return "Drop Chance Calculator";
+
       case "/simulations/mccabe-thiele":
-        return "McCabe-Thiele Simulator";
+        return "McCabe-Thiele Graphical Method";
+
+      case "/simulations/kinetics":
+        return "Reaction Kinetics Simulator";
+
+      case "/simulations/process-control":
+        return "Process Control Simulator";
+
+      case "/simulations/pid-tuning":
+        return "PID Tuning Simulator";
+        
       default:
         return "Welcome";
     }

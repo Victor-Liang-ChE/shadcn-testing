@@ -1,7 +1,11 @@
 'use client';
 
 import Link from "next/link";
+import Image from "next/image"; // Import Image component
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+
+// Define the path for the thumbnail
+const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
 
 export default function Page() {
   const simulations = [
@@ -28,16 +32,34 @@ export default function Page() {
   ];
 
   return (
-    <main className="flex flex-col items-center justify-between pt-24 px-6 md:px-24">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <main className="flex flex-col items-center justify-between pt-24 px-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full"> 
         {simulations.map((simulation, index) => (
           <Link key={index} href={simulation.path} className="block h-full">
-            <Card className="h-full hover:shadow-lg transition-shadow bg-card border border-border">
+            <Card className="h-full hover:shadow-lg transition-shadow bg-card border border-border flex flex-col"> 
               <CardHeader>
-                <div className="h-32 w-full bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground">{simulation.name}</div>
+                {/* Outer container for centering the block */}
+                <div className="relative mx-auto mb-4"> 
+                  {/* Inner container for aspect ratio, size, rounding, clipping, and relative positioning */}
+                  <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative"> 
+                    {simulation.name === "McCabe-Thiele" ? (
+                      <Image 
+                        src={mccabeThumbnailPath} 
+                        alt={`${simulation.name} Thumbnail`} 
+                        layout="fill" 
+                        objectFit="contain" 
+                      />
+                    ) : (
+                      // Placeholder text - absolutely positioned to center within the inner container
+                      <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-muted"> {/* Optional: bg-muted for placeholder */}
+                        <span>{simulation.name}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <CardTitle>{simulation.name}</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex-grow"> 
                 <CardDescription>{simulation.description}</CardDescription>
               </CardContent>
             </Card>

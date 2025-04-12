@@ -1,8 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-// Remove Chart.js imports
-
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 // Import ECharts components
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
@@ -15,7 +13,8 @@ import {
   GridComponent,
   LegendComponent,
   MarkLineComponent,
-  MarkPointComponent
+  MarkPointComponent,
+  ToolboxComponent // Import ToolboxComponent for saveAsImage feature
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 
@@ -27,6 +26,7 @@ echarts.use([
   LegendComponent,
   MarkLineComponent,
   MarkPointComponent,
+  ToolboxComponent, // Register ToolboxComponent
   LineChart,
   ScatterChart,
   CanvasRenderer
@@ -39,9 +39,14 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip as ShadTooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Download } from 'lucide-react'; // Import Download icon
+
 
 // Define ECharts point type (can be number array or object)
 type EChartsPoint = [number, number] | [number | null, number | null];
+
+// Helper function for delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export default function McCabeThielePage() {
   // Input States
@@ -72,6 +77,7 @@ export default function McCabeThielePage() {
 
   // State for ECharts options - Use the imported EChartsOption type
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
+  const echartsRef = useRef<ReactECharts | null>(null); // Ref for ECharts instance
   // State for displayed parameters in the title
   const [displayedComp1, setDisplayedComp1] = useState('');
   const [displayedComp2, setDisplayedComp2] = useState('');
@@ -81,35 +87,30 @@ export default function McCabeThielePage() {
 
 
   useEffect(() => {
-    // document.title = "McCabe-Thiele Simulator"; // Set Navbar Title - Moved to layout potentially
-    fetchVLEData(); // Initial fetch
+    // Initial fetch without arguments
+    fetchVLEData();
     setDisplayedComp1('methanol');
     setDisplayedComp2('water');
     setDisplayedTemp(27);
     setDisplayedPressure(null);
     setDisplayedUseTemp(true);
-  }, []); // Run only once on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // fetchVLEData should be stable due to useCallback
 
   // ... (keep navbar reset useEffect) ...
-  useEffect(() => {
-    return () => {
-      const navbar = document.querySelector('.navbar-wrapper');
-      if (navbar) {
-        navbar.classList.add('resetting');
-        setTimeout(() => {
-          navbar.classList.remove('resetting');
-        }, 10);
-      }
-    };
-  }, []);
 
+  const fetchVLEData = useCallback(async (retryCount = 0) => {
+    const maxRetries = 3;
+    const retryDelay = 500; // milliseconds
 
-  const fetchVLEData = useCallback(async () => {
-    console.log("DEBUG: fetchVLEData called with components:", comp1, comp2);
+    console.log(`DEBUG: fetchVLEData called (Attempt ${retryCount + 1}) with components:`, comp1, comp2);
     console.log(`DEBUG: Using ${useTemperature ? 'temperature' : 'pressure'} mode with value ${useTemperature ? temperatureC : pressureBar}`);
 
-    setLoading(true);
-    setError(null);
+    // Set loading only on the first attempt
+    if (retryCount === 0) {
+        setLoading(true);
+        setError(null);
+    }
 
     try {
       console.log("DEBUG: Preparing API call to McCabe-Thiele endpoint");
@@ -133,9 +134,17 @@ export default function McCabeThielePage() {
 
       if (data.error) {
         console.error("DEBUG ERROR: API returned error:", data.error);
-        throw new Error(data.error);
+        // Check for specific retryable error
+        if (data.error.includes("'PiecewiseHeatCapacity' object has no attribute 'append'") && retryCount < maxRetries) {
+            console.log(`DEBUG: Retrying API call due to specific error (Attempt ${retryCount + 2})...`);
+            await delay(retryDelay);
+            fetchVLEData(retryCount + 1); // Recursive call for retry
+            return; // Exit current attempt
+        }
+        throw new Error(data.error); // Throw non-retryable or max-retry errors
       }
 
+      // --- Process successful data ---
       console.log(`DEBUG: VLE data received. Points: ${data.x_values?.length || 0}`);
       console.log(`DEBUG: Temperature: ${data.temperature}K, Pressure: ${data.pressure ? data.pressure/1e5 + 'bar' : 'Not specified'}`);
       console.log("DEBUG: Volatility info:", data.volatility);
@@ -165,18 +174,30 @@ export default function McCabeThielePage() {
         setDisplayedTemp(null);
         setDisplayedPressure(pressureBar);
       }
-
+      // --- End process successful data ---
 
     } catch (err) {
+      // Handle errors that occurred during fetch or after retries failed
       console.error("DEBUG ERROR: Error fetching VLE data:", err);
       setError(`Failed to load equilibrium data. ${err instanceof Error ? err.message : 'Please try again.'}`);
-    } finally {
-      setLoading(false);
-      console.log("DEBUG: fetchVLEData completed");
-    }
-  }, [comp1, comp2, useTemperature, temperatureC, pressureBar]); // Keep dependencies
+      // Clear potentially stale data on final failure
+      setEquilibriumData(null);
+      setVolatilityInfo(null);
+      setDisplayedComp1('');
+      setDisplayedComp2('');
+      setDisplayedTemp(null);
+      setDisplayedPressure(null);
 
-  // *** Refactor generateChartJsData to generateEChartsOptions ***
+    } finally {
+      // Set loading false only after the final attempt (success or failure)
+      if (retryCount === 0 || error || equilibriumData) { // Ensure loading is set false on final state
+          setLoading(false);
+      }
+      console.log("DEBUG: fetchVLEData attempt completed");
+    }
+  }, [comp1, comp2, useTemperature, temperatureC, pressureBar, error, equilibriumData]); // Dependencies remain the same
+
+  // *** generateEChartsOptions function ***
   const generateEChartsOptions = useCallback((xValues: number[], yValues: number[]) => {
     if (!xValues || !yValues || xValues.length === 0) {
         setEchartsOptions({}); // Clear chart if no data
@@ -367,13 +388,13 @@ export default function McCabeThielePage() {
         title: {
             text: titleText,
             left: 'center',
-            textStyle: { color: 'white', fontSize: 16, fontFamily: 'Merriweather Sans' }
+            textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' }
         },
         grid: {
-            left: '10%',   // Increased left margin to match bottom
-            right: '15%',  // Keep right margin for legend
-            bottom: '10%', // Keep bottom margin
-            top: '12%',
+            left: '5%',   // Increased left margin to match bottom
+            right: '5%',  
+            bottom: '5%', // Keep bottom margin
+            top: '5%',
             containLabel: true
         },
         xAxis: {
@@ -383,11 +404,11 @@ export default function McCabeThielePage() {
             interval: 0.1,
             name: `Liquid Mole Fraction ${moreVolatile}`,
             nameLocation: 'middle',
-            nameGap: 35, // Slightly increased gap due to larger font
+            nameGap: 30, // Slightly increased gap due to larger font
             nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Increased font size
             axisLine: { lineStyle: { color: 'white' } },
             axisTick: { lineStyle: { color: 'white' }, length: 5, inside: false },
-            axisLabel: { color: 'white', fontSize: 13, fontFamily: 'Merriweather Sans', formatter: '{value}' }, // Increased font size
+            axisLabel: { color: 'white', fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, // Increased font size
             splitLine: { show: false },
         },
         yAxis: {
@@ -397,11 +418,11 @@ export default function McCabeThielePage() {
             interval: 0.1,
             name: `Vapor Mole Fraction ${moreVolatile}`,
             nameLocation: 'middle',
-            nameGap: 50, // Slightly increased gap due to larger font
+            nameGap: 40, // Slightly increased gap due to larger font
             nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Increased font size
             axisLine: { lineStyle: { color: 'white' } },
             axisTick: { lineStyle: { color: 'white' }, length: 5, inside: false },
-            axisLabel: { color: 'white', fontSize: 13, fontFamily: 'Merriweather Sans', formatter: '{value}' }, // Increased font size
+            axisLabel: { color: 'white', fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, // Increased font size
             splitLine: { show: false },
         },
         legend: {
@@ -416,19 +437,39 @@ export default function McCabeThielePage() {
             icon: 'rect',
         },
         tooltip: {
-            show: false, // Disable tooltips globally for now
+            show: true, // Disable tooltips globally for now
             // trigger: 'axis', // Or 'item'
             // axisPointer: { type: 'cross' }
         },
         animationDuration: 300,
         animationEasing: 'cubicInOut',
+        // Add Toolbox for saving image
+        toolbox: {
+            show: true,
+            orient: 'vertical', // Position vertically
+            right: 0, // Position from the right
+            top: 'bottom', // Center vertically
+            feature: {
+                saveAsImage: {
+                    show: true,
+                    title: 'Save as Image',
+                    name: `mccabe-thiele-${displayedComp1}-${displayedComp2}`, // Dynamic filename
+                    backgroundColor: '#08306b', // Match chart background
+                    pixelRatio: 2 // Increase resolution
+                }
+            },
+            iconStyle: {
+                borderColor: '#fff' // White icon border
+            }
+        },
         series: series,
     });
 
   }, [xd, xb, xf, q, r, equilibriumData, volatilityInfo, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, buffer]);
 
 
-  // ... (keep getFeedQualityState) ...
+  // --- Helper Functions ---
+
   const getFeedQualityState = () => {
     if (q === 1) return "Saturated Liquid";
     if (q === 0) return "Saturated Vapor";
@@ -437,7 +478,6 @@ export default function McCabeThielePage() {
     return "Super Heated Vapor";
   };
 
-  // Handle Enter key press in inputs
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       event.preventDefault(); // Prevent default form submission behavior if any
@@ -445,7 +485,6 @@ export default function McCabeThielePage() {
     }
   };
 
-  // Update compositions ensuring constraints are met
   const updateCompositions = (type: 'xd' | 'xf' | 'xb', value: number) => {
     // Get the current state values to check against
     const currentXd = xd;
@@ -490,6 +529,7 @@ export default function McCabeThielePage() {
     // This avoids complex cascading updates and relies on the user not being able to move sliders past the calculated boundaries.
   };
 
+  // --- End Helper Functions ---
 
   // Update useEffect to call the new options generation function
   useEffect(() => {
@@ -501,6 +541,12 @@ export default function McCabeThielePage() {
         setFeedStage(null);
     }
   }, [equilibriumData, generateEChartsOptions]);
+
+
+  // Wrapper function for the button click
+  const handleUpdateGraphClick = () => {
+    fetchVLEData(); // Call without arguments, retryCount defaults to 0
+  };
 
   return (
     <TooltipProvider>
@@ -526,7 +572,8 @@ export default function McCabeThielePage() {
                               <Input
                                  id="temperature" type="number" value={temperatureC}
                                  onChange={(e) => setTemperatureC(Number(e.target.value))}
-                                 onKeyDown={handleKeyDown} min="0" step="1"
+                                 onKeyDown={handleKeyDown} // Usage is now after definition
+                                 min="0" step="1"
                                  required={useTemperature} disabled={!useTemperature} className="flex-1"
                               />
                            </div>
@@ -537,7 +584,8 @@ export default function McCabeThielePage() {
                               <Input
                                  id="pressure" type="number" value={pressureBar}
                                  onChange={(e) => setPressureBar(Number(e.target.value))}
-                                 onKeyDown={handleKeyDown} min="0.1" step="0.1"
+                                 onKeyDown={handleKeyDown} // Usage is now after definition
+                                 min="0.1" step="0.1"
                                  required={!useTemperature} disabled={useTemperature} className="flex-1"
                               />
                            </div>
@@ -550,21 +598,24 @@ export default function McCabeThielePage() {
                         <Label htmlFor="comp1" className="w-24 whitespace-nowrap">Component 1:</Label>
                         <Input
                           id="comp1" value={comp1} onChange={(e) => setComp1(e.target.value)}
-                          onKeyDown={handleKeyDown} required className="flex-1"
+                          onKeyDown={handleKeyDown} // Usage is now after definition
+                          required className="flex-1"
                         />
                      </div>
                      <div className="flex items-center gap-3">
                         <Label htmlFor="comp2" className="w-24 whitespace-nowrap">Component 2:</Label>
                         <Input
                           id="comp2" value={comp2} onChange={(e) => setComp2(e.target.value)}
-                          onKeyDown={handleKeyDown} required className="flex-1"
+                          onKeyDown={handleKeyDown} // Usage is now after definition
+                          required className="flex-1"
                         />
                      </div>
                   </div>
                 </div>
 
                 {/* Submit Button */}
-                <Button onClick={fetchVLEData} disabled={loading} className="w-full">
+                {/* Use the wrapper function here */}
+                <Button onClick={handleUpdateGraphClick} disabled={loading} className="w-full">
                   {loading ? 'Calculating...' : 'Update Graph'}
                 </Button>
 
@@ -586,7 +637,7 @@ export default function McCabeThielePage() {
                      max={0.99}
                      step={0.01}
                      value={[xd]}
-                     onValueChange={(value) => updateCompositions('xd', value[0])}
+                     onValueChange={(value) => updateCompositions('xd', value[0])} // Usage is now after definition
                      style={{ '--primary': 'hsl(38 92% 50%)' } as React.CSSProperties}
                    />
                  </div>
@@ -601,7 +652,7 @@ export default function McCabeThielePage() {
                      max={0.99}
                      step={0.01}
                      value={[xf]}
-                     onValueChange={(value) => updateCompositions('xf', value[0])}
+                     onValueChange={(value) => updateCompositions('xf', value[0])} // Usage is now after definition
                      style={{ '--primary': 'hsl(0 84% 60%)' } as React.CSSProperties}
                    />
                  </div>
@@ -616,7 +667,7 @@ export default function McCabeThielePage() {
                      max={0.99}
                      step={0.01}
                      value={[xb]}
-                     onValueChange={(value) => updateCompositions('xb', value[0])}
+                     onValueChange={(value) => updateCompositions('xb', value[0])} // Usage is now after definition
                      style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}
                    />
                  </div>
@@ -630,7 +681,7 @@ export default function McCabeThielePage() {
                              <span className="text-xs">ⓘ</span>
                            </Button>
                          </TooltipTrigger>
-                         <TooltipContent><p>{getFeedQualityState()}</p></TooltipContent>
+                         <TooltipContent><p>{getFeedQualityState()}</p></TooltipContent> {/* Usage is now after definition */}
                        </ShadTooltip>
                    </Label>
                    <Slider
@@ -657,7 +708,7 @@ export default function McCabeThielePage() {
             {/* Plot Card */}
             <Card>
               <CardContent className="py-2">
-                {/* Chart Container - This div already has rounded corners */}
+                {/* Chart Container */}
                 <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
                    {loading && (
                     <div className="absolute inset-0 flex items-center justify-center text-white">
@@ -676,19 +727,31 @@ export default function McCabeThielePage() {
                   {/* Render ReactECharts component */}
                   {!loading && equilibriumData && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts
+                      ref={echartsRef} // Assign ref
                       echarts={echarts}
                       option={echartsOptions}
-                      // Apply borderRadius and overflow hidden to the ECharts div itself
                       style={{
                         height: '100%',
                         width: '100%',
-                        borderRadius: '1rem', // Equivalent to rounded-md
+                        borderRadius: '0.375rem', // Use Tailwind's rounded-md value
                         overflow: 'hidden'
                       }}
                       notMerge={false}
                       lazyUpdate={false}
                     />
                   )}
+                   {/* Custom Save Button (Optional - ECharts toolbox is usually preferred) */}
+                   {/*
+                   <Button
+                       variant="outline"
+                       size="icon"
+                       onClick={saveChartAsImage}
+                       className="absolute bottom-4 right-4 z-10 bg-background/70 hover:bg-background/90 backdrop-blur-sm"
+                       title="Save Chart as PNG"
+                   >
+                       <Download className="h-4 w-4" />
+                   </Button>
+                   */}
                 </div>
 
                 {/* Results Display */}
