@@ -19,6 +19,8 @@ function Navbar() {
         return "Miscellaneous Projects";
       case "/misc/drop-chance":
         return "Drop Chance Calculator";
+      case "/simulations/mccabe-thiele":
+        return "McCabe-Thiele Simulator";
       default:
         return "Welcome";
     }
@@ -29,15 +31,15 @@ function Navbar() {
 
   return (
     // Use inline style to directly reference CSS variables
-    <nav 
-      className="flex items-center justify-between p-4 border-b min-w-full text-navbar-foreground" 
+    <nav
+      className="flex items-center justify-between p-4 border-b min-w-full text-navbar-foreground"
       style={{ backgroundColor: 'var(--navbar-background)' }}
     >
       {/* Left: Brand */}
       <div>
         <Link href="/" legacyBehavior passHref>
-          {/* Removed font-serif, apply consistent hover */}
-          <a className={`text-lg font-semibold ${linkHoverStyle} inline-block`}>
+          {/* Increased font size */}
+          <a className={`text-xl font-semibold ${linkHoverStyle} inline-block`}>
             Victor Liang
           </a>
         </Link>
@@ -45,8 +47,8 @@ function Navbar() {
 
       {/* Center: Page Title */}
       <div className="absolute left-1/2 transform -translate-x-1/2">
-        {/* Removed font-semibold, rely on base styles */}
-        <span className="text-lg font-semibold">{getPageTitle()}</span>
+        {/* Increased font size */}
+        <span className="text-xl font-semibold">{getPageTitle()}</span>
       </div>
 
       {/* Mobile Menu Button */}
@@ -65,12 +67,12 @@ function Navbar() {
       {/* Desktop Menu */}
       <div className="hidden md:flex items-center space-x-4">
         <Link href="/simulations" legacyBehavior passHref>
-          {/* Removed font-serif, apply consistent hover */}
-          <a className={`text-lg font-semibold ${linkHoverStyle}`}>Simulations</a>
+          {/* Increased font size */}
+          <a className={`text-xl font-semibold ${linkHoverStyle}`}>Simulations</a>
         </Link>
         <Link href="/misc" legacyBehavior passHref>
-          {/* Removed font-serif, apply consistent hover */}
-          <a className={`text-lg font-semibold ${linkHoverStyle}`}>Misc</a>
+          {/* Increased font size */}
+          <a className={`text-xl font-semibold ${linkHoverStyle}`}>Misc</a>
         </Link>
         {/* Apply consistent hover to ThemeToggle's button */}
         <div className={linkHoverStyle}>
@@ -79,7 +81,7 @@ function Navbar() {
       </div>
 
       {/* Mobile Menu Dropdown */}
-      <div 
+      <div
         className={`absolute top-16 right-0 w-48 z-50 md:hidden border-border overflow-hidden transition-all duration-200 ease-in-out ${
           isMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
         }`}
@@ -87,10 +89,12 @@ function Navbar() {
       >
         <div className="p-4 flex flex-col space-y-4 border-x border-b">
           <Link href="/simulations" legacyBehavior passHref>
-            <a className={`text-lg font-semibold ${linkHoverStyle}`}>Simulations</a>
+            {/* Increased font size */}
+            <a className={`text-xl font-semibold ${linkHoverStyle}`}>Simulations</a>
           </Link>
           <Link href="/misc" legacyBehavior passHref>
-            <a className={`text-lg font-semibold ${linkHoverStyle}`}>Misc</a>
+            {/* Increased font size */}
+            <a className={`text-xl font-semibold ${linkHoverStyle}`}>Misc</a>
           </Link>
           <div className={`flex justify-center ${linkHoverStyle}`}>
             <ThemeToggle />

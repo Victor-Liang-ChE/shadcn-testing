@@ -5,11 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Slider } from "@/components/ui/slider"; // Import Slider
+import { Slider } from "@/components/ui/slider";
 
 const DropChanceCalculator = () => {
-  const [percentValue, setPercentValue] = useState<number>(50); // Default to 50 for slider
-  const [attemptsValue, setAttemptsValue] = useState<number>(10); // Default to 10 for slider
+  const [percentValue, setPercentValue] = useState<number>(50);
+  const [attemptsValue, setAttemptsValue] = useState<number>(10);
   const [maxAttemptsValue, setMaxAttemptsValue] = useState<number>(100);
   const [desiredDropsValue, setDesiredDropsValue] = useState<number>(1);
   const [desiredDropsRangeValue, setDesiredDropsRangeValue] = useState<[number, number]>([1, 2]);
@@ -32,7 +32,7 @@ const DropChanceCalculator = () => {
       }
       return Math.exp(logResult);
     }
-    
+
     let coeff = 1;
     for (let x = n - k + 1; x <= n; x++) coeff *= x;
     for (let x = 1; x <= k; x++) coeff /= x;
@@ -47,7 +47,7 @@ const DropChanceCalculator = () => {
     if (n > 1000) {
       const mean = n * p;
       const stdDev = Math.sqrt(n * p * (1 - p));
-      
+
       if (isAtLeast) {
         const z = (k - 0.5 - mean) / stdDev;
         return 1 - normalCDF(z);
@@ -57,7 +57,7 @@ const DropChanceCalculator = () => {
         return normalCDF(z2) - normalCDF(z1);
       }
     }
-    
+
     if (isAtLeast) {
       let cumProb = 0;
       for (let i = 0; i < k; i++) {
@@ -68,18 +68,18 @@ const DropChanceCalculator = () => {
       return binomialProbability(n, k, p);
     }
   };
-  
+
   const normalCDF = (z: number): number => {
     if (z < -6) return 0;
     if (z > 6) return 1;
-    
+
     let sum = 0;
     let term = z;
     for (let i = 3; sum + term !== sum; i += 2) {
       sum += term;
       term = term * z * z / i;
     }
-    
+
     return 0.5 + sum * Math.exp(-z * z / 2) / Math.sqrt(2 * Math.PI);
   };
 
@@ -97,10 +97,9 @@ const DropChanceCalculator = () => {
     }
   }, [attemptsValue, desiredDropsValue, desiredDropsRangeValue]);
 
-
   useEffect(() => {
-    if (isNaN(percentValue) || isNaN(attemptsValue) || 
-        isNaN(desiredDropsValue) || 
+    if (isNaN(percentValue) || isNaN(attemptsValue) ||
+        isNaN(desiredDropsValue) ||
         isNaN(desiredDropsRangeValue[0]) || isNaN(desiredDropsRangeValue[1])) {
       setResult("Please enter valid values for all fields.");
       return;
@@ -112,26 +111,20 @@ const DropChanceCalculator = () => {
     if (toggleState === 0) {
       // Exact probability calculation
       const currentDesiredDrops = Math.min(desiredDropsValue, attemptsValue);
-      if (currentDesiredDrops < desiredDropsValue) {
-        setDesiredDropsValue(currentDesiredDrops);
-      }
+      if (currentDesiredDrops < desiredDropsValue) { setDesiredDropsValue(currentDesiredDrops); }
       const exactProb = calculateCumulativeProbability(attemptsValue, currentDesiredDrops, probability, false);
       resultText = `Probability of getting exactly ${currentDesiredDrops} ${currentDesiredDrops === 1 ? 'drop' : 'drops'}: <b>${(exactProb * 100).toPrecision(3)}%</b>`;
     } else if (toggleState === 1) {
       // At least probability calculation
       const currentDesiredDrops = Math.min(desiredDropsValue, attemptsValue);
-      if (currentDesiredDrops < desiredDropsValue) {
-        setDesiredDropsValue(currentDesiredDrops);
-      }
+      if (currentDesiredDrops < desiredDropsValue) { setDesiredDropsValue(currentDesiredDrops); }
       const atLeastProb = calculateCumulativeProbability(attemptsValue, currentDesiredDrops, probability, true);
       resultText = `Probability of getting at least ${currentDesiredDrops} ${currentDesiredDrops === 1 ? 'drop' : 'drops'}: <b>${(atLeastProb * 100).toPrecision(3)}%</b>`;
     } else {
       // Range probability calculation
       const minDrops = Math.min(desiredDropsRangeValue[0], attemptsValue);
       const maxDrops = Math.min(desiredDropsRangeValue[1], attemptsValue);
-      if (minDrops !== desiredDropsRangeValue[0] || maxDrops !== desiredDropsRangeValue[1]) {
-        setDesiredDropsRangeValue([minDrops, maxDrops]);
-      }
+      if (minDrops !== desiredDropsRangeValue[0] || maxDrops !== desiredDropsRangeValue[1]) { setDesiredDropsRangeValue([minDrops, maxDrops]); }
       const finalMinDrops = Math.min(minDrops, maxDrops);
       const probAtLeastMin = calculateCumulativeProbability(attemptsValue, finalMinDrops, probability, true);
       const probAtLeastMaxPlusOne = calculateCumulativeProbability(attemptsValue, maxDrops + 1, probability, true);
@@ -170,11 +163,11 @@ const DropChanceCalculator = () => {
 
 
   return (
-    <main className="flex flex-col items-center justify-between pt-12 md:pt-24 px-6 md:px-24 pb-12"> {/* Added bottom padding */}
+    <main className="flex flex-col items-center justify-between pt-12 md:pt-24 px-8 md:px-32 pb-12"> {/* Increased horizontal padding: px-8 md:px-32 */}
       <Card className="w-full max-w-4xl">
         <CardHeader>
         </CardHeader>
-        <CardContent className="space-y-8"> {/* Increased from space-y-6 */}
+        <CardContent className="space-y-8">
           <Tabs defaultValue="exact" onValueChange={(value) => {
             if (value === "exact") setToggleState(0);
             else if (value === "atleast") setToggleState(1);
@@ -187,8 +180,8 @@ const DropChanceCalculator = () => {
             </TabsList>
 
             {/* Common Inputs */}
-            <div className="space-y-6 pt-6"> {/* Increased from space-y-4 pt-4 */}
-               <div className="space-y-3"> {/* Increased from space-y-2 */}
+            <div className="space-y-6 pt-6">
+               <div className="space-y-3">
                  <Label htmlFor="percent" className="font-bold">Drop Chance: {percentValue}%</Label>
                  <Slider
                    id="percent"
@@ -199,7 +192,7 @@ const DropChanceCalculator = () => {
                    onValueChange={(value) => setPercentValue(value[0])}
                  />
                </div>
-               <div className="space-y-3"> {/* Increased from space-y-2 */}
+               <div className="space-y-3">
                  <div className="flex justify-between items-center">
                     <Label htmlFor="attempts" className="font-bold">Number of Attempts: {attemptsValue}</Label>
                     <div className="flex items-center gap-2">
@@ -226,8 +219,8 @@ const DropChanceCalculator = () => {
                </div>
             </div>
 
-            <TabsContent value="exact" className="space-y-6 pt-6 mt-4"> {/* Removed border-t, increased spacing */}
-               <div className="space-y-3"> {/* Increased from space-y-2 */}
+            <TabsContent value="exact" className="space-y-6 pt-6 mt-4">
+               <div className="space-y-3">
                  <Label htmlFor="drops" className="font-bold">Desired {desiredDropsValue === 1 ? 'Drop' : 'Drops'}: {desiredDropsValue}</Label>
                  <Slider
                    id="drops"
@@ -240,8 +233,8 @@ const DropChanceCalculator = () => {
                  />
                </div>
             </TabsContent>
-            <TabsContent value="atleast" className="space-y-6 pt-6 mt-4"> {/* Removed border-t, increased spacing */}
-               <div className="space-y-3"> {/* Increased from space-y-2 */}
+            <TabsContent value="atleast" className="space-y-6 pt-6 mt-4">
+               <div className="space-y-3">
                  <Label htmlFor="drops-atleast" className="font-bold">Desired {desiredDropsValue === 1 ? 'Drop' : 'Drops'}: {desiredDropsValue}</Label>
                  <Slider
                    id="drops-atleast"
@@ -254,11 +247,11 @@ const DropChanceCalculator = () => {
                  />
                </div>
             </TabsContent>
-            <TabsContent value="range" className="space-y-6 pt-6 mt-4"> {/* Removed border-t, increased spacing */}
-               <div className="space-y-3"> {/* Increased from space-y-2 */}
+            <TabsContent value="range" className="space-y-6 pt-6 mt-4">
+               <div className="space-y-3">
                  <Label className="font-bold">Desired Range: {desiredDropsRangeValue[0]} to {desiredDropsRangeValue[1]} {desiredDropsRangeValue[1] === 1 ? 'Drop' : 'Drops'}</Label>
-                 <div className="grid grid-cols-2 gap-6"> {/* Increased from gap-4 */}
-                    <div className="space-y-2"> {/* Increased from space-y-1 */}
+                 <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-2">
                        <Label htmlFor="min-drops" className="text-sm font-bold">Min: {desiredDropsRangeValue[0]}</Label>
                        <Slider
                          id="min-drops"
@@ -270,7 +263,7 @@ const DropChanceCalculator = () => {
                          disabled={attemptsValue === 0}
                        />
                     </div>
-                    <div className="space-y-2"> {/* Increased from space-y-1 */}
+                    <div className="space-y-2">
                        <Label htmlFor="max-drops" className="text-sm font-bold">Max: {desiredDropsRangeValue[1]}</Label>
                        <Slider
                          id="max-drops"
@@ -287,7 +280,7 @@ const DropChanceCalculator = () => {
             </TabsContent>
           </Tabs>
 
-          <div className="mt-8 p-6 bg-muted rounded-md whitespace-pre-line"> {/* Increased padding and margin */}
+          <div className="mt-8 p-6 bg-muted rounded-md whitespace-pre-line">
             <div dangerouslySetInnerHTML={{ __html: result || "Adjust sliders to calculate probability" }} />
           </div>
         </CardContent>
