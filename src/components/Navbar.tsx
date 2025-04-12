@@ -12,15 +12,10 @@ function Navbar() {
   const pathname = usePathname();
   
   const getPageTitle = () => {
-    switch (pathname) {
+    switch (pathname) {      
+      
       case "/simulations":
         return "Chemical Engineering Simulations";
-        
-      case "/misc":
-        return "Miscellaneous Projects";
-
-      case "/misc/drop-chance":
-        return "Drop Chance Calculator";
 
       case "/simulations/mccabe-thiele":
         return "McCabe-Thiele Graphical Method";
@@ -33,6 +28,15 @@ function Navbar() {
 
       case "/simulations/pid-tuning":
         return "PID Tuning Simulator";
+
+      case "/misc":
+          return "Miscellaneous Projects";
+  
+      case "/misc/drop-chance":
+          return "Drop Chance Calculator";
+
+      case "/misc/portola-menu":
+          return "Portola Menu";
         
       default:
         return "Welcome";
