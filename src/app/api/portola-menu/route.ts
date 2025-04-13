@@ -18,20 +18,37 @@ interface MenuData {
     dateRange: string;
 }
 
-// Function to extract day titles with dates and shorten them
+// Interface for the combined response
+interface AllMealsResponse {
+    breakfast: MenuData;
+    lunch: MenuData;
+    dinner: MenuData;
+    dateRange: string; // Keep top-level date range
+}
+
+// Function to extract day titles - Return full name and date
 function extractDayTitles(document: Document): string[] {
-    const dayHeaders = Array.from(document.querySelectorAll('#week-menu-table thead th'));
-    // Skip first header (empty cell), take the next 5
-    return dayHeaders.slice(1, 6).map(th => {
-        // Extract text, remove extra whitespace, should be like "Monday, 04/15"
-        const fullText = th.textContent?.replace(/\s+/g, ' ').trim() || '';
-        // Extract only the day name part and shorten it
-        const dayNameMatch = fullText.match(/^(\w+)/);
-        if (dayNameMatch && dayNameMatch[1]) {
-            return dayNameMatch[1].substring(0, 3); // e.g., "Mon", "Tue"
+    const potentialHeaders = Array.from(document.querySelectorAll('h4, p.day-header, div.day-title'));
+    const dayTitles: string[] = [];
+    const dayNameRegex = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i;
+
+    potentialHeaders.forEach(el => {
+        const fullText = el.textContent?.replace(/\s+/g, ' ').trim() || '';
+        const match = fullText.match(dayNameRegex);
+        if (match && fullText.match(/\d{1,2}\/\d{1,2}/)) {
+            if (dayTitles.length < 5) {
+                 // Return the full text like "Saturday, 04/12"
+                 dayTitles.push(fullText);
+            }
         }
-        return 'Day'; // Fallback
     });
+
+    if (dayTitles.length < 5) {
+        console.warn(`DEBUG WARN: Found only ${dayTitles.length} potential day titles. Structure might have changed.`);
+    }
+
+    // Return full titles or empty array
+    return dayTitles.length > 0 ? dayTitles : [];
 }
 
 // Function to process menu items for a section
@@ -50,6 +67,11 @@ function processTbody(tbody: Element | null, meal: string, highlightLogic: boole
         tds.forEach((td, dayIndex) => {
             if (dayIndex >= 5) return; // Only process first 5 columns (days)
 
+            // Ensure the array for the day exists
+            if (!menuItems[dayIndex]) {
+                menuItems[dayIndex] = [];
+            }
+
             if (isCourseRow) {
                 const text = td.textContent?.replace(/\(v\)|\(vgn\)/g, '').trim() || '';
                 if (text) {
@@ -63,24 +85,13 @@ function processTbody(tbody: Element | null, meal: string, highlightLogic: boole
                         const text = dd.textContent?.replace(/\(v\)|\(vgn\)/g, '').trim() || '';
                         if (text) {
                             let highlight = false;
-
-                            // Apply highlighting logic based on Python script
-                            // highlightLogic is true only for 'lunch' and 'dinner' main processing
                             if (highlightLogic) {
-                                // Lunch highlighting: first item (itemIndex === 0) in specific rows (trCount)
                                 if (meal === 'lunch' && itemIndex === 0 && [6, 10, 12, 14].includes(trCount)) {
                                     highlight = true;
-                                    console.log(`Highlighted lunch item: ${text} (tr: ${trCount})`);
-                                }
-                                // Dinner highlighting: first item (itemIndex === 0) in specific rows (trCount)
-                                else if (meal === 'dinner' && itemIndex === 0 && [4, 10, 12].includes(trCount)) {
+                                } else if (meal === 'dinner' && itemIndex === 0 && [6, 10, 12].includes(trCount)) { // Adjusted dinner rows based on previous logic
                                     highlight = true;
-                                    console.log(`Highlighted dinner item: ${text} (tr: ${trCount})`);
                                 }
                             }
-                            // Note: 'brunch' is processed with highlightLogic=false, so it won't highlight
-                            // 'breakfast' is processed with highlightLogic=false, so it won't highlight
-
                             menuItems[dayIndex].push({ text, highlight });
                         }
                     });
@@ -91,24 +102,29 @@ function processTbody(tbody: Element | null, meal: string, highlightLogic: boole
     return menuItems;
 }
 
+// Helper to create MenuData structure
+function createMenuDataObject(titles: string[], items: MenuItem[][], dateRange: string): MenuData {
+    const daysData: DayMenu[] = titles.map((title, index) => ({
+        title: title,
+        items: items[index] || []
+    }));
+    return { days: daysData, dateRange };
+}
+
+
 export async function GET(request: Request) {
-    console.log("DEBUG: Portola menu API route called");
-    const { searchParams } = new URL(request.url);
-    const meal = searchParams.get('meal') || 'dinner';
-    console.log(`DEBUG: Requested meal type: ${meal}`);
+    console.log("DEBUG: Portola menu API route called (fetching all meals)");
 
     try {
         const url = 'https://apps.dining.ucsb.edu/menu/week?dc=portola&m=breakfast&m=brunch&m=lunch&m=dinner&m=late-night&food=';
         console.log(`DEBUG: Fetching menu from URL: ${url}`);
-        const response = await fetch(url, { cache: 'no-store' }); // Disable cache
+        const response = await fetch(url, { cache: 'no-store' });
 
         if (!response.ok) {
             console.error(`DEBUG ERROR: Failed to fetch menu HTML. Status: ${response.status}`);
             throw new Error(`Failed to fetch menu HTML: ${response.statusText}`);
         }
-
         const htmlContent = await response.text();
-        console.log(`DEBUG: Received HTML content (length: ${htmlContent.length})`);
         if (!htmlContent) {
             throw new Error("Received empty HTML content.");
         }
@@ -116,71 +132,26 @@ export async function GET(request: Request) {
         const dom = new JSDOM(htmlContent);
         const document = dom.window.document;
 
-        const dayTitles = extractDayTitles(document); // Use the updated function
+        // --- Extract Titles and Date Range Once ---
+        const dayTitles = extractDayTitles(document);
         console.log('DEBUG: Extracted Day titles:', dayTitles);
-        // Fallback if titles extraction fails
         const finalDayTitles = dayTitles.length === 5 ? dayTitles : Array.from({ length: 5 }, (_, i) => `Day ${i + 1}`);
 
-        let processedMenuItems: MenuItem[][] = [[], [], [], [], []];
-        let menuFound = false;
-
-        if (meal === 'lunch') {
-            console.log('DEBUG: Processing lunch/brunch menu');
-            const lunchSection = document.querySelector('#lunch-body');
-            const brunchSection = document.querySelector('#brunch-body');
-
-            if (lunchSection) {
-                const lunchTbody = lunchSection.querySelector('tbody');
-                if (lunchTbody) {
-                    console.log('DEBUG: Found lunch tbody');
-                    // Process lunch with highlighting enabled (highlightLogic = true)
-                    const lunchMenu = processTbody(lunchTbody, 'lunch', true);
-                    lunchMenu.forEach((dayItems, dayIndex) => processedMenuItems[dayIndex].push(...dayItems));
-                    menuFound = true;
-                } else { console.log('DEBUG: No tbody found in #lunch-body'); }
-            } else { console.log('DEBUG: No #lunch-body section found'); }
-
-            if (brunchSection) {
-                const brunchTbody = brunchSection.querySelector('tbody');
-                if (brunchTbody) {
-                    console.log('DEBUG: Found brunch tbody');
-                    // Process brunch with highlighting disabled (highlightLogic = false)
-                    const brunchMenu = processTbody(brunchTbody, 'brunch', false);
-                    brunchMenu.forEach((dayItems, dayIndex) => {
-                        if (!processedMenuItems[dayIndex]) {
-                            processedMenuItems[dayIndex] = [];
-                        }
-                        processedMenuItems[dayIndex].push(...dayItems);
-                    });
-                    menuFound = true;
-                } else { console.log('DEBUG: No tbody found in #brunch-body'); }
-            } else { console.log('DEBUG: No #brunch-body section found'); }
-
-        } else { // breakfast or dinner
-            const sectionId = `${meal}-body`;
-            console.log(`DEBUG: Processing ${meal} menu (selector: #${sectionId})`);
-            const section = document.querySelector(`#${sectionId}`);
-
-            if (section) {
-                const tbody = section.querySelector('tbody');
-                if (tbody) {
-                    console.log(`DEBUG: Found ${meal} tbody`);
-                    // Enable highlighting only for dinner (highlightLogic = meal === 'dinner')
-                    processedMenuItems = processTbody(tbody, meal, meal === 'dinner');
-                    menuFound = true;
-                } else { console.log(`DEBUG: No tbody found in #${sectionId}`); }
-            } else { console.log(`DEBUG: No #${sectionId} section found`); }
-        }
-
-        // Get date range
         let dateRange = "N/A";
-        const dateElement = document.querySelector('.date-range'); // Assuming this class exists
-        if (dateElement?.textContent) {
-            dateRange = dateElement.textContent.trim();
-        } else {
+        let dateElementFound = false;
+        const allParagraphs = Array.from(document.querySelectorAll('p'));
+        const dateRangeRegex = /\d{1,2}\/\d{1,2}\s+to\s+\d{1,2}\/\d{1,2}/;
+        for (const p of allParagraphs) {
+            if (p.textContent && dateRangeRegex.test(p.textContent)) {
+                dateRange = p.textContent.trim();
+                dateElementFound = true;
+                break;
+            }
+        }
+        if (!dateElementFound) {
+             console.warn("DEBUG WARN: Date range element not found using pattern matching, generating fallback dates.");
              // Fallback date range generation if element not found
-             console.warn("DEBUG WARN: '.date-range' element not found, generating fallback dates.");
-             const today = new Date();
+             const today = new Date(); // Consider timezone if needed
              const futureDate = new Date(today);
              futureDate.setDate(today.getDate() + 4);
              const formatDate = (date: Date) => `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`;
@@ -188,24 +159,68 @@ export async function GET(request: Request) {
         }
         console.log(`DEBUG: Date range determined as: ${dateRange}`);
 
-        // Check if any menu items were actually found across all days
-        const totalItems = processedMenuItems.reduce((sum, day) => sum + (day?.length || 0), 0);
-        if (!menuFound || totalItems === 0) {
-            console.log(`DEBUG: No menu items found for ${meal}. Returning empty.`);
-            // Return success but with empty data and the determined date range
-            return NextResponse.json({ days: [], dateRange: dateRange });
-        }
+        // --- Process Each Meal ---
+        let breakfastItems: MenuItem[][] = [[], [], [], [], []];
+        let lunchItems: MenuItem[][] = [[], [], [], [], []];
+        let dinnerItems: MenuItem[][] = [[], [], [], [], []];
 
-        const daysData: DayMenu[] = finalDayTitles.map((title, index) => ({
-            title: title, // Use extracted short titles or fallback
-            items: processedMenuItems[index] || [] // Ensure items array exists
-        }));
+        // Breakfast
+        const breakfastSection = document.querySelector('#breakfast-body');
+        if (breakfastSection) {
+            const breakfastTbody = breakfastSection.querySelector('tbody');
+            breakfastItems = processTbody(breakfastTbody, 'breakfast', false); // No highlight for breakfast
+            // Add "See Brunch" message for weekends
+            finalDayTitles.forEach((title, index) => {
+                if (title.startsWith('Sat') || title.startsWith('Sun')) {
+                    if (!breakfastItems[index]) breakfastItems[index] = [];
+                    // Clear existing items and add the message
+                    breakfastItems[index] = [{ text: "See Lunch/Brunch section for Brunch menu.", class: 'brunch-notice' }];
+                }
+            });
+        } else { console.log('DEBUG: No #breakfast-body section found'); }
 
-        const menuData: MenuData = { days: daysData, dateRange };
-        console.log(`DEBUG: Successfully processed ${meal} menu data. Highlighted items: ${daysData.flatMap(day => day.items).filter(item => item.highlight).length}`);
-        return NextResponse.json(menuData);
+        // Lunch/Brunch (Combined)
+        const lunchSection = document.querySelector('#lunch-body');
+        const brunchSection = document.querySelector('#brunch-body');
+        if (lunchSection) {
+            const lunchTbody = lunchSection.querySelector('tbody');
+            const processedLunch = processTbody(lunchTbody, 'lunch', true); // Highlight lunch
+            processedLunch.forEach((dayItems, dayIndex) => {
+                 if (!lunchItems[dayIndex]) lunchItems[dayIndex] = [];
+                 lunchItems[dayIndex].push(...dayItems);
+            });
+        } else { console.log('DEBUG: No #lunch-body section found'); }
+        if (brunchSection) {
+            const brunchTbody = brunchSection.querySelector('tbody');
+            const processedBrunch = processTbody(brunchTbody, 'brunch', false); // No highlight brunch
+            processedBrunch.forEach((dayItems, dayIndex) => {
+                 if (!lunchItems[dayIndex]) lunchItems[dayIndex] = [];
+                 lunchItems[dayIndex].push(...dayItems);
+            });
+        } else { console.log('DEBUG: No #brunch-body section found'); }
+
+
+        // Dinner
+        const dinnerSection = document.querySelector('#dinner-body');
+        if (dinnerSection) {
+            const dinnerTbody = dinnerSection.querySelector('tbody');
+            dinnerItems = processTbody(dinnerTbody, 'dinner', true); // Highlight dinner
+        } else { console.log('DEBUG: No #dinner-body section found'); }
+
+        // --- Construct Response ---
+        const allData: AllMealsResponse = {
+            breakfast: createMenuDataObject(finalDayTitles, breakfastItems, dateRange),
+            lunch: createMenuDataObject(finalDayTitles, lunchItems, dateRange),
+            dinner: createMenuDataObject(finalDayTitles, dinnerItems, dateRange),
+            dateRange: dateRange // Include top-level date range
+        };
+
+        console.log(`DEBUG: Successfully processed all meal data.`);
+        return NextResponse.json(allData);
+
     } catch (error: any) {
-        console.error(`DEBUG ERROR in API route for meal "${meal}":`, error);
+        console.error(`DEBUG ERROR in API route (all meals):`, error);
+        // Return a generic error structure if needed, or specific meal errors
         return NextResponse.json(
             { error: error.message || 'Failed to process menu data' },
             { status: 500 }
