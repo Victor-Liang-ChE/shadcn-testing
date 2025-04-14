@@ -361,7 +361,176 @@ export default function PidTuningPage() {
 
     const formatNumber = (num: number | null | undefined, precision = 3): string => { /* ... (unchanged) ... */ if (num === null || num === undefined || isNaN(num)) return "---"; if (Math.abs(num) === Infinity) return "Inf"; if (Math.abs(num) > 0 && (Math.abs(num) < 10**(-precision) || Math.abs(num) > 10**6)) return num.toPrecision(precision); return num.toFixed(precision); };
 
-    const generateEchartsOptions = useCallback(( simRes: ProcessSimulationResult | null, calculatedPid: PidParams | null, ruleLabel: string | undefined, currentLambda: number, modelLabel: string, C_proc_used: number[][], currentTFinal: number ): EChartsOption => { /* ... (unchanged from previous version) ... */ const subTextParts = []; if (ruleLabel) subTextParts.push(`Rule: ${ruleLabel}`); if (calculatedPid) { subTextParts.push(`&tau;<sub>c</sub>=${currentLambda.toFixed(2)}`); subTextParts.push(`Kp=${formatNumber(calculatedPid.Kp, 2)}`); subTextParts.push(`&tau;<sub>i</sub>=${formatNumber(calculatedPid.Ti, 2)}`); if (calculatedPid.Td > 1e-9) { subTextParts.push(`&tau;<sub>d</sub>=${formatNumber(calculatedPid.Td, 2)}`); } } const subtext = subTextParts.join(', '); if (!simRes || !C_proc_used || C_proc_used.length === 0 || C_proc_used[0].length === 0) { return { title: { text: 'Waiting for simulation data...', subtext: 'Adjust parameters or select rule', left: 'center' }, xAxis: { type: 'value', min:0, max:currentTFinal }, yAxis: { type: 'value' }, series: [], backgroundColor: 'transparent' }; } const numProcessStates = C_proc_used[0].length; if (numProcessStates > simRes.y.length) { console.error("C Matrix columns mismatch simulation states rows!", { C_cols: numProcessStates, y_states_rows: simRes.y.length }); return { title: { text: 'Error: State/Output matrix row mismatch', left: 'center' }, backgroundColor: 'transparent' }; } const output_y = simRes.t.map((_, i) => { let y_val = 0; if (simRes.y && simRes.y[0] && i < simRes.y[0].length) { for (let j = 0; j < numProcessStates; j++) { if (simRes.y[j] && typeof simRes.y[j][i] === 'number' && C_proc_used[0] && typeof C_proc_used[0][j] === 'number') { y_val += C_proc_used[0][j] * simRes.y[j][i]; } else { console.warn(`State y[${j}][${i}] or C[0][${j}] invalid.`); return NaN; } } } else { console.warn(`Time index ${i} out of bounds.`); return NaN; } return y_val; }); const validDataPoints = simRes.t.map((time, index) => [time, output_y[index]]).filter(point => !isNaN(point[1] as number)); const seriesData: SeriesOption[] = [ { name: 'Process Output (y)', type: 'line', smooth: true, symbol: 'none', data: validDataPoints, lineStyle: { color: '#3b82f6', width: 2 }, emphasis: { focus: 'series' }, }, { name: 'Setpoint (r)', type: 'line', smooth: false, symbol: 'none', data: [[0, setpoint], [currentTFinal, setpoint]], lineStyle: { color: '#ef4444', type: 'dashed' }, step: 'end', z: 1 } ]; return { backgroundColor: 'transparent', animation: false, title: { text: `Closed-Loop Step Response: ${modelLabel}`, subtext, left: 'center', textStyle: { fontSize: 16 }, subtextStyle: { fontSize: 11, color: '#6b7280' } }, tooltip: { trigger: 'axis', formatter: (params: any) => { let t = params[0] ? `Time: ${params[0].axisValueLabel}<br/>` : ''; params.forEach((p: any) => { if (p.seriesName === 'Setpoint (r)') { t += `${p.marker}${p.seriesName}: ${setpoint.toFixed(3)}<br/>`; } else if (p.value && p.value.length > 1 && typeof p.value[1] === 'number') { t += `${p.marker}${p.seriesName}: ${p.value[1].toPrecision(4)}<br/>`; } }); return t; } }, legend: { data: ['Process Output (y)', 'Setpoint (r)'], bottom: 10 }, grid: { left: '8%', right: '8%', bottom: '15%', top: '22%', containLabel: false }, toolbox: { feature: { saveAsImage: { name: `pid_tuning_${modelLabel.replace(/[^a-z0-9]/gi, '_')}_${ruleLabel?.replace(/[^a-z0-9]/gi, '_') ?? 'no_rule'}_tc_${currentLambda.toFixed(2)}` } }, show: true, orient: 'horizontal', bottom: 5, right: '5%' }, xAxis: { type: 'value', name: 'Time (s)', nameLocation: 'middle', nameGap: 25, min: 0, max: currentTFinal, axisLabel: { formatter: (v: number) => v.toFixed(1) }, splitLine: { show: false } }, yAxis: { type: 'value', name: 'Output', nameLocation: 'middle', nameGap: 45, axisLabel: { formatter: (v: number) => v.toPrecision(3) }, splitLine: { show: true, lineStyle: { type: 'dashed', color: '#e5e7eb' } } }, series: seriesData }; }, [setpoint]); // Removed args that are passed in, added setpoint dependency
+    const generateEchartsOptions = useCallback(( simRes: ProcessSimulationResult | null, calculatedPid: PidParams | null, ruleLabel: string | undefined, currentLambda: number, modelLabel: string, C_proc_used: number[][], currentTFinal: number ): EChartsOption => {
+        const subTextParts = [];
+        if (ruleLabel) subTextParts.push(`Rule: ${ruleLabel}`);
+        if (calculatedPid) {
+            subTextParts.push(`&tau;<sub>c</sub>=${currentLambda.toFixed(2)}`);
+            subTextParts.push(`Kp=${formatNumber(calculatedPid.Kp, 2)}`);
+            subTextParts.push(`&tau;<sub>i</sub>=${formatNumber(calculatedPid.Ti, 2)}`);
+            if (calculatedPid.Td > 1e-9) {
+                subTextParts.push(`&tau;<sub>d</sub>=${formatNumber(calculatedPid.Td, 2)}`);
+            }
+        }
+        const subtext = subTextParts.join(', ');
+
+        const emptyOrErrorOptions: EChartsOption = {
+            backgroundColor: '#08306b', // Match McCabe
+            title: {
+                text: 'Waiting for simulation data...',
+                subtext: 'Adjust parameters or select rule',
+                left: 'center',
+                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'sans-serif' }, // Match McCabe
+                subtextStyle: { fontSize: 11, color: '#ccc' } // Lighter subtext
+            },
+            grid: { left: '5%', right: '5%', bottom: '5%', top: '5%', containLabel: true }, // Match McCabe
+            xAxis: { type: 'value', min:0, max:currentTFinal, axisLabel: { color: '#fff' }, axisLine: { lineStyle: { color: '#fff' } } }, // Basic styling
+            yAxis: { type: 'value', axisLabel: { color: '#fff' }, axisLine: { lineStyle: { color: '#fff' } } }, // Basic styling
+            series: [],
+            animation: false,
+        };
+
+        if (!simRes || !C_proc_used || C_proc_used.length === 0 || C_proc_used[0].length === 0) {
+            return emptyOrErrorOptions;
+        }
+
+        const numProcessStates = C_proc_used[0].length;
+        if (numProcessStates > simRes.y.length) {
+            console.error("C Matrix columns mismatch simulation states rows!", { C_cols: numProcessStates, y_states_rows: simRes.y.length });
+            return { ...emptyOrErrorOptions, title: { ...emptyOrErrorOptions.title, text: 'Error: State/Output matrix mismatch' } };
+        }
+
+        const output_y = simRes.t.map((_, i) => {
+            let y_val = 0;
+            if (simRes.y && simRes.y[0] && i < simRes.y[0].length) {
+                for (let j = 0; j < numProcessStates; j++) {
+                    if (simRes.y[j] && typeof simRes.y[j][i] === 'number' && C_proc_used[0] && typeof C_proc_used[0][j] === 'number') {
+                        y_val += C_proc_used[0][j] * simRes.y[j][i];
+                    } else {
+                        console.warn(`State y[${j}][${i}] or C[0][${j}] invalid.`); return NaN;
+                    }
+                }
+            } else {
+                console.warn(`Time index ${i} out of bounds.`); return NaN;
+            }
+            return y_val;
+        });
+
+        const validDataPoints = simRes.t.map((time, index) => [time, output_y[index]]).filter(point => !isNaN(point[1] as number));
+
+        const seriesData: SeriesOption[] = [
+            {
+                name: 'Process Output (y)',
+                type: 'line',
+                smooth: true, // Keep smooth for PID response
+                symbol: 'none',
+                data: validDataPoints,
+                lineStyle: { color: '#ffff00', width: 2.5 }, // Yellow, thicker like McCabe equilibrium
+                emphasis: { focus: 'series' },
+                animation: false, // Disable animation per series
+            },
+            {
+                name: 'Setpoint (r)',
+                type: 'line',
+                smooth: false,
+                symbol: 'none',
+                data: [[0, setpoint], [currentTFinal, setpoint]],
+                lineStyle: { color: '#ef4444', type: 'dashed', width: 1.5 }, // Red dashed, slightly thicker
+                step: 'end', // Keep step for setpoint change visualization
+                z: 1,
+                animation: false, // Disable animation per series
+            }
+        ];
+
+        const titleText = `Closed-Loop Step Response: ${modelLabel}`;
+        const saveName = `pid_tuning_${modelLabel.replace(/[^a-z0-9]/gi, '_')}_${ruleLabel?.replace(/[^a-z0-9]/gi, '_') ?? 'no_rule'}_tc_${currentLambda.toFixed(2)}`;
+
+        return {
+            backgroundColor: '#08306b', // Match McCabe
+            animation: false, // Disable animations globally
+            title: {
+                text: titleText,
+                subtext,
+                left: 'center',
+                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'sans-serif' }, // Match McCabe
+                subtextStyle: { fontSize: 11, color: '#ccc' } // Lighter subtext
+            },
+            tooltip: {
+                trigger: 'axis',
+                formatter: (params: any) => {
+                    let t = params[0] ? `Time: ${params[0].axisValueLabel}<br/>` : '';
+                    params.forEach((p: any) => {
+                        if (p.seriesName === 'Setpoint (r)') {
+                            t += `${p.marker}${p.seriesName}: ${setpoint.toFixed(3)}<br/>`;
+                        } else if (p.value && p.value.length > 1 && typeof p.value[1] === 'number') {
+                            t += `${p.marker}${p.seriesName}: ${p.value[1].toPrecision(4)}<br/>`;
+                        }
+                    });
+                    return t;
+                }
+            },
+            legend: {
+                orient: 'vertical', // Match McCabe
+                right: '2%', // Match McCabe
+                top: 'center', // Match McCabe
+                data: seriesData.map(s => s.name) as string[], // Ensure string array
+                textStyle: { color: '#fff', fontSize: 12, fontFamily: 'sans-serif' }, // Match McCabe
+                itemWidth: 12, // Match McCabe
+                itemHeight: 12, // Match McCabe
+                icon: 'rect', // Match McCabe
+            },
+            grid: {
+                left: '5%', // Match McCabe
+                right: '5%', // Match McCabe
+                bottom: '5%', // Match McCabe
+                top: '5%', // Match McCabe
+                containLabel: true // Match McCabe
+            },
+            toolbox: {
+                show: true,
+                orient: 'vertical', // Match McCabe
+                right: 0, // Match McCabe
+                top: 'bottom', // Match McCabe (adjust if needed)
+                feature: {
+                    saveAsImage: {
+                        show: true,
+                        title: 'Save as Image',
+                        name: saveName, // Dynamic filename
+                        backgroundColor: '#08306b', // Match chart background
+                        pixelRatio: 2 // Increase resolution
+                    }
+                },
+                iconStyle: {
+                    borderColor: '#fff' // Match McCabe
+                }
+            },
+            xAxis: {
+                type: 'value',
+                name: 'Time (s)',
+                nameLocation: 'middle', // Match McCabe
+                nameGap: 30, // Match McCabe
+                min: 0,
+                max: currentTFinal,
+                axisLine: { lineStyle: { color: '#fff' } }, // Match McCabe
+                axisTick: { lineStyle: { color: '#fff' }, length: 5, inside: false }, // Match McCabe
+                axisLabel: { color: '#fff', fontSize: 16, fontFamily: 'sans-serif', formatter: (v: number) => v.toFixed(1) }, // Match McCabe font size
+                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'sans-serif' }, // Match McCabe
+                splitLine: { show: false } // Match McCabe
+            },
+            yAxis: {
+                type: 'value',
+                name: 'Output',
+                nameLocation: 'middle', // Match McCabe
+                nameGap: 40, // Match McCabe (adjust if needed for 'Output')
+                axisLine: { lineStyle: { color: '#fff' } }, // Match McCabe
+                axisTick: { lineStyle: { color: '#fff' }, length: 5, inside: false }, // Match McCabe
+                axisLabel: { color: '#fff', fontSize: 16, fontFamily: 'sans-serif', formatter: (v: number) => v.toPrecision(3) }, // Match McCabe font size
+                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'sans-serif' }, // Match McCabe
+                splitLine: { show: false } // Match McCabe
+            },
+            series: seriesData
+        };
+    }, [setpoint]); // Dependency remains setpoint
 
     const runSimulation = useCallback(async () => { /* ... (unchanged simulation logic from previous version, relies on selectedRule, modelParams etc.) ... */ if (!selectedRule) { setIsLoading(false); setSimulationStatus("Select a tuning rule."); const C_proc_prev = (currentCProc && currentCProc.length > 0) ? currentCProc : [[1]]; const emptyOptions = generateEchartsOptions(null, null, undefined, lambda, selectedModel.label, C_proc_prev, tFinal); setEchartsOptions(emptyOptions); return; } const modelParamKeys = selectedModel.parameters.map(p => p.id); const allParamsSet = modelParamKeys.every(key => modelParams[key] !== undefined && modelParams[key] !== null && !isNaN(modelParams[key] as number)); if (!allParamsSet) { setIsLoading(false); setSimulationStatus("Set all model parameters."); return; } setIsLoading(true); setSimulationStatus("Calculating..."); let calculatedPid: PidParams | null = null; try { calculatedPid = selectedRule.calculate({ ...modelParams, lambda }); setPidParams(calculatedPid); } catch (error) { console.error("PID Calculation Error:", error); setSimulationStatus(`Error calculating PID: ${error instanceof Error ? error.message : String(error)}`); setPidParams(null); setSimulationResult(null); const C_proc_prev = (currentCProc && currentCProc.length > 0) ? currentCProc : [[1]]; const errorOptions = generateEchartsOptions(null, null, selectedRule.label, lambda, selectedModel.label, C_proc_prev, tFinal); setEchartsOptions(errorOptions); try { echartsRef.current?.getEchartsInstance().setOption(errorOptions, { notMerge: true }); } catch (e) { console.error("Error setting ECharts option during PID calc error:", e); } setIsLoading(false); return; } if (!calculatedPid) { setSimulationStatus("Error: Failed to obtain PID params."); setIsLoading(false); return; } let sim_results: ProcessSimulationResult | null = null; let finalStatus = "Error: Unknown simulation failure"; let C_proc_used: number[][] = currentCProc; try { const { odeFunc, y0, C_proc } = selectedModel.getOdeSystem(modelParams, setpoint, calculatedPid, alpha); if (!C_proc || C_proc.length === 0 || C_proc[0].length === 0) throw new Error("Invalid C_proc matrix."); C_proc_used = C_proc; setCurrentCProc(C_proc); const t_span: [number, number] = [0, tFinal]; sim_results = await solveODERK45(odeFunc, y0, t_span); setSimulationResult(sim_results); finalStatus = sim_results.status; } catch (error) { console.error("Simulation Error:", error); finalStatus = `Error in simulation: ${error instanceof Error ? error.message : String(error)}`; setSimulationResult(null); setCurrentCProc([[1]]); C_proc_used = [[1]]; } finally { setSimulationStatus(finalStatus); const newOptions = generateEchartsOptions(sim_results, calculatedPid, selectedRule.label, lambda, selectedModel.label, C_proc_used, tFinal); setEchartsOptions(newOptions); try { const instance = echartsRef.current?.getEchartsInstance(); if (instance) instance.setOption(newOptions, { notMerge: true }); else console.warn("ECharts instance not available on ref yet."); } catch (e) { console.error("Error setting ECharts option via ref:", e); } setIsLoading(false); } }, [selectedRule, modelParams, lambda, selectedModel, alpha, setpoint, tFinal, currentCProc, generateEchartsOptions]);
 
@@ -389,7 +558,46 @@ export default function PidTuningPage() {
                 </div>
                 {/* Plot Column */}
                 <div className="lg:col-span-2">
-                    <Card> <CardContent className="pt-6"> <div className="text-xs text-muted-foreground mb-2 h-4 text-right pr-2"> {(isLoading && simulationStatus !== 'Calculating...') ? 'Initializing...' : simulationStatus !== 'Complete' && simulationStatus !== 'Ready' ? simulationStatus : ''} </div> <div className="relative h-[500px] md:h-[600px] rounded-md overflow-hidden border"> {isLoading && simulationStatus === 'Calculating...' && ( <div className="absolute inset-0 flex items-center justify-center bg-background/60 dark:bg-background/70 z-10 backdrop-blur-sm" aria-label="Calculating simulation"> <Skeleton className="h-3/4 w-3/4 rounded-md"/> </div> )} {hasValidChartOptions ? ( <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={false} /> ) : ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground p-4 text-center"> Chart options invalid. </div> )} {!isLoading && !simulationResult && !(simulationStatus.startsWith('Error')) && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground p-4 text-center"> { !selectedRuleId ? "Select model and tuning rule to start." : "Adjust parameters to simulate." } </div> )} {simulationStatus.startsWith('Error') && ( <div className="absolute inset-0 flex items-center justify-center text-destructive-foreground bg-destructive/80 p-4 text-center z-20"> {simulationStatus} </div> )} </div> </CardContent> </Card>
+                    <Card>
+                        <CardContent className="pt-6">
+                            {/* Status Text */}
+                            <div className="text-xs text-muted-foreground mb-2 h-4 text-right pr-2">
+                                {(isLoading && simulationStatus !== 'Calculating...') ? 'Initializing...' : simulationStatus !== 'Complete' && simulationStatus !== 'Ready' ? simulationStatus : ''}
+                            </div>
+                            {/* Chart Container - Apply background color here too for visual consistency */}
+                            <div className="relative h-[500px] md:h-[600px] rounded-md overflow-hidden border" style={{ backgroundColor: '#08306b' }}>
+                                {isLoading && simulationStatus === 'Calculating...' && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-background/60 dark:bg-background/70 z-10 backdrop-blur-sm" aria-label="Calculating simulation">
+                                        <Skeleton className="h-3/4 w-3/4 rounded-md"/>
+                                    </div>
+                                )}
+                                {hasValidChartOptions ? (
+                                    <ReactECharts
+                                        ref={echartsRef}
+                                        echarts={echarts}
+                                        option={echartsOptions}
+                                        style={{ height: '100%', width: '100%' }}
+                                        notMerge={true}
+                                        lazyUpdate={false}
+                                    />
+                                ) : (
+                                    <div className="absolute inset-0 flex items-center justify-center text-gray-400 p-4 text-center"> {/* Adjusted text color */}
+                                        Chart options invalid.
+                                    </div>
+                                )}
+                                {!isLoading && !simulationResult && !(simulationStatus.startsWith('Error')) && (
+                                    <div className="absolute inset-0 flex items-center justify-center text-gray-400 p-4 text-center"> {/* Adjusted text color */}
+                                        { !selectedRuleId ? "Select model and tuning rule to start." : "Adjust parameters to simulate." }
+                                    </div>
+                                )}
+                                {simulationStatus.startsWith('Error') && (
+                                    <div className="absolute inset-0 flex items-center justify-center text-destructive-foreground bg-destructive/80 p-4 text-center z-20">
+                                        {simulationStatus}
+                                    </div>
+                                )}
+                            </div>
+                        </CardContent>
+                    </Card>
                 </div>
             </div>
         </div>
