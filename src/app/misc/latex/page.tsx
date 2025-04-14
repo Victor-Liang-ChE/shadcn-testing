@@ -8,10 +8,13 @@ import { Copy, Check } from 'lucide-react'; // Icons for copy button
 
 // --- Conversion Logic (Ported from Python) ---
 
-// Handles \frac{num}{den} conversion, including nested fractions
+// NOTE: Conversion functions (replaceFracManually, fullyReplaceFrac,
+// latex2python, python_to_numpy v4) are included here as they were
+// in the previous "final" version.
+
 function replaceFracManually(expr: string): string {
     const fracIndex = expr.indexOf('\\frac');
-    if (fracIndex === -1) return expr; // Base case: no more fractions
+    if (fracIndex === -1) return expr;
 
     let braceLevel = 0;
     let numStart = -1, numEnd = -1, denStart = -1, denEnd = -1;
@@ -84,133 +87,95 @@ function replaceFracManually(expr: string): string {
     return replaceFracManually(newExpr);
 }
 
-
-// Wrapper function (currently just calls the recursive one)
 function fullyReplaceFrac(expr: string): string {
     return replaceFracManually(expr);
 }
 
-
-// Converts basic LaTeX to Python syntax string
 function latex2python(latexStr: string): string {
-    let expr = latexStr.replace(/^\$|\$$/g, ''); // Remove starting/ending $
-    expr = expr.replace(/\\left|\\right/g, ''); // Remove \left and \right
-
-    expr = fullyReplaceFrac(expr); // Handle fractions first
-
+    let expr = latexStr.replace(/^\$|\$$/g, '');
+    expr = expr.replace(/\\left|\\right/g, '');
+    expr = fullyReplaceFrac(expr);
     expr = expr.replace(/\\operatorname\{([^{}]+)\}/g, '$1');
     expr = expr.replace(/\\?exp\(/g, 'e**(');
     expr = expr.replace(/\\(sin|cos|tan|sinh|cosh|tanh|arcsin|arccos|arctan|arcsinh|arccosh|arctanh|log|ln)\b/g, '$1');
     expr = expr.replace(/\\cdot\s*/g, '*');
     expr = expr.replace(/\\pi\b/g, 'pi');
-    expr = expr.replace(/\\sqrt\{([^}]+?)\}/g, 'sqrt($1)'); // Basic sqrt
+    expr = expr.replace(/\\sqrt\{([^}]+?)\}/g, 'sqrt($1)');
 
-    // Power conversion - order matters and is fragile
-    expr = expr.replace(/([a-zA-Z0-9_]+|\([^)]+\))\s*\^\s*\{([^}]+?)\}/g, '$1**($2)'); // Base^{exp}
-    expr = expr.replace(/([a-zA-Z0-9_]+|\([^)]+\))\s*\^\s*([a-zA-Z0-9_]+)/g, '$1**($2)');   // Base^exp
-
-    // Convert remaining braces - also fragile for nesting
+    expr = expr.replace(/([a-zA-Z0-9_]+|\([^)]+\))\s*\^\s*\{([^}]+?)\}/g, '$1**($2)');
+    expr = expr.replace(/([a-zA-Z0-9_]+|\([^)]+\))\s*\^\s*([a-zA-Z0-9_]+)/g, '$1**($2)');
     expr = expr.replace(/\{\s*([^}]+?)\s*\}/g, '($1)');
-    expr = expr.replace(/\^/g, '**'); // Final catch-all for ^
+    expr = expr.replace(/\^/g, '**');
 
-    // Cleanup
-    while (/\(\(([^()]*)\)\)/.test(expr)) { // Loop to handle multiple nesting levels
+    while (/\(\(([^()]*)\)\)/.test(expr)) {
       expr = expr.replace(/\(\(([^()]*)\)\)/g, '($1)');
     }
     expr = expr.replace(/\s+/g, ' ');
-
     return expr.trim();
 }
 
-
-// ============================================================
-// START OF CORRECTED python_to_numpy FUNCTION (ATTEMPT 4)
-// Removed the flawed final parenthesis cleanup step
-// ============================================================
 function python_to_numpy(expr: string): string {
     let numpyExpr = expr;
     let initialExpr;
-    let maxIterations = 100; // Safeguard counter
+    let maxIterations = 100;
 
     // --- STEP 1: Convert e**(...) to np.exp(...) iteratively ---
     let safeguard = 0;
-    // Regex attempts to match balanced parentheses in the argument
     const expRegex = /\be\s*\*\*\s*(\((?:[^()]|\([^()]*\))*\)|[a-zA-Z0-9_.]+)/g;
-
     while (/\be\s*\*\*/.test(numpyExpr) && safeguard < maxIterations) {
         initialExpr = numpyExpr;
         numpyExpr = numpyExpr.replace(expRegex, 'np.exp($1)');
-
         if (numpyExpr === initialExpr) {
-            // If the complex regex didn't change anything, try a simpler one
             numpyExpr = numpyExpr.replace(/\be\s*\*\*\s*\(([^)]+)\)/g, 'np.exp($1)');
         }
         if (numpyExpr === initialExpr) {
-             // console.warn("e** conversion stagnated for:", initialExpr); // Keep console cleaner
-             break; // Stop if no change
+             // console.warn("e** conversion stagnated for:", initialExpr);
+             break;
         }
         safeguard++;
     }
-     if (safeguard >= maxIterations) {
-         console.error("Max iterations reached during e** conversion for:", expr);
-     }
+     if (safeguard >= maxIterations) console.error("Max iterations reached during e** conversion for:", expr);
 
     // --- STEP 2: Convert remaining ** to np.power ---
     let iterations = 0;
     while (numpyExpr.includes('**') && iterations < maxIterations) {
         initialExpr = numpyExpr;
-
-        // Regexes try to avoid base 'e' and handle parentheses
         const powerBaseRegex = /(?:[a-df-zA-Z0-9_][a-zA-Z0-9_.]*|\d+|\((?:[^()]|\([^()]*\))*\))/;
         const powerExpRegex = /(?:[a-zA-Z0-9_.]+|\((?:[^()]|\([^()]*\))*\))/;
         const powerRegexStr = `(${powerBaseRegex.source})\\s*\\*\\*\\s*(${powerExpRegex.source})`;
         const powerRegex = new RegExp(powerRegexStr, 'g');
-
         numpyExpr = numpyExpr.replace(powerRegex, 'np.power($1, $2)');
-
         if (numpyExpr === initialExpr) {
-            // Try one more specific replacement before breaking
              numpyExpr = numpyExpr.replace(/\(((?:[^()]|\([^()]*\))*)\)\s*\*\*\s*([a-zA-Z0-9_.]+)/g, 'np.power($1, $2)');
              if (numpyExpr === initialExpr) {
-                // console.warn("Power conversion loop stagnated for:", initialExpr); // Keep console cleaner
+                // console.warn("Power conversion loop stagnated for:", initialExpr);
                  break;
              }
         }
         iterations++;
     }
-     if (iterations >= maxIterations) {
-         console.error("Max iterations reached during power conversion for:", expr);
-     }
+     if (iterations >= maxIterations) console.error("Max iterations reached during power conversion for:", expr);
 
     // --- STEP 3: Handle sqrt() ---
     numpyExpr = numpyExpr.replace(/(?<!np\.)\bsqrt\s*\(([^)]+)\)/g, 'np.sqrt($1)');
-
     // --- STEP 4: Handle log/ln ---
     numpyExpr = numpyExpr.replace(/(?<!np\.)\bln\s*\(([^)]+)\)/g, 'np.log($1)');
     numpyExpr = numpyExpr.replace(/(?<!np\.)\blog\s*\(([^)]+)\)/g, 'np.log10($1)');
-
     // --- STEP 5: Handle trig functions ---
     numpyExpr = numpyExpr.replace(/(?<!np\.)\b(sin|cos|tan|sinh|cosh|tanh|arcsin|arccos|arctan|arcsinh|arccosh|arctanh)\s*\(([^)]+)\)/g, 'np.$1($2)');
-
     // --- STEP 6: Handle 'pi' constant ---
     numpyExpr = numpyExpr.replace(/(?<![a-zA-Z0-9_.])\bpi\b(?![a-zA-Z0-9_.])/g, 'np.pi');
+    // --- STEP 7: REMOVED Flawed Parenthesis Cleanup & standalone 'e' conversion ---
 
-    // --- STEP 7: REMOVED Flawed Parenthesis Cleanup ---
-
-    // console.log("Final NumPy Expr (Attempt 4):", numpyExpr); // Keep commented out unless debugging
+    // console.log("Final NumPy Expr (Attempt 4):", numpyExpr);
     return numpyExpr;
 }
-// ============================================================
-// END OF CORRECTED python_to_numpy FUNCTION (ATTEMPT 4)
-// ============================================================
 
 
 // --- React Component ---
 
-// Simple Copy Button Component (Unchanged)
 const CopyButton = ({ textToCopy }: { textToCopy: string }) => {
     const [copied, setCopied] = useState(false);
-
     const handleCopy = async () => {
         if (!textToCopy) return;
         try {
@@ -222,7 +187,6 @@ const CopyButton = ({ textToCopy }: { textToCopy: string }) => {
             alert('Failed to copy text to clipboard.');
         }
     };
-
     return (
         <Button variant="ghost" size="icon" onClick={handleCopy} className="h-6 w-6 ml-2" aria-label="Copy to clipboard">
             {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
@@ -233,37 +197,85 @@ const CopyButton = ({ textToCopy }: { textToCopy: string }) => {
 
 export default function LatexConverterPage() {
     const mathQuillEl = useRef<HTMLDivElement>(null);
-    const mathField = useRef<any>(null); // To store the MathQuill instance
-
+    const mathField = useRef<any>(null);
     const [rawLatex, setRawLatex] = useState('');
     const [pythonExpr, setPythonExpr] = useState('');
     const [numpyExpr, setNumpyExpr] = useState('');
-    const [errorMsg, setErrorMsg] = useState(''); // Use state for errors
+    const [errorMsg, setErrorMsg] = useState('');
 
-    // Initialize MathQuill (Unchanged)
+    // ============================================================
+    // START OF ROBUST useEffect FOR MATHQUILL INITIALIZATION
+    // ============================================================
     useEffect(() => {
-        const initializeMathQuill = () => {
-            if (typeof window !== 'undefined' && (window as any).jQuery && (window as any).MathQuill && mathQuillEl.current) {
+        let attempts = 0;
+        const maxAttempts = 30; // Try for ~6 seconds (30 * 200ms)
+        let timeoutId: NodeJS.Timeout | null = null;
+
+        const tryInitialize = () => {
+            attempts++;
+            // console.log(`MathQuill init attempt ${attempts}`); // Optional: for debugging
+
+            // Check more thoroughly if libraries are ready and element exists
+            const jQueryReady = typeof window !== 'undefined' && typeof (window as any).jQuery === 'function';
+            // Check if MathQuill object exists AND its core function exists
+            const MQReady = jQueryReady && typeof (window as any).MathQuill?.getInterface === 'function';
+            const elementReady = mathQuillEl.current !== null;
+
+            if (MQReady && elementReady) {
+                // console.log("Dependencies and element ready."); // Optional: for debugging
                 const MQ = (window as any).MathQuill.getInterface(2);
-                 if (mathField.current || (window as any).jQuery(mathQuillEl.current).data('[[mathquill internal data]]')) {
-                    return; // Already initialized
-                 }
-                 try {
+
+                // Prevent re-initialization checks (important!)
+                if (mathField.current || (window as any).jQuery(mathQuillEl.current).data('[[mathquill internal data]]')) {
+                   // console.log("Skipping: Already initialized."); // Optional: for debugging
+                   return;
+                }
+
+                // Initialize
+                try {
                     mathField.current = MQ.MathField(mathQuillEl.current, {
-                        spaceBehavesLikeTab: true,
-                        handlers: { edit: () => {} }
+                         spaceBehavesLikeTab: true,
+                         handlers: {
+                             edit: () => {
+                                 // Clear errors/results on edit if desired by user
+                                 // setErrorMsg('');
+                                 // setRawLatex(''); setPythonExpr(''); setNumpyExpr('');
+                             }
+                         }
                     });
-                 } catch (initError) {
-                     console.error("MathQuill initialization failed:", initError);
-                     setErrorMsg("Failed to initialize math editor.");
-                 }
+                    // console.log("MathQuill Initialized successfully."); // Optional: for debugging
+                } catch (initError) {
+                    console.error("MathQuill initialization failed:", initError);
+                    setErrorMsg("Failed to initialize math editor."); // Show error to user
+                }
+
             } else {
-                setTimeout(initializeMathQuill, 200);
+                 // console.log(`Not ready: jQuery=${jQueryReady}, MQ=${MQReady}, Element=${elementReady}`); // Optional: for debugging
+                if (attempts < maxAttempts) {
+                    // Retry if not ready and under max attempts
+                    timeoutId = setTimeout(tryInitialize, 200);
+                } else {
+                    // Stop retrying and inform user
+                    console.error(`MathQuill initialization failed after ${maxAttempts} attempts.`);
+                    setErrorMsg("Math editor failed to load. Please try reloading the page.");
+                }
             }
         };
-        const timeoutId = setTimeout(initializeMathQuill, 100);
-        return () => clearTimeout(timeoutId);
-    }, []);
+
+        // Start the first attempt slightly delayed
+        timeoutId = setTimeout(tryInitialize, 150);
+
+        // Cleanup function to clear timeout if component unmounts
+        return () => {
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+            // Note: MathQuill lacks a standard 'destroy' method.
+        };
+    }, []); // Empty dependency array ensures this runs once on mount
+    // ============================================================
+    // END OF ROBUST useEffect FOR MATHQUILL INITIALIZATION
+    // ============================================================
 
 
     // Callback for triggering the conversion (Unchanged)
@@ -278,7 +290,7 @@ export default function LatexConverterPage() {
             try {
                 const pyExpr = latex2python(latex);
                 setPythonExpr(pyExpr);
-                const npExpr = python_to_numpy(pyExpr); // Calls the NEW numpy conversion function
+                const npExpr = python_to_numpy(pyExpr);
                 setNumpyExpr(npExpr);
             } catch (error: any) {
                 console.error("Conversion Error:", error);
@@ -301,7 +313,7 @@ export default function LatexConverterPage() {
         }
     };
 
-    // --- UI Section --- (Restored to original structure/styles from user prompt)
+    // --- UI Section --- (Restored to original structure/styles)
     return (
         <div className="container mx-auto p-4 md:p-8">
             {/* Title Removed */}
