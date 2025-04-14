@@ -37,6 +37,9 @@ function Navbar() {
 
       case "/misc/portola-menu":
           return "Portola Menu";
+
+      case "/misc/latex":
+          return "LaTeX Constructor & Converter";
         
       default:
         return "Welcome";
