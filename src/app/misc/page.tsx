@@ -8,7 +8,7 @@ export default function Page() {
     { name: "Drop Chance", path: "/misc/drop-chance" },
     { name: "Japanese Lyrics Analyzer", path: "/misc/japanese-lyrics" },
     { name: "Portola Menu", path: "/misc/portola-menu" },
-    { name: "Chemical Engineering Economics", path: "/misc/chem-econ" },
+    { name: "Chemical Engineering Economics", path: "/misc/cheme-econ" },
     { name: "LaTeX Constructor & Converter", path: "/misc/latex" },
     { name: "Sandbox", path: "/misc/sandbox" },
     { name: "Chemistry Tools", path: "/misc/chemistry-tools" },

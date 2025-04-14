@@ -26,8 +26,8 @@ function Navbar() {
       case "/simulations/kinetics":
         return "Reaction Kinetics Simulator";
 
-      case "/simulations/process-control":
-        return "Process Control Simulator";
+      case "/simulations/process-dynamics":
+        return "Process Dynamics Simulator";
 
       case "/simulations/pid-tuning":
         return "PID Tuning Simulator";
@@ -46,6 +46,9 @@ function Navbar() {
         
       case "/misc/chemistry-tools":
           return "Chemistry Tools";
+
+      case "/misc/cheme-econ":
+          return "Chemical Engineering Economics Calculator";
 
       default:
         return "";
