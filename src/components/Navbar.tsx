@@ -13,6 +13,9 @@ function Navbar() {
   
   const getPageTitle = () => {
     switch (pathname) {      
+
+      case "/":
+        return "Welcome";
       
       case "/simulations":
         return "Chemical Engineering Simulations";
@@ -45,7 +48,7 @@ function Navbar() {
           return "Chemistry Tools";
 
       default:
-        return "Welcome";
+        return "";
     }
   };
 

@@ -195,8 +195,7 @@ const StoichiometryCalculator: React.FC = () => {
     <div className="space-y-6">
       {/* Reaction Input */}
       <Card>
-          {/* ... (no change) ... */}
-        <CardContent className="pt-6 pb-6 space-y-4">
+        <CardContent className="pt-2 pb-2 space-y-4">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-4">
             <div className="flex-1 flex items-center gap-2"><Input id="reactants-input" type="text" value={reactants} onChange={(e) => setReactants(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleEquationSubmit()} placeholder="Reactants (e.g., 2H2 + O2)" className="flex-grow" /></div>
             <span className="text-xl font-semibold mx-2 text-center sm:text-left">→</span>
@@ -213,12 +212,12 @@ const StoichiometryCalculator: React.FC = () => {
         <div className="space-y-6">
           {/* Reactant Cards */}
           <Card>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-6">
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
               {reactionData.reactants.map((reactant) => {
                 const compound = reactant.compound; const molarMass = molarMasses[compound]; const mode = inputModes[compound] || 'moles'; const res = results?.reactants[compound]; const isLimiting = results?.limiting_reactants?.includes(compound) ?? false; const currentInputValue = inputData[compound]?.[`${mode}_display`] ?? '';
                 return (
                   <Card key={`reactant-${compound}`} className="flex flex-col overflow-hidden">
-                    <CardHeader className="pb-3 space-y-2">
+                    <CardHeader className="space-y-2">
                        <div className="flex justify-between items-baseline gap-2">
                             <div className="flex items-baseline gap-2">
                                 <Tooltip delayDuration={150}>
@@ -232,7 +231,7 @@ const StoichiometryCalculator: React.FC = () => {
                             </Tabs>
                        </div>
                     </CardHeader>
-                    <CardContent className="flex-grow space-y-2 pt-0 pb-4">
+                    <CardContent className="flex-grow">
                       {mode === 'moles' ? (<div className="relative"><Label htmlFor={`moles-${compound}`} className="sr-only">Initial Moles for {compound}</Label><Input id={`moles-${compound}`} type="text" inputMode="decimal" placeholder="Initial Moles" value={currentInputValue} onChange={(e) => handleInputChange(compound, 'moles', e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleCalculate()} className="pr-12 hide-number-arrows" aria-label={`Initial moles for ${compound}`} /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">mol</span></div>)
                        : (<div className="relative"><Label htmlFor={`grams-${compound}`} className="sr-only">Initial Grams for {compound}</Label><Input id={`grams-${compound}`} type="text" inputMode="decimal" placeholder="Initial Grams" value={currentInputValue} onChange={(e) => handleInputChange(compound, 'grams', e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleCalculate()} className="pr-8 hide-number-arrows" aria-label={`Initial grams for ${compound}`} /><span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">g</span></div>)}
                     </CardContent>
@@ -241,7 +240,7 @@ const StoichiometryCalculator: React.FC = () => {
                 );
               })}
             </CardContent>
-            <CardFooter className="pt-6 flex justify-center"><Button onClick={handleCalculate} disabled={isLoading} size="lg" className="w-full sm:w-auto">{isLoading ? 'Calculating...' : 'Calculate Stoichiometry'}</Button></CardFooter>
+            <CardFooter className="pt-0 flex justify-center"><Button onClick={handleCalculate} disabled={isLoading} size="lg" className="w-full sm:w-auto">{isLoading ? 'Calculating...' : 'Calculate Stoichiometry'}</Button></CardFooter>
           </Card>
 
           {/* Product Cards */}
@@ -250,37 +249,29 @@ const StoichiometryCalculator: React.FC = () => {
                 <div className="flex flex-col sm:flex-row justify-start items-center gap-4">
                     {hasCalculated && (<div className="flex items-center space-x-2"><Checkbox id="conversion-check" checked={showConversion} onCheckedChange={(checked) => { setShowConversion(Boolean(checked)); }} aria-label="Enable reaction conversion percentage" /><Label htmlFor="conversion-check" className="text-sm font-medium whitespace-nowrap cursor-pointer">Set Conversion ({conversionPercentage}%)</Label></div>)}
                 </div>
-                 {/* UPDATED Slider Container: Reserve space */}
                  {hasCalculated && (
-                    // Always render container if calculated, give it min height
-                    <div className="pt-4 min-h-[40px]"> {/* Adjust min-h if needed */}
-                        {showConversion && ( // Conditionally render slider inside
+                    <div className="pt-4 min-h-[40px]">
+                        {showConversion && (
                             <>
                                 <Label htmlFor="conversion-slider" className="sr-only">Conversion Percentage Slider</Label>
-                                <Slider
-                                    id="conversion-slider"
-                                    min={0} max={100} step={1}
-                                    value={[conversionPercentage]}
-                                    onValueChange={(value) => setConversionPercentage(value[0])}
-                                    aria-label={`Conversion percentage: ${conversionPercentage}%`}
-                                />
+                                <Slider id="conversion-slider" min={0} max={100} step={1} value={[conversionPercentage]} onValueChange={(value) => setConversionPercentage(value[0])} aria-label={`Conversion percentage: ${conversionPercentage}%`} />
                             </>
                         )}
                     </div>
                  )}
             </CardHeader>
-            <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {reactionData.products.map((product) => {
                 const compound = product.compound; const molarMass = molarMasses[compound]; const res = results?.products[compound];
                 return (
                   <Card key={`product-${compound}`} className="overflow-hidden">
-                    <CardHeader className="pb-2 flex flex-col items-start">
+                    <CardHeader className="pb-0 flex flex-col items-start">
                         <Tooltip delayDuration={150}>
                            <TooltipTrigger asChild><span className="inline-flex items-baseline gap-1 cursor-help"><CardTitle className="text-lg"><ChemicalFormula formula={compound} /></CardTitle>{molarMass && <Info className="h-3 w-3 text-muted-foreground shrink-0" />}</span></TooltipTrigger>
                             {molarMass && (<TooltipContent><p>Molar Mass: {formatNumber(molarMass, { type: 'molarMass' })} g/mol</p></TooltipContent>)}
                         </Tooltip>
                     </CardHeader>
-                    <CardContent className="pt-1 pb-4">
+                    <CardContent className="pt-0 pb-0">
                        {results && res ? (<p className="text-sm">Produced: <span className="font-medium">{formatNumber(res.produced_grams)} g</span><span className="text-muted-foreground"> ({formatNumber(res.produced_moles)} mol)</span></p>)
                         : (<p className="text-sm text-muted-foreground">Calculate to see results.</p>)}
                     </CardContent>
@@ -296,8 +287,8 @@ const StoichiometryCalculator: React.FC = () => {
   );
 };
 
-// --- Molecular Visualization Component (Title Removed) ---
-const MolecularVisualization: React.FC = () => { /* ... (no change from previous version) ... */
+// --- Molecular Visualization Component ---
+const MolecularVisualization: React.FC = () => { /* ... (no change) ... */
   const [chemicalName, setChemicalName] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
@@ -319,7 +310,6 @@ const MolecularVisualization: React.FC = () => { /* ... (no change from previous
   return (
     <div className="space-y-6">
       <Card>
-        {/* CardHeader removed */}
         <CardContent className="pt-6 pb-6 space-y-4">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
              <Label htmlFor="chemical-name-vis" className="sr-only sm:not-sr-only sm:w-auto mb-1 sm:mb-0">Chemical Name:</Label>
