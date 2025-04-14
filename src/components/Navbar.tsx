@@ -41,6 +41,9 @@ function Navbar() {
       case "/misc/latex":
           return "LaTeX Constructor & Converter";
         
+      case "/misc/chemistry-tools":
+          return "Chemistry Tools";
+
       default:
         return "Welcome";
     }
