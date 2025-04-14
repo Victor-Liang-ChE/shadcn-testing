@@ -23,7 +23,10 @@ const typescriptLogoPath = "/logos/typescript.svg";
 const dockerLogoPath = "/logos/docker.svg";
 const reactLogoPath = "/logos/react.svg";
 const dashLogoPath = "/logos/dash.svg"; // You'll need to add this logo
-const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png"; // Add path for the thumbnail
+const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png"; // Added path
+const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
+const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png"; // Added path
+const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png"; // Added path
 
 export default function Home() {
   return (
@@ -109,14 +112,21 @@ export default function Home() {
       {/* Featured Simulations Section */}
       <div className="simulations-showcase mt-8">
         <h2 className="text-2xl font-bold mb-4 text-center">Featured Simulations</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
+        {/* Use consistent grid and card structure */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
           <Link href="/simulations/kinetics" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                {/* Make container square and centered */}
-                <div className="relative aspect-square h-32 mx-auto bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground overflow-hidden">
-                  {/* Placeholder text */}
-                  <span>Kinetics Simulator</span> 
+                {/* Consistent image container */}
+                <div className="relative mx-auto mb-4">
+                  <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
+                    <Image
+                      src={kineticsThumbnailPath}
+                      alt="Reaction Kinetics Thumbnail"
+                      layout="fill"
+                      objectFit="contain"
+                    />
+                  </div>
                 </div>
                 <CardTitle>Reaction Kinetics</CardTitle>
               </CardHeader>
@@ -129,13 +139,14 @@ export default function Home() {
           <Link href="/simulations/mccabe-thiele" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                <div className="relative mx-auto overflow-hidden mb-4">
-                  <div className="aspect-square w-64 h-64 overflow-hidden rounded-3xl relative"> 
-                    <Image 
-                      src={mccabeThumbnailPath} 
-                      alt="McCabe-Thiele Thumbnail" 
-                      layout="fill" 
-                      objectFit="contain" 
+                {/* Consistent image container */}
+                <div className="relative mx-auto mb-4">
+                  <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
+                    <Image
+                      src={mccabeThumbnailPath}
+                      alt="McCabe-Thiele Thumbnail"
+                      layout="fill"
+                      objectFit="contain"
                     />
                   </div>
                 </div>
@@ -147,18 +158,25 @@ export default function Home() {
             </Card>
           </Link>
 
+          {/* Corrected path for Process Dynamics */}
           <Link href="/simulations/process-control" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                 {/* Make container square and centered */}
-                <div className="relative aspect-square h-32 mx-auto bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground overflow-hidden">
-                  {/* Placeholder text */}
-                  <span>Process Control</span>
+                 {/* Consistent image container */}
+                <div className="relative mx-auto mb-4">
+                  <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
+                    <Image
+                      src={dynamicsThumbnailPath}
+                      alt="Process Dynamics Thumbnail"
+                      layout="fill"
+                      objectFit="contain"
+                    />
+                  </div>
                 </div>
-                <CardTitle>Process Control</CardTitle>
+                <CardTitle>Process Dynamics</CardTitle>
               </CardHeader>
               <CardContent className="flex-grow">
-                <CardDescription>Simulate process control systems with various inputs and understand system dynamics in chemical processes.</CardDescription>
+                <CardDescription>Simulate process dynamics with various inputs and understand system behavior in chemical processes.</CardDescription>
               </CardContent>
             </Card>
           </Link>
@@ -166,10 +184,16 @@ export default function Home() {
           <Link href="/simulations/pid-tuning" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
-                 {/* Make container square and centered */}
-                 <div className="relative aspect-square h-32 mx-auto bg-muted rounded-md mb-4 flex items-center justify-center text-muted-foreground overflow-hidden">
-                   {/* Placeholder text */}
-                   <span>PID Tuning</span>
+                 {/* Consistent image container */}
+                 <div className="relative mx-auto mb-4">
+                   <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
+                     <Image
+                       src={pidThumbnailPath}
+                       alt="PID Tuning Thumbnail"
+                       layout="fill"
+                       objectFit="contain"
+                     />
+                   </div>
                  </div>
                 <CardTitle>PID Tuning</CardTitle>
               </CardHeader>
