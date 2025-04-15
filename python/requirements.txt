@@ -1,0 +1,12 @@
+flask
+gunicorn
+numpy
+thermo
+chempy
+pubchempy
+rdkit
+requests
+beautifulsoup4
+pytz
+sudachipy
+pykakasi
