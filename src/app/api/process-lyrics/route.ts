@@ -1,11 +1,14 @@
 import { NextResponse } from 'next/server';
 
+// Define the Cloud Run URL
+const CLOUD_RUN_LYRICS_URL = 'https://nextjsbackend-23789472506.us-west1.run.app/process-lyrics';
+
 // Determine the backend URL
 // 1. Check environment variable (recommended for flexibility)
-// 2. Default to localhost if environment variable is not set
-const PYTHON_BACKEND_URL = process.env.PYTHON_LYRICS_BACKEND_URL || 'http://127.0.0.1:8080/process-lyrics';
-// You could add a third fallback to a cloud URL if needed:
-// const PYTHON_BACKEND_URL = process.env.PYTHON_LYRICS_BACKEND_URL || 'http://127.0.0.1:8080/process-lyrics' || 'YOUR_CLOUD_RUN_URL_HERE';
+// 2. Use the Cloud Run URL if env var is not set
+// 3. Default to localhost as a last resort (for local Python testing)
+const PYTHON_BACKEND_URL = process.env.PYTHON_LYRICS_BACKEND_URL || CLOUD_RUN_LYRICS_URL || 'http://127.0.0.1:8080/process-lyrics';
+
 
 export async function POST(request: Request) {
   console.log(`DEBUG: /api/process-lyrics route called. Target backend: ${PYTHON_BACKEND_URL}`);
