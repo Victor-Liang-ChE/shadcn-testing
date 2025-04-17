@@ -10,3 +10,4 @@ beautifulsoup4
 pytz
 sudachipy
 pykakasi
+sudachidict_core
