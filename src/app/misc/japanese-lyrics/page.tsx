@@ -174,7 +174,9 @@ export default function JapaneseLyricsPage() {
         // Main container - relative positioning context
         <div className="relative h-screen w-screen overflow-hidden bg-background text-foreground">
             {/* Left Control Panel - Added overflow-y-auto */}
-            <div className="absolute left-0 top-0 z-10 flex h-full w-[220px] flex-col gap-4 overflow-y-auto bg-primary p-4 text-primary-foreground">
+            <div
+                className="absolute left-0 top-0 z-10 flex h-full w-[220px] flex-col gap-4 overflow-y-auto bg-background text-foreground p-4"
+            >
                 {/* Control Buttons and Select */}
                 <Button onClick={toggleInputVisibility} variant="secondary">
                     {showInput ? "Hide Input" : "Show Input"}
@@ -187,7 +189,7 @@ export default function JapaneseLyricsPage() {
                     onValueChange={handleFormatChange}
                     disabled={!showFurigana}
                 >
-                    <SelectTrigger className="w-full text-primary">
+                    <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select Format" />
                     </SelectTrigger>
                     <SelectContent>
@@ -203,7 +205,7 @@ export default function JapaneseLyricsPage() {
                         value={inputText}
                         onChange={handleInputChange}
                         placeholder="Paste the lyrics here..."
-                        className="min-h-[200px] resize-none text-primary" // Use min-height
+                        className="min-h-[200px] resize-none placeholder:text-foreground/60"
                     />
                     {isLoading && (
                         <div className="mt-4 flex items-center justify-center gap-2 text-sm text-primary-foreground">
@@ -228,7 +230,7 @@ export default function JapaneseLyricsPage() {
                             <AccordionContent className="max-h-[30vh] overflow-y-auto pb-1"> {/* Adjusted padding */}
                                 {/* Using pre-wrap to preserve line breaks from the original markdown */}
                                 {/* Changed text color for better contrast on primary background */}
-                                <p className="whitespace-pre-wrap text-sm text-primary-foreground/80">
+                                <p className="whitespace-pre-wrap text-sm text-foreground/80">
 {`- kinda been getting bored of music lately, i gotta listen to some old songs again
 - ame to cappuccino is such a good song, she actually recommended the best songs ahhahhaha
 - gonna try singing it by following the lyrics, but it sucks that i cant read most of the kanji lmao

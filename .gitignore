@@ -42,3 +42,6 @@ next-env.d.ts
 
 .vscode
 .idx
+__pycache__/
+*.py[cod]
+*$py.class

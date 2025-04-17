@@ -50,6 +50,9 @@ function Navbar() {
       case "/misc/cheme-econ":
           return "Chemical Engineering Economics Calculator";
 
+      case "/misc/japanese-lyrics":
+          return "Japanese Lyrics Processor";
+
       default:
         return "";
     }
