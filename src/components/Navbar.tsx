@@ -13,9 +13,6 @@ function Navbar() {
   
   const getPageTitle = () => {
     switch (pathname) {      
-
-      case "/":
-        return "Welcome";
       
       case "/simulations":
         return "Chemical Engineering Simulations";
@@ -31,6 +28,9 @@ function Navbar() {
 
       case "/simulations/pid-tuning":
         return "PID Tuning Simulator";
+
+      case "/simulations/fug":
+        return "FUG";
 
       case "/misc":
           return "Miscellaneous Projects";
@@ -52,6 +52,9 @@ function Navbar() {
 
       case "/misc/japanese-lyrics":
           return "Japanese Lyrics Processor";
+
+      case "/misc/ufc-champions":
+          return "UFC Championship Lineage";
 
       default:
         return "";

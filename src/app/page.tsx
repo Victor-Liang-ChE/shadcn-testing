@@ -27,6 +27,7 @@ const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png"; // Added pat
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png"; // Added path
 const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png"; // Added path
+const labIllustrationPath = "/images/lab-illustration.png"; // Added path for the illustration
 
 export default function Home() {
   return (
@@ -40,58 +41,68 @@ export default function Home() {
             </CardDescription>
           </CardHeader>
 
-          <CardContent className="space-y-4 bio-section">
-            <div className="bio-paragraph flex items-center flex-wrap gap-2">
-              <span>Languages and Frameworks:</span>
-              <span className="lang-icons flex flex-wrap gap-3 items-center">
-                <Image src={pythonLogoPath} alt="Python Logo" width={25} height={25} title="Python" />
-                <Image src={reactLogoPath} alt="React Logo" width={25} height={25} title="React" />
-                <Image src={javascriptLogoPath} alt="JavaScript Logo" width={25} height={25} title="JavaScript" />
-                <Image src={typescriptLogoPath} alt="TypeScript Logo" width={25} height={25} title="TypeScript" />
-                <Image src={html5LogoPath} alt="HTML5 Logo" width={30} height={30} title="HTML5" />
-                <Image src={css3LogoPath} alt="CSS3 Logo" width={35} height={35} title="CSS3" />
-                <Image src={dockerLogoPath} alt="Docker Logo" width={25} height={25} title="Docker" />
-              </span>
-            </div>
-            
-            <div className="bio-paragraph flex items-center flex-wrap gap-2">
-              <span>Python Packages:</span>
-              <span className="flex flex-wrap gap-2">
-                <Badge variant="secondary">NumPy</Badge>
-                <Badge variant="secondary">SciPy</Badge>
-                <Badge variant="secondary">Pandas</Badge>
-                <Badge variant="secondary">Matplotlib</Badge>
-                <Badge variant="secondary">Scikit-learn</Badge>
-                <Badge variant="secondary">Plotly</Badge>
-                <Badge variant="secondary">RegEx</Badge>
-                <Badge variant="secondary">Control</Badge>
-                <Badge variant="secondary">BeautifulSoup4</Badge>
-              </span>
-              <span className="ml-1">📦</span>
-            </div>
-            
-            <div className="bio-paragraph flex items-center gap-2">
-              <p>Currently a senior at the University of California, Santa Barbara.</p>
-              <Image src={ucsbLogoPath} alt="UCSB Logo" width={25} height={25} className="ucsb-logo dark:invert-[0.8]" />
-            </div>
-            
-            <p className="bio-paragraph">Will pursue a masters degree in materials science next year. 🎓</p>
-            
-            <div className="bio-paragraph flex items-baseline gap-2">
-              <span>Want to contact me?</span>
-              <a href="mailto:victorliang@ucsb.edu" className="text-primary hover:underline">
-                victorliang@ucsb.edu
-              </a>
-              <span>📧</span>
+          {/* Modified CardContent to use 5-column grid */}
+          <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-6 bio-section"> {/* Changed to md:grid-cols-5 */}
+            {/* Left Column for Bio Text - Takes 3/5ths width */}
+            <div className="md:col-span-3 space-y-4"> {/* Changed to md:col-span-3 */}
+              <div className="bio-paragraph flex items-center flex-wrap gap-2">
+                <span>Languages and Frameworks:</span>
+                <span className="lang-icons flex flex-wrap gap-3 items-center">
+                  <Image src={pythonLogoPath} alt="Python Logo" width={25} height={25} title="Python" />
+                  <Image src={reactLogoPath} alt="React Logo" width={25} height={25} title="React" />
+                  <Image src={javascriptLogoPath} alt="JavaScript Logo" width={25} height={25} title="JavaScript" />
+                  <Image src={typescriptLogoPath} alt="TypeScript Logo" width={25} height={25} title="TypeScript" />
+                  <Image src={html5LogoPath} alt="HTML5 Logo" width={30} height={30} title="HTML5" />
+                  <Image src={css3LogoPath} alt="CSS3 Logo" width={35} height={35} title="CSS3" />
+                  <Image src={dockerLogoPath} alt="Docker Logo" width={25} height={25} title="Docker" />
+                </span>
+              </div>
+
+              <div className="bio-paragraph flex items-center flex-wrap gap-2">
+                <span>Python Packages:</span>
+                <span className="text-muted-foreground">
+                  NumPy, SciPy, Pandas, Matplotlib, Scikit-learn, Plotly, RegEx, Control, BeautifulSoup4
+                </span>
+                <span className="ml-1">📦</span>
+              </div>
+
+              <div className="bio-paragraph flex items-center gap-2">
+                <p>Currently a senior at the University of California, Santa Barbara.</p>
+                <Image src={ucsbLogoPath} alt="UCSB Logo" width={25} height={25} className="ucsb-logo dark:invert-[0.8]" />
+              </div>
+
+              <p className="bio-paragraph">Will pursue a masters degree in materials science next year. 🎓</p>
+
+              <div className="bio-paragraph flex items-baseline gap-2">
+                <span>Want to contact me?</span>
+                <a href="mailto:victorliang@ucsb.edu" className="text-primary hover:underline">
+                  victorliang@ucsb.edu
+                </a>
+                <span>📧</span>
+              </div>
+
+              <div className="bio-paragraph flex items-center gap-2">
+                <p>Under heavy construction, but take a look around! 😄</p>
+              </div>
             </div>
 
-            <div className="bio-paragraph flex items-center gap-2">
-              <p>Under heavy construction, but take a look around! 😄</p>
+            {/* Right Column for Image - Takes 2/5ths width */}
+            <div className="md:col-span-2 flex items-center justify-center h-full"> {/* Changed to md:col-span-2 */}
+              {/* Image container fills its parent column's height and width */}
+              <div className="relative w-full h-full rounded-lg overflow-hidden">
+                <Image
+                  src={labIllustrationPath}
+                  alt="Lab Illustration"
+                  layout="fill"
+                  objectFit="contain"
+                />
+              </div>
             </div>
           </CardContent>
 
           <CardFooter className="flex flex-col items-start pt-0">
-            <div className="social-links flex gap-2 justify-center w-full">
+            {/* Remove justify-center and w-full to align left */}
+            <div className="social-links flex gap-2"> 
               <Button variant="outline" size="icon" asChild className="bg-card hover:bg-accent">
                 <a href="https://github.com/Victor-Liang-ChE" target="_blank" rel="noopener noreferrer">
                   <Image src={githubLogoPath} alt="GitHub Logo" width={30} height={30} className="dark:invert" />
@@ -159,7 +170,7 @@ export default function Home() {
           </Link>
 
           {/* Corrected path for Process Dynamics */}
-          <Link href="/simulations/process-control" passHref>
+          <Link href="/simulations/process-dynamics" passHref>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
                  {/* Consistent image container */}

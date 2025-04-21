@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 
 export default function Page() {
-  const projects = [
+const projects = [
     { name: "Drop Chance", path: "/misc/drop-chance" },
     { name: "Japanese Lyrics Analyzer", path: "/misc/japanese-lyrics" },
     { name: "Portola Menu", path: "/misc/portola-menu" },
@@ -12,7 +12,8 @@ export default function Page() {
     { name: "LaTeX Constructor & Converter", path: "/misc/latex" },
     { name: "Sandbox", path: "/misc/sandbox" },
     { name: "Chemistry Tools", path: "/misc/chemistry-tools" },
-    { name: "Video/Audio Downloader", path: "/misc/downloader" }
+    { name: "Video/Audio Downloader", path: "/misc/downloader" },
+    { name: "UFC Championship Lineage", path: "/misc/ufc-champions" },
   ];
 
   return (
