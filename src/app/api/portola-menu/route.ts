@@ -88,7 +88,7 @@ function processTbody(tbody: Element | null, meal: string, highlightLogic: boole
                             if (highlightLogic) {
                                 if (meal === 'lunch' && itemIndex === 0 && [6, 10, 12, 14].includes(trCount)) {
                                     highlight = true;
-                                } else if (meal === 'dinner' && itemIndex === 0 && [4, 10, 12].includes(trCount)) { // Adjusted dinner rows based on previous logic
+                                } else if (meal === 'dinner' && itemIndex === 0 && [6, 10, 12].includes(trCount)) { // Adjusted dinner rows based on previous logic
                                     highlight = true;
                                 }
                             }

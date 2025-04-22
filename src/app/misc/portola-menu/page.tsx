@@ -54,24 +54,45 @@ export default function PortolaMenuPage() {
   // Update page title based on state
   useEffect(() => {
     let titleText = 'Portola Dining Menu';
-    const currentData = allMenuData ? allMenuData[mealType as keyof AllMealsData] as MenuData : null;
     const topLevelDateRange = allMenuData?.dateRange;
 
     if (isLoading) {
        titleText = 'Loading Menu...';
     } else if (error) {
        titleText = 'Error Loading Menu';
-    } else if (currentData && topLevelDateRange && topLevelDateRange !== "N/A") {
-        const mealCapitalized = mealType.charAt(0).toUpperCase() + mealType.slice(1).replace('lunch', 'Lunch/Brunch'); // Adjust label for lunch
-        // Use the top-level date range
-        titleText = `Portola Dining ${mealCapitalized} Menu (${topLevelDateRange})`;
+    // Display the formatted date range if it's available and not "N/A"
+    } else if (topLevelDateRange && topLevelDateRange !== "N/A") {
+        try {
+            const [startDateStr, endDateStr] = topLevelDateRange.split(' to ');
+            const currentYear = new Date().getFullYear();
+            // Append the current year for parsing
+            const startDate = new Date(`${startDateStr}/${currentYear}`);
+            const endDate = new Date(`${endDateStr}/${currentYear}`);
+
+            // Adjust year for end date if it wraps around New Year
+            if (endDate < startDate) {
+                endDate.setFullYear(currentYear + 1);
+            }
+
+            const options: Intl.DateTimeFormatOptions = { weekday: 'short' };
+            const startDay = startDate.toLocaleDateString('en-US', options);
+            const endDay = endDate.toLocaleDateString('en-US', options);
+
+            // Format: Day MM/DD - Day MM/DD
+            titleText = `${startDay} ${startDateStr} - ${endDay} ${endDateStr}`;
+        } catch (e) {
+            console.error("Error formatting date range:", e);
+            // Fallback to original string if formatting fails
+            titleText = topLevelDateRange;
+        }
     } else {
-        // Fallback title if data is missing or unavailable
+        // Fallback title if data is missing or date range is unavailable
         const mealCapitalized = mealType.charAt(0).toUpperCase() + mealType.slice(1).replace('lunch', 'Lunch/Brunch');
         titleText = `Portola Dining ${mealCapitalized} Menu (Unavailable)`;
     }
     setPageTitle(titleText);
-  }, [allMenuData, mealType, isLoading, error]); // Depend on allMenuData now
+  // Depend on allMenuData, mealType, isLoading, error
+  }, [allMenuData, mealType, isLoading, error]);
 
   // Fetch all menu data once on component mount
   useEffect(() => {
@@ -170,7 +191,8 @@ export default function PortolaMenuPage() {
                 <Skeleton className="h-6 w-3/4" />
               </CardHeader>
               <CardContent className="space-y-3 pt-2">
-                {[...Array(8)].map((_, j) => (
+                {/* Increased number of skeleton lines from 8 to 12 */}
+                {[...Array(24)].map((_, j) => (
                   <Skeleton key={j} className="h-4 w-full" />
                 ))}
               </CardContent>

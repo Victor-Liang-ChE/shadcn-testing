@@ -737,7 +737,7 @@ const UfcChampionsDisplay: React.FC = () => {
   /*  UI                                                                */
   /* ------------------------------------------------------------------ */
   return (
-    <main className="relative pt-8 md:pt-6 px-4 md:px-8 pb-18 w-full flex flex-col h-screen"> {/* Added flex flex-col h-screen */}
+    <main className="relative pt-8 md:pt-6 px-4 md:px-6 pb-20 w-full flex flex-col h-screen"> {/* Added flex flex-col h-screen */}
 
       {/* --- View Toggle and Gender Filter --- */}
       {/* Added min-h-[...] to stabilize height */}
@@ -935,9 +935,7 @@ const UfcChampionsDisplay: React.FC = () => {
         ) : ( // Render actual timeline
             <div
               ref={timelineScrollContainerRef}
-              className="w-full max-w-screen-2xl mx-auto overflow-x-auto border rounded-md bg-card text-card-foreground flex-1" // Added flex-1
-              // Changed height calculation to be less tall
-              style={{ height: 'calc(100vh - 10rem)', overflowY: 'auto' }} // Reduced height
+              className="w-full max-w-screen-2xl mx-auto overflow-x-auto border rounded-md bg-card text-card-foreground flex-1 min-h-[70vh]" // Added flex-1
             >
               {/* Container for scrolling content */}
               <div

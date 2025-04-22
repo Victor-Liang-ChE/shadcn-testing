@@ -61,8 +61,11 @@ function Navbar() {
     }
   };
 
-  // Consistent hover style for links and button
-  const linkHoverStyle = "hover:text-accent-foreground transition-colors duration-200";
+  // Consistent hover style for links and button - Added padding and background hover
+  const linkHoverStyle = "hover:text-accent-foreground hover:bg-accent rounded-md px-3 py-2 transition-colors duration-200";
+  // Style specifically for the brand link - Removed background hover, kept text hover
+  const brandLinkHoverStyle = "hover:text-accent-foreground rounded-md px-2 py-1 transition-colors duration-200";
+
 
   return (
     // Use inline style to directly reference CSS variables
@@ -73,8 +76,9 @@ function Navbar() {
       {/* Left: Brand */}
       <div>
         <Link href="/" legacyBehavior passHref>
-          {/* Increased font size */}
-          <a className={`text-xl font-semibold ${linkHoverStyle} inline-block`}>
+          {/* Increased font size and applied updated brand hover style */}
+          {/* Keep legacyBehavior here for now if it's not causing issues */}
+          <a className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
             Victor Liang
           </a>
         </Link>
@@ -100,16 +104,16 @@ function Navbar() {
       </div>
 
       {/* Desktop Menu */}
-      <div className="hidden md:flex items-center space-x-4">
-        <Link href="/simulations" legacyBehavior passHref>
-          {/* Increased font size */}
-          <a className={`text-xl font-semibold ${linkHoverStyle}`}>Simulations</a>
+      <div className="hidden md:flex items-center space-x-1"> {/* Reduced space for tighter fit with padding */}
+        {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+        <Link href="/simulations" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          Simulations
         </Link>
-        <Link href="/misc" legacyBehavior passHref>
-          {/* Increased font size */}
-          <a className={`text-xl font-semibold ${linkHoverStyle}`}>Misc</a>
+        {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+        <Link href="/misc" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          Misc
         </Link>
-        {/* Apply consistent hover to ThemeToggle's button */}
+        {/* Apply linkHoverStyle to the wrapper div */}
         <div className={linkHoverStyle}>
            <ThemeToggle />
         </div>
@@ -122,16 +126,17 @@ function Navbar() {
         }`}
         style={{ backgroundColor: 'var(--navbar-background)' }}
       >
-        <div className="p-4 flex flex-col space-y-4 border-x border-b">
-          <Link href="/simulations" legacyBehavior passHref>
-            {/* Increased font size */}
-            <a className={`text-xl font-semibold ${linkHoverStyle}`}>Simulations</a>
-          </Link>
-          <Link href="/misc" legacyBehavior passHref>
-            {/* Increased font size */}
-            <a className={`text-xl font-semibold ${linkHoverStyle}`}>Misc</a>
-          </Link>
-          <div className={`flex justify-center ${linkHoverStyle}`}>
+        <div className="p-4 flex flex-col space-y-2"> {/* Reduced space-y */}
+           {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+           <Link href="/simulations" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             Simulations
+           </Link>
+           {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+           <Link href="/misc" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             Misc
+           </Link>
+          {/* Center the toggle button and apply linkHoverStyle to the wrapper */}
+          <div className={`flex justify-center pt-2 ${linkHoverStyle}`}> {/* Added padding top and hover style */}
             <ThemeToggle />
           </div>
         </div>
