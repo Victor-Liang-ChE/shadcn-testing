@@ -48,32 +48,12 @@ type EChartsPoint = [number, number] | [number | null, number | null];
 // Helper function for delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- Default Data for Methanol/Water @ 27°C ---
-// IMPORTANT: Replace these placeholder arrays with actual data generated from your backend
-const DEFAULT_X_VALUES = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1]; // Replace with actual data
-const DEFAULT_Y_VALUES = [0, 0.26, 0.42, 0.53, 0.61, 0.67, 0.72, 0.76, 0.79, 0.82, 0.85, 0.88, 0.9, 0.92, 0.94, 0.96, 0.97, 0.98, 0.99, 0.995, 1]; // Replace with actual data
-const DEFAULT_POLY_COEFFS: number[] = []; // Explicitly type as number array
-const DEFAULT_VOLATILITY_INFO = {
-    message: 'methanol is more volatile (lower boiling point)',
-    more_volatile: 'methanol',
-    less_volatile: 'water',
-    bp1: 337.8,
-    bp2: 373.15
-};
-const DEFAULT_EQUILIBRIUM_DATA = {
-    x: DEFAULT_X_VALUES,
-    y: DEFAULT_Y_VALUES,
-    polyCoeffs: DEFAULT_POLY_COEFFS
-};
-// --- End Default Data ---
-
-
 export default function McCabeThielePage() {
-  // Input States - Default to Methanol/Water @ 27°C
+  // Input States
   const [comp1, setComp1] = useState('methanol');
   const [comp2, setComp2] = useState('water');
   const [temperatureC, setTemperatureC] = useState(27);
-  const [pressureBar, setPressureBar] = useState(1); // Keep a default, but it's unused initially
+  const [pressureBar, setPressureBar] = useState(1);
   const [useTemperature, setUseTemperature] = useState(true);
 
   // Parameter States
@@ -85,11 +65,11 @@ export default function McCabeThielePage() {
 
   const buffer = 0.01; // Define buffer for constraints
 
-  // Data & Control States - Initialize with defaults
-  const [equilibriumData, setEquilibriumData] = useState<any>(DEFAULT_EQUILIBRIUM_DATA);
-  const [loading, setLoading] = useState(false); // Start not loading
+  // Data & Control States
+  const [equilibriumData, setEquilibriumData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [volatilityInfo, setVolatilityInfo] = useState<string | null>(DEFAULT_VOLATILITY_INFO.message); // Initialize with default message
+  const [volatilityInfo, setVolatilityInfo] = useState<string | null>(null); // Keep for axis label logic
 
   // Result States
   const [stages, setStages] = useState<number | null>(null);
@@ -98,39 +78,24 @@ export default function McCabeThielePage() {
   // State for ECharts options - Use the imported EChartsOption type
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
   const echartsRef = useRef<ReactECharts | null>(null); // Ref for ECharts instance
-  const isInitialMount = useRef(true); // Ref to track initial mount
-
-  // State for displayed parameters in the title - Initialize with defaults
-  const [displayedComp1, setDisplayedComp1] = useState('methanol');
-  const [displayedComp2, setDisplayedComp2] = useState('water');
-  const [displayedTemp, setDisplayedTemp] = useState<number | null>(27);
+  // State for displayed parameters in the title
+  const [displayedComp1, setDisplayedComp1] = useState('');
+  const [displayedComp2, setDisplayedComp2] = useState('');
+  const [displayedTemp, setDisplayedTemp] = useState<number | null>(null);
   const [displayedPressure, setDisplayedPressure] = useState<number | null>(null);
   const [displayedUseTemp, setDisplayedUseTemp] = useState(true);
 
 
-  // useEffect(() => {
-  //   // Initial fetch without arguments - REMOVED
-  //   // fetchVLEData();
-  //   // setDisplayedComp1('methanol'); // Now initialized in useState
-  //   // setDisplayedComp2('water'); // Now initialized in useState
-  //   // setDisplayedTemp(27); // Now initialized in useState
-  //   // setDisplayedPressure(null); // Now initialized in useState
-  //   // setDisplayedUseTemp(true); // Now initialized in useState
-  // // eslint-disable-next-line react-hooks/exhaustive-deps
-  // }, []); // fetchVLEData should be stable due to useCallback - HOOK REMOVED/COMMENTED
-
-  // --- New useEffect to fetch data on input change (skipping initial mount) ---
   useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false; // Set flag to false after first render
-    } else {
-      // Only call fetchVLEData if it's not the initial mount
-      console.log("DEBUG: Input change detected, fetching new VLE data...");
-      fetchVLEData();
-    }
+    // Initial fetch without arguments
+    fetchVLEData();
+    setDisplayedComp1('methanol');
+    setDisplayedComp2('water');
+    setDisplayedTemp(27);
+    setDisplayedPressure(null);
+    setDisplayedUseTemp(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comp1, comp2, temperatureC, pressureBar, useTemperature]); // Dependencies that trigger refetch
-
+  }, []); // fetchVLEData should be stable due to useCallback
 
   // ... (keep navbar reset useEffect) ...
 
@@ -230,7 +195,7 @@ export default function McCabeThielePage() {
       }
       console.log("DEBUG: fetchVLEData attempt completed");
     }
-  }, [comp1, comp2, useTemperature, temperatureC, pressureBar]); // Removed error and equilibriumData from deps as they cause loops
+  }, [comp1, comp2, useTemperature, temperatureC, pressureBar, error, equilibriumData]); // Dependencies remain the same
 
   // *** generateEChartsOptions function ***
   const generateEChartsOptions = useCallback((xValues: number[], yValues: number[]) => {
@@ -500,7 +465,7 @@ export default function McCabeThielePage() {
         series: series,
     });
 
-  }, [xd, xb, xf, q, r, volatilityInfo, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, buffer]); // Removed equilibriumData from deps
+  }, [xd, xb, xf, q, r, equilibriumData, volatilityInfo, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, buffer]);
 
 
   // --- Helper Functions ---
@@ -567,22 +532,18 @@ export default function McCabeThielePage() {
   // --- End Helper Functions ---
 
   // Update useEffect to call the new options generation function
-  // This effect now runs initially with default data and whenever equilibriumData changes
   useEffect(() => {
     if (equilibriumData?.x && equilibriumData?.y) {
-      console.log("DEBUG: Generating ECharts options with data:", equilibriumData);
       generateEChartsOptions(equilibriumData.x, equilibriumData.y);
     } else {
-        console.log("DEBUG: Clearing ECharts options (no data)");
         setEchartsOptions({});
         setStages(null);
         setFeedStage(null);
     }
-  // generateEChartsOptions is now a dependency
   }, [equilibriumData, generateEChartsOptions]);
 
 
-  // Wrapper function for the button click (still useful for manual updates)
+  // Wrapper function for the button click
   const handleUpdateGraphClick = () => {
     fetchVLEData(); // Call without arguments, retryCount defaults to 0
   };
@@ -757,6 +718,9 @@ export default function McCabeThielePage() {
                       </div>
                     </div>
                    )}
+                   {!loading && !equilibriumData && !error && (
+                    <div className="absolute inset-0 flex items-center justify-center text-white">Please provide inputs and update graph.</div>
+                   )}
                    {error && !loading && (
                     <div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div>
                    )}
@@ -791,7 +755,7 @@ export default function McCabeThielePage() {
                 </div>
 
                 {/* Results Display */}
-                {stages !== null && feedStage !== null && !loading && ( // Added !loading check
+                {stages !== null && feedStage !== null && (
                   <div className="grid grid-cols-2 gap-4 text-center mt-4 pt-2">
                     <div className="p-4 bg-muted rounded-md">
                       <p className="text-sm font-medium">Number of Stages</p>
