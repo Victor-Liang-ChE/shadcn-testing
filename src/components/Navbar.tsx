@@ -51,7 +51,7 @@ function Navbar() {
           return "Chemical Engineering Economics Calculator";
 
       case "/misc/japanese-lyrics":
-          return "Japanese Lyrics Processor";
+          return "Japanese Lyrics Analyzer";
 
       case "/misc/ufc-champions":
           return "UFC Championship Lineage";
