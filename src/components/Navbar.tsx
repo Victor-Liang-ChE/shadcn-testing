@@ -12,6 +12,14 @@ function Navbar() {
   const pathname = usePathname();
   
   const getPageTitle = () => {
+    // Use startsWith for nested routes
+    if (pathname.startsWith("/LearnChemE/fluid-dynamics/bernoulli-equation")) {
+      return "Bernoulli Equation";
+    }
+    if (pathname.startsWith("/LearnChemE")) {
+      return "LearnChemE 2.0";
+    }
+
     switch (pathname) {      
       
       case "/simulations":
@@ -56,8 +64,15 @@ function Navbar() {
       case "/misc/ufc-champions":
           return "UFC Championship Lineage";
 
+      case "/misc/csv-to-plot":
+          return "Fast .csv Plotter";
+
       default:
-        return "";
+        // Check for base paths if no specific match
+        if (pathname === "/LearnChemE") return "LearnChemE 2.0";
+        if (pathname === "/simulations") return "Chemical Engineering Simulations";
+        if (pathname === "/misc") return "Miscellaneous Projects";
+        return ""; // Default empty title
     }
   };
 
@@ -109,6 +124,10 @@ function Navbar() {
         <Link href="/simulations" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Simulations
         </Link>
+        {/* Add LearnChemE Link */}
+        <Link href="/LearnChemE" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          LearnChemE 2.0
+        </Link>
         {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
         <Link href="/misc" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Misc
@@ -130,6 +149,10 @@ function Navbar() {
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
            <Link href="/simulations" className={`block text-xl font-semibold ${linkHoverStyle}`}>
              Simulations
+           </Link>
+           {/* Add LearnChemE Link */}
+           <Link href="/LearnChemE" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             LearnChemE 2.0
            </Link>
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
            <Link href="/misc" className={`block text-xl font-semibold ${linkHoverStyle}`}>
