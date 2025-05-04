@@ -17,6 +17,7 @@ const projects = [
     { name: "Chemistry Tools", path: "/misc/chemistry-tools" },
     { name: "Video/Audio Downloader", path: "/misc/downloader" },
     { name: "UFC Championship Lineage", path: "/misc/ufc-champions" },
+    { name: "Fast .csv Plotter", path: "/misc/csv-to-plot" }, // Added this line
   ];
 
   return (
