@@ -125,21 +125,15 @@ export default function CsvToPlotPage() {
   const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    // Only set to false if not dragging over a child element (prevents flickering)
-    // Use relatedTarget to check if the mouse left the element entirely or entered a child
-    const currentTarget = e.currentTarget as Node;
-    const relatedTarget = e.relatedTarget as Node | null;
-    if (!relatedTarget || !currentTarget.contains(relatedTarget)) {
-        // Check if relatedTarget is outside the window (or null)
-        // This part is tricky across browsers, relying on handleDrop and window's dragleave might be safer
-    }
-     // Let the window's dragleave handle setting isDragging to false when leaving the viewport
+    // Simplified logic: If leaving the specific drop zone, set dragging to false
+    // This relies on dragEnter/dragOver on the same element to set it back to true if needed
+    setIsDragging(false);
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault(); // Necessary to allow drop
     e.stopPropagation();
-    setIsDragging(true); // Keep true while dragging over
+    setIsDragging(true); // Keep true while dragging over the drop zone
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -316,7 +310,7 @@ export default function CsvToPlotPage() {
       grid: {
         left: '10%',
         right: '7%',
-        bottom: '15%', // INCREASED bottom margin slightly more to ensure space
+        bottom: '12%', // ADJUSTED: Reduced grid bottom margin to move axis up
         top: '10%',
         containLabel: true
       },
@@ -340,7 +334,7 @@ export default function CsvToPlotPage() {
         type: xAxisType,
         name: xAxisLabel,
         nameLocation: 'middle',
-        nameGap: 30,
+        nameGap: 35, // ADJUSTED: Increased gap to push label down relative to axis line
         nameTextStyle: { color: textColor, fontSize: axisLabelFontSize, fontFamily: chartFont }, // Use font
         axisLine: { lineStyle: { color: mutedColor } }, // Use theme-based muted color
         axisTick: { lineStyle: { color: mutedColor } }, // Use theme-based muted color
@@ -362,9 +356,10 @@ export default function CsvToPlotPage() {
       },
       toolbox: {
         show: true,
-        orient: 'horizontal',
-        right: 20,
-        bottom: 0, // Set toolbox to absolute bottom
+        orient: 'horizontal', // Keep horizontal
+        right: 20, // Keep right position
+        top: 10, // ADJUSTED: Position from the top instead of bottom
+        // bottom: 0, // REMOVED
         feature: {
           saveAsImage: {
             show: true,
@@ -394,8 +389,8 @@ export default function CsvToPlotPage() {
               type: 'slider',
               xAxisIndex: 0,
               filterMode: 'filter',
-              bottom: 35, // INCREASED: Position bottom edge 35px up to clear toolbox@bottom:0
-              height: 20, // Slider height remains 20px
+              bottom: 10, // Keep slider positioned low
+              height: 20,
               handleIcon: 'M10.7,11.9v-1.3H9.3v1.3c-4.9,0.3-8.8,4.4-8.8,9.4c0,5,3.9,9.1,8.8,9.4v1.3h1.3v-1.3c4.9-0.3,8.8-4.4,8.8-9.4C19.5,16.3,15.6,12.2,10.7,11.9z M13.3,24.4H6.7V23h6.6V24.4z M13.3,19.6H6.7v-1.4h6.6V19.6z',
               handleSize: '80%',
               handleStyle: {
@@ -484,61 +479,6 @@ export default function CsvToPlotPage() {
   }, [chartType, showBestFit, csvData, xAxisColumn, yAxisColumn]); // Dependencies for calculation
 
 
-  // Add/Remove global drag listeners for full page drop zone effect
-  useEffect(() => {
-    const windowDragEnter = (e: DragEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsDragging(true);
-    };
-    // Simplified windowDragLeave - only set false when leaving the window
-    const windowDragLeave = (e: DragEvent) => {
-        // Check if the mouse is leaving the viewport
-        if (
-            e.clientY <= 0 ||
-            e.clientX <= 0 ||
-            e.clientX >= window.innerWidth ||
-            e.clientY >= window.innerHeight
-        ) {
-            // Also check relatedTarget to ensure it's not entering an iframe/object
-             if (!e.relatedTarget) {
-                setIsDragging(false);
-             }
-        }
-         // Don't set false if just moving between elements within the window
-    };
-     const windowDragOver = (e: DragEvent) => {
-        e.preventDefault(); // Necessary to allow drop
-        e.stopPropagation();
-        setIsDragging(true); // Ensure it stays true while dragging over
-    };
-    const windowDrop = (e: DragEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsDragging(false); // Definitely false on drop
-        // The actual file processing is handled by the React onDrop handler on the <main> element
-    };
-
-    const preventDefault = (e: DragEvent) => e.preventDefault();
-
-    window.addEventListener('dragenter', windowDragEnter);
-    window.addEventListener('dragleave', windowDragLeave); // Use simplified handler
-    window.addEventListener('dragover', windowDragOver);
-    window.addEventListener('drop', windowDrop);
-    window.addEventListener('dragover', preventDefault, false); // Keep these
-    window.addEventListener('drop', preventDefault, false);   // Keep these
-
-    return () => {
-      window.removeEventListener('dragenter', windowDragEnter);
-      window.removeEventListener('dragleave', windowDragLeave); // Use simplified handler
-      window.removeEventListener('dragover', windowDragOver);
-      window.removeEventListener('drop', windowDrop);
-      window.removeEventListener('dragover', preventDefault, false);
-      window.removeEventListener('drop', preventDefault, false);
-    };
-  }, []); // Dependency array remains empty
-
-
   // --- UI Handlers ---
   const handleSwapAxes = () => {
     if (xAxisColumn && yAxisColumn) {
@@ -579,43 +519,23 @@ export default function CsvToPlotPage() {
 
   return (
     <TooltipProvider>
-      <main
-          className="container mx-auto p-4 md:p-8 relative"
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-      >
-        {/* Drag Overlay - Conditionally change size */}
-        {isDragging && (
-          <div className={cn(
-            "absolute bg-primary/20 backdrop-blur-sm flex flex-col items-center justify-center z-50 rounded-lg border-2 border-dashed border-primary pointer-events-none",
-            // If no data, make it smaller (matching placeholder height), otherwise full size
-            csvData.length === 0 ? "inset-x-0 top-0 h-[400px]" : "inset-0"
-          )}>
-            <UploadCloud className="w-16 h-16 text-primary mb-4 animate-bounce" />
-            <p className="text-xl font-semibold text-primary">Drop your .csv file here</p>
-          </div>
-        )}
-
+      {/* Remove drag handlers from main element */}
+      <main className="container mx-auto p-4 md:p-8 relative">
 
         {/* Main Content Grid */}
+        {/* Grid logic: 1 column initially, 3 columns when data is loaded */}
         <div className={`grid grid-cols-1 ${csvData.length > 0 ? 'lg:grid-cols-3' : 'lg:grid-cols-1'} gap-6 transition-all duration-300 ease-in-out`}>
 
-          {/* Controls Column */}
-          <div className="lg:col-span-1 space-y-6">
-            <Card>
-              {/* ... CardHeader ... */}
-               <CardHeader>
-                <CardTitle>CSV Plotter</CardTitle>
-                <CardDescription>
-                  {fileName
-                    ? `File: ${fileName}`
-                    : "Drag & drop a .csv file anywhere on the page to plot."}
-                </CardDescription>
-              </CardHeader>
-
-              {headers.length > 0 && (
+          {/* Controls Column - Render only when data is loaded */}
+          {csvData.length > 0 && headers.length > 0 && (
+            <div className="lg:col-span-1 space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>CSV Plotter</CardTitle>
+                  <CardDescription>
+                    {fileName ? `File: ${fileName}` : "Configure your plot."}
+                  </CardDescription>
+                </CardHeader>
                 <CardContent className="space-y-6">
                   {/* Chart Type Selection - Moved UP */}
                    <div className="space-y-2">
@@ -755,22 +675,20 @@ export default function CsvToPlotPage() {
                   </div>
 
                 </CardContent>
-              )}
-              {/* ... Error display ... */}
-               {error && (
-                <CardContent>
-                  <p className="text-sm text-red-500">{error}</p>
-                </CardContent>
-              )}
-            </Card>
-          </div>
+                {error && !plotData.length && ( // Show plot-related errors here
+                  <CardContent>
+                    <p className="text-sm text-red-500">{error}</p>
+                  </CardContent>
+                )}
+              </Card>
+            </div>
+          )}
 
-          {/* Chart Column */}
-           {csvData.length > 0 && (
+          {/* Chart Column - Render only when data is loaded */}
+          {csvData.length > 0 && (
             <div className="lg:col-span-2">
               <Card>
                 <CardContent className="pt-6">
-                  {/* Chart container with fixed height */}
                   <div className="relative h-[500px] md:h-[600px] rounded-md border bg-card">
                     {Object.keys(chartOptions).length > 0 ? (
                       <ReactECharts
@@ -792,17 +710,38 @@ export default function CsvToPlotPage() {
             </div>
           )}
 
+          {/* Placeholder and Drop Zone - Render only when NO data is loaded */}
+          {csvData.length === 0 && (
+            // This div spans the full width (lg:col-span-1 in a 1-column grid)
+            // Add drag handlers HERE
+            <div
+              className="lg:col-span-1 relative flex items-center justify-center h-[400px] border-2 border-dashed border-muted-foreground/50 rounded-lg bg-card"
+              onDragEnter={handleDragEnter}
+              onDragLeave={handleDragLeave}
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+            >
+              {/* Text Content */}
+              {!isDragging && (
+                <div className="text-center text-muted-foreground">
+                  <UploadCloud className="w-12 h-12 mx-auto mb-4" />
+                  <p className="text-lg font-medium">Drag and drop your CSV file here</p>
+                  {error && <p className="text-sm text-red-500 mt-4">{error}</p>}
+                </div>
+              )}
 
-          {/* Placeholder when no data is loaded */}
-           {csvData.length === 0 && !isDragging && (
-              <div className="lg:col-span-3 flex items-center justify-center h-[400px] border-2 border-dashed border-muted-foreground/50 rounded-lg bg-card">
-                  <div className="text-center text-muted-foreground">
-                      <UploadCloud className="w-12 h-12 mx-auto mb-4" />
-                      <p className="text-lg font-medium">Drag and drop your CSV file here</p>
-                      <p className="text-sm">or wait for the drop zone overlay.</p>
-                       {error && <p className="text-sm text-red-500 mt-4">{error}</p>}
-                  </div>
-              </div>
+              {/* Drag Overlay - Show only when dragging over THIS specific element */}
+              {isDragging && (
+                <div className={cn(
+                  "absolute bg-primary/20 backdrop-blur-sm flex flex-col items-center justify-center z-10 rounded-lg border-2 border-dashed border-primary pointer-events-none",
+                  // Make it cover the placeholder box exactly
+                  "inset-0"
+                )}>
+                  <UploadCloud className="w-16 h-16 text-primary mb-4 animate-bounce" />
+                  <p className="text-xl font-semibold text-primary">Drop your .csv file here</p>
+                </div>
+              )}
+            </div>
           )}
 
         </div>
