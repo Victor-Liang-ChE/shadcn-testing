@@ -18,27 +18,6 @@ import {
 } from "@/components/ui/accordion";
 import { Loader2 } from "lucide-react"; // Example loading icon
 
-// Helper function to merge adjacent duplicate lines (ported from Python)
-const mergeAdjacentDuplicates = (lines: string[]): string[] => {
-    if (!lines || lines.length === 0) {
-        return [];
-    }
-    const merged: string[] = [];
-    let count = 1;
-    let prevLine = lines[0];
-    for (let i = 1; i < lines.length; i++) {
-        if (lines[i] === prevLine) {
-            count++;
-        } else {
-            merged.push(count > 1 ? `${prevLine} x${count}` : prevLine);
-            prevLine = lines[i];
-            count = 1;
-        }
-    }
-    merged.push(count > 1 ? `${prevLine} x${count}` : prevLine);
-    return merged;
-};
-
 // Debounce function
 function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -56,7 +35,6 @@ function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
         });
     };
 }
-
 
 interface ProcessedLyrics {
     plain: string;

@@ -151,21 +151,23 @@ export default function ProcessControlPage() {
             animation: false,
             title: {
                 text: titleText, left: 'center',
-                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'sans-serif' }
+                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'Merriweather Sans' } // Apply font
             },
             tooltip: {
                 trigger: 'axis',
                 formatter: (params: any) => {
-                    let tooltipText = `Time: ${params[0].axisValueLabel}<br/>`;
+                    let tooltipText = `<span style="font-family: 'Merriweather Sans';">Time: ${params[0].axisValueLabel}<br/>`; // Apply font to tooltip
                     params.forEach((param: any) => {
                         tooltipText += `${param.marker}${param.seriesName}: ${param.value[1].toPrecision(4)}<br/>`;
                     });
+                    tooltipText += `</span>`;
                     return tooltipText;
-                }
+                },
+                textStyle: { fontFamily: 'Merriweather Sans' } // Also set font here for consistency
             },
             legend: {
                 data: ['System Response', 'Input'],
-                textStyle: { color: '#fff', fontSize: 12, fontFamily: 'sans-serif' },
+                textStyle: { color: '#fff', fontSize: 12, fontFamily: 'Merriweather Sans' }, // Apply font
                 top: 'bottom',
                 type: 'scroll'
             },
@@ -178,8 +180,8 @@ export default function ProcessControlPage() {
             xAxis: {
                 type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,
                 min: 0, max: 50, // Fixed X-axis range
-                axisLabel: { color: '#fff', fontSize: 14, fontFamily: 'sans-serif', formatter: (v: number) => v.toFixed(1) },
-                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'sans-serif' },
+                axisLabel: { color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toFixed(1) }, // Apply font
+                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Apply font
                 axisLine: { lineStyle: { color: '#fff' } },
                 axisTick: { lineStyle: { color: '#fff' } },
                 splitLine: { show: false }
@@ -188,8 +190,8 @@ export default function ProcessControlPage() {
                 type: 'value', name: 'Response / Input', nameLocation: 'middle', nameGap: 50,
                 min: finalYAxisRange[0], // Use the passed finalYAxisRange
                 max: finalYAxisRange[1], // Use the passed finalYAxisRange
-                axisLabel: { color: '#fff', fontSize: 14, fontFamily: 'sans-serif', formatter: (v: number) => v.toPrecision(3) },
-                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'sans-serif' },
+                axisLabel: { color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toPrecision(3) }, // Apply font
+                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Apply font
                 axisLine: { lineStyle: { color: '#fff' } },
                 axisTick: { lineStyle: { color: '#fff' } },
                 splitLine: { show: false }
@@ -280,8 +282,7 @@ export default function ProcessControlPage() {
                 {/* Controls Column */}
                 <div className="lg:col-span-1 space-y-6">
                     <Card>
-                        <CardHeader><CardTitle>System Configuration</CardTitle></CardHeader>
-                        <CardContent className="space-y-4">
+                        <CardContent className="space-y-4"> {/* Removed pt-6 */}
                             <Label>Order:</Label>
                             <div className="flex gap-2">
                                 <Button variant={order === 'first' ? 'default' : 'outline'} onClick={() => handleOrderChange('first')} className="flex-1">1st Order</Button>
@@ -296,8 +297,7 @@ export default function ProcessControlPage() {
                     </Card>
 
                     <Card>
-                        <CardHeader><CardTitle>Parameters</CardTitle></CardHeader>
-                        <CardContent className="space-y-6">
+                        <CardContent className="space-y-6"> {/* Removed pt-6 */}
                             {/* K Slider */}
                             <div className="space-y-2">
                                 <Label htmlFor="k-slider" className="flex justify-between"><span>Gain (K):</span><span>{formatNumber(params.K)}</span></Label>
@@ -324,8 +324,7 @@ export default function ProcessControlPage() {
                     </Card>
 
                     <Card>
-                         <CardHeader><CardTitle>Display Options</CardTitle></CardHeader>
-                         <CardContent>
+                         <CardContent> {/* Removed pt-6 */}
                             <div className="flex items-center space-x-2">
                                 <Checkbox id="lock-y-axis" checked={lockYAxis} onCheckedChange={handleLockChange} />
                                 <Label htmlFor="lock-y-axis">Lock Y-axis</Label>

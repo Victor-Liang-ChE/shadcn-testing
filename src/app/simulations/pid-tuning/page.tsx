@@ -375,17 +375,17 @@ export default function PidTuningPage() {
         const subtext = subTextParts.join(', ');
 
         const emptyOrErrorOptions: EChartsOption = {
-            backgroundColor: '#08306b', // Match McCabe
+            backgroundColor: '#08306b',
             title: {
                 text: 'Waiting for simulation data...',
                 subtext: 'Adjust parameters or select rule',
                 left: 'center',
-                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'sans-serif' }, // Match McCabe
-                subtextStyle: { fontSize: 11, color: '#ccc' } // Lighter subtext
+                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'Merriweather Sans' }, // Added font
+                subtextStyle: { fontSize: 11, color: '#ccc', fontFamily: 'Merriweather Sans' } // Added font
             },
-            grid: { left: '5%', right: '5%', bottom: '5%', top: '5%', containLabel: true }, // Match McCabe
-            xAxis: { type: 'value', min:0, max:currentTFinal, axisLabel: { color: '#fff' }, axisLine: { lineStyle: { color: '#fff' } } }, // Basic styling
-            yAxis: { type: 'value', axisLabel: { color: '#fff' }, axisLine: { lineStyle: { color: '#fff' } } }, // Basic styling
+            grid: { left: '5%', right: '5%', bottom: '5%', top: '5%', containLabel: true },
+            xAxis: { type: 'value', min:0, max:currentTFinal, axisLabel: { color: '#fff', fontFamily: 'Merriweather Sans' }, axisLine: { lineStyle: { color: '#fff' } } }, // Added font
+            yAxis: { type: 'value', axisLabel: { color: '#fff', fontFamily: 'Merriweather Sans' }, axisLine: { lineStyle: { color: '#fff' } } }, // Added font
             series: [],
             animation: false,
         };
@@ -446,17 +446,20 @@ export default function PidTuningPage() {
         const saveName = `pid_tuning_${modelLabel.replace(/[^a-z0-9]/gi, '_')}_${ruleLabel?.replace(/[^a-z0-9]/gi, '_') ?? 'no_rule'}_tc_${currentLambda.toFixed(2)}`;
 
         return {
-            backgroundColor: '#08306b', // Match McCabe
-            animation: false, // Disable animations globally
+            backgroundColor: '#08306b',
+            animation: false,
             title: {
                 text: titleText,
                 subtext,
                 left: 'center',
-                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'sans-serif' }, // Match McCabe
-                subtextStyle: { fontSize: 11, color: '#ccc' } // Lighter subtext
+                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'Merriweather Sans' }, // Added font
+                subtextStyle: { fontSize: 11, color: '#ccc', fontFamily: 'Merriweather Sans' } // Added font
             },
             tooltip: {
                 trigger: 'axis',
+                // Tooltip font might need global CSS or complex formatter styling
+                // Applying here might not work directly on the default tooltip structure
+                textStyle: { fontFamily: 'Merriweather Sans' },
                 formatter: (params: any) => {
                     let t = params[0] ? `Time: ${params[0].axisValueLabel}<br/>` : '';
                     params.forEach((p: any) => {
@@ -470,27 +473,27 @@ export default function PidTuningPage() {
                 }
             },
             legend: {
-                orient: 'vertical', // Match McCabe
-                right: '2%', // Match McCabe
-                top: 'center', // Match McCabe
-                data: seriesData.map(s => s.name) as string[], // Ensure string array
-                textStyle: { color: '#fff', fontSize: 12, fontFamily: 'sans-serif' }, // Match McCabe
-                itemWidth: 12, // Match McCabe
-                itemHeight: 12, // Match McCabe
-                icon: 'rect', // Match McCabe
+                orient: 'vertical',
+                right: '2%',
+                top: 'center',
+                data: seriesData.map(s => s.name) as string[],
+                textStyle: { color: '#fff', fontSize: 12, fontFamily: 'Merriweather Sans' }, // Added font
+                itemWidth: 12,
+                itemHeight: 12,
+                icon: 'rect',
             },
             grid: {
-                left: '5%', // Match McCabe
-                right: '5%', // Match McCabe
-                bottom: '5%', // Match McCabe
-                top: '5%', // Match McCabe
-                containLabel: true // Match McCabe
+                left: '5%',
+                right: '5%',
+                bottom: '5%',
+                top: '5%',
+                containLabel: true
             },
             toolbox: {
                 show: true,
-                orient: 'vertical', // Match McCabe
-                right: 0, // Match McCabe
-                top: 'bottom', // Match McCabe (adjust if needed)
+                orient: 'vertical',
+                right: 0,
+                top: 'bottom',
                 feature: {
                     saveAsImage: {
                         show: true,
@@ -507,30 +510,30 @@ export default function PidTuningPage() {
             xAxis: {
                 type: 'value',
                 name: 'Time (s)',
-                nameLocation: 'middle', // Match McCabe
-                nameGap: 30, // Match McCabe
+                nameLocation: 'middle',
+                nameGap: 30,
                 min: 0,
                 max: currentTFinal,
-                axisLine: { lineStyle: { color: '#fff' } }, // Match McCabe
-                axisTick: { lineStyle: { color: '#fff' }, length: 5, inside: false }, // Match McCabe
-                axisLabel: { color: '#fff', fontSize: 16, fontFamily: 'sans-serif', formatter: (v: number) => v.toFixed(1) }, // Match McCabe font size
-                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'sans-serif' }, // Match McCabe
-                splitLine: { show: false } // Match McCabe
+                axisLine: { lineStyle: { color: '#fff' } },
+                axisTick: { lineStyle: { color: '#fff' }, length: 5, inside: false },
+                axisLabel: { color: '#fff', fontSize: 16, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toFixed(1) }, // Added font
+                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added font
+                splitLine: { show: false }
             },
             yAxis: {
                 type: 'value',
                 name: 'Output',
-                nameLocation: 'middle', // Match McCabe
-                nameGap: 40, // Match McCabe (adjust if needed for 'Output')
-                axisLine: { lineStyle: { color: '#fff' } }, // Match McCabe
-                axisTick: { lineStyle: { color: '#fff' }, length: 5, inside: false }, // Match McCabe
-                axisLabel: { color: '#fff', fontSize: 16, fontFamily: 'sans-serif', formatter: (v: number) => v.toPrecision(3) }, // Match McCabe font size
-                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'sans-serif' }, // Match McCabe
-                splitLine: { show: false } // Match McCabe
+                nameLocation: 'middle',
+                nameGap: 40,
+                axisLine: { lineStyle: { color: '#fff' } },
+                axisTick: { lineStyle: { color: '#fff' }, length: 5, inside: false },
+                axisLabel: { color: '#fff', fontSize: 16, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toPrecision(3) }, // Added font
+                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added font
+                splitLine: { show: false }
             },
             series: seriesData
         };
-    }, [setpoint]); // Dependency remains setpoint
+    }, [setpoint]);
 
     const runSimulation = useCallback(async () => { /* ... (unchanged simulation logic from previous version, relies on selectedRule, modelParams etc.) ... */ if (!selectedRule) { setIsLoading(false); setSimulationStatus("Select a tuning rule."); const C_proc_prev = (currentCProc && currentCProc.length > 0) ? currentCProc : [[1]]; const emptyOptions = generateEchartsOptions(null, null, undefined, lambda, selectedModel.label, C_proc_prev, tFinal); setEchartsOptions(emptyOptions); return; } const modelParamKeys = selectedModel.parameters.map(p => p.id); const allParamsSet = modelParamKeys.every(key => modelParams[key] !== undefined && modelParams[key] !== null && !isNaN(modelParams[key] as number)); if (!allParamsSet) { setIsLoading(false); setSimulationStatus("Set all model parameters."); return; } setIsLoading(true); setSimulationStatus("Calculating..."); let calculatedPid: PidParams | null = null; try { calculatedPid = selectedRule.calculate({ ...modelParams, lambda }); setPidParams(calculatedPid); } catch (error) { console.error("PID Calculation Error:", error); setSimulationStatus(`Error calculating PID: ${error instanceof Error ? error.message : String(error)}`); setPidParams(null); setSimulationResult(null); const C_proc_prev = (currentCProc && currentCProc.length > 0) ? currentCProc : [[1]]; const errorOptions = generateEchartsOptions(null, null, selectedRule.label, lambda, selectedModel.label, C_proc_prev, tFinal); setEchartsOptions(errorOptions); try { echartsRef.current?.getEchartsInstance().setOption(errorOptions, { notMerge: true }); } catch (e) { console.error("Error setting ECharts option during PID calc error:", e); } setIsLoading(false); return; } if (!calculatedPid) { setSimulationStatus("Error: Failed to obtain PID params."); setIsLoading(false); return; } let sim_results: ProcessSimulationResult | null = null; let finalStatus = "Error: Unknown simulation failure"; let C_proc_used: number[][] = currentCProc; try { const { odeFunc, y0, C_proc } = selectedModel.getOdeSystem(modelParams, setpoint, calculatedPid, alpha); if (!C_proc || C_proc.length === 0 || C_proc[0].length === 0) throw new Error("Invalid C_proc matrix."); C_proc_used = C_proc; setCurrentCProc(C_proc); const t_span: [number, number] = [0, tFinal]; sim_results = await solveODERK45(odeFunc, y0, t_span); setSimulationResult(sim_results); finalStatus = sim_results.status; } catch (error) { console.error("Simulation Error:", error); finalStatus = `Error in simulation: ${error instanceof Error ? error.message : String(error)}`; setSimulationResult(null); setCurrentCProc([[1]]); C_proc_used = [[1]]; } finally { setSimulationStatus(finalStatus); const newOptions = generateEchartsOptions(sim_results, calculatedPid, selectedRule.label, lambda, selectedModel.label, C_proc_used, tFinal); setEchartsOptions(newOptions); try { const instance = echartsRef.current?.getEchartsInstance(); if (instance) instance.setOption(newOptions, { notMerge: true }); else console.warn("ECharts instance not available on ref yet."); } catch (e) { console.error("Error setting ECharts option via ref:", e); } setIsLoading(false); } }, [selectedRule, modelParams, lambda, selectedModel, alpha, setpoint, tFinal, currentCProc, generateEchartsOptions]);
 
@@ -559,26 +562,74 @@ export default function PidTuningPage() {
                 {/* Controls Column */}
                 <div className="lg:col-span-1 space-y-6">
                      {/* Model Selection */}
-                     <Card> <CardContent className="space-y-4 pt-6"> <div> <Label htmlFor="process-model-select" className="mb-2 block font-semibold">Process Model:</Label> <Select value={selectedModelId} onValueChange={(value) => setSelectedModelId(value)} disabled={isLoading}> <SelectTrigger id="process-model-select"><SelectValue placeholder="Select a process model" /></SelectTrigger> <SelectContent> {processModels.map(model => ( <SelectItem key={model.id} value={model.id}> <span className='font-medium'>{model.label}: </span> <span dangerouslySetInnerHTML={{ __html: model.descriptionHtml }} className="ml-2 text-muted-foreground italic" /> </SelectItem> ))} </SelectContent> </Select> </div> </CardContent> </Card>
+                     <Card>
+                         {/* Use flexbox for label and select alignment */}
+                         <CardContent className="space-y-4 pt-2 pb-2">
+                             <div className="flex items-center justify-between gap-4"> {/* Added flex container */}
+                                 {/* Removed block and mb-2 */}
+                                 <Label htmlFor="process-model-select" className="font-semibold whitespace-nowrap">Process Model:</Label>
+                                 <Select value={selectedModelId} onValueChange={(value) => setSelectedModelId(value)} disabled={isLoading}>
+                                     {/* Added w-auto to prevent full width */}
+                                     <SelectTrigger id="process-model-select" className="w-auto">
+                                         <SelectValue placeholder="Select a process model" />
+                                     </SelectTrigger>
+                                     <SelectContent>
+                                         {processModels.map(model => (
+                                             <SelectItem key={model.id} value={model.id}>
+                                                 <span className='font-medium'>{model.label}: </span>
+                                                 <span dangerouslySetInnerHTML={{ __html: model.descriptionHtml }} className="ml-2 italic" />
+                                             </SelectItem>
+                                         ))}
+                                     </SelectContent>
+                                 </Select>
+                             </div>
+                         </CardContent>
+                     </Card>
                      {/* Model Parameters */}
-                     <Card> <CardContent className="space-y-4 pt-6"> <Label className="mb-2 block font-semibold">Model Parameters:</Label> {selectedModel.parameters.map(param => ( <div key={param.id} className="space-y-2"> <Label htmlFor={`${param.id}-input`} className="text-sm flex justify-between items-center"> <span dangerouslySetInnerHTML={{ __html: `${param.label} (${param.symbol}):` }} /> <Input id={`${param.id}-input`} type="number" className="h-7 w-24 text-sm px-2 py-1 border rounded" value={modelParams[param.id]?.toString() ?? ''} min={param.min} max={param.max} step={param.step} onChange={(e) => handleModelParamChange(param.id, e.target.value)} disabled={isLoading && simulationStatus === 'Calculating...'} /> </Label> <Slider id={`${param.id}-slider`} min={param.min} max={param.max} step={param.step} value={[modelParams[param.id] ?? param.default]} onValueChange={(v) => handleModelParamChange(param.id, v[0])} disabled={isLoading && simulationStatus === 'Calculating...'} /> </div> ))} </CardContent> </Card>
+                     {/* Added pb-6 */}
+                     <Card> <CardContent className="space-y-4 pt-2 pb-2"> <Label className="mb-2 block font-semibold">Model Parameters:</Label> {selectedModel.parameters.map(param => ( <div key={param.id} className="space-y-2"> <Label htmlFor={`${param.id}-input`} className="text-sm flex justify-between items-center"> <span dangerouslySetInnerHTML={{ __html: `${param.label} (${param.symbol}):` }} /> <Input id={`${param.id}-input`} type="number" className="h-7 w-24 text-sm px-2 py-1 border rounded" value={modelParams[param.id]?.toString() ?? ''} min={param.min} max={param.max} step={param.step} onChange={(e) => handleModelParamChange(param.id, e.target.value)} disabled={isLoading && simulationStatus === 'Calculating...'} /> </Label> <Slider id={`${param.id}-slider`} min={param.min} max={param.max} step={param.step} value={[modelParams[param.id] ?? param.default]} onValueChange={(v) => handleModelParamChange(param.id, v[0])} disabled={isLoading && simulationStatus === 'Calculating...'} /> </div> ))} </CardContent> </Card>
                      {/* Tuning Rule & Lambda */}
-                     <Card> <CardContent className="space-y-4 pt-6"> <div> <Label htmlFor="tuning-rule-select" className="mb-2 block font-semibold">Tuning Rule:</Label> <Select value={selectedRuleId} onValueChange={setSelectedRuleId} disabled={isLoading || applicableRules.length === 0}> <SelectTrigger id="tuning-rule-select"> <SelectValue placeholder={applicableRules.length > 0 ? "Select an applicable rule..." : "No rules applicable..."} /> </SelectTrigger> <SelectContent> {applicableRules.map(rule => ( <SelectItem key={rule.id} value={rule.id}>{rule.label}</SelectItem> ))} </SelectContent> </Select> {applicableRules.length === 0 && !isLoading && <p className="text-xs text-muted-foreground mt-1">No specific IMC rules defined for this model structure yet.</p>} </div> <div className="space-y-2"> <Label htmlFor="lambda-slider" className="text-sm flex justify-between items-center"> <span>IMC Tuning (&tau;<sub>c</sub>):</span> <span className="font-medium">{lambda.toFixed(2)}</span> </Label> <Slider id="lambda-slider" min={0.1} max={Math.max(5.0,(modelParams?.T ?? modelParams?.T1 ?? 1)*1.5)} step={0.05} value={[lambda]} onValueChange={(v)=>setLambda(v[0])} disabled={isLoading && simulationStatus === 'Calculating...'}/> <p className="text-xs text-muted-foreground pt-1">Adjust closed-loop time constant (&tau;<sub>c</sub>).</p> </div> </CardContent> </Card>
+                     <Card>
+                         <CardContent className="space-y-4 pt-2 pb-2">
+                             {/* Use flexbox for label and select alignment */}
+                             <div className="flex items-center justify-between gap-4"> {/* Added flex container */}
+                                 {/* Removed block and mb-2 */}
+                                 <Label htmlFor="tuning-rule-select" className="font-semibold whitespace-nowrap">Tuning Rule:</Label>
+                                 <Select value={selectedRuleId} onValueChange={setSelectedRuleId} disabled={isLoading || applicableRules.length === 0}>
+                                     {/* Added w-auto to prevent full width */}
+                                     <SelectTrigger id="tuning-rule-select" className="w-auto">
+                                         <SelectValue placeholder={applicableRules.length > 0 ? "Select an applicable rule..." : "No rules applicable..."} />
+                                     </SelectTrigger>
+                                     <SelectContent>
+                                         {applicableRules.map(rule => (
+                                             <SelectItem key={rule.id} value={rule.id}>{rule.label}</SelectItem>
+                                         ))}
+                                     </SelectContent>
+                                 </Select>
+                             </div>
+                             {/* Conditionally render the 'no rules' message separately */}
+                             {applicableRules.length === 0 && !isLoading && <p className="text-xs mt-1">No specific IMC rules defined for this model structure yet.</p>}
+                             <div className="space-y-2"> <Label htmlFor="lambda-slider" className="text-sm flex justify-between items-center"> <span>IMC Tuning (&tau;<sub>c</sub>):</span> <span className="font-medium">{lambda.toFixed(2)}</span> </Label> <Slider id="lambda-slider" min={0.1} max={Math.max(5.0,(modelParams?.T ?? modelParams?.T1 ?? 1)*1.5)} step={0.05} value={[lambda]} onValueChange={(v)=>setLambda(v[0])} disabled={isLoading && simulationStatus === 'Calculating...'}/> <p className="text-xs pt-1">Adjust closed-loop time constant (&tau;<sub>c</sub>).</p> </div>
+                         </CardContent>
+                     </Card>
                      {/* Calculated PID Parameters */}
-                     <Card> <CardContent className="space-y-2 text-sm pt-6 min-h-[100px]"> <Label className="mb-2 block font-semibold">Calculated PID Parameters:</Label> {isLoading && simulationStatus === 'Calculating...' ? ( <> <Skeleton className="h-4 w-20 mb-1"/> <Skeleton className="h-4 w-24 mb-1"/> <Skeleton className="h-4 w-28 mb-1"/> <Skeleton className="h-3 w-32 mt-2"/></> ) : pidParams ? ( <> <p>Kp: <span className="font-semibold">{formatNumber(pidParams.Kp)}</span></p> <p dangerouslySetInnerHTML={{__html:`&tau;<sub>i</sub>: <span class="font-semibold">${formatNumber(pidParams.Ti)}</span>`}}/> {pidParams.Td > 1e-9 && <p dangerouslySetInnerHTML={{__html:`&tau;<sub>d</sub>: <span class="font-semibold">${formatNumber(pidParams.Td)}</span>`}}/>} {pidParams.Td > 1e-9 && <p className="text-xs text-muted-foreground mt-2" dangerouslySetInnerHTML={{__html:`(Filter T<sub>f</sub> &approx; ${formatNumber(alpha*pidParams.Td,2)})`}}/>} </> ) : ( <p className="text-muted-foreground">{simulationStatus.startsWith('Error') ? 'Calculation failed.' : !selectedRuleId ? 'Select tuning rule.' : 'Pending calculation...'}</p> )} </CardContent> </Card>
+                     {/* Added pb-6 */}
+                     <Card> <CardContent className="space-y-2 text-sm pt-2 pb-2"> <Label className="mb-2 block font-semibold">Calculated PID Parameters:</Label> {isLoading && simulationStatus === 'Calculating...' ? ( <> <Skeleton className="h-4 w-20 mb-1"/> <Skeleton className="h-4 w-24 mb-1"/> <Skeleton className="h-4 w-28 mb-1"/> <Skeleton className="h-3 w-32 mt-2"/></> ) : pidParams ? ( <> <p>Kp: <span className="font-semibold">{formatNumber(pidParams.Kp)}</span></p> <p dangerouslySetInnerHTML={{__html:`&tau;<sub>i</sub>: <span class="font-semibold">${formatNumber(pidParams.Ti)}</span>`}}/> {pidParams.Td > 1e-9 && <p dangerouslySetInnerHTML={{__html:`&tau;<sub>d</sub>: <span class="font-semibold">${formatNumber(pidParams.Td)}</span>`}}/>} {pidParams.Td > 1e-9 && <p className="text-xs mt-2" dangerouslySetInnerHTML={{__html:`(Filter T<sub>f</sub> &approx; ${formatNumber(alpha*pidParams.Td,2)})`}}/>} </> ) : ( <p>{simulationStatus.startsWith('Error') ? 'Calculation failed.' : !selectedRuleId ? 'Select tuning rule.' : 'Pending calculation...'}</p> )} </CardContent> </Card>
                      {/* Simulation Time Control */}
-                     <Card> <CardContent className="pt-6"> <div className="space-y-2"> <Label htmlFor="tfinal-input" className="text-sm flex justify-between items-center"> <span>Simulation Time (s):</span> <Input id="tfinal-input" type="number" className="h-7 w-24 text-sm px-2 py-1 border rounded" value={tFinal.toString()} min={1} max={500} step={1} onChange={(e) => setTFinal(Math.max(1, parseFloat(e.target.value) || 10))} disabled={isLoading && simulationStatus === 'Calculating...'} /> </Label> <Slider id="tfinal-slider" min={5} max={200} step={5} value={[tFinal]} onValueChange={(v)=>setTFinal(v[0])} disabled={isLoading && simulationStatus === 'Calculating...'}/> </div> </CardContent> </Card>
+                     {/* Added pb-6 */}
+                     <Card> <CardContent className="pt-2 pb-2"> <div className="space-y-2"> <Label htmlFor="tfinal-input" className="text-sm flex justify-between items-center"> <span>Simulation Time (s):</span> <Input id="tfinal-input" type="number" className="h-7 w-24 text-sm px-2 py-1 border rounded" value={tFinal.toString()} min={1} max={500} step={1} onChange={(e) => setTFinal(Math.max(1, parseFloat(e.target.value) || 10))} disabled={isLoading && simulationStatus === 'Calculating...'} /> </Label> <Slider id="tfinal-slider" min={5} max={200} step={5} value={[tFinal]} onValueChange={(v)=>setTFinal(v[0])} disabled={isLoading && simulationStatus === 'Calculating...'}/> </div> </CardContent> </Card>
                 </div>
                 {/* Plot Column */}
                 <div className="lg:col-span-2">
                     <Card>
-                        <CardContent className="pt-6">
-                            {/* Status Text */}
-                            <div className="text-xs text-muted-foreground mb-2 h-4 text-right pr-2">
+                        {/* Added pb-6 for equal padding */}
+                        <CardContent className="pt-2 pb-2">
+                            {/* Status Text - Removed text-muted-foreground */}
+                            <div className="text-xs mb-2 h-4 text-right pr-2">
                                 {(isLoading && simulationStatus !== 'Calculating...') ? 'Initializing...' : simulationStatus !== 'Complete' && simulationStatus !== 'Ready' ? simulationStatus : ''}
                             </div>
-                            {/* Chart Container - Apply background color here too for visual consistency */}
-                            <div className="relative h-[500px] md:h-[600px] rounded-md overflow-hidden border" style={{ backgroundColor: '#08306b' }}>
+                            {/* Chart Container - Changed rounded-md to rounded-2xl */}
+                            <div className="relative h-[500px] md:h-[600px] rounded-2xl overflow-hidden border" style={{ backgroundColor: '#08306b' }}>
                                 {isLoading && simulationStatus === 'Calculating...' && (
                                     <div className="absolute inset-0 flex items-center justify-center bg-background/60 dark:bg-background/70 z-10 backdrop-blur-sm" aria-label="Calculating simulation">
                                         <Skeleton className="h-3/4 w-3/4 rounded-md"/>
@@ -594,12 +645,14 @@ export default function PidTuningPage() {
                                         lazyUpdate={false}
                                     />
                                 ) : (
-                                    <div className="absolute inset-0 flex items-center justify-center text-gray-400 p-4 text-center"> {/* Adjusted text color */}
+                                    /* Removed text-muted-foreground */
+                                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 dark:text-gray-400 p-4 text-center">
                                         Chart options invalid.
                                     </div>
                                 )}
                                 {!isLoading && !simulationResult && !(simulationStatus.startsWith('Error')) && (
-                                    <div className="absolute inset-0 flex items-center justify-center text-gray-400 p-4 text-center"> {/* Adjusted text color */}
+                                    /* Removed text-muted-foreground */
+                                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 dark:text-gray-400 p-4 text-center">
                                         { !selectedRuleId ? "Select model and tuning rule to start." : "Adjust parameters to simulate." }
                                     </div>
                                 )}

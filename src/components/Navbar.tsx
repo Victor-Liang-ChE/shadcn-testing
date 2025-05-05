@@ -12,10 +12,15 @@ function Navbar() {
   const pathname = usePathname();
   
   const getPageTitle = () => {
-    switch (pathname) {      
+    // Use startsWith for nested routes
+    if (pathname.startsWith("/LearnChemE/fluid-dynamics/bernoulli-equation")) {
+      return "Bernoulli Equation";
+    }
+    if (pathname.startsWith("/LearnChemE")) {
+      return "LearnChemE 2.0";
+    }
 
-      case "/":
-        return "Welcome";
+    switch (pathname) {      
       
       case "/simulations":
         return "Chemical Engineering Simulations";
@@ -31,6 +36,9 @@ function Navbar() {
 
       case "/simulations/pid-tuning":
         return "PID Tuning Simulator";
+
+      case "/simulations/fug":
+        return "FUG";
 
       case "/misc":
           return "Miscellaneous Projects";
@@ -51,15 +59,28 @@ function Navbar() {
           return "Chemical Engineering Economics Calculator";
 
       case "/misc/japanese-lyrics":
-          return "Japanese Lyrics Processor";
+          return "Japanese Lyrics Analyzer";
+
+      case "/misc/ufc-champions":
+          return "UFC Championship Lineage";
+
+      case "/misc/csv-to-plot":
+          return "Fast .csv Plotter";
 
       default:
-        return "";
+        // Check for base paths if no specific match
+        if (pathname === "/LearnChemE") return "LearnChemE 2.0";
+        if (pathname === "/simulations") return "Chemical Engineering Simulations";
+        if (pathname === "/misc") return "Miscellaneous Projects";
+        return ""; // Default empty title
     }
   };
 
-  // Consistent hover style for links and button
-  const linkHoverStyle = "hover:text-accent-foreground transition-colors duration-200";
+  // Consistent hover style for links and button - Added padding and background hover
+  const linkHoverStyle = "hover:text-accent-foreground hover:bg-accent rounded-md px-3 py-2 transition-colors duration-200";
+  // Style specifically for the brand link - Removed background hover, kept text hover
+  const brandLinkHoverStyle = "hover:text-accent-foreground rounded-md px-2 py-1 transition-colors duration-200";
+
 
   return (
     // Use inline style to directly reference CSS variables
@@ -70,8 +91,9 @@ function Navbar() {
       {/* Left: Brand */}
       <div>
         <Link href="/" legacyBehavior passHref>
-          {/* Increased font size */}
-          <a className={`text-xl font-semibold ${linkHoverStyle} inline-block`}>
+          {/* Increased font size and applied updated brand hover style */}
+          {/* Keep legacyBehavior here for now if it's not causing issues */}
+          <a className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
             Victor Liang
           </a>
         </Link>
@@ -97,16 +119,20 @@ function Navbar() {
       </div>
 
       {/* Desktop Menu */}
-      <div className="hidden md:flex items-center space-x-4">
-        <Link href="/simulations" legacyBehavior passHref>
-          {/* Increased font size */}
-          <a className={`text-xl font-semibold ${linkHoverStyle}`}>Simulations</a>
+      <div className="hidden md:flex items-center space-x-1"> {/* Reduced space for tighter fit with padding */}
+        {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+        <Link href="/simulations" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          Simulations
         </Link>
-        <Link href="/misc" legacyBehavior passHref>
-          {/* Increased font size */}
-          <a className={`text-xl font-semibold ${linkHoverStyle}`}>Misc</a>
+        {/* Add LearnChemE Link */}
+        <Link href="/LearnChemE" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          LearnChemE 2.0
         </Link>
-        {/* Apply consistent hover to ThemeToggle's button */}
+        {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+        <Link href="/misc" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          Misc
+        </Link>
+        {/* Apply linkHoverStyle to the wrapper div */}
         <div className={linkHoverStyle}>
            <ThemeToggle />
         </div>
@@ -119,16 +145,21 @@ function Navbar() {
         }`}
         style={{ backgroundColor: 'var(--navbar-background)' }}
       >
-        <div className="p-4 flex flex-col space-y-4 border-x border-b">
-          <Link href="/simulations" legacyBehavior passHref>
-            {/* Increased font size */}
-            <a className={`text-xl font-semibold ${linkHoverStyle}`}>Simulations</a>
-          </Link>
-          <Link href="/misc" legacyBehavior passHref>
-            {/* Increased font size */}
-            <a className={`text-xl font-semibold ${linkHoverStyle}`}>Misc</a>
-          </Link>
-          <div className={`flex justify-center ${linkHoverStyle}`}>
+        <div className="p-4 flex flex-col space-y-2"> {/* Reduced space-y */}
+           {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+           <Link href="/simulations" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             Simulations
+           </Link>
+           {/* Add LearnChemE Link */}
+           <Link href="/LearnChemE" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             LearnChemE 2.0
+           </Link>
+           {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
+           <Link href="/misc" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             Misc
+           </Link>
+          {/* Center the toggle button and apply linkHoverStyle to the wrapper */}
+          <div className={`flex justify-center pt-2 ${linkHoverStyle}`}> {/* Added padding top and hover style */}
             <ThemeToggle />
           </div>
         </div>
