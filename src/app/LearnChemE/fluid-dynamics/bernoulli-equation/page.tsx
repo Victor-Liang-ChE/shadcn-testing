@@ -180,9 +180,9 @@ export default function BernoulliPage() {
             {/* Inlet Pipe Diameter */}
             <div className="space-y-3 mb-6">
               <Label htmlFor="d1Input" className="font-medium flex justify-between items-center">
-                <span>Inlet pipe diameter (D₁) (cm):</span>
+                <span>Inlet pipe diameter (D<sub>in</sub>):</span>
                 <span className="font-mono w-[80px] text-right tabular-nums">
-                  {(d1Input * 100).toFixed(1)}
+                  {(d1Input * 100).toFixed(1)} cm
                 </span>
               </Label>
               <Slider
@@ -199,9 +199,9 @@ export default function BernoulliPage() {
             {/* Outlet Pipe Diameter */}
             <div className="space-y-3 mb-6">
               <Label htmlFor="d2" className="font-medium flex justify-between items-center">
-                <span>Outlet pipe diameter (D₂) (cm):</span>
+                <span>Outlet pipe diameter (D<sub>out</sub>):</span>
                 <span className="font-mono w-[80px] text-right tabular-nums">
-                  {(d2 * 100).toFixed(1)}
+                  {(d2 * 100).toFixed(1)} cm
                 </span>
               </Label>
               <Slider
@@ -218,9 +218,9 @@ export default function BernoulliPage() {
             {/* Change in Height (Delta Z) */}
             <div className="space-y-3 mb-6">
               <Label htmlFor="deltaZInput" className="font-medium flex justify-between items-center">
-                <span>Change in height (Δz) (m):</span>
+                <span>Change in height (Δz):</span>
                 <span className="font-mono w-[80px] text-right tabular-nums">
-                  {deltaZInput.toFixed(1)}
+                  {deltaZInput.toFixed(1)} m
                 </span>
               </Label>
               <Slider
@@ -237,9 +237,9 @@ export default function BernoulliPage() {
             {/* Inlet Absolute Pressure */}
             <div className="space-y-3 mb-6">
               <Label htmlFor="p1AbsKPaInput" className="font-medium flex justify-between items-center">
-                <span>Inlet pressure (P₁) (kPa Abs):</span>
+                <span>Inlet pressure (P<sub>in</sub>):</span>
                 <span className="font-mono w-[80px] text-right tabular-nums">
-                  {p1AbsKPaInput.toFixed(1)}
+                  {p1AbsKPaInput.toFixed(1)} kPa
                 </span>
               </Label>
               <Slider
@@ -256,9 +256,9 @@ export default function BernoulliPage() {
             {/* Inlet Velocity */}
             <div className="space-y-3 mb-6">
               <Label htmlFor="v1Input" className="font-medium flex justify-between items-center">
-                <span>Inlet velocity (u₁) (m/s):</span>
+                <span>Inlet velocity (u<sub>in</sub>):</span>
                 <span className="font-mono w-[80px] text-right tabular-nums">
-                  {v1Input.toFixed(1)}
+                  {v1Input.toFixed(1)} m/s
                 </span>
               </Label>
               <Slider
