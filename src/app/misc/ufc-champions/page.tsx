@@ -707,7 +707,7 @@ const UfcChampionsDisplay: React.FC = () => {
       ) : (
         /* --- Timeline View --- */
         ((// Render actual timeline
-      (isTimelineCalculating || !timelineData) ? (<div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>) : (<div
+      ((isTimelineCalculating || !timelineData) ? (<div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>) : (<div
           ref={timelineScrollContainerRef}
           // Attach timeline-specific handlers
           onPointerDown={handleTimelinePointerDown}
@@ -839,7 +839,7 @@ const UfcChampionsDisplay: React.FC = () => {
 
           </div> {/* End of Grid */}
         </div> {/* End of scrollable content container */}
-      </div>)) /* End of Timeline View */)
+      </div>))) /* End of Timeline View */)
       )}
       {/* --- Fighter Details Overlay --- */}
       <AnimatePresence>
