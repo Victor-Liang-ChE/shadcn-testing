@@ -1,26 +1,11 @@
 // --- Interfaces for Data Structures ---
-export interface AntoineParams {
-    A: number;
-    B: number;
-    C: number;
-    Tmin_K: number;
-    Tmax_K: number;
-    Units: 'Pa' | 'kPa' | string; // Allow string for flexibility
-    EquationNo?: number | string;
-}
-
-export interface UnifacGroupComposition {
-    [subgroupId: number]: number; // { subgroupId: count }
-}
-
-export interface CompoundData {
-    name: string;
-    antoine: AntoineParams | null;
-    unifacGroups: UnifacGroupComposition | null;
-    // Pre-calculated values needed for UNIFAC
-    r_i?: number;
-    q_i?: number;
-}
+// MOVED AntoineParams, UnifacGroupComposition, PrPureComponentParams, CompoundData, BubbleDewResult to vle-types.ts
+import type {
+    AntoineParams,
+    UnifacGroupComposition, // Assuming this is now in vle-types.ts or defined locally if very specific
+    CompoundData,
+    BubbleDewResult
+} from './vle-types'; // Import shared types
 
 export interface UnifacParameters {
     Rk: { [subgroupId: number]: number };
@@ -29,29 +14,9 @@ export interface UnifacParameters {
     a_mk: Map<string, number>; // Key: `${mainGroup_m}-${mainGroup_k}`
 }
 
-// Updated VleResultPoint interface
-export interface VleResultPoint {
-    x_comp1: number; // Mole fraction of component 1 in liquid
-    y_comp1: number; // Mole fraction of component 1 in vapor
-    T_K: number;     // Temperature in Kelvin
-    P_Pa?: number;    // Pressure in Pascals (optional)
-}
-
-// New BubbleDewResult interface for detailed calculation results
-export interface BubbleDewResult {
-    comp1_feed: number;        // Input mole fraction of component 1 (either x or y)
-    comp1_equilibrium: number; // Calculated mole fraction of component 1 in the other phase
-    T_K?: number;              // Calculated Temperature (for BubbleT, DewT)
-    P_Pa?: number;             // Calculated Pressure (for BubbleP, DewP)
-    iterations?: number;
-    error?: string;            // Error message if calculation failed
-    calculationType?: 'bubbleT' | 'bubbleP' | 'dewT' | 'dewP'; // New field
-}
+// REMOVED: VleResultPoint interface (BubbleDewResult is more comprehensive)
 
 
-// --- Calculation Logic ---
-
-/** Calculates Saturation Pressure (Pa) using Antoine-like Eq. */
 export function calculatePsat_Pa(
     params: AntoineParams,
     T_kelvin: number,
@@ -91,7 +56,7 @@ export function calculatePsat_Pa(
 
 /** Calculates UNIFAC activity coefficients gamma_i for a binary mixture */
 export function calculateUnifacGamma(
-    componentData: CompoundData[], // Should have r_i, q_i pre-calculated
+    componentData: CompoundData[], // Uses imported CompoundData
     x: number[], // mole fractions [x1, x2]
     T_kelvin: number,
     params: UnifacParameters
@@ -389,36 +354,36 @@ export function calculateUnifacGamma(
 }
 
 /** Bubble Temperature Calculation using Newton-Raphson */
-export function calculateBubbleTemperature( // Renamed from calculateBubblePoint_NewtonRaphsonImpl
-    componentData: CompoundData[],
-    x_comp1: number, // Mole fraction of component 1 in the liquid phase
-    P_target_Pa: number,
+export function calculateBubbleTemperature(
+    components: CompoundData[], // Uses imported CompoundData
+    x1_feed: number,
+    P_system_Pa: number,
     unifacParams: UnifacParameters,
-    initialTempGuess_K: number, // Parameter name updated
-    max_iter: number = 100,
-    tolerance: number = 1e-6
-): BubbleDewResult | null { // Return type updated
+    initialTempGuess_K: number,
+    maxIter: number = 50,
+    tolerance: number = 1e-4
+): BubbleDewResult | null { // Uses imported BubbleDewResult
     console.debug(`DEBUG: calculateBubbleTemperature called for:`);
-    console.debug(`DEBUG:   Component 1: ${componentData[0]?.name} (x1=${x_comp1.toFixed(4)})`);
-    console.debug(`DEBUG:   Component 2: ${componentData[1]?.name} (x2=${(1.0 - x_comp1).toFixed(4)})`);
-    console.debug(`DEBUG:   Target Pressure: ${P_target_Pa.toFixed(0)} Pa`);
+    console.debug(`DEBUG:   Component 1: ${components[0]?.name} (x1=${x1_feed.toFixed(4)})`);
+    console.debug(`DEBUG:   Component 2: ${components[1]?.name} (x2=${(1.0 - x1_feed).toFixed(4)})`);
+    console.debug(`DEBUG:   Target Pressure: ${P_system_Pa.toFixed(0)} Pa`);
     console.debug(`DEBUG:   Initial Temp Guess: ${initialTempGuess_K.toFixed(2)} K`);
 
-    const x = [x_comp1, 1.0 - x_comp1];
+    const x = [x1_feed, 1.0 - x1_feed];
 
     const objectiveFunction = (T_kelvin: number): number => {
         const psat = [
-            calculatePsat_Pa(componentData[0].antoine!, T_kelvin, componentData[0].name),
-            calculatePsat_Pa(componentData[1].antoine!, T_kelvin, componentData[1].name)
+            calculatePsat_Pa(components[0].antoine!, T_kelvin, components[0].name),
+            calculatePsat_Pa(components[1].antoine!, T_kelvin, components[1].name)
         ];
-        const gammaResult = calculateUnifacGamma(componentData, x, T_kelvin, unifacParams);
+        const gammaResult = calculateUnifacGamma(components, x, T_kelvin, unifacParams);
 
         if (!gammaResult || isNaN(psat[0]) || isNaN(psat[1])) {
             return NaN; // Indicate failure to evaluate objective
         }
         const gamma = gammaResult;
         const P_calc_Pa = x[0] * gamma[0] * psat[0] + x[1] * gamma[1] * psat[1];
-        return P_calc_Pa - P_target_Pa;
+        return P_calc_Pa - P_system_Pa;
     };
 
     const derivativeObjectiveFunction = (T_kelvin: number): number => {
@@ -432,29 +397,29 @@ export function calculateBubbleTemperature( // Renamed from calculateBubblePoint
     };
 
     let T_current = initialTempGuess_K;
-    for (let i = 0; i < max_iter; i++) {
+    for (let i = 0; i < maxIter; i++) {
         const fT = objectiveFunction(T_current);
         if (isNaN(fT)) {
             console.error(`BubbleT: Objective function returned NaN at T=${T_current.toFixed(2)}K, iter=${i}`);
-            return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_target_Pa, iterations: i, error: "Objective function NaN", calculationType: 'bubbleT' };
+            return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_system_Pa, iterations: i, error: "Objective function NaN", calculationType: 'bubbleT' };
         }
 
-        if (Math.abs(fT) < P_target_Pa * tolerance) { // Relative tolerance
-            const gammaConverged = calculateUnifacGamma(componentData, x, T_current, unifacParams);
+        if (Math.abs(fT) < P_system_Pa * tolerance) { // Relative tolerance
+            const gammaConverged = calculateUnifacGamma(components, x, T_current, unifacParams);
             const psatConverged = [
-                calculatePsat_Pa(componentData[0].antoine!, T_current, componentData[0].name),
-                calculatePsat_Pa(componentData[1].antoine!, T_current, componentData[1].name)
+                calculatePsat_Pa(components[0].antoine!, T_current, components[0].name),
+                calculatePsat_Pa(components[1].antoine!, T_current, components[1].name)
             ];
             if (!gammaConverged || isNaN(psatConverged[0]) || isNaN(psatConverged[1])) {
-                return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_target_Pa, iterations: i, error: "Final property calculation failed", calculationType: 'bubbleT' };
+                return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_system_Pa, iterations: i, error: "Final property calculation failed", calculationType: 'bubbleT' };
             }
             const P_final_calc = x[0] * gammaConverged[0] * psatConverged[0] + x[1] * gammaConverged[1] * psatConverged[1];
             const y_comp1_final = (x[0] * gammaConverged[0] * psatConverged[0]) / P_final_calc; // Corrected calculation
             return {
-                comp1_feed: x_comp1,
+                comp1_feed: x1_feed,
                 comp1_equilibrium: Math.min(Math.max(y_comp1_final, 0), 1), // y_comp1
                 T_K: T_current,
-                P_Pa: P_target_Pa, // P_final_calc could also be used here if more accurate
+                P_Pa: P_system_Pa, // P_final_calc could also be used here if more accurate
                 iterations: i,
                 calculationType: 'bubbleT'
             };
@@ -463,27 +428,27 @@ export function calculateBubbleTemperature( // Renamed from calculateBubblePoint
         const dfT = derivativeObjectiveFunction(T_current);
         if (isNaN(dfT) || Math.abs(dfT) < 1e-10) {
             console.error(`BubbleT: Derivative is NaN or too small at T=${T_current.toFixed(2)}K, dfT=${dfT?.toExponential(2)}, iter=${i}`);
-            return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_target_Pa, iterations: i, error: "Derivative issue", calculationType: 'bubbleT' };
+            return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_system_Pa, iterations: i, error: "Derivative issue", calculationType: 'bubbleT' };
         }
 
         const T_next = T_current - fT / dfT; // Corrected Newton step
         if (Math.abs(T_next - T_current) < tolerance * Math.abs(T_current) + tolerance) { // Combined relative/absolute step tolerance
              T_current = T_next; // One last update before final calc
-             const gammaConverged = calculateUnifacGamma(componentData, x, T_current, unifacParams);
+             const gammaConverged = calculateUnifacGamma(components, x, T_current, unifacParams);
              const psatConverged = [
-                 calculatePsat_Pa(componentData[0].antoine!, T_current, componentData[0].name),
-                 calculatePsat_Pa(componentData[1].antoine!, T_current, componentData[1].name)
+                 calculatePsat_Pa(components[0].antoine!, T_current, components[0].name),
+                 calculatePsat_Pa(components[1].antoine!, T_current, components[1].name)
              ];
              if (!gammaConverged || isNaN(psatConverged[0]) || isNaN(psatConverged[1])) {
-                 return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_target_Pa, iterations: i, error: "Final property calculation failed on T_step convergence", calculationType: 'bubbleT' };
+                 return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_system_Pa, iterations: i, error: "Final property calculation failed on T_step convergence", calculationType: 'bubbleT' };
              }
              const P_final_calc = x[0] * gammaConverged[0] * psatConverged[0] + x[1] * gammaConverged[1] * psatConverged[1];
              const y_comp1_final = (x[0] * gammaConverged[0] * psatConverged[0]) / P_final_calc; // Corrected calculation
              return {
-                 comp1_feed: x_comp1,
+                 comp1_feed: x1_feed,
                  comp1_equilibrium: Math.min(Math.max(y_comp1_final, 0), 1),
                  T_K: T_current,
-                 P_Pa: P_target_Pa,
+                 P_Pa: P_system_Pa,
                  iterations: i,
                  calculationType: 'bubbleT'
              };
@@ -492,33 +457,33 @@ export function calculateBubbleTemperature( // Renamed from calculateBubblePoint
 
         if (T_current < 150 || T_current > 700) { // Basic Temperature bounds
              console.warn(`BubbleT: Temperature ${T_current.toFixed(2)}K out of bounds [150-700K] at iter=${i}.`);
-            return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_target_Pa, iterations: i, error: "Temperature out of bounds", calculationType: 'bubbleT' };
+            return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_system_Pa, iterations: i, error: "Temperature out of bounds", calculationType: 'bubbleT' };
         }
     }
-    console.warn(`BubbleT: Failed to converge for x1=${x_comp1.toFixed(4)} after ${max_iter} iterations. Last T=${T_current.toFixed(2)}K, f(T)=${objectiveFunction(T_current)?.toExponential(2)}`);
-    return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_target_Pa, iterations: max_iter, error: "Max iterations reached", calculationType: 'bubbleT' };
+    console.warn(`BubbleT: Failed to converge for x1=${x1_feed.toFixed(4)} after ${maxIter} iterations. Last T=${T_current.toFixed(2)}K, f(T)=${objectiveFunction(T_current)?.toExponential(2)}`);
+    return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_current, P_Pa: P_system_Pa, iterations: maxIter, error: "Max iterations reached", calculationType: 'bubbleT' };
 }
 
 /** Bubble Pressure Calculation */
 export function calculateBubblePressure(
-    componentData: CompoundData[],
-    x_comp1: number, // Mole fraction of component 1 in the liquid phase
-    T_target_K: number,
+    components: CompoundData[], // Uses imported CompoundData
+    x1_feed: number,
+    T_system_K: number,
     unifacParams: UnifacParameters,
-    initialPressureGuess_Pa: number, // Not strictly needed for direct calculation but can be a starting point if iterative
-    max_iter: number = 10, // Usually converges quickly or is direct
-    tolerance: number = 1e-6 // Tolerance for P if iterative, not used in direct
-): BubbleDewResult | null {
-    const x = [x_comp1, 1.0 - x_comp1];
+    initialPressureGuess_Pa: number,
+    maxIter: number = 20, // Reduced iterations for P, often more stable
+    tolerance: number = 1e-5 // Relative tolerance for pressure
+): BubbleDewResult | null { // Uses imported BubbleDewResult
+    const x = [x1_feed, 1.0 - x1_feed];
 
     const psat = [ // Psat is constant for a given T_target_K
-        calculatePsat_Pa(componentData[0].antoine!, T_target_K, componentData[0].name),
-        calculatePsat_Pa(componentData[1].antoine!, T_target_K, componentData[1].name)
+        calculatePsat_Pa(components[0].antoine!, T_system_K, components[0].name),
+        calculatePsat_Pa(components[1].antoine!, T_system_K, components[1].name)
     ];
-    const gammaResult = calculateUnifacGamma(componentData, x, T_target_K, unifacParams);
+    const gammaResult = calculateUnifacGamma(components, x, T_system_K, unifacParams);
 
     if (!gammaResult || isNaN(psat[0]) || isNaN(psat[1]) || psat[0] <=0 || psat[1] <=0) {
-        return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_target_K, error: "Initial property calculation failed (Psat/Gamma)", calculationType: 'bubbleP' };
+        return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_system_K, error: "Initial property calculation failed (Psat/Gamma)", calculationType: 'bubbleP' };
     }
     const gamma = gammaResult;
 
@@ -526,14 +491,14 @@ export function calculateBubblePressure(
     const P_bubble_Pa = x[0] * gamma[0] * psat[0] + x[1] * gamma[1] * psat[1];
 
     if (isNaN(P_bubble_Pa) || P_bubble_Pa <= 0) {
-         return { comp1_feed: x_comp1, comp1_equilibrium: NaN, T_K: T_target_K, P_Pa: P_bubble_Pa, error: "P_bubble calculation resulted in NaN or non-positive value", calculationType: 'bubbleP' };
+         return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: P_bubble_Pa, error: "P_bubble calculation resulted in NaN or non-positive value", calculationType: 'bubbleP' };
     }
 
     const y_comp1_final = (x[0] * gamma[0] * psat[0]) / P_bubble_Pa;
     return {
-        comp1_feed: x_comp1,
+        comp1_feed: x1_feed,
         comp1_equilibrium: Math.min(Math.max(y_comp1_final, 0), 1), // y_comp1
-        T_K: T_target_K,
+        T_K: T_system_K,
         P_Pa: P_bubble_Pa,
         iterations: 1, // Direct calculation
         calculationType: 'bubbleP'
@@ -742,4 +707,115 @@ export function calculateDewPressure(
         }
     }
     return { comp1_feed: y_comp1, comp1_equilibrium: NaN, T_K: T_target_K, P_Pa: P_current_Pa, iterations: max_iter, error: "DewP: Max iterations reached", calculationType: 'dewP' };
+}
+
+/** Fetch UNIFAC interaction parameters from Supabase */
+import type { SupabaseClient } from '@supabase/supabase-js'; // Add this import
+
+export async function fetchUnifacInteractionParams(
+    supabase: SupabaseClient,
+    allSubgroupIds: number[]
+): Promise<UnifacParameters> {
+    if (!supabase) { throw new Error("Supabase client not initialized."); }
+    if (allSubgroupIds.length === 0) return { Rk: {}, Qk: {}, mainGroupMap: {}, a_mk: new Map() };
+
+    console.log("Fetching UNIFAC parameters for subgroups (from library):", allSubgroupIds);
+
+    try {
+        // 1. Fetch Rk, Qk, and Main Group Mapping
+        const { data: groupData, error: groupError } = await supabase
+            .from('UNIFAC - Rk and Qk')
+            .select('"Subgroup #", "Main Group #", "Rk", "Qk"')
+            .in('"Subgroup #"', allSubgroupIds);
+
+        if (groupError) throw new Error(`Supabase UNIFAC subgroup query error: ${groupError.message}`);
+        if (!groupData || groupData.length < allSubgroupIds.length) {
+            const foundIds = new Set(groupData?.map(g => g["Subgroup #"]) ?? []);
+            const missingIds = allSubgroupIds.filter(id => !foundIds.has(id));
+            throw new Error(`Missing UNIFAC parameters for subgroup ID(s): ${missingIds.join(', ')}`);
+        }
+
+        const Rk: { [id: number]: number } = {};
+        const Qk: { [id: number]: number } = {};
+        const mainGroupMap: { [id: number]: number } = {};
+        const mainGroupIds = new Set<number>();
+
+        groupData.forEach(g => {
+            const subgroupId = g["Subgroup #"];
+            const mainGroupId = g["Main Group #"];
+            const rkVal = g["Rk"];
+            const qkVal = g["Qk"];
+
+            if (subgroupId == null || mainGroupId == null || rkVal == null || qkVal == null) {
+                console.warn(`Incomplete data for subgroup ${subgroupId} in UNIFAC - Rk and Qk table. Skipping.`);
+                // Or throw new Error(`Incomplete data for subgroup ${subgroupId}.`);
+                return;
+            }
+            Rk[subgroupId] = rkVal;
+            Qk[subgroupId] = qkVal;
+            mainGroupMap[subgroupId] = mainGroupId;
+            mainGroupIds.add(mainGroupId);
+        });
+
+        for (const reqId of allSubgroupIds) {
+            if (mainGroupMap[reqId] === undefined) {
+                throw new Error(`Failed to retrieve parameters or main group mapping for subgroup ID: ${reqId}. Check UNIFAC - Rk and Qk table.`);
+            }
+        }
+
+        console.log("Fetched Rk, Qk, Main Group Map. Required Main Groups:", Array.from(mainGroupIds));
+
+        // 2. Fetch Interaction Parameters (a_mk)
+        const mainGroupArray = Array.from(mainGroupIds);
+        if (mainGroupArray.length === 0) {
+            console.warn("No main groups identified, cannot fetch interaction parameters.");
+            return { Rk, Qk, mainGroupMap, a_mk: new Map() };
+        }
+
+        const { data: interactionData, error: interactionError } = await supabase
+            .from('UNIFAC - a(ij)')
+            .select('i, j, "a(ij)"')
+            .in('i', mainGroupArray)
+            .in('j', mainGroupArray);
+
+        if (interactionError) throw new Error(`Supabase UNIFAC interaction query error: ${interactionError.message}`);
+        if (!interactionData) throw new Error("Failed to query UNIFAC interaction parameters (interactionData is null/undefined).");
+
+        const a_mk = new Map<string, number>();
+        interactionData.forEach(interaction => {
+            const main_group_m = interaction.i;
+            const main_group_k = interaction.j;
+            const a_mk_value = interaction["a(ij)"];
+
+            if (main_group_m != null && main_group_k != null && a_mk_value != null) {
+                a_mk.set(`${main_group_m}-${main_group_k}`, a_mk_value);
+            } else {
+                console.warn(`Incomplete interaction data found: i=${main_group_m}, j=${main_group_k} in UNIFAC - a(ij) table. Skipping.`);
+            }
+        });
+
+        for (const mg1 of mainGroupArray) {
+            for (const mg2 of mainGroupArray) {
+                const key = `${mg1}-${mg2}`;
+                if (!a_mk.has(key)) {
+                    if (mg1 === mg2) {
+                        console.warn(`Missing diagonal interaction parameter for main group ${mg1} (a_mm). Assuming 0.`);
+                        a_mk.set(key, 0.0);
+                    } else {
+                        console.warn(`Missing UNIFAC interaction parameter for main groups: ${key} (a_mk). Assuming 0. Check UNIFAC - a(ij) table.`);
+                        a_mk.set(key, 0.0);
+                        // Alternatively, could throw an error:
+                        // throw new Error(`Missing UNIFAC interaction parameter for main groups: ${key}. Ensure all pairs are in UNIFAC - a(ij) table.`);
+                    }
+                }
+            }
+        }
+
+        console.log("Fetched UNIFAC interaction parameters (a_mk) from library.");
+        return { Rk, Qk, mainGroupMap, a_mk };
+    } catch (err: any) {
+        console.error("Error fetching UNIFAC parameters in library:", err.message);
+        // Re-throw the error to be caught by the calling function in page.tsx
+        throw err; 
+    }
 }
