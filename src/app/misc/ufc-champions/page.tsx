@@ -706,8 +706,8 @@ const UfcChampionsDisplay: React.FC = () => {
         </Card>)
       ) : (
         /* --- Timeline View --- */
-        ((isTimelineCalculating || !timelineData) ? // Render actual timeline
-        (<div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>) : (<div
+        ((// Render actual timeline
+      (isTimelineCalculating || !timelineData) ? (<div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>) : (<div
           ref={timelineScrollContainerRef}
           // Attach timeline-specific handlers
           onPointerDown={handleTimelinePointerDown}
@@ -719,127 +719,127 @@ const UfcChampionsDisplay: React.FC = () => {
             isTimelineView && !showDetailsView && "cursor-grab" // Grab cursor for timeline
           )}
         >
-          {/* Container for scrolling content (inner div, no handlers needed here) */}
+        {/* Container for scrolling content (inner div, no handlers needed here) */}
+        <div
+          className="relative px-0 py-0 overflow-visible h-full select-none" // Add select-none here too
+          style={{ width: `${timelineData.totalWidth + (2.5 * 16)}px`, paddingBottom: '1rem' }}
+        >
+          {/* Grid for rows, sidebar, and markers (no handlers needed here) */}
           <div
-            className="relative px-0 py-0 overflow-visible h-full select-none" // Add select-none here too
-            style={{ width: `${timelineData.totalWidth + (2.5 * 16)}px`, paddingBottom: '1rem' }}
+            className="relative z-10 overflow-visible grid h-full"
+            style={{ gridTemplateRows: `1rem repeat(${Object.keys(filteredClasses).length}, 1fr) 1.5rem`, gridTemplateColumns: '2.5rem 1fr', width: '100%' }}
           >
-            {/* Grid for rows, sidebar, and markers (no handlers needed here) */}
-            <div
-              className="relative z-10 overflow-visible grid h-full"
-              style={{ gridTemplateRows: `1rem repeat(${Object.keys(filteredClasses).length}, 1fr) 1.5rem`, gridTemplateColumns: '2.5rem 1fr', width: '100%' }}
-            >
-               {/* Top Left Corner */}
-               <div className="sticky left-0 bg-card z-30 border-r border-border/60" style={{ gridRow: 1, gridColumn: 1 }}></div>
-               {/* Top Markers */}
-               <div className="relative h-full border-b border-border/60" style={{ gridRow: 1, gridColumn: 2 }}>
-                {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`top-month-${date.toISOString()}`} className="absolute bottom-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> </div> ); })}
-                {timelineData && timelineData.todayX >= 0 && ( <div key="top-today-marker" className="absolute bottom-0 z-10" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> </div> )}
-              </div>
-              {/* Weight Classes & Bars */}
-              {Object.entries(filteredClasses).map(([key,wc],r)=>(
-                <div key={key} className="contents">
-                  {/* abbrev name (add select-none) */}
-                  <div
-                    className="sticky left-0 bg-card z-30 flex items-center justify-center px-1 border-r border-b border-border/60 select-none"
-                    style={{ gridRow: r + 2, gridColumn: 1, width: '2.5rem' }}
-                  >
-                    <span className="text-[12px] font-bold uppercase text-center">
-                      {abbreviateWeightClass(key)}
-                    </span>
-                  </div>
-                  {/* champion bars container (no handlers needed here) */}
-                  <div
-                    className="relative h-full border-b border-border/60 overflow-visible"
-                    style={{ gridRow: r + 2, gridColumn: 2, position: 'relative' }}
-                  >
-                    {wc.champions.map((c,i)=>{
-                      const s = parseDate(c.reignStart)!;
-                      const e = parseDate(c.reignEnd)!;
-                      const cs = s < timelineData!.minDate ? timelineData!.minDate : s;
-                      const ce = e > timelineData!.maxDate ? timelineData!.maxDate : e;
-                      const left = diffInDays(timelineData!.minDate,cs)*timelineData!.pixelsPerDay;
-                      const width = diffInDays(cs,ce)*timelineData!.pixelsPerDay;
-                      const reignYears = diffInDays(s, e) / 365;
-                      const isLongReign = reignYears >= 1;
-
-                      // <<<--- REMOVE old hue calculation (commented out for reference)
-                      // let h=0; for(let k=0;k<c.name.length;k++) h=c.name.charCodeAt(k)+((h<<5)-h);
-                      // const hue=h%360, bg=`hsl(${hue},70%,90%)`, hov=`hsl(${hue},70%,80%)`, col=`hsl(${hue},80%,25%)`;
-
-                      // <<<--- ADD new color calculation:
-                      const reignDaysTotal = diffInDays(s, e); // Calculate total reign days
-                      const { bg, text, hoverBg } = getReignColor(reignDaysTotal);
-
-                      return (
-                        <motion.div
-                          key={`${key}-${i}`}
-                          layoutId={getLayoutId(c)} // <<<--- ADD layoutId HERE
-                          draggable={false}
-                          onClick={() => { if (!timelineDidDragRef.current) { fetchFighterData(c) } }}
-                          className="absolute top-[2px] bottom-[2px] rounded-sm flex items-center justify-center group cursor-pointer shadow-sm z-10 select-none"
-                          // <<<--- UPDATE style prop
-                          style={{
-                            left:`${left}px`,
-                            width:`${Math.max(width,2)}px`,
-                            backgroundColor: bg, // Use calculated background
-                            color: text,       // Use calculated text color
-                            borderRadius: '0.125rem'
-                          }}
-                          initial={{ scale:1 }}
-                          // <<<--- UPDATE whileHover prop
-                          whileHover={{
-                            backgroundColor: hoverBg, // Use calculated hover background
-                            zIndex:20,
-                            scale: 1.03,
-                            borderRadius: '0.125rem'
-                          }}
-                          transition={{ duration:0.15 }}
-                        >
-                          {/* Inner spans will inherit text color */}
-                          {isLongReign ? (
-                            <span className="text-[20px] font-bold whitespace-nowrap px-1 overflow-hidden text-ellipsis max-w-full select-none">
-                              {c.name}
-                            </span>
-                          ) : (
-                            <span
-                              className="text-[20px] font-bold whitespace-nowrap overflow-visible group-hover:opacity-0 transition-opacity duration-100 select-none"
-                              style={{ position: 'relative', zIndex: 15 }}
-                            >
-                              {getInitials(c.name)}
-                            </span>
-                          )}
-                          {!isLongReign && (
-                            <span
-                              className="absolute inset-0 flex items-center justify-center text-[15px] font-semibold px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100 delay-50 pointer-events-none select-none"
-                              // <<<--- UPDATE hover span style
-                              style={{
-                                  background: hoverBg, // Use hover background
-                                  color: text,        // Use base text color (should still contrast)
-                                  borderRadius: '0.125rem',
-                                  zIndex: 21
-                              }}
-                            >
-                              {c.name}
-                            </span>
-                          )}
-                        </motion.div>
-                      );
-                    })}
-                  </div>
+             {/* Top Left Corner */}
+             <div className="sticky left-0 bg-card z-30 border-r border-border/60" style={{ gridRow: 1, gridColumn: 1 }}></div>
+             {/* Top Markers */}
+             <div className="relative h-full border-b border-border/60" style={{ gridRow: 1, gridColumn: 2 }}>
+              {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`top-month-${date.toISOString()}`} className="absolute bottom-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> </div> ); })}
+              {timelineData && timelineData.todayX >= 0 && ( <div key="top-today-marker" className="absolute bottom-0 z-10" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> </div> )}
+            </div>
+            {/* Weight Classes & Bars */}
+            {Object.entries(filteredClasses).map(([key,wc],r)=>(
+              <div key={key} className="contents">
+                {/* abbrev name (add select-none) */}
+                <div
+                  className="sticky left-0 bg-card z-30 flex items-center justify-center px-1 border-r border-b border-border/60 select-none"
+                  style={{ gridRow: r + 2, gridColumn: 1, width: '2.5rem' }}
+                >
+                  <span className="text-[12px] font-bold uppercase text-center">
+                    {abbreviateWeightClass(key)}
+                  </span>
                 </div>
-              ))}
+                {/* champion bars container (no handlers needed here) */}
+                <div
+                  className="relative h-full border-b border-border/60 overflow-visible"
+                  style={{ gridRow: r + 2, gridColumn: 2, position: 'relative' }}
+                >
+                  {wc.champions.map((c,i)=>{
+                    const s = parseDate(c.reignStart)!;
+                    const e = parseDate(c.reignEnd)!;
+                    const cs = s < timelineData!.minDate ? timelineData!.minDate : s;
+                    const ce = e > timelineData!.maxDate ? timelineData!.maxDate : e;
+                    const left = diffInDays(timelineData!.minDate,cs)*timelineData!.pixelsPerDay;
+                    const width = diffInDays(cs,ce)*timelineData!.pixelsPerDay;
+                    const reignYears = diffInDays(s, e) / 365;
+                    const isLongReign = reignYears >= 1;
 
-               {/* ... Bottom Left Corner ... */}
-               {/* Bottom Markers (add select-none to text spans) */}
-               <div className="relative h-full" style={{ gridRow: Object.keys(filteredClasses).length + 2, gridColumn: 2 }}>
-                 {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`bottom-month-${date.toISOString()}`} className="absolute top-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> {isYear && ( <span className="absolute top-full text-[12px] text-foreground transform -translate-x-1/2 select-none"> {date.getFullYear()} </span> )} </div> ); })}
-                 {timelineData && timelineData.todayX >= 0 && ( <div key="bottom-today-marker" className="absolute top-0 z-10 flex flex-col items-center" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> <span className="absolute top-full text-[9px] text-primary font-semibold transform -translate-x-1/2 bg-card px-0.5 select-none"> Now </span> </div> )}
-               </div>
+                    // <<<--- REMOVE old hue calculation (commented out for reference)
+                    // let h=0; for(let k=0;k<c.name.length;k++) h=c.name.charCodeAt(k)+((h<<5)-h);
+                    // const hue=h%360, bg=`hsl(${hue},70%,90%)`, hov=`hsl(${hue},70%,80%)`, col=`hsl(${hue},80%,25%)`;
 
-            </div> {/* End of Grid */}
-          </div> {/* End of scrollable content container */}
-        </div>) /* End of Timeline View */)
+                    // <<<--- ADD new color calculation:
+                    const reignDaysTotal = diffInDays(s, e); // Calculate total reign days
+                    const { bg, text, hoverBg } = getReignColor(reignDaysTotal);
+
+                    return (
+                      <motion.div
+                        key={`${key}-${i}`}
+                        layoutId={getLayoutId(c)} // <<<--- ADD layoutId HERE
+                        draggable={false}
+                        onClick={() => { if (!timelineDidDragRef.current) { fetchFighterData(c) } }}
+                        className="absolute top-[2px] bottom-[2px] rounded-sm flex items-center justify-center group cursor-pointer shadow-sm z-10 select-none"
+                        // <<<--- UPDATE style prop
+                        style={{
+                          left:`${left}px`,
+                          width:`${Math.max(width,2)}px`,
+                          backgroundColor: bg, // Use calculated background
+                          color: text,       // Use calculated text color
+                          borderRadius: '0.125rem'
+                        }}
+                        initial={{ scale:1 }}
+                        // <<<--- UPDATE whileHover prop
+                        whileHover={{
+                          backgroundColor: hoverBg, // Use calculated hover background
+                          zIndex:20,
+                          scale: 1.03,
+                          borderRadius: '0.125rem'
+                        }}
+                        transition={{ duration:0.15 }}
+                      >
+                        {/* Inner spans will inherit text color */}
+                        {isLongReign ? (
+                          <span className="text-[20px] font-bold whitespace-nowrap px-1 overflow-hidden text-ellipsis max-w-full select-none">
+                            {c.name}
+                          </span>
+                        ) : (
+                          <span
+                            className="text-[20px] font-bold whitespace-nowrap overflow-visible group-hover:opacity-0 transition-opacity duration-100 select-none"
+                            style={{ position: 'relative', zIndex: 15 }}
+                          >
+                            {getInitials(c.name)}
+                          </span>
+                        )}
+                        {!isLongReign && (
+                          <span
+                            className="absolute inset-0 flex items-center justify-center text-[15px] font-semibold px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100 delay-50 pointer-events-none select-none"
+                            // <<<--- UPDATE hover span style
+                            style={{
+                                background: hoverBg, // Use hover background
+                                color: text,        // Use base text color (should still contrast)
+                                borderRadius: '0.125rem',
+                                zIndex: 21
+                            }}
+                          >
+                            {c.name}
+                          </span>
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+             {/* ... Bottom Left Corner ... */}
+             {/* Bottom Markers (add select-none to text spans) */}
+             <div className="relative h-full" style={{ gridRow: Object.keys(filteredClasses).length + 2, gridColumn: 2 }}>
+               {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`bottom-month-${date.toISOString()}`} className="absolute top-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> {isYear && ( <span className="absolute top-full text-[12px] text-foreground transform -translate-x-1/2 select-none"> {date.getFullYear()} </span> )} </div> ); })}
+               {timelineData && timelineData.todayX >= 0 && ( <div key="bottom-today-marker" className="absolute top-0 z-10 flex flex-col items-center" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> <span className="absolute top-full text-[9px] text-primary font-semibold transform -translate-x-1/2 bg-card px-0.5 select-none"> Now </span> </div> )}
+             </div>
+
+          </div> {/* End of Grid */}
+        </div> {/* End of scrollable content container */}
+      </div>)) /* End of Timeline View */)
       )}
       {/* --- Fighter Details Overlay --- */}
       <AnimatePresence>
