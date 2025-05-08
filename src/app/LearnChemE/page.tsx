@@ -51,7 +51,10 @@ const FluidDynamicsContent = () => (
   <div className="p-6">
     <h2 className="text-2xl font-semibold mb-4">Fluid Dynamics Simulations</h2>
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-       <Link href="/LearnChemE/fluid-dynamics/bernoulli-equation" className="block">
+       <Link
+         href="/LearnChemE/fluid-dynamics/bernoulli-equation"
+         className="block"
+         legacyBehavior>
          <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
            <CardHeader>
              <CardTitle>Bernoulli Equation</CardTitle>
@@ -63,7 +66,10 @@ const FluidDynamicsContent = () => (
            </CardContent>
          </Card>
        </Link>
-       <Link href="/LearnChemE/fluid-dynamics/buoyancy" className="block">
+       <Link
+         href="/LearnChemE/fluid-dynamics/buoyancy"
+         className="block"
+         legacyBehavior>
          <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
            <CardHeader>
              <CardTitle>Buoyancy of a Floating Cube</CardTitle>
@@ -75,7 +81,10 @@ const FluidDynamicsContent = () => (
            </CardContent>
          </Card>
        </Link>
-       <Link href="/LearnChemE/fluid-dynamics/couette-flow" className="block">
+       <Link
+         href="/LearnChemE/fluid-dynamics/couette-flow"
+         className="block"
+         legacyBehavior>
          <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
            <CardHeader>
              <CardTitle>Couette Flow</CardTitle>

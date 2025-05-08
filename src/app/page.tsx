@@ -119,13 +119,12 @@ export default function Home() {
           </CardFooter>
         </Card>
       </div>
-      
       {/* Featured Simulations Section */}
       <div className="simulations-showcase mt-8">
         <h2 className="text-2xl font-bold mb-4 text-center">Featured Simulations</h2>
         {/* Use consistent grid and card structure */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
-          <Link href="/simulations/kinetics" passHref>
+          <Link href="/simulations/kinetics" passHref legacyBehavior>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
                 {/* Consistent image container */}
@@ -147,7 +146,7 @@ export default function Home() {
             </Card>
           </Link>
 
-          <Link href="/simulations/mccabe-thiele" passHref>
+          <Link href="/simulations/mccabe-thiele" passHref legacyBehavior>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
                 {/* Consistent image container */}
@@ -170,7 +169,7 @@ export default function Home() {
           </Link>
 
           {/* Corrected path for Process Dynamics */}
-          <Link href="/simulations/process-dynamics" passHref>
+          <Link href="/simulations/process-dynamics" passHref legacyBehavior>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
                  {/* Consistent image container */}
@@ -192,7 +191,7 @@ export default function Home() {
             </Card>
           </Link>
 
-          <Link href="/simulations/pid-tuning" passHref>
+          <Link href="/simulations/pid-tuning" passHref legacyBehavior>
             <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
               <CardHeader>
                  {/* Consistent image container */}

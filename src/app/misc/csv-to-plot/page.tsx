@@ -676,9 +676,9 @@ export default function CsvToPlotPage() {
 
                 </CardContent>
                 {error && !plotData.length && ( // Show plot-related errors here
-                  <CardContent>
+                  (<CardContent>
                     <p className="text-sm text-red-500">{error}</p>
-                  </CardContent>
+                  </CardContent>)
                 )}
               </Card>
             </div>
@@ -714,7 +714,7 @@ export default function CsvToPlotPage() {
           {csvData.length === 0 && (
             // This div spans the full width (lg:col-span-1 in a 1-column grid)
             // Add drag handlers HERE
-            <div
+            (<div
               className="lg:col-span-1 relative flex items-center justify-center h-[400px] border-2 border-dashed border-muted-foreground/50 rounded-lg bg-card"
               onDragEnter={handleDragEnter}
               onDragLeave={handleDragLeave}
@@ -729,7 +729,6 @@ export default function CsvToPlotPage() {
                   {error && <p className="text-sm text-red-500 mt-4">{error}</p>}
                 </div>
               )}
-
               {/* Drag Overlay - Show only when dragging over THIS specific element */}
               {isDragging && (
                 <div className={cn(
@@ -741,7 +740,7 @@ export default function CsvToPlotPage() {
                   <p className="text-xl font-semibold text-primary">Drop your .csv file here</p>
                 </div>
               )}
-            </div>
+            </div>)
           )}
 
         </div>

@@ -104,13 +104,11 @@ function Navbar() {
           </a>
         </Link>
       </div>
-
       {/* Center: Page Title */}
       <div className="absolute left-1/2 transform -translate-x-1/2">
         {/* Increased font size */}
         <span className="text-xl font-semibold">{getPageTitle()}</span>
       </div>
-
       {/* Mobile Menu Button */}
       <div className="md:hidden">
         <Button
@@ -123,7 +121,6 @@ function Navbar() {
           {isMenuOpen ? <X size={24} /> : <Menu size={24} />}
         </Button>
       </div>
-
       {/* Desktop Menu */}
       <div className="hidden md:flex items-center space-x-1"> {/* Reduced space for tighter fit with padding */}
         {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
@@ -143,7 +140,6 @@ function Navbar() {
            <ThemeToggle />
         </div>
       </div>
-
       {/* Mobile Menu Dropdown */}
       <div
         className={`absolute top-16 right-0 w-48 z-50 md:hidden border-border overflow-hidden transition-all duration-200 ease-in-out ${

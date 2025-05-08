@@ -23,15 +23,13 @@ const projects = [
   return (
     // pt-24 still pushes everything down from the top nav bar
     <main className="flex flex-col items-center justify-between pt-12 px-8 md:px-32">
-
       {/* Page Description: Added whitespace-pre-line class */}
       <p className="mb-10 text-lg text-center text-muted-foreground max-w-3xl mx-auto whitespace-pre-line">
         {pageDescription}
       </p>
-
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 w-full">
         {projects.map((project, index) => (
-          <Link key={index} href={project.path} className="block">
+          <Link key={index} href={project.path} className="block" legacyBehavior>
             <Card className="hover:shadow-lg transition-shadow bg-card text-card-foreground border border-border h-36 flex flex-col">
               <CardContent className="flex items-center justify-center h-full p-6 flex-grow">
                 <span className="text-lg font-medium text-center">{project.name}</span>
