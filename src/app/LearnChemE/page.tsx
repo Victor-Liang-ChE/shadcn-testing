@@ -75,6 +75,18 @@ const FluidDynamicsContent = () => (
            </CardContent>
          </Card>
        </Link>
+       <Link href="/LearnChemE/fluid-dynamics/couette-flow" className="block">
+         <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
+           <CardHeader>
+             <CardTitle>Couette Flow</CardTitle>
+           </CardHeader>
+           <CardContent className="flex-grow">
+             <p className="text-sm text-muted-foreground">
+               Visualize velocity profiles in Couette flow between parallel plates.
+             </p>
+           </CardContent>
+         </Card>
+       </Link>
        {/* Add more Fluid Dynamics simulations here as cards */}
     </div>
   </div>

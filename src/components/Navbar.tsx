@@ -16,6 +16,12 @@ function Navbar() {
     if (pathname.startsWith("/LearnChemE/fluid-dynamics/bernoulli-equation")) {
       return "Bernoulli Equation";
     }
+    if (pathname.startsWith("/LearnChemE/fluid-dynamics/couette-flow")) {
+      return "Couette Flow";
+    }
+    if (pathname.startsWith("/LearnChemE/fluid-dynamics/buoyancy")) {
+      return "Buoyancy";
+    }
     if (pathname.startsWith("/LearnChemE")) {
       return "LearnChemE 2.0";
     }
