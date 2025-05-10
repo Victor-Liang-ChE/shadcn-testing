@@ -193,6 +193,26 @@ export function calculateSrkFugacityCoefficients(
     return [Math.exp(ln_phi1), Math.exp(ln_phi2)];
 }
 
+// Helper function for numerical derivative (central difference)
+function numericalDerivative(
+    func: (t: number) => number,
+    t: number,
+    h: number = 1e-3 // for temperature, can be tuned
+): number {
+    const f_plus_h = func(t + h);
+    const f_minus_h = func(t - h);
+
+    if (isNaN(f_plus_h) || isNaN(f_minus_h)) {
+        console.warn(`Numerical derivative: NaN encountered at T=${t.toFixed(2)}`);
+        return NaN;
+    }
+    if (Math.abs(2 * h) < 1e-9) { // Avoid division by zero if h is too small
+        console.warn(`Numerical derivative: Step size h is too small or zero.`);
+        return NaN;
+    }
+    return (f_plus_h - f_minus_h) / (2 * h);
+}
+
 export function calculateBubbleTemperatureSrk(
     components: CompoundData[],
     x1_feed: number,
@@ -200,70 +220,154 @@ export function calculateBubbleTemperatureSrk(
     srkInteractionParams: SrkInteractionParams,
     initialTempGuess_K: number,
     maxIter: number = 100,
-    tolerance: number = 1e-5
+    tolerance_f: number = 1e-6, // for the objective function |f(T)|
+    tolerance_T_step: number = 1e-4 // for |T_new - T_old|
 ): BubbleDewResult | null {
-    console.log(`SRK Bubble T: x1=${x1_feed.toFixed(3)}, P=${(P_system_Pa/1000).toFixed(1)}kPa, Init_T=${initialTempGuess_K.toFixed(1)}K`);
+    console.log(`SRK Bubble T (Newton): x1=${x1_feed.toFixed(3)}, P=${(P_system_Pa / 1000).toFixed(1)}kPa, Init_T=${initialTempGuess_K.toFixed(1)}K`);
     let T_K = initialTempGuess_K;
-    const x = [x1_feed, 1 - x1_feed];
-    let y = [...x];
+    const x = [x1_feed, 1 - x1_feed]; // Liquid phase composition is fixed for bubble point
 
     if (!components[0]?.srkParams || !components[1]?.srkParams) {
         return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: NaN, P_Pa: P_system_Pa, error: "SRK: Pure component SRK parameters missing.", calculationType: 'bubbleT' };
     }
 
-    let K_values = [1.0, 1.0];
+    let K_values_iter: number[] = [1.0, 1.0]; // K-values from current iteration
+    let y_iter: number[] = [...x];       // y-values from current iteration
+
+    // Objective function: f(T) = sum(K_i * x_i) - 1
+    const objectiveFunction = (T_current_K: number): number => {
+        // Calculate K-values at T_current_K, P_system_Pa, and for liquid phase x
+        const phi_L = calculateSrkFugacityCoefficients(components, x, T_current_K, P_system_Pa, srkInteractionParams, 'liquid');
+        if (!phi_L) {
+            console.warn(`SRK Bubble T ObjFunc: Failed to get phi_L at T=${T_current_K.toFixed(2)}K`);
+            return NaN; // Indicate failure
+        }
+
+        // Estimate y based on current K_values_iter
+        let y_for_phi_V = [K_values_iter[0] * x[0], K_values_iter[1] * x[1]];
+        const sumY_phi_V = y_for_phi_V[0] + y_for_phi_V[1];
+        if (sumY_phi_V > 1e-9) {
+            y_for_phi_V = [y_for_phi_V[0] / sumY_phi_V, y_for_phi_V[1] / sumY_phi_V];
+        } else {
+            y_for_phi_V = [...x]; // Fallback if K-values are problematic
+        }
+        
+        const phi_V = calculateSrkFugacityCoefficients(components, y_for_phi_V, T_current_K, P_system_Pa, srkInteractionParams, 'vapor');
+        if (!phi_V) {
+            console.warn(`SRK Bubble T ObjFunc: Failed to get phi_V at T=${T_current_K.toFixed(2)}K for y=[${y_for_phi_V[0].toFixed(3)},${y_for_phi_V[1].toFixed(3)}]`);
+            return NaN; // Indicate failure
+        }
+
+        const K_at_T = [phi_L[0] / phi_V[0], phi_L[1] / phi_V[1]];
+        if (K_at_T.some(k => isNaN(k) || !isFinite(k))) {
+            console.warn(`SRK Bubble T ObjFunc: Invalid K-values at T=${T_current_K.toFixed(2)}K`);
+            return NaN;
+        }
+
+        (objectiveFunction as any)._last_K_values = K_at_T;
+        const sum_Kx_for_y = K_at_T[0]*x[0] + K_at_T[1]*x[1];
+        if (sum_Kx_for_y > 1e-9) {
+            (objectiveFunction as any)._last_y_values = [K_at_T[0]*x[0]/sum_Kx_for_y, K_at_T[1]*x[1]/sum_Kx_for_y];
+        } else {
+             (objectiveFunction as any)._last_y_values = [...x]; // Fallback
+        }
+
+        return K_at_T[0] * x[0] + K_at_T[1] * x[1] - 1.0;
+    };
+
+    // Initialize K_values_iter and y_iter for the first call to objectiveFunction
+    if (components[0].antoine && components[1].antoine) {
+        const Psat1_init = calculatePsat_Pa(components[0].antoine, T_K); // Removed name argument
+        const Psat2_init = calculatePsat_Pa(components[1].antoine, T_K); // Removed name argument
+        if (!isNaN(Psat1_init) && !isNaN(Psat2_init) && Psat1_init > 0 && Psat2_init > 0) {
+            K_values_iter = [Psat1_init / P_system_Pa, Psat2_init / P_system_Pa];
+            const sumY_init = K_values_iter[0]*x[0] + K_values_iter[1]*x[1];
+            if(sumY_init > 1e-9) {
+                y_iter = [K_values_iter[0]*x[0]/sumY_init, K_values_iter[1]*x[1]/sumY_init];
+            }
+        }
+    }
 
     for (let iter = 0; iter < maxIter; iter++) {
-        const phi_L = calculateSrkFugacityCoefficients(components, x, T_K, P_system_Pa, srkInteractionParams, 'liquid');
-        if (!phi_L) {
-            return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: `SRK: Failed to calculate liquid fugacities at T=${T_K.toFixed(1)}K.`, calculationType: 'bubbleT', iterations: iter };
+        const fT = objectiveFunction(T_K);
+
+        if ((objectiveFunction as any)._last_K_values) {
+            K_values_iter = (objectiveFunction as any)._last_K_values;
+        }
+        if ((objectiveFunction as any)._last_y_values) {
+            y_iter = (objectiveFunction as any)._last_y_values;
         }
 
-        if (iter === 0) {
-            const Psat1_est = components[0].antoine ? calculatePsat_Pa(components[0].antoine, T_K) : P_system_Pa;
-            const Psat2_est = components[1].antoine ? calculatePsat_Pa(components[1].antoine, T_K) : P_system_Pa;
-            const K1_est = Psat1_est / P_system_Pa;
-            const K2_est = Psat2_est / P_system_Pa;
-            y = [K1_est * x[0], K2_est * x[1]];
-            const sumY_est = y[0] + y[1];
-            if (sumY_est > 0) { y[0] /= sumY_est; y[1] /= sumY_est; } else { y = [...x]; }
-        } else {
-             y = [K_values[0] * x[0], K_values[1] * x[1]];
-             const sumY_iter = y[0] + y[1];
-             if (sumY_iter > 0) { y[0] /= sumY_iter; y[1] /= sumY_iter; }
+        if (isNaN(fT)) {
+            // console.error(`SRK Bubble T: Objective function returned NaN at T=${T_K.toFixed(2)}K, iter=${iter}`);
+            return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, iterations: iter, error: "SRK BubbleT: Objective function NaN", calculationType: 'bubbleT' };
+        }
+
+        if (Math.abs(fT) < tolerance_f) {
+            // console.log(`SRK Bubble T: Converged on f(T) at iter=${iter}, T=${T_K.toFixed(2)}, f(T)=${fT.toExponential(3)}`);
+            return {
+                comp1_feed: x1_feed,
+                comp1_equilibrium: Math.min(Math.max(y_iter[0], 0), 1),
+                T_K: T_K,
+                P_Pa: P_system_Pa,
+                iterations: iter + 1,
+                calculationType: 'bubbleT'
+            };
+        }
+
+        const dfdT = numericalDerivative(objectiveFunction, T_K, T_K * 1e-4); // Relative step for h
+
+        if (isNaN(dfdT) || Math.abs(dfdT) < 1e-9) {
+            // console.error(`SRK Bubble T: Derivative is NaN or too small at T=${T_K.toFixed(2)}K, dfdT=${dfdT?.toExponential(2)}, iter=${iter}`);
+            T_K += (fT > 0 ? -0.1 : 0.1); // Heuristic kick, same logic as PR
+            if (T_K <= 0) T_K = initialTempGuess_K * (Math.random() * 0.2 + 0.9); // Reset
+            // console.warn(`SRK Bubble T: Derivative issue. Perturbed T to ${T_K.toFixed(2)}K`);
+            continue; // Skip update and retry
+        }
+
+        let deltaT = -fT / dfdT;
+        const max_deltaT_abs = T_K * 0.20; // Max 20% change of current T
+        if (Math.abs(deltaT) > max_deltaT_abs) {
+            deltaT = Math.sign(deltaT) * max_deltaT_abs;
+        }
+        if (iter < 3) { // Stronger damping for initial iterations
+            deltaT *= 0.5;
         }
         
-        const phi_V = calculateSrkFugacityCoefficients(components, y, T_K, P_system_Pa, srkInteractionParams, 'vapor');
-        if (!phi_V) {
-            return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: `SRK: Failed to calculate vapor fugacities at T=${T_K.toFixed(1)}K with y=[${y[0].toFixed(3)},${y[1].toFixed(3)}]`, calculationType: 'bubbleT', iterations: iter };
+        const T_K_new = T_K + deltaT;
+
+        // console.debug(`SRK Bubble T iter ${iter}: T_old=${T_K.toFixed(2)}, f(T)=${fT.toExponential(3)}, dfdT=${dfdT.toExponential(3)}, deltaT=${deltaT.toFixed(3)}, T_new=${T_K_new.toFixed(2)}`);
+
+        if (T_K_new <= 0) {
+            // console.warn(`SRK Bubble T: Newton step resulted in T_new <= 0 (${T_K_new.toFixed(2)}). Halving step or resetting.`);
+            deltaT /= 2;
+            T_K = T_K + deltaT; // Re-calculate T_K with halved deltaT
+            if (T_K <= 0) T_K = (T_K + initialTempGuess_K) / 2; // Fallback
+            // console.warn(`SRK Bubble T: Adjusted T to ${T_K.toFixed(2)}`);
+            continue;
         }
-
-        K_values = [phi_L[0] / phi_V[0], phi_L[1] / phi_V[1]];
-        if (isNaN(K_values[0]) || isNaN(K_values[1]) || !isFinite(K_values[0]) || !isFinite(K_values[1])) {
-             return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: `SRK: K-value calculation failed (NaN/Inf) at T=${T_K.toFixed(1)}K.`, calculationType: 'bubbleT', iterations: iter };
-        }
-
-        const sum_Ki_xi = K_values[0] * x[0] + K_values[1] * x[1];
-        const error_func = sum_Ki_xi - 1.0;
-
-        if (Math.abs(error_func) < tolerance) {
-            y = [K_values[0] * x[0], K_values[1] * x[1]];
-            const sumY_final = y[0] + y[1];
-            if (sumY_final > 0) { y[0] /= sumY_final; y[1] /= sumY_final; }
-            return { comp1_feed: x1_feed, comp1_equilibrium: y[0], T_K: T_K, P_Pa: P_system_Pa, iterations: iter + 1, calculationType: 'bubbleT' };
-        }
-
-        let T_change = error_func * (T_K * 0.1);
-        const max_T_step = 10.0;
-        if (Math.abs(T_change) > max_T_step) T_change = Math.sign(T_change) * max_T_step;
-        if (iter < 5 || Math.abs(error_func) > 0.1) T_change *= 0.5;
         
-        let T_K_new = T_K + T_change;
-        if (T_K_new <= 0) T_K_new = T_K * 0.9;
+        if (Math.abs(deltaT) < tolerance_T_step && Math.abs(deltaT) < tolerance_T_step * Math.abs(T_K_new) ) {
+            // console.log(`SRK Bubble T: Converged on T_step at iter=${iter}, T=${T_K_new.toFixed(2)}, deltaT=${deltaT.toExponential(3)}`);
+            objectiveFunction(T_K_new); // Final update for K and y
+            K_values_iter = (objectiveFunction as any)._last_K_values || K_values_iter;
+            y_iter        = (objectiveFunction as any)._last_y_values || y_iter;
+            return {
+                comp1_feed: x1_feed,
+                comp1_equilibrium: Math.min(Math.max(y_iter[0], 0), 1),
+                T_K: T_K_new,
+                P_Pa: P_system_Pa,
+                iterations: iter + 1,
+                calculationType: 'bubbleT'
+            };
+        }
         T_K = T_K_new;
     }
+
+    // console.warn(`SRK Bubble T: Failed to converge for x1=${x1_feed.toFixed(4)} after ${maxIter} iterations. Last T=${T_K.toFixed(2)}K, f(T)=${objectiveFunction(T_K)?.toExponential(2)}`);
     return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "SRK: Bubble T max iterations reached", calculationType: 'bubbleT', iterations: maxIter };
 }
+
 
 export function calculateBubblePressureSrk(
     components: CompoundData[],
