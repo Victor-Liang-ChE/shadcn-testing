@@ -43,8 +43,8 @@ function Navbar() {
       case "/simulations/pid-tuning":
         return "PID Tuning Simulator";
 
-      case "/simulations/fug":
-        return "FUG";
+      case "/simulations/azeotrope-finder":
+        return "Azeotrope Finder";
 
       case "/misc":
           return "Miscellaneous Projects";
