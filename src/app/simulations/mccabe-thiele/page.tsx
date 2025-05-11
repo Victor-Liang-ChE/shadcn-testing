@@ -164,6 +164,7 @@ export default function McCabeThielePage() {
   // Result States
   const [stages, setStages] = useState<number | null>(null);
   const [feedStage, setFeedStage] = useState<number | null>(null);
+  const [rMin, setRMin] = useState<number | null>(null);
 
   // State for ECharts options - Use the imported EChartsOption type
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
@@ -585,10 +586,82 @@ export default function McCabeThielePage() {
   // a separate useEffect with an empty dependency array could call calculateEquilibriumCurve(),
   // but the current request is to stop fetching until the button is pressed.
 
+  const interpolateY = (xTarget: number, xData: number[], yData: number[]): number | null => {
+    if (!xData || !yData || xData.length === 0 || xData.length !== yData.length) return null;
+    
+    // Handle cases where xTarget is outside the data range (clamp to ends)
+    if (xTarget <= xData[0]) return yData[0];
+    if (xTarget >= xData[xData.length - 1]) return yData[yData.length - 1];
+  
+    for (let i = 0; i < xData.length - 1; i++) {
+      if (xTarget >= xData[i] && xTarget <= xData[i + 1]) {
+        const x1 = xData[i], y1 = yData[i];
+        const x2 = xData[i + 1], y2 = yData[i + 1];
+        if (x2 === x1) return y1; // Avoid division by zero if points are identical
+        return y1 + (y2 - y1) * (xTarget - x1) / (x2 - x1);
+      }
+    }
+    return null; // Should ideally be covered by boundary checks
+  };
+
+  const interpolateX = (yTarget: number, yData: number[], xData: number[]): number | null => {
+    if (!xData || !yData || yData.length === 0 || yData.length !== xData.length) return null;
+
+    // Attempt to find the correct segment for interpolation.
+    // This assumes yData is reasonably monotonic for typical VLE.
+    let bestSegment = -1;
+
+    // First pass: direct match or exact boundary
+    if (yTarget <= yData[0]) { // Using the sorted nature of xData, yData should correspond
+        if (yData[0] < yData[yData.length-1]) return xData[0]; // y is increasing
+        else return xData[xData.length-1]; // y is decreasing (less common for typical x-y)
+    }
+    if (yTarget >= yData[yData.length - 1]) {
+        if (yData[0] < yData[yData.length-1]) return xData[xData.length-1];
+        else return xData[0];
+    }
+
+
+    for (let i = 0; i < yData.length - 1; i++) {
+        const y1 = yData[i];
+        const y2 = yData[i+1];
+        if ((y1 <= yTarget && yTarget <= y2) || (y2 <= yTarget && yTarget <= y1)) {
+            bestSegment = i;
+            break;
+        }
+    }
+
+    if (bestSegment !== -1) {
+        const y1 = yData[bestSegment], x1 = xData[bestSegment];
+        const y2 = yData[bestSegment+1], x2 = xData[bestSegment+1];
+        if (y2 === y1) return (yTarget === y1) ? x1 : null; // Horizontal segment
+        return x1 + (x2 - x1) * (yTarget - y1) / (y2 - y1);
+    }
+    
+    // Fallback if no segment found (e.g. yTarget outside range not caught by initial checks)
+    // This part might need more robust handling depending on VLE data characteristics
+    console.warn("interpolateX: yTarget might be out of yData range or yData not suitable for simple interpolation.");
+    return null;
+  };
+
+  const formatNumberToPrecision = (num: any, precision: number = 3): string => {
+    if (typeof num === 'number') {
+      if (num === 0) return '0';
+      const fixed = num.toPrecision(precision);
+      // Remove trailing zeros after decimal point, but keep integer part if it ends in zero
+      if (fixed.includes('.')) {
+        return parseFloat(fixed).toString(); 
+      }
+      return fixed;
+    }
+    return String(num); // Return as string if not a number
+  };
+
 
   const generateEChartsOptions = useCallback((xValues: number[], yValues: number[]) => {
     if (!xValues || !yValues || xValues.length === 0) {
         setEchartsOptions({});
+        setRMin(null);
         return;
     }
     const series: SeriesOption[] = [];
@@ -688,6 +761,88 @@ export default function McCabeThielePage() {
     });
     setStages(stageCount); setFeedStage(feedStageCount);
 
+    // Calculate Rmin
+    let x_pinch: number | null = null;
+    let y_pinch: number | null = null;
+
+    if (Math.abs(q - 1.0) < 1e-6) { // q = 1 (saturated liquid feed)
+        x_pinch = xf;
+        y_pinch = interpolateY(xf, xValues, yValues);
+    } else if (Math.abs(q - 0.0) < 1e-6) { // q = 0 (saturated vapor feed)
+        y_pinch = xf;
+        x_pinch = interpolateX(xf, yValues, xValues);
+    } else { // Mixed feed or subcooled/superheated
+        const m_q = q / (q - 1);
+        const c_q = -xf / (q - 1);
+
+        for (let i = 0; i < xValues.length - 1; i++) {
+            const x1_eq = xValues[i], y1_eq = yValues[i];
+            const x2_eq = xValues[i+1], y2_eq = yValues[i+1];
+
+            if (x2_eq === x1_eq) continue; // Skip vertical segment in equilibrium data (unlikely)
+            const m_eq = (y2_eq - y1_eq) / (x2_eq - x1_eq);
+            const c_eq = y1_eq - m_eq * x1_eq;
+
+            if (Math.abs(m_q - m_eq) < 1e-9) { // Parallel lines
+                if (Math.abs(c_q - c_eq) < 1e-9) { // Lines are collinear
+                    // Pinch can be anywhere on this segment that's also on q-line.
+                    // A common choice is xf if it falls on this segment.
+                    // For simplicity, we might need a more robust pinch finding for this rare case.
+                    // Or, if xf is within [x1_eq, x2_eq], use xf.
+                    if (xf >= Math.min(x1_eq, x2_eq) && xf <= Math.max(x1_eq, x2_eq)) {
+                        x_pinch = xf;
+                        y_pinch = m_q * x_pinch + c_q;
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            const x_intersect_candidate = (c_eq - c_q) / (m_q - m_eq);
+
+            if (x_intersect_candidate >= Math.min(x1_eq, x2_eq) - 1e-6 && x_intersect_candidate <= Math.max(x1_eq, x2_eq) + 1e-6) {
+                 // Check if this intersection is "before" or "at" xd from feed perspective
+                if ( (q > 1 && x_intersect_candidate <= xf) || (q < 0 && x_intersect_candidate >= xf) || (q >= 0 && q <= 1) ) {
+                     // More refined check: the pinch point should generally be between xf and where the operating line would hit y=x if extended from xd.
+                     // For Rmin, the operating line from (xd,xd) to (x_pinch, y_pinch) is key.
+                     // The intersection must be on the equilibrium curve.
+                    x_pinch = x_intersect_candidate;
+                    y_pinch = m_q * x_pinch + c_q; // or y_pinch = interpolateY(x_pinch, xValues, yValues);
+                    // Ensure y_pinch is also on the equilibrium curve segment
+                    const y_check = interpolateY(x_pinch, xValues, yValues);
+                    if (y_check !== null && Math.abs(y_check - y_pinch) < 1e-3) { // Allow small tolerance
+                        break;
+                    } else {
+                        x_pinch = null; y_pinch = null; // Reset if not a valid intersection point on equilibrium
+                    }
+                }
+            }
+        }
+        // If no intersection found through segments, it might be at xf itself if q-line passes through (xf, y_eq(xf))
+        if (!x_pinch && interpolateY(xf, xValues, yValues) !== null) {
+            const y_at_xf_eq = interpolateY(xf, xValues, yValues)!;
+            const y_at_xf_qline = m_q * xf + c_q;
+            if (Math.abs(y_at_xf_eq - y_at_xf_qline) < 1e-3) { // Check if (xf, y_eq(xf)) is on q-line
+                x_pinch = xf;
+                y_pinch = y_at_xf_eq;
+            }
+        }
+    }
+
+    if (x_pinch !== null && y_pinch !== null && (y_pinch - x_pinch) > 1e-6) { // Avoid division by zero/small number
+        const calculatedRMin = (xd - y_pinch) / (y_pinch - x_pinch);
+        setRMin(calculatedRMin >= 0 ? calculatedRMin : null); // Rmin should be non-negative
+    } else {
+        // A more complex tangency check might be needed if the above fails,
+        // or if y_pinch is very close to x_pinch leading to huge Rmin.
+        // For now, set to null if simple calculation isn't valid.
+        setRMin(null);
+        if (x_pinch !== null && y_pinch !== null && (y_pinch - x_pinch) <= 1e-6) {
+            console.warn("Rmin calculation: pinch point y_pinch is too close to x_pinch, Rmin might be very large or infinite.");
+        }
+    }
+
+
     const capitalizeFirst = (str: string) => str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
     const dispComp1Cap = capitalizeFirst(displayedComp1);
     const dispComp2Cap = capitalizeFirst(displayedComp2);
@@ -726,7 +881,69 @@ export default function McCabeThielePage() {
             textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
             itemWidth: 12, itemHeight: 12, icon: 'rect',
         },
-        tooltip: { show: true, trigger: 'axis', axisPointer: { type: 'cross' } }, // Enabled tooltip
+        tooltip: { 
+            show: true, 
+            trigger: 'axis', 
+            backgroundColor: '#08306b', // Dark blue background for tooltip
+            borderColor: '#55aaff', // A lighter blue for border
+            borderWidth: 1,
+            textStyle: { 
+                color: 'white', // White text for tooltip
+                fontSize: 12,
+                fontFamily: 'Merriweather Sans'
+            },
+            axisPointer: { 
+                type: 'cross',
+                label: {
+                    show: true,
+                    backgroundColor: '#08306b', // Dark blue for axis pointer label
+                    color: 'white', // White text for axis pointer label
+                    borderColor: '#55aaff',
+                    borderWidth: 1,
+                    shadowBlur: 0, // Optional: remove shadow if any
+                    shadowColor: 'transparent',
+                    fontFamily: 'Merriweather Sans',
+                    formatter: function (params: any) {
+                        // params.value is the axis value
+                        if (params.axisDimension === 'x') {
+                            return `x: ${formatNumberToPrecision(params.value, 3)}`;
+                        }
+                        if (params.axisDimension === 'y') {
+                            return `y: ${formatNumberToPrecision(params.value, 3)}`;
+                        }
+                        return formatNumberToPrecision(params.value, 3);
+                    }
+                },
+                crossStyle: { // Optional: style the crosshair lines
+                    color: '#999'
+                }
+            },
+            formatter: function (params: any) {
+                let tooltipHtml = '';
+                if (Array.isArray(params) && params.length > 0) {
+                    // Display the x-value once at the top, if it's an axis trigger
+                    const xAxisValue = params[0].axisValue;
+                    if (xAxisValue !== undefined) {
+                         tooltipHtml += `x: ${formatNumberToPrecision(xAxisValue, 3)}<br/>`;
+                    }
+
+                    params.forEach((param: any, index: number) => {
+                        const seriesName = param.seriesName;
+                        // Key Points series has custom tooltip already, skip detailed formatting here or customize if needed
+                        if (seriesName === 'Key Points') {
+                            if (param.data && param.data.name) {
+                                tooltipHtml += `${param.marker} ${param.data.name}: (${formatNumberToPrecision(param.value[0], 3)}, ${formatNumberToPrecision(param.value[1], 3)})<br/>`;
+                            }
+                        } else if (seriesName && param.value && Array.isArray(param.value) && param.value.length >= 2) {
+                            // For other line series, show series name and y-value
+                            // The x-value is common (axisValue), y-value is param.value[1]
+                            tooltipHtml += `${param.marker} ${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}<br/>`;
+                        }
+                    });
+                }
+                return tooltipHtml;
+            }
+        }, 
         animationDuration: 300, animationEasing: 'cubicInOut',
         toolbox: {
             show: true, orient: 'vertical', right: 0, top: 'bottom',
@@ -1031,7 +1248,14 @@ export default function McCabeThielePage() {
                  </div>
                  {/* r Slider */}
                  <div className="space-y-3">
-                   <Label htmlFor="r">Reflux Ratio (R): {r.toFixed(2)}</Label>
+                   <Label htmlFor="r" className="flex justify-between items-center">
+                     <span>Reflux Ratio (R): {r.toFixed(2)}</span>
+                     {rMin !== null && (
+                        <span className="text-xs text-muted-foreground">
+                            R<sub>min</sub>: {rMin.toFixed(2)}
+                        </span>
+                     )}
+                   </Label>
                    <Slider id="r" min={0.1} max={10} step={0.05} value={[r]} onValueChange={(value) => setR(value[0])} style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}/>
                  </div>
                </CardContent>
