@@ -801,7 +801,7 @@ export default function McCabeThielePage() {
                   </div>
                 </div>
                 <Button onClick={handleUpdateGraphClick} disabled={loading} className="w-full">
-                  {loading ? 'Calculating...' : 'Update Graph & Calculate XY'}
+                  {loading ? 'Calculating...' : 'Update Graph'}
                 </Button>
                 {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
               </CardContent>
@@ -812,21 +812,21 @@ export default function McCabeThielePage() {
                  {/* xd Slider */}
                  <div className="space-y-3">
                    <Label htmlFor="xd">
-                     <span dangerouslySetInnerHTML={{ __html: `Distillate Comp (x<sub>D</sub>): ${xd.toFixed(2)}` }} />
+                     <span dangerouslySetInnerHTML={{ __html: `Distillate Composition (x<sub>D</sub>): ${xd.toFixed(2)}` }} />
                    </Label>
                    <Slider id="xd" min={0.01} max={0.99} step={0.01} value={[xd]} onValueChange={(value) => updateCompositions('xd', value[0])} style={{ '--primary': 'hsl(38 92% 50%)' } as React.CSSProperties}/>
                  </div>
                  {/* xf Slider */}
                  <div className="space-y-3">
                    <Label htmlFor="xf">
-                     <span dangerouslySetInnerHTML={{ __html: `Feed Comp (x<sub>F</sub>): ${xf.toFixed(2)}` }} />
+                     <span dangerouslySetInnerHTML={{ __html: `Feed Composition (x<sub>F</sub>): ${xf.toFixed(2)}` }} />
                    </Label>
                    <Slider id="xf" min={0.01} max={0.99} step={0.01} value={[xf]} onValueChange={(value) => updateCompositions('xf', value[0])} style={{ '--primary': 'hsl(0 84% 60%)' } as React.CSSProperties}/>
                  </div>
                  {/* xb Slider */}
                  <div className="space-y-3">
                    <Label htmlFor="xb">
-                     <span dangerouslySetInnerHTML={{ __html: `Bottoms Comp (x<sub>B</sub>): ${xb.toFixed(2)}` }} />
+                     <span dangerouslySetInnerHTML={{ __html: `Bottoms Composition (x<sub>B</sub>): ${xb.toFixed(2)}` }} />
                    </Label>
                    <Slider id="xb" min={0.01} max={0.99} step={0.01} value={[xb]} onValueChange={(value) => updateCompositions('xb', value[0])} style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}/>
                  </div>
