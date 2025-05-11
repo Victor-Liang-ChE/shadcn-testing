@@ -101,8 +101,8 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 
 export default function AzeotropeFinderPage() {
   // Input States
-  const [comp1Name, setComp1Name] = useState('acetone'); // Default to acetone
-  const [comp2Name, setComp2Name] = useState('water');   // Default to water
+  const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
+  const [comp2Name, setComp2Name] = useState('Water');   // Default to water
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeAzeotrope>('uniquac'); // Default to uniquac
   const [azeotropeScanType, setAzeotropeScanType] = useState<AzeotropeScanType>('vs_P_find_T'); // Default to Scan Pressure
   const scanSteps = 50; // Always use 50 scan points, no UI to change this
@@ -407,8 +407,8 @@ export default function AzeotropeFinderPage() {
         
         let currentScanStartValue: number, currentScanEndValue: number;
         if (azeotropeScanType === 'vs_P_find_T') {
-            currentScanStartValue = 1; // kPa
-            currentScanEndValue = 2000; // kPa
+            currentScanStartValue = 0.01; // bar (changed from 1 kPa)
+            currentScanEndValue = 20; // bar (changed from 2000 kPa)
         } else { // vs_T_find_P
             currentScanStartValue = 230; // K
             currentScanEndValue = 550; // K
@@ -425,7 +425,7 @@ export default function AzeotropeFinderPage() {
 
                 let bubbleResult: BubbleDewResult | null = null;
                 if (azeotropeScanType === 'vs_P_find_T') {
-                    const P_system_Pa = currentScanVal * 1000;
+                    const P_system_Pa = currentScanVal * 100000; // Convert bar to Pa
                     const T_bp1_est = antoineBoilingPointSolverLocal(data1.antoine, P_system_Pa) || 350;
                     const T_bp2_est = antoineBoilingPointSolverLocal(data2.antoine, P_system_Pa) || 350;
                     const initialTempGuess = x1_guess * T_bp1_est + (1 - x1_guess) * T_bp2_est;
@@ -466,7 +466,7 @@ export default function AzeotropeFinderPage() {
                 // Recalculate the dependent variable at the found x_az
                 let finalBubbleResult: BubbleDewResult | null = null;
                  if (azeotropeScanType === 'vs_P_find_T') {
-                    const P_system_Pa = currentScanVal * 1000;
+                    const P_system_Pa = currentScanVal * 100000; // Convert bar to Pa
                     const T_bp1_est = antoineBoilingPointSolverLocal(data1.antoine, P_system_Pa) || 350;
                     const T_bp2_est = antoineBoilingPointSolverLocal(data2.antoine, P_system_Pa) || 350;
                     const initialTempGuess = x_az_found * T_bp1_est + (1 - x_az_found) * T_bp2_est;
@@ -537,7 +537,7 @@ export default function AzeotropeFinderPage() {
     }
 
     const comp1DisplayCap = displayedComp1 ? displayedComp1.charAt(0).toUpperCase() + displayedComp1.slice(1) : "Comp1";
-    const scanParamName = displayedScanType === 'vs_P_find_T' ? "Azeotropic Pressure (kPa)" : "Azeotropic Temperature (K)";
+    const scanParamName = displayedScanType === 'vs_P_find_T' ? "Azeotropic Pressure (bar)" : "Azeotropic Temperature (K)"; // Changed kPa to bar
     const dependentParamName = displayedScanType === 'vs_P_find_T' ? `Azeotropic Temperature (°C)` : `Azeotropic Pressure (bar)`;
     const compositionLegendName = `Azeotropic ${comp1DisplayCap} Comp. (x₁)`;
     const compositionAxisName = `Azeotropic ${comp1DisplayCap} Composition (x₁)`;
@@ -551,10 +551,9 @@ export default function AzeotropeFinderPage() {
       title: { 
         text: titleText, 
         left: 'center', 
-        // top: '3%', // Removed to allow default top positioning
-        textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' }, 
+        textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
       },
-      backgroundColor: '#0f172a',
+      backgroundColor: '#08306b',
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'cross' },
@@ -581,19 +580,19 @@ export default function AzeotropeFinderPage() {
             return tooltipHtml;
         }
       },
-      legend: {
-        data: [compositionLegendName, dependentParamName],
-        bottom: 10,
-        textStyle: { color: '#9ca3af', fontFamily: 'Merriweather Sans' }, 
-        inactiveColor: '#4b5563'
-      },
-      grid: { left: '8%', right: '10%', bottom: '15%', top: '8%', containLabel: true }, // Adjusted grid.top from 15% to 12%
+      // legend: { // Legend removed as per request
+      //   data: [compositionLegendName, dependentParamName],
+      //   bottom: 10,
+      //   textStyle: { color: '#9ca3af', fontFamily: 'Merriweather Sans' }, 
+      //   inactiveColor: '#4b5563'
+      // },
+      grid: { left: '8%', right: '10%', bottom: '8%', top: '8%', containLabel: true }, // Adjusted grid.bottom from 15% to 8%
       xAxis: {
         show: true, 
         type: 'value', name: scanParamName, nameLocation: 'middle', nameGap: 30,
-        axisLabel: { color: '#e7e7eb', fontFamily: 'Merriweather Sans' }, // Changed color
-        nameTextStyle: { color: '#e7e7eb', fontSize: 14, fontFamily: 'Merriweather Sans' },
-        axisLine: { lineStyle: { color: '#4b5563' } },
+        axisLabel: { color: '#e7e7eb', fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
+        nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+        axisLine: { lineStyle: { color: '#4b5563', width: 2.5 } }, // Added width
         splitLine: { show: false }, // Removed grid lines
         scale: true, 
       },
@@ -602,9 +601,9 @@ export default function AzeotropeFinderPage() {
           show: true, 
           type: 'value', name: compositionAxisName, nameLocation: 'middle', nameGap: 50, min: 0, max: 1,
           position: 'left', 
-          axisLabel: { color: '#e7e7eb', formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans' }, // Changed color
-          nameTextStyle: { color: '#e7e7eb', fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: '#3b82f6' } }, 
+          axisLabel: { color: '#e7e7eb', formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
+          nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+          axisLine: { lineStyle: { color: '#22c55e', width: 2.5 } }, // Changed color to green for composition axis, added width
           splitLine: { show: false }, // Removed grid lines
         },
         {
@@ -613,16 +612,17 @@ export default function AzeotropeFinderPage() {
           axisLabel: { 
             color: '#e7e7eb', // Changed color
             formatter: (v: number) => (displayedScanType === 'vs_P_find_T') ? v.toFixed(1) : formatNumberToPrecision(v, 3), 
-            fontFamily: 'Merriweather Sans' 
+            fontFamily: 'Merriweather Sans',
+            fontSize: 16 // Added fontSize
           },
-          nameTextStyle: { color: '#e7e7eb', fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: '#f59e0b' } }, 
+          nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+          axisLine: { lineStyle: { color: '#f59e0b', width: 2.5 } }, // Added width
           splitLine: { show: false }, // Removed grid lines
           scale: true,
         }
       ],
       series: [
-        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#3b82f6', width: 2.5 }, itemStyle: { color: '#3b82f6' }, symbolSize: 6, symbol: 'circle' },
+        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#22c55e', width: 2.5 }, itemStyle: { color: '#22c55e' }, symbolSize: 6, symbol: 'circle' }, // Changed color to green
         { name: dependentParamName, type: 'line', yAxisIndex: 1, data: dependent_val_data, smooth: true, lineStyle: { color: '#f59e0b', width: 2.5 }, itemStyle: { color: '#f59e0b' }, symbolSize: 6, symbol: 'triangle' }
       ],
       // dataZoom removed
@@ -736,7 +736,7 @@ export default function AzeotropeFinderPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2"> {/* Minimal padding for graph card content */}
-                <div className="relative h-[600px] md:h-[700px] rounded-md" style={{ backgroundColor: '#0f172a' }}> {/* Dark background for plot area */}
+                <div className="relative h-[600px] md:h-[700px] rounded-md" style={{ backgroundColor: '#08306b' }}> {/* Dark background for plot area */}
                   {loading && (<div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Scanning for Azeotropes...</div><div className="text-sm text-gray-300">Using {fluidPackage.toUpperCase()} model.</div></div></div>)}
                   {!loading && !displayedComp1 && !error && (<div className="absolute inset-0 flex items-center justify-center text-white">Please provide inputs and find azeotropes.</div>)}
                   {error && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div>)}

@@ -8,7 +8,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 // Replace external URLs with local paths from public folder
@@ -22,11 +21,9 @@ const css3LogoPath = "/logos/css.svg";
 const typescriptLogoPath = "/logos/typescript.svg";
 const dockerLogoPath = "/logos/docker.svg";
 const reactLogoPath = "/logos/react.svg";
-const dashLogoPath = "/logos/dash.svg"; // You'll need to add this logo
 const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png"; // Added path
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png"; // Added path
-const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png"; // Added path
 const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png"; // Added for Azeotrope Finder
 const labIllustrationPath = "/images/lab-illustration.png"; // Added path for the illustration
 
@@ -34,7 +31,7 @@ export default function Home() {
   const homeFeaturedSimulations = [
     {
       name: "McCabe-Thiele",
-      path: "/simulations/mccabe-thiele",
+      path: "/toolbox/mccabe-thiele",
       description:
         "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
       thumbnailPath: mccabeThumbnailPath,
@@ -42,21 +39,22 @@ export default function Home() {
     },
     {
       name: "Azeotrope Finder",
-      path: "/simulations/azeotrope-finder",
+      path: "/toolbox/azeotrope-finder",
       description:
         "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
       thumbnailPath: azeotropeThumbnailPath,
+      isNew: true, // Add this property
     },
     {
       name: "Reaction Kinetics",
-      path: "/simulations/kinetics",
+      path: "/toolbox/kinetics",
       description:
         "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
       thumbnailPath: kineticsThumbnailPath,
     },
     {
       name: "Process Dynamics",
-      path: "/simulations/process-dynamics",
+      path: "/toolbox/process-dynamics",
       description:
         "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
       thumbnailPath: dynamicsThumbnailPath,
@@ -249,8 +247,13 @@ export default function Home() {
             <Link href={simulation.path} key={simulation.name}>
               <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col relative overflow-hidden">
                 {simulation.isUpdated && (
-                  <div className="absolute top-3 right-[-32px] transform rotate-45 bg-red-600 text-white text-xs font-semibold py-2 px-8 shadow-lg z-10">
+                  <div className="absolute top-3 right-[-32px] transform rotate-45 bg-yellow-400 text-black text-xs font-semibold py-2 px-8 shadow-lg z-10">
                     UPDATED
+                  </div>
+                )}
+                {simulation.isNew && (
+                  <div className="absolute top-3 right-[-28px] transform rotate-45 bg-orange-500 text-white text-xs font-semibold py-2 px-10 shadow-lg z-10">
+                    NEW
                   </div>
                 )}
                 <CardHeader>

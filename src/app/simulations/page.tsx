@@ -18,31 +18,31 @@ export default function Page() {
   const allSimulations = [
     {
       name: "McCabe-Thiele",
-      path: "/simulations/mccabe-thiele",
+      path: "/toolbox/mccabe-thiele",
       description: "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
       thumbnailPath: mccabeThumbnailPath
     },
     {
       name: "Azeotrope Finder",
-      path: "/simulations/azeotrope-finder",
+      path: "/toolbox/azeotrope-finder",
       description: "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
       thumbnailPath: azeotropeThumbnailPath
     },
     {
       name: "Reaction Kinetics",
-      path: "/simulations/kinetics",
+      path: "/toolbox/kinetics",
       description: "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
       thumbnailPath: kineticsThumbnailPath
     },
     {
       name: "Process Dynamics",
-      path: "/simulations/process-dynamics",
+      path: "/toolbox/process-dynamics",
       description: "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
       thumbnailPath: dynamicsThumbnailPath
     },
     {
       name: "PID Tuning",
-      path: "/simulations/pid-tuning",
+      path: "/toolbox/pid-tuning",
       description: "Interactive PID controller tuning simulation. Adjust parameters and observe system response in real-time.",
       thumbnailPath: pidThumbnailPath
     }
