@@ -45,15 +45,17 @@ export default function Page() {
     // Parent container sets overall padding (px-6) and centers children (items-center)
     // pt-24 still pushes everything down from the top nav bar
     <main className="flex flex-col items-center justify-between pt-12 px-6">
-
       {/* Page Description: Added whitespace-pre-line class */}
       <p className="mb-10 text-lg text-center text-muted-foreground max-w-3xl mx-auto whitespace-pre-line">
         {pageDescription}
       </p>
-
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
         {simulations.map((simulation, index) => (
-          <Link key={index} href={simulation.path} className="block h-full">
+          <Link
+            key={index}
+            href={simulation.path}
+            className="block h-full"
+            legacyBehavior>
             <Card className="h-full hover:shadow-lg transition-shadow bg-card border border-border flex flex-col">
               <CardHeader>
                 {/* Outer container for centering the block */}

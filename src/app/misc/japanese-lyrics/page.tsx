@@ -244,7 +244,6 @@ export default function JapaneseLyricsPage() {
                     </Accordion>
                 </div>
             </div>
-
             {/* Lyrics Display Area - Positioned next to left panel, scrolls */}
             {/* Changed bottom-[60px] to bottom-0 */}
             <div className="absolute bottom-0 left-[220px] right-0 top-0 overflow-y-auto p-5">

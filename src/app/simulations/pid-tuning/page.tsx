@@ -646,15 +646,14 @@ export default function PidTuningPage() {
                                     />
                                 ) : (
                                     /* Removed text-muted-foreground */
-                                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 dark:text-gray-400 p-4 text-center">
-                                        Chart options invalid.
-                                    </div>
+                                    (<div className="absolute inset-0 flex items-center justify-center text-gray-500 dark:text-gray-400 p-4 text-center">Chart options invalid.
+                                                                            </div>)
                                 )}
                                 {!isLoading && !simulationResult && !(simulationStatus.startsWith('Error')) && (
                                     /* Removed text-muted-foreground */
-                                    <div className="absolute inset-0 flex items-center justify-center text-gray-500 dark:text-gray-400 p-4 text-center">
+                                    (<div className="absolute inset-0 flex items-center justify-center text-gray-500 dark:text-gray-400 p-4 text-center">
                                         { !selectedRuleId ? "Select model and tuning rule to start." : "Adjust parameters to simulate." }
-                                    </div>
+                                    </div>)
                                 )}
                                 {simulationStatus.startsWith('Error') && (
                                     <div className="absolute inset-0 flex items-center justify-center text-destructive-foreground bg-destructive/80 p-4 text-center z-20">

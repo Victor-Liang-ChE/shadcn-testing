@@ -581,7 +581,6 @@ const UfcChampionsDisplay: React.FC = () => {
   /* ------------------------------------------------------------------ */
   return (
     <main className="relative pt-8 md:pt-6 px-4 md:px-6 pb-20 w-full flex flex-col h-screen">
-
       {/* --- View Toggle and Gender Filter --- */}
       <div className="w-full max-w-screen-2xl mx-auto flex justify-between items-start mb-4 px-0 md:px-0 min-h-[40px]">
         <div className="flex-1">
@@ -605,248 +604,243 @@ const UfcChampionsDisplay: React.FC = () => {
           <Label htmlFor="timeline-view-toggle" className="text-sm font-medium">Show Full Timeline View</Label>
         </div>
       </div>
-
       {/* --- Conditional Rendering: Card View or Timeline View --- */}
       {!isTimelineView ? (
         /* --- Main Content Card (Background) --- */
-        <Card className={cn( "w-full max-w-screen-2xl mx-auto transition-opacity duration-300 flex flex-col mb-auto", showDetailsView ? "opacity-20 pointer-events-none" : "opacity-100" )}>
-           <div className="overflow-y-auto">
-             <CardContent className="space-y-6 pt-6">
-                {/* selector */}
-                <Select value={selected} onValueChange={setSelected} disabled={showDetailsView}>
-                   <SelectTrigger className="w-full md:w-[300px] mx-auto"> <SelectValue placeholder="Select a Weight Class" /> </SelectTrigger>
-                   <SelectContent> {Object.entries(classes).map(([key, val]) => ( <SelectItem key={key} value={key}> {val.displayName} </SelectItem> ))} </SelectContent>
-                </Select>
+        (<Card className={cn( "w-full max-w-screen-2xl mx-auto transition-opacity duration-300 flex flex-col mb-auto", showDetailsView ? "opacity-20 pointer-events-none" : "opacity-100" )}>
+          <div className="overflow-y-auto">
+            <CardContent className="space-y-6 pt-6">
+               {/* selector */}
+               <Select value={selected} onValueChange={setSelected} disabled={showDetailsView}>
+                  <SelectTrigger className="w-full md:w-[300px] mx-auto"> <SelectValue placeholder="Select a Weight Class" /> </SelectTrigger>
+                  <SelectContent> {Object.entries(classes).map(([key, val]) => ( <SelectItem key={key} value={key}> {val.displayName} </SelectItem> ))} </SelectContent>
+               </Select>
 
-                 {/* champions timeline (Card View) */}
-                 {!data ? (
-                    <div className="mt-6">
-                      <div className="w-full overflow-x-auto pb-4">
-                        <div className="flex space-x-3 items-stretch min-h-[200px]"> {[...Array(5)].map((_, i) => ( <Skeleton key={i} className="flex-shrink-0 w-52 h-[180px] rounded-md" /> ))} </div>
-                      </div>
-                    </div>
-                 ) : (
-                    <div className="mt-6">
-                      {/* ---- Apply Drag Scroll Handlers Here ---- */}
-                      <div
-                        ref={scrollContainerRef}
-                        className={cn(
-                            "w-full overflow-x-auto pb-4",
-                            !isTimelineView && !showDetailsView && "cursor-grab" // Add grab cursor
-                        )}
-                        onPointerDown={handlePointerDown}
-                        onPointerMove={handlePointerMove}
-                        onPointerUp={handlePointerUpOrLeave}
-                        onPointerLeave={handlePointerUpOrLeave} // Handle leave while dragging
-                      >
-                        <div className="flex space-x-3 items-stretch min-h-[200px]">
-                          {data.champions.map((c, i) => {
-                            const start = parseDate(c.reignStart)!;
-                            const end = parseDate(c.reignEnd)!;
-                            const reignDays = diffInDays(start, end);
-                            const duration = humanDuration(reignDays);
-                            const next = data.champions[i + 1];
-                            let vacancyBlock: React.ReactNode = null;
-                             if (next) {
-                               const gap = diffInDays(end, parseDate(next.reignStart) || new Date()) - 1;
-                               if (gap > 0) {
-                                 vacancyBlock = ( <div className="flex flex-col items-center justify-center px-2 text-center"> <div className="w-px h-16 bg-destructive/50 my-1"></div> <span className="text-xs text-destructive whitespace-normal w-16"> VACANT<br/>{humanDuration(gap)} </span> <div className="w-px h-16 bg-destructive/50 my-1"></div> </div> );
-                               }
-                             } else if (c.reignEnd && c.reignEnd !== "Present" && !c.notes?.toLowerCase().includes("interim")) {
-                                vacancyBlock = ( <div className="flex flex-col items-center justify-center px-2 text-center"> <div className="w-px h-16 bg-destructive/50 my-1"></div> <span className="text-xs text-destructive whitespace-normal w-16"> VACANT </span> <div className="w-px h-16 bg-destructive/50 my-1"></div> </div> );
-                             }
+                {/* champions timeline (Card View) */}
+                {!data ? (
+                   <div className="mt-6">
+                     <div className="w-full overflow-x-auto pb-4">
+                       <div className="flex space-x-3 items-stretch min-h-[200px]"> {[...Array(5)].map((_, i) => ( <Skeleton key={i} className="flex-shrink-0 w-52 h-[180px] rounded-md" /> ))} </div>
+                     </div>
+                   </div>
+                ) : (
+                   <div className="mt-6">
+                     {/* ---- Apply Drag Scroll Handlers Here ---- */}
+                     <div
+                       ref={scrollContainerRef}
+                       className={cn(
+                           "w-full overflow-x-auto pb-4",
+                           !isTimelineView && !showDetailsView && "cursor-grab" // Add grab cursor
+                       )}
+                       onPointerDown={handlePointerDown}
+                       onPointerMove={handlePointerMove}
+                       onPointerUp={handlePointerUpOrLeave}
+                       onPointerLeave={handlePointerUpOrLeave} // Handle leave while dragging
+                     >
+                       <div className="flex space-x-3 items-stretch min-h-[200px]">
+                         {data.champions.map((c, i) => {
+                           const start = parseDate(c.reignStart)!;
+                           const end = parseDate(c.reignEnd)!;
+                           const reignDays = diffInDays(start, end);
+                           const duration = humanDuration(reignDays);
+                           const next = data.champions[i + 1];
+                           let vacancyBlock: React.ReactNode = null;
+                            if (next) {
+                              const gap = diffInDays(end, parseDate(next.reignStart) || new Date()) - 1;
+                              if (gap > 0) {
+                                vacancyBlock = ( <div className="flex flex-col items-center justify-center px-2 text-center"> <div className="w-px h-16 bg-destructive/50 my-1"></div> <span className="text-xs text-destructive whitespace-normal w-16"> VACANT<br/>{humanDuration(gap)} </span> <div className="w-px h-16 bg-destructive/50 my-1"></div> </div> );
+                              }
+                            } else if (c.reignEnd && c.reignEnd !== "Present" && !c.notes?.toLowerCase().includes("interim")) {
+                               vacancyBlock = ( <div className="flex flex-col items-center justify-center px-2 text-center"> <div className="w-px h-16 bg-destructive/50 my-1"></div> <span className="text-xs text-destructive whitespace-normal w-16"> VACANT </span> <div className="w-px h-16 bg-destructive/50 my-1"></div> </div> );
+                            }
 
-                            return (
-                              <React.Fragment key={`${c.name}-${i}`}>
-                                {/* ---- Add draggable=false and select-none to the card div ---- */}
-                                <motion.div
-                                  layoutId={getLayoutId(c)}
-                                  draggable={false} // Keep this on the motion.div
-                                  onClick={() => {
-                                    // <<<--- Check didDragRef before fetching
-                                    if (!didDragRef.current) {
-                                        fetchFighterData(c);
-                                    }
-                                    // didDragRef will be reset on the *next* pointer down
-                                  }}
-                                  className="
-                                    flex-shrink-0 w-52 p-3 bg-muted rounded-md shadow-sm
-                                    relative z-0 hover:z-10 flex flex-col
-                                    overflow-hidden {/* Keep overflow-hidden */}
-                                    select-none cursor-pointer group" // Added cursor-pointer back
-                                  whileHover={{ scale: 1.05, zIndex: 10 }}
-                                  transition={{ duration: 0.2 }}
-                                >
-                                  {/* ---- Add draggable=false ONLY to the container div ---- */}
-                                  <div
-                                    draggable={false} // Keep this on the container div
-                                    className="relative h-24 w-full mb-2 bg-gradient-to-b from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 rounded flex items-center justify-center"
-                                  >
-                                    {/* ---- REMOVE draggable={false} from User ---- */}
-                                    <User className="h-12 w-12 text-gray-500 dark:text-gray-400" />
-                                  </div>
-                                  {/* --- Text Block (Should be visible now) --- */}
-                                  <div className="mt-1"> {/* <<<--- Added small top margin */}
-                                      <p className="font-bold text-base leading-tight mb-1 truncate">{c.name}</p>
-                                      <p className="text-xs"> {start.toLocaleDateString()} - {c.reignEnd === "Present" ? "Present" : end.toLocaleDateString()} </p>
-                                      <p className="text-xs text-muted-foreground"> {duration} </p>
-                                  </div>
-                                </motion.div>
-                                {vacancyBlock}
-                              </React.Fragment>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      {/* ---- End Drag Scroll Container ---- */}
-                    </div>
-                  )}
+                           return (
+                             <React.Fragment key={`${c.name}-${i}`}>
+                               {/* ---- Add draggable=false and select-none to the card div ---- */}
+                               <motion.div
+                                 layoutId={getLayoutId(c)}
+                                 draggable={false} // Keep this on the motion.div
+                                 onClick={() => {
+                                   // <<<--- Check didDragRef before fetching
+                                   if (!didDragRef.current) {
+                                       fetchFighterData(c);
+                                   }
+                                   // didDragRef will be reset on the *next* pointer down
+                                 }}
+                                 className="
+                                   flex-shrink-0 w-52 p-3 bg-muted rounded-md shadow-sm
+                                   relative z-0 hover:z-10 flex flex-col
+                                   overflow-hidden {/* Keep overflow-hidden */}
+                                   select-none cursor-pointer group" // Added cursor-pointer back
+                                 whileHover={{ scale: 1.05, zIndex: 10 }}
+                                 transition={{ duration: 0.2 }}
+                               >
+                                 {/* ---- Add draggable=false ONLY to the container div ---- */}
+                                 <div
+                                   draggable={false} // Keep this on the container div
+                                   className="relative h-24 w-full mb-2 bg-gradient-to-b from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 rounded flex items-center justify-center"
+                                 >
+                                   {/* ---- REMOVE draggable={false} from User ---- */}
+                                   <User className="h-12 w-12 text-gray-500 dark:text-gray-400" />
+                                 </div>
+                                 {/* --- Text Block (Should be visible now) --- */}
+                                 <div className="mt-1"> {/* <<<--- Added small top margin */}
+                                     <p className="font-bold text-base leading-tight mb-1 truncate">{c.name}</p>
+                                     <p className="text-xs"> {start.toLocaleDateString()} - {c.reignEnd === "Present" ? "Present" : end.toLocaleDateString()} </p>
+                                     <p className="text-xs text-muted-foreground"> {duration} </p>
+                                 </div>
+                               </motion.div>
+                               {vacancyBlock}
+                             </React.Fragment>
+                           );
+                         })}
+                       </div>
+                     </div>
+                     {/* ---- End Drag Scroll Container ---- */}
+                   </div>
+                 )}
 
-              <p className="text-xs text-center text-muted-foreground mt-8"> Missing UFC 294 and 308 Events. </p>
-             </CardContent>
-           </div>
-         </Card>
+             <p className="text-xs text-center text-muted-foreground mt-8"> Missing UFC 294 and 308 Events. </p>
+            </CardContent>
+          </div>
+        </Card>)
       ) : (
         /* --- Timeline View --- */
-        (isTimelineCalculating || !timelineData) ? (
-            <div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>
-        ) : ( // Render actual timeline
+        ((isTimelineCalculating || !timelineData) ? // Render actual timeline
+        (<div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>) : (<div
+          ref={timelineScrollContainerRef}
+          // Attach timeline-specific handlers
+          onPointerDown={handleTimelinePointerDown}
+          onPointerMove={handleTimelinePointerMove}
+          onPointerUp={handleTimelinePointerUpOrLeave}
+          onPointerLeave={handleTimelinePointerUpOrLeave}
+          className={cn( // Add conditional cursor style
+            "w-full max-w-screen-2xl mx-auto overflow-x-auto border rounded-md bg-card text-card-foreground flex-1 min-h-[70vh]",
+            isTimelineView && !showDetailsView && "cursor-grab" // Grab cursor for timeline
+          )}
+        >
+          {/* Container for scrolling content (inner div, no handlers needed here) */}
+          <div
+            className="relative px-0 py-0 overflow-visible h-full select-none" // Add select-none here too
+            style={{ width: `${timelineData.totalWidth + (2.5 * 16)}px`, paddingBottom: '1rem' }}
+          >
+            {/* Grid for rows, sidebar, and markers (no handlers needed here) */}
             <div
-              ref={timelineScrollContainerRef}
-              // Attach timeline-specific handlers
-              onPointerDown={handleTimelinePointerDown}
-              onPointerMove={handleTimelinePointerMove}
-              onPointerUp={handleTimelinePointerUpOrLeave}
-              onPointerLeave={handleTimelinePointerUpOrLeave}
-              className={cn( // Add conditional cursor style
-                "w-full max-w-screen-2xl mx-auto overflow-x-auto border rounded-md bg-card text-card-foreground flex-1 min-h-[70vh]",
-                isTimelineView && !showDetailsView && "cursor-grab" // Grab cursor for timeline
-              )}
+              className="relative z-10 overflow-visible grid h-full"
+              style={{ gridTemplateRows: `1rem repeat(${Object.keys(filteredClasses).length}, 1fr) 1.5rem`, gridTemplateColumns: '2.5rem 1fr', width: '100%' }}
             >
-              {/* Container for scrolling content (inner div, no handlers needed here) */}
-              <div
-                className="relative px-0 py-0 overflow-visible h-full select-none" // Add select-none here too
-                style={{ width: `${timelineData.totalWidth + (2.5 * 16)}px`, paddingBottom: '1rem' }}
-              >
-                {/* Grid for rows, sidebar, and markers (no handlers needed here) */}
-                <div
-                  className="relative z-10 overflow-visible grid h-full"
-                  style={{ gridTemplateRows: `1rem repeat(${Object.keys(filteredClasses).length}, 1fr) 1.5rem`, gridTemplateColumns: '2.5rem 1fr', width: '100%' }}
-                >
-                   {/* Top Left Corner */}
-                   <div className="sticky left-0 bg-card z-30 border-r border-border/60" style={{ gridRow: 1, gridColumn: 1 }}></div>
-                   {/* Top Markers */}
-                   <div className="relative h-full border-b border-border/60" style={{ gridRow: 1, gridColumn: 2 }}>
-                    {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`top-month-${date.toISOString()}`} className="absolute bottom-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> </div> ); })}
-                    {timelineData && timelineData.todayX >= 0 && ( <div key="top-today-marker" className="absolute bottom-0 z-10" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> </div> )}
+               {/* Top Left Corner */}
+               <div className="sticky left-0 bg-card z-30 border-r border-border/60" style={{ gridRow: 1, gridColumn: 1 }}></div>
+               {/* Top Markers */}
+               <div className="relative h-full border-b border-border/60" style={{ gridRow: 1, gridColumn: 2 }}>
+                {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`top-month-${date.toISOString()}`} className="absolute bottom-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> </div> ); })}
+                {timelineData && timelineData.todayX >= 0 && ( <div key="top-today-marker" className="absolute bottom-0 z-10" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> </div> )}
+              </div>
+              {/* Weight Classes & Bars */}
+              {Object.entries(filteredClasses).map(([key,wc],r)=>(
+                <div key={key} className="contents">
+                  {/* abbrev name (add select-none) */}
+                  <div
+                    className="sticky left-0 bg-card z-30 flex items-center justify-center px-1 border-r border-b border-border/60 select-none"
+                    style={{ gridRow: r + 2, gridColumn: 1, width: '2.5rem' }}
+                  >
+                    <span className="text-[12px] font-bold uppercase text-center">
+                      {abbreviateWeightClass(key)}
+                    </span>
                   </div>
-                  {/* Weight Classes & Bars */}
-                  {Object.entries(filteredClasses).map(([key,wc],r)=>(
-                    <div key={key} className="contents">
-                      {/* abbrev name (add select-none) */}
-                      <div
-                        className="sticky left-0 bg-card z-30 flex items-center justify-center px-1 border-r border-b border-border/60 select-none"
-                        style={{ gridRow: r + 2, gridColumn: 1, width: '2.5rem' }}
-                      >
-                        <span className="text-[12px] font-bold uppercase text-center">
-                          {abbreviateWeightClass(key)}
-                        </span>
-                      </div>
-                      {/* champion bars container (no handlers needed here) */}
-                      <div
-                        className="relative h-full border-b border-border/60 overflow-visible"
-                        style={{ gridRow: r + 2, gridColumn: 2, position: 'relative' }}
-                      >
-                        {wc.champions.map((c,i)=>{
-                          const s = parseDate(c.reignStart)!;
-                          const e = parseDate(c.reignEnd)!;
-                          const cs = s < timelineData!.minDate ? timelineData!.minDate : s;
-                          const ce = e > timelineData!.maxDate ? timelineData!.maxDate : e;
-                          const left = diffInDays(timelineData!.minDate,cs)*timelineData!.pixelsPerDay;
-                          const width = diffInDays(cs,ce)*timelineData!.pixelsPerDay;
-                          const reignYears = diffInDays(s, e) / 365;
-                          const isLongReign = reignYears >= 1;
+                  {/* champion bars container (no handlers needed here) */}
+                  <div
+                    className="relative h-full border-b border-border/60 overflow-visible"
+                    style={{ gridRow: r + 2, gridColumn: 2, position: 'relative' }}
+                  >
+                    {wc.champions.map((c,i)=>{
+                      const s = parseDate(c.reignStart)!;
+                      const e = parseDate(c.reignEnd)!;
+                      const cs = s < timelineData!.minDate ? timelineData!.minDate : s;
+                      const ce = e > timelineData!.maxDate ? timelineData!.maxDate : e;
+                      const left = diffInDays(timelineData!.minDate,cs)*timelineData!.pixelsPerDay;
+                      const width = diffInDays(cs,ce)*timelineData!.pixelsPerDay;
+                      const reignYears = diffInDays(s, e) / 365;
+                      const isLongReign = reignYears >= 1;
 
-                          // <<<--- REMOVE old hue calculation (commented out for reference)
-                          // let h=0; for(let k=0;k<c.name.length;k++) h=c.name.charCodeAt(k)+((h<<5)-h);
-                          // const hue=h%360, bg=`hsl(${hue},70%,90%)`, hov=`hsl(${hue},70%,80%)`, col=`hsl(${hue},80%,25%)`;
+                      // <<<--- REMOVE old hue calculation (commented out for reference)
+                      // let h=0; for(let k=0;k<c.name.length;k++) h=c.name.charCodeAt(k)+((h<<5)-h);
+                      // const hue=h%360, bg=`hsl(${hue},70%,90%)`, hov=`hsl(${hue},70%,80%)`, col=`hsl(${hue},80%,25%)`;
 
-                          // <<<--- ADD new color calculation:
-                          const reignDaysTotal = diffInDays(s, e); // Calculate total reign days
-                          const { bg, text, hoverBg } = getReignColor(reignDaysTotal);
+                      // <<<--- ADD new color calculation:
+                      const reignDaysTotal = diffInDays(s, e); // Calculate total reign days
+                      const { bg, text, hoverBg } = getReignColor(reignDaysTotal);
 
-                          return (
-                            <motion.div
-                              key={`${key}-${i}`}
-                              layoutId={getLayoutId(c)} // <<<--- ADD layoutId HERE
-                              draggable={false}
-                              onClick={() => { if (!timelineDidDragRef.current) { fetchFighterData(c) } }}
-                              className="absolute top-[2px] bottom-[2px] rounded-sm flex items-center justify-center group cursor-pointer shadow-sm z-10 select-none"
-                              // <<<--- UPDATE style prop
-                              style={{
-                                left:`${left}px`,
-                                width:`${Math.max(width,2)}px`,
-                                backgroundColor: bg, // Use calculated background
-                                color: text,       // Use calculated text color
-                                borderRadius: '0.125rem'
-                              }}
-                              initial={{ scale:1 }}
-                              // <<<--- UPDATE whileHover prop
-                              whileHover={{
-                                backgroundColor: hoverBg, // Use calculated hover background
-                                zIndex:20,
-                                scale: 1.03,
-                                borderRadius: '0.125rem'
-                              }}
-                              transition={{ duration:0.15 }}
+                      return (
+                        <motion.div
+                          key={`${key}-${i}`}
+                          layoutId={getLayoutId(c)} // <<<--- ADD layoutId HERE
+                          draggable={false}
+                          onClick={() => { if (!timelineDidDragRef.current) { fetchFighterData(c) } }}
+                          className="absolute top-[2px] bottom-[2px] rounded-sm flex items-center justify-center group cursor-pointer shadow-sm z-10 select-none"
+                          // <<<--- UPDATE style prop
+                          style={{
+                            left:`${left}px`,
+                            width:`${Math.max(width,2)}px`,
+                            backgroundColor: bg, // Use calculated background
+                            color: text,       // Use calculated text color
+                            borderRadius: '0.125rem'
+                          }}
+                          initial={{ scale:1 }}
+                          // <<<--- UPDATE whileHover prop
+                          whileHover={{
+                            backgroundColor: hoverBg, // Use calculated hover background
+                            zIndex:20,
+                            scale: 1.03,
+                            borderRadius: '0.125rem'
+                          }}
+                          transition={{ duration:0.15 }}
+                        >
+                          {/* Inner spans will inherit text color */}
+                          {isLongReign ? (
+                            <span className="text-[20px] font-bold whitespace-nowrap px-1 overflow-hidden text-ellipsis max-w-full select-none">
+                              {c.name}
+                            </span>
+                          ) : (
+                            <span
+                              className="text-[20px] font-bold whitespace-nowrap overflow-visible group-hover:opacity-0 transition-opacity duration-100 select-none"
+                              style={{ position: 'relative', zIndex: 15 }}
                             >
-                              {/* Inner spans will inherit text color */}
-                              {isLongReign ? (
-                                <span className="text-[20px] font-bold whitespace-nowrap px-1 overflow-hidden text-ellipsis max-w-full select-none">
-                                  {c.name}
-                                </span>
-                              ) : (
-                                <span
-                                  className="text-[20px] font-bold whitespace-nowrap overflow-visible group-hover:opacity-0 transition-opacity duration-100 select-none"
-                                  style={{ position: 'relative', zIndex: 15 }}
-                                >
-                                  {getInitials(c.name)}
-                                </span>
-                              )}
-                              {!isLongReign && (
-                                <span
-                                  className="absolute inset-0 flex items-center justify-center text-[15px] font-semibold px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100 delay-50 pointer-events-none select-none"
-                                  // <<<--- UPDATE hover span style
-                                  style={{
-                                      background: hoverBg, // Use hover background
-                                      color: text,        // Use base text color (should still contrast)
-                                      borderRadius: '0.125rem',
-                                      zIndex: 21
-                                  }}
-                                >
-                                  {c.name}
-                                </span>
-                              )}
-                            </motion.div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
+                              {getInitials(c.name)}
+                            </span>
+                          )}
+                          {!isLongReign && (
+                            <span
+                              className="absolute inset-0 flex items-center justify-center text-[15px] font-semibold px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100 delay-50 pointer-events-none select-none"
+                              // <<<--- UPDATE hover span style
+                              style={{
+                                  background: hoverBg, // Use hover background
+                                  color: text,        // Use base text color (should still contrast)
+                                  borderRadius: '0.125rem',
+                                  zIndex: 21
+                              }}
+                            >
+                              {c.name}
+                            </span>
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
 
-                   {/* ... Bottom Left Corner ... */}
-                   {/* Bottom Markers (add select-none to text spans) */}
-                   <div className="relative h-full" style={{ gridRow: Object.keys(filteredClasses).length + 2, gridColumn: 2 }}>
-                     {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`bottom-month-${date.toISOString()}`} className="absolute top-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> {isYear && ( <span className="absolute top-full text-[12px] text-foreground transform -translate-x-1/2 select-none"> {date.getFullYear()} </span> )} </div> ); })}
-                     {timelineData && timelineData.todayX >= 0 && ( <div key="bottom-today-marker" className="absolute top-0 z-10 flex flex-col items-center" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> <span className="absolute top-full text-[9px] text-primary font-semibold transform -translate-x-1/2 bg-card px-0.5 select-none"> Now </span> </div> )}
-                   </div>
+               {/* ... Bottom Left Corner ... */}
+               {/* Bottom Markers (add select-none to text spans) */}
+               <div className="relative h-full" style={{ gridRow: Object.keys(filteredClasses).length + 2, gridColumn: 2 }}>
+                 {timelineData?.monthMarkers.map(({ date, x }) => { const isYear = date.getMonth() === 0; return ( <div key={`bottom-month-${date.toISOString()}`} className="absolute top-0 flex flex-col items-center" style={{ left: `${x}px`, height: isYear ? '0.75rem' : '0.375rem' }}> <div className="w-px h-full bg-foreground/50"></div> {isYear && ( <span className="absolute top-full text-[12px] text-foreground transform -translate-x-1/2 select-none"> {date.getFullYear()} </span> )} </div> ); })}
+                 {timelineData && timelineData.todayX >= 0 && ( <div key="bottom-today-marker" className="absolute top-0 z-10 flex flex-col items-center" style={{ left: `${timelineData.todayX}px`, height: '1rem' }}> <div className="w-px h-full bg-primary/70"></div> <span className="absolute top-full text-[9px] text-primary font-semibold transform -translate-x-1/2 bg-card px-0.5 select-none"> Now </span> </div> )}
+               </div>
 
-                </div> {/* End of Grid */}
-              </div> {/* End of scrollable content container */}
-            </div> /* End of Timeline View */
-        )
+            </div> {/* End of Grid */}
+          </div> {/* End of scrollable content container */}
+        </div>) /* End of Timeline View */)
       )}
-
       {/* --- Fighter Details Overlay --- */}
       <AnimatePresence>
         {showDetailsView && selectedFighter && (
