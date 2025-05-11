@@ -137,7 +137,7 @@ export default function VleCalculatorPage() {
     // --- Azeotrope Finder States ---
     const [azeotropeFinderActive, setAzeotropeFinderActive] = useState<boolean>(false);
     const [azeotropeScanType, setAzeotropeScanType] = useState<AzeotropeScanType>('vs_P_find_T');
-    const [scanSteps, setScanSteps] = useState<number>(30);
+    const [scanSteps, setScanSteps] = useState<number>(100); // MODIFIED DEFAULT VALUE
     const [azeotropeScanData, setAzeotropeScanData] = useState<{ scanVal: number, x_az: number, dependentVal: number }[]>([]);
 
 
@@ -970,7 +970,7 @@ export default function VleCalculatorPage() {
                 try {
                     errorMessage = JSON.stringify(err);
                 } catch (stringifyError) {
-                    errorMessage = "An un-stringifiable error object was thrown during azeotrope scan.";
+                    errorMessage = "An un-stringiable error object was thrown during azeotrope scan.";
                 }
             }
             console.error("Azeotrope Scan failed. Raw error object:", err); // Log the raw error
@@ -999,69 +999,84 @@ export default function VleCalculatorPage() {
         const dependentParamColor = isDark ? '#FBBF24' : '#F59E0B'; // For T_az/P_az line
         const chartFontFamily = '"Merriweather Sans", sans-serif'; // Define font family
 
-        if (azeotropeFinderActive && azeotropeScanData.length > 0) {
-            const scanParamName = azeotropeScanType === 'vs_P_find_T' ? "Pressure (kPa)" : "Temperature (K)";
-            const dependentParamName = azeotropeScanType === 'vs_P_find_T' ? "Azeotropic Temperature (K)" : "Azeotropic Pressure (kPa)";
-            const titleText = `Azeotrope Locus for ${comp1Name}/${comp2Name}`;
+        if (azeotropeFinderActive) {
+            if (azeotropeScanData.length > 0) {
+                const scanParamName = azeotropeScanType === 'vs_P_find_T' ? "Pressure (kPa)" : "Temperature (K)";
+                const dependentParamName = azeotropeScanType === 'vs_P_find_T' ? "Azeotropic Temperature (K)" : "Azeotropic Pressure (kPa)";
+                const titleText = `Azeotrope Locus for ${comp1Name}/${comp2Name}`;
 
-            const x_az_data = azeotropeScanData.map(d => [d.scanVal, d.x_az]);
-            const dependent_val_data = azeotropeScanData.map(d => [d.scanVal, d.dependentVal]);
+                const x_az_data = azeotropeScanData.map(d => [d.scanVal, d.x_az]);
+                const dependent_val_data = azeotropeScanData.map(d => [d.scanVal, d.dependentVal]);
 
-            setVleChartOptions({
-                title: { text: titleText, left: 'center', textStyle: { color: textColor, fontSize: 16, fontFamily: chartFontFamily } },
-                tooltip: { 
-                    trigger: 'axis', 
-                    axisPointer: { type: 'cross' },
-                    textStyle: { fontFamily: chartFontFamily },
-                    formatter: (params: any) => {
-                        if (!params || params.length === 0) return '';
-                        let tooltipString = `${params[0].axisValueLabel} ${scanParamName.split(' ')[0] === 'Pressure' ? 'kPa' : 'K'}<br/>`;
-                        
-                        const compParam = params.find((p: any) => p.seriesName === 'Azeotropic Composition (x₁)');
-                        const depParam = params.find((p: any) => p.seriesName === dependentParamName);
+                setVleChartOptions({
+                    title: { text: titleText, left: 'center', textStyle: { color: textColor, fontSize: 16, fontFamily: chartFontFamily } },
+                    tooltip: { 
+                        trigger: 'axis', 
+                        axisPointer: { type: 'cross' },
+                        textStyle: { fontFamily: chartFontFamily },
+                        formatter: (params: any) => {
+                            if (!params || params.length === 0) return '';
+                            let tooltipString = `${params[0].axisValueLabel} ${scanParamName.split(' ')[0] === 'Pressure' ? 'kPa' : 'K'}<br/>`;
+                            
+                            const compParam = params.find((p: any) => p.seriesName === 'Azeotropic Composition (x₁)');
+                            const depParam = params.find((p: any) => p.seriesName === dependentParamName);
 
-                        if (compParam) {
-                            tooltipString += `${compParam.marker} ${compParam.seriesName}: ${parseFloat(compParam.value[1]).toFixed(3)}<br/>`;
+                            if (compParam) {
+                                tooltipString += `${compParam.marker} ${compParam.seriesName}: ${parseFloat(compParam.value[1]).toFixed(3)}<br/>`;
+                            }
+                            if (depParam) {
+                                tooltipString += `${depParam.marker} ${depParam.seriesName}: ${Math.round(parseFloat(depParam.value[1]))} ${dependentParamName.includes('(K)') ? 'K' : 'kPa'}`;
+                            }
+                            return tooltipString;
                         }
-                        if (depParam) {
-                            tooltipString += `${depParam.marker} ${depParam.seriesName}: ${Math.round(parseFloat(depParam.value[1]))} ${dependentParamName.includes('(K)') ? 'K' : 'kPa'}`;
-                        }
-                        return tooltipString;
-                    }
-                },
-                legend: { data: ['Azeotropic Composition (x₁)', dependentParamName], bottom: 5, textStyle: { color: textColor, fontFamily: chartFontFamily } },
-                grid: { left: '10%', right: '12%', bottom: '15%', top: '15%', containLabel: true }, // Adjusted for dual y-axis
-                xAxis: {
-                    type: 'value', name: scanParamName, nameLocation: 'middle', nameGap: 30,
-                    axisLabel: { color: textColor, fontSize: 12, fontFamily: chartFontFamily }, 
-                    nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
-                    axisLine: { lineStyle: { color: lineColor } }, 
-                    splitLine: { show: false }, // REMOVE GRID LINES
-                    scale: true,
-                },
-                yAxis: [
-                    {
-                        type: 'value', name: 'Azeotropic Composition (x₁)', nameLocation: 'middle', nameGap: 55, min: 0, max: 1,
-                        axisLabel: { color: textColor, fontSize: 12, formatter: (v:number) => v.toFixed(3), fontFamily: chartFontFamily },
-                        nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
-                        axisLine: { lineStyle: { color: liquidColor } }, 
-                        splitLine: { show: false }, // REMOVE GRID LINES
                     },
-                    {
-                        type: 'value', name: dependentParamName, nameLocation: 'middle', nameGap: 70, position: 'right',
-                        axisLabel: { color: textColor, fontSize: 12, formatter: (v:number) => Math.round(v).toString(), fontFamily: chartFontFamily }, // Format to whole number
+                    legend: { data: ['Azeotropic Composition (x₁)', dependentParamName], bottom: 5, textStyle: { color: textColor, fontFamily: chartFontFamily } },
+                    grid: { left: '10%', right: '12%', bottom: '15%', top: '15%', containLabel: true }, // Adjusted for dual y-axis
+                    xAxis: {
+                        type: 'value', name: scanParamName, nameLocation: 'middle', nameGap: 30,
+                        axisLabel: { color: textColor, fontSize: 12, fontFamily: chartFontFamily }, 
                         nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
-                        axisLine: { lineStyle: { color: dependentParamColor } }, 
-                        splitLine: { show: false }, // REMOVE GRID LINES
+                        axisLine: { lineStyle: { color: lineColor } }, 
+                        splitLine: { show: false },
                         scale: true,
-                    }
-                ],
-                series: [
-                    { name: 'Azeotropic Composition (x₁)', type: 'line', yAxisIndex: 0, symbol: 'circle', symbolSize: 6, lineStyle: { color: liquidColor, width: 2 }, data: x_az_data },
-                    { name: dependentParamName, type: 'line', yAxisIndex: 1, symbol: 'triangle', symbolSize: 6, lineStyle: { color: dependentParamColor, width: 2 }, data: dependent_val_data }
-                ]
-            });
-
+                    },
+                    yAxis: [
+                        {
+                            type: 'value', name: 'Azeotropic Composition (x₁)', nameLocation: 'middle', nameGap: 55, min: 0, max: 1,
+                            axisLabel: { color: textColor, fontSize: 12, formatter: (v:number) => v.toFixed(3), fontFamily: chartFontFamily },
+                            nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
+                            axisLine: { lineStyle: { color: liquidColor } }, 
+                            splitLine: { show: false },
+                        },
+                        {
+                            type: 'value', name: dependentParamName, nameLocation: 'middle', nameGap: 70, position: 'right',
+                            axisLabel: { color: textColor, fontSize: 12, formatter: (v:number) => Math.round(v).toString(), fontFamily: chartFontFamily }, 
+                            nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
+                            axisLine: { lineStyle: { color: dependentParamColor } }, 
+                            splitLine: { show: false },
+                            scale: true,
+                        }
+                    ],
+                    series: [
+                        { name: 'Azeotropic Composition (x₁)', type: 'line', yAxisIndex: 0, symbol: 'circle', symbolSize: 6, lineStyle: { color: liquidColor, width: 2 }, data: x_az_data },
+                        { name: dependentParamName, type: 'line', yAxisIndex: 1, symbol: 'triangle', symbolSize: 6, lineStyle: { color: dependentParamColor, width: 2 }, data: dependent_val_data }
+                    ]
+                });
+            } else { // Azeotrope finder active, but no data
+                setVleChartOptions({
+                    title: {
+                        text: `Azeotrope Scan for ${comp1Name}/${comp2Name}`,
+                        subtext: 'No azeotropes found within the scanned range.',
+                        left: 'center',
+                        top: 'center', // Center vertically as well
+                        textStyle: { color: textColor, fontSize: 18, fontWeight: 'bold', fontFamily: chartFontFamily },
+                        subtextStyle: { color: textColor, fontSize: 14, fontFamily: chartFontFamily }
+                    },
+                    xAxis: { show: false }, // Hide axes
+                    yAxis: { show: false },
+                    series: [] // No data series
+                });
+            }
         } else if (!azeotropeFinderActive && results.length > 0 && comp1Name && comp2Name) {
             // --- Existing VLE Diagram Plotting Logic ---
             let titleText = "";
@@ -1479,34 +1494,57 @@ export default function VleCalculatorPage() {
             </Card>
 
             {error && (<Alert variant="destructive" className="mb-4"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>)}
+            
+            {/* Loading Message */}
             {isLoading && <p className="text-center my-4">Loading and calculating, please wait...</p>}
 
-            {/* --- Chart Card --- */}
-            {(results.length > 0 || azeotropeScanData.length > 0) && !isLoading && (
-                 <Card className="mb-4">
-                     <CardContent className="pt-6">
-                         {Object.keys(vleChartOptions).length > 0 ? (
-                              <div className="relative h-[500px] md:h-[600px] rounded-md border bg-card">
-                                 {/* --- REPLACE PLOTLY WITH ECHARTS --- */}
-                                 <ReactECharts
-                                     echarts={echarts}
-                                     option={vleChartOptions}
-                                     style={{ height: '100%', width: '100%' }}
-                                     notMerge={true} // Recommended for dynamic data
-                                     lazyUpdate={true} // Recommended for performance
-                                     theme={resolvedTheme === 'dark' ? 'dark' : undefined} // Optional: ECharts theme
-                                 />
-                              </div>
-                          ) : (
-                             <p className="text-muted-foreground text-center h-[500px] md:h-[600px] flex items-center justify-center">Generating chart...</p>
-                          )}
-                          <p className="text-xs text-muted-foreground mt-2 text-center">
-                              Note: Accuracy depends on database parameters and model limitations.
-                          </p>
-                      </CardContent>
-                  </Card>
-             )}
-             {/* --- END Chart Card --- */}
+            {/* Chart Area or "No Results" Message - Rendered when not loading */}
+            {!isLoading && (
+                <>
+                    {/* Chart Card: Render if in azeotropeFinder mode OR in VLE diagram mode with results */}
+                    {(azeotropeFinderActive || (!azeotropeFinderActive && results.length > 0)) && (
+                        <Card className="mb-4">
+                            <CardContent className="pt-6">
+                                {Object.keys(vleChartOptions).length > 0 ? (
+                                    <div className="relative h-[500px] md:h-[600px] rounded-md border bg-card">
+                                        <ReactECharts
+                                            echarts={echarts}
+                                            option={vleChartOptions}
+                                            style={{ height: '100%', width: '100%' }}
+                                            notMerge={true}
+                                            lazyUpdate={true}
+                                            theme={resolvedTheme === 'dark' ? 'dark' : undefined}
+                                        />
+                                    </div>
+                                ) : (
+                                    // Fallback if vleChartOptions is empty for some reason.
+                                    // useEffect should ensure vleChartOptions is set with a "no data" message if needed.
+                                    <p className="text-muted-foreground text-center h-[500px] md:h-[600px] flex items-center justify-center">
+                                        {azeotropeFinderActive && azeotropeScanData.length === 0 && !error ? 
+                                            "No azeotropes found within the scanned range." : 
+                                            "Generating chart..."
+                                        }
+                                    </p>
+                                )}
+                                <p className="text-xs text-muted-foreground mt-2 text-center">
+                                    Note: Accuracy depends on database parameters and model limitations.
+                                </p>
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* "Calculate VLE diagram" Message: Render if in VLE mode, no results, not loading, and no error */}
+                    {!azeotropeFinderActive && results.length === 0 && !error && (
+                        <Card className="mb-4">
+                            <CardContent className="pt-6">
+                                <p className="text-muted-foreground text-center h-[500px] md:h-[600px] flex items-center justify-center">
+                                    Calculate a VLE diagram to see results.
+                                </p>
+                            </CardContent>
+                        </Card>
+                    )}
+                </>
+            )}
 
             <Card>
                 <CardHeader><CardTitle>Calculation Log</CardTitle></CardHeader>
