@@ -55,7 +55,7 @@ export default function Page() {
             key={index}
             href={simulation.path}
             className="block h-full"
-            legacyBehavior>
+            >
             <Card className="h-full hover:shadow-lg transition-shadow bg-card border border-border flex flex-col">
               <CardHeader>
                 {/* Outer container for centering the block */}

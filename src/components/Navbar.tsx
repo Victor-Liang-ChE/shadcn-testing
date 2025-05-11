@@ -96,12 +96,8 @@ function Navbar() {
     >
       {/* Left: Brand */}
       <div>
-        <Link href="/" legacyBehavior passHref>
-          {/* Increased font size and applied updated brand hover style */}
-          {/* Keep legacyBehavior here for now if it's not causing issues */}
-          <a className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
+        <Link href="/" className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
             Victor Liang
-          </a>
         </Link>
       </div>
       {/* Center: Page Title */}
