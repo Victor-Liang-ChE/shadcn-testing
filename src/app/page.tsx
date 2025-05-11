@@ -147,7 +147,11 @@ export default function Home() {
           </Link>
 
           <Link href="/simulations/mccabe-thiele" passHref legacyBehavior>
-            <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col">
+            <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col relative overflow-hidden">
+              {/* UPDATED Badge */}
+              <div className="absolute top-3 right-[-32px] transform rotate-45 bg-red-600 text-white text-xs font-semibold py-2 px-8 shadow-lg z-10">
+                UPDATED
+              </div>
               <CardHeader>
                 {/* Consistent image container */}
                 <div className="relative mx-auto mb-4">
