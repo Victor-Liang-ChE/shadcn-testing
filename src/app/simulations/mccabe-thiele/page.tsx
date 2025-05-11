@@ -123,6 +123,21 @@ try {
     console.error("Error initializing Supabase client for McCabe-Thiele:", error);
 }
 
+// Debounce function
+function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+
+  const debounced = (...args: Parameters<F>) => {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+    timeout = setTimeout(() => func(...args), waitFor);
+  };
+
+  return debounced as (...args: Parameters<F>) => void;
+}
+
 export default function McCabeThielePage() {
   // Input States - Updated defaults for initial load
   const [comp1Name, setComp1Name] = useState('methanol');
@@ -161,15 +176,29 @@ export default function McCabeThielePage() {
   const [displayedUseTemp, setDisplayedUseTemp] = useState(true);
   const [displayedFluidPackage, setDisplayedFluidPackage] = useState<FluidPackageTypeMcCabe>('unifac');
 
+  // Suggestion states
+  const [comp1Suggestions, setComp1Suggestions] = useState<string[]>([]);
+  const [comp2Suggestions, setComp2Suggestions] = useState<string[]>([]);
+  const [showComp1Suggestions, setShowComp1Suggestions] = useState(false);
+  const [showComp2Suggestions, setShowComp2Suggestions] = useState(false);
+  const [activeSuggestionInput, setActiveSuggestionInput] = useState<'comp1' | 'comp2' | null>(null);
+
+  const input1Ref = useRef<HTMLInputElement>(null);
+  const input2Ref = useRef<HTMLInputElement>(null);
+  const suggestions1Ref = useRef<HTMLDivElement>(null);
+  const suggestions2Ref = useRef<HTMLDivElement>(null);
+
 
   // --- useEffect for initial graph load ---
   useEffect(() => {
     // Automatically calculate and display the graph on initial component mount
     // with the default states (Methanol/Water, 60C, UNIQUAC).
     console.log("McCabe: Initial load effect triggered.");
-    calculateEquilibriumCurve();
+    if (supabase) { // Ensure supabase is initialized before first calculation
+        calculateEquilibriumCurve();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty dependency array ensures this runs only once on mount
+  }, [supabase]); // Add supabase as a dependency if it can be initially undefined
 
   // --- Data Fetching (Adapted from test/page.tsx) ---
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
@@ -291,6 +320,115 @@ export default function McCabeThielePage() {
         return null;
     }
   }
+
+  // --- Fetch Suggestions ---
+  const fetchSuggestions = useCallback(async (inputValue: string, inputTarget: 'comp1' | 'comp2') => {
+    if (!inputValue || inputValue.length < 2 || !supabase) {
+      if (inputTarget === 'comp1') {
+        setComp1Suggestions([]);
+        setShowComp1Suggestions(false);
+      } else {
+        setComp2Suggestions([]);
+        setShowComp2Suggestions(false);
+      }
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('compounds')
+        .select('name')
+        .ilike('name', `%${inputValue}%`)
+        .limit(5);
+
+      if (error) {
+        console.error("Supabase suggestion fetch error:", error);
+        if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]);
+        return;
+      }
+
+      const suggestions = data ? data.map(item => item.name) : [];
+      if (inputTarget === 'comp1') {
+        setComp1Suggestions(suggestions);
+        setShowComp1Suggestions(suggestions.length > 0);
+      } else {
+        setComp2Suggestions(suggestions);
+        setShowComp2Suggestions(suggestions.length > 0);
+      }
+    } catch (err) {
+      console.error("Error fetching suggestions:", err);
+      if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]);
+    }
+  }, [supabase]);
+
+  const debouncedFetchSuggestions = useCallback(debounce(fetchSuggestions, 300), [fetchSuggestions]);
+
+  const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    setComp1Name(newValue);
+    setActiveSuggestionInput('comp1');
+    if (newValue.trim() === "") {
+      setShowComp1Suggestions(false);
+      setComp1Suggestions([]);
+    } else {
+      debouncedFetchSuggestions(newValue, 'comp1');
+    }
+  };
+
+  const handleComp2NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value;
+    setComp2Name(newValue);
+    setActiveSuggestionInput('comp2');
+    if (newValue.trim() === "") {
+      setShowComp2Suggestions(false);
+      setComp2Suggestions([]);
+    } else {
+      debouncedFetchSuggestions(newValue, 'comp2');
+    }
+  };
+
+  const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
+    if (inputTarget === 'comp1') {
+      setComp1Name(suggestion);
+      setShowComp1Suggestions(false);
+      setComp1Suggestions([]);
+      input1Ref.current?.focus(); // Keep focus on the input
+    } else {
+      setComp2Name(suggestion);
+      setShowComp2Suggestions(false);
+      setComp2Suggestions([]);
+      input2Ref.current?.focus(); // Keep focus on the input
+    }
+    // setActiveSuggestionInput(null); // Don't reset active input here, let blur handle it or next focus
+  };
+  
+  // Effect to handle clicks outside of the suggestion boxes
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (activeSuggestionInput === 'comp1') {
+        if (suggestions1Ref.current && !suggestions1Ref.current.contains(target) && input1Ref.current && !input1Ref.current.contains(target)) {
+          setShowComp1Suggestions(false);
+        }
+      }
+      if (activeSuggestionInput === 'comp2') {
+        if (suggestions2Ref.current && !suggestions2Ref.current.contains(target) && input2Ref.current && !input2Ref.current.contains(target)) {
+          setShowComp2Suggestions(false);
+        }
+      }
+      // If click is outside any active suggestion area, reset active input
+      if (input1Ref.current && !input1Ref.current.contains(target) &&
+          input2Ref.current && !input2Ref.current.contains(target) &&
+          suggestions1Ref.current && !suggestions1Ref.current.contains(target) &&
+          suggestions2Ref.current && !suggestions2Ref.current.contains(target)) {
+        // setActiveSuggestionInput(null); // This might be too aggressive, let focus changes manage active state
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [activeSuggestionInput]);
 
   const calculateEquilibriumCurve = useCallback(async () => {
     console.log(`McCabe: calculateEquilibriumCurve called. Comp1: ${comp1Name}, Comp2: ${comp2Name}, Package: ${fluidPackage}`);
@@ -644,10 +782,20 @@ export default function McCabeThielePage() {
     return "Super Heated Vapor";
   };
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>, inputTarget?: 'comp1' | 'comp2') => {
     if (event.key === 'Enter') {
       event.preventDefault();
+      if (inputTarget === 'comp1' && showComp1Suggestions && comp1Suggestions.length > 0) {
+        // Potentially select first suggestion or handle differently
+        // For now, just close suggestions and update graph
+        setShowComp1Suggestions(false);
+      } else if (inputTarget === 'comp2' && showComp2Suggestions && comp2Suggestions.length > 0) {
+        setShowComp2Suggestions(false);
+      }
       handleUpdateGraphClick(); // Trigger graph update on Enter key
+    } else if (event.key === 'Escape') {
+        if (inputTarget === 'comp1') setShowComp1Suggestions(false);
+        if (inputTarget === 'comp2') setShowComp2Suggestions(false);
     }
   };
   
@@ -762,27 +910,71 @@ export default function McCabeThielePage() {
 
                   {/* Component Inputs - Side by side with placeholders and swap button */}
                   <div className="flex items-center gap-2">
-                    <Input
-                      id="comp1Name"
-                      value={comp1Name}
-                      onChange={(e) => setComp1Name(e.target.value)}
-                      onKeyDown={handleKeyDown} // Attach Enter key handler
-                      placeholder="Methanol" // Specific placeholder
-                      required
-                      className="flex-1"
-                    />
+                    <div className="relative flex-1">
+                      <Input
+                        ref={input1Ref}
+                        id="comp1Name"
+                        value={comp1Name}
+                        onChange={handleComp1NameChange}
+                        onKeyDown={(e) => handleKeyDown(e, 'comp1')}
+                        onFocus={() => {
+                            setActiveSuggestionInput('comp1');
+                            if (comp1Name.trim() !== "" && comp1Suggestions.length > 0) setShowComp1Suggestions(true);
+                            else if (comp1Name.trim() !== "") debouncedFetchSuggestions(comp1Name, 'comp1');
+                        }}
+                        placeholder="Methanol"
+                        required
+                        className="w-full"
+                        autoComplete="off"
+                      />
+                      {showComp1Suggestions && comp1Suggestions.length > 0 && (
+                        <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                          {comp1Suggestions.map((suggestion, index) => (
+                            <div
+                              key={index}
+                              onClick={() => handleSuggestionClick(suggestion, 'comp1')}
+                              className="px-3 py-2 hover:bg-accent cursor-pointer text-sm"
+                            >
+                              {suggestion}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                     <Button variant="ghost" size="icon" onClick={handleSwapComponents} title="Swap Components">
                         <ArrowLeftRight className="h-4 w-4" />
                     </Button>
-                    <Input
-                      id="comp2Name"
-                      value={comp2Name}
-                      onChange={(e) => setComp2Name(e.target.value)}
-                      onKeyDown={handleKeyDown} // Attach Enter key handler
-                      placeholder="Water" // Specific placeholder
-                      required
-                      className="flex-1"
-                    />
+                    <div className="relative flex-1">
+                      <Input
+                        ref={input2Ref}
+                        id="comp2Name"
+                        value={comp2Name}
+                        onChange={handleComp2NameChange}
+                        onKeyDown={(e) => handleKeyDown(e, 'comp2')}
+                        onFocus={() => {
+                            setActiveSuggestionInput('comp2');
+                            if (comp2Name.trim() !== "" && comp2Suggestions.length > 0) setShowComp2Suggestions(true);
+                            else if (comp2Name.trim() !== "") debouncedFetchSuggestions(comp2Name, 'comp2');
+                        }}
+                        placeholder="Water"
+                        required
+                        className="w-full"
+                        autoComplete="off"
+                      />
+                      {showComp2Suggestions && comp2Suggestions.length > 0 && (
+                        <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                          {comp2Suggestions.map((suggestion, index) => (
+                            <div
+                              key={index}
+                              onClick={() => handleSuggestionClick(suggestion, 'comp2')}
+                              className="px-3 py-2 hover:bg-accent cursor-pointer text-sm"
+                            >
+                              {suggestion}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   {/* Fluid Package Selector - Label side-by-side, reordered */}
                   <div className="flex items-center gap-2">
