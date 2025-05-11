@@ -1492,12 +1492,9 @@ export default function VleCalculatorPage() {
                     </Button>
                 </CardContent>
             </Card>
-
             {error && (<Alert variant="destructive" className="mb-4"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>)}
-            
             {/* Loading Message */}
             {isLoading && <p className="text-center my-4">Loading and calculating, please wait...</p>}
-
             {/* Chart Area or "No Results" Message - Rendered when not loading */}
             {!isLoading && (
                 <>
@@ -1519,12 +1516,12 @@ export default function VleCalculatorPage() {
                                 ) : (
                                     // Fallback if vleChartOptions is empty for some reason.
                                     // useEffect should ensure vleChartOptions is set with a "no data" message if needed.
-                                    <p className="text-muted-foreground text-center h-[500px] md:h-[600px] flex items-center justify-center">
+                                    (<p className="text-muted-foreground text-center h-[500px] md:h-[600px] flex items-center justify-center">
                                         {azeotropeFinderActive && azeotropeScanData.length === 0 && !error ? 
                                             "No azeotropes found within the scanned range." : 
                                             "Generating chart..."
                                         }
-                                    </p>
+                                    </p>)
                                 )}
                                 <p className="text-xs text-muted-foreground mt-2 text-center">
                                     Note: Accuracy depends on database parameters and model limitations.
@@ -1545,7 +1542,6 @@ export default function VleCalculatorPage() {
                     )}
                 </>
             )}
-
             <Card>
                 <CardHeader><CardTitle>Calculation Log</CardTitle></CardHeader>
                 <CardContent><div className="h-64 overflow-y-auto bg-muted p-2 rounded text-xs font-mono">{logMessages.length === 0 ? <p>No messages yet...</p> : logMessages.map((msg, index) => <div key={index}>{msg}</div>)}</div></CardContent>
