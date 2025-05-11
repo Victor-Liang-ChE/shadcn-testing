@@ -128,7 +128,7 @@ export default function McCabeThielePage() {
   const [comp1Name, setComp1Name] = useState('methanol');
   const [comp2Name, setComp2Name] = useState('water');
   const [temperatureC, setTemperatureC] = useState<number | null>(60);
-  const [pressureBar, setPressureBar] = useState<number | null>(1.01325); // Default, but will be overridden by useTemperature=true
+  const [pressureBar, setPressureBar] = useState<number | null>(1); // Default, but will be overridden by useTemperature=true
   const [useTemperature, setUseTemperature] = useState(true);
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeMcCabe>('uniquac');
 
