@@ -54,22 +54,30 @@ export default function PortolaMenuPage() {
   // Update page title based on state
   useEffect(() => {
     let titleText = 'Portola Dining Menu';
-    const topLevelDateRange = allMenuData?.dateRange;
+    const topLevelDateRange = allMenuData?.dateRange; // Keep for fallback
 
     if (isLoading) {
        titleText = 'Loading Menu...';
     } else if (error) {
        titleText = 'Error Loading Menu';
-    // Display the formatted date range if it's available and not "N/A"
+    } else if (menuData && menuData.days && menuData.days.length > 0) {
+        // New logic: Use first and last day titles from menuData.days
+        const firstDayTitleFull = menuData.days[0].title; // e.g., "Sunday, 05/05"
+        const lastDayTitleFull = menuData.days[menuData.days.length - 1].title; // e.g., "Thursday, 05/09"
+
+        // Remove comma to get "Day MM/DD" format
+        const firstDayFormatted = firstDayTitleFull.replace(',', '');
+        const lastDayFormatted = lastDayTitleFull.replace(',', '');
+
+        titleText = `${firstDayFormatted} - ${lastDayFormatted}`;
     } else if (topLevelDateRange && topLevelDateRange !== "N/A") {
+        // Fallback to existing logic if menuData.days is not available
         try {
             const [startDateStr, endDateStr] = topLevelDateRange.split(' to ');
             const currentYear = new Date().getFullYear();
-            // Append the current year for parsing
             const startDate = new Date(`${startDateStr}/${currentYear}`);
             const endDate = new Date(`${endDateStr}/${currentYear}`);
 
-            // Adjust year for end date if it wraps around New Year
             if (endDate < startDate) {
                 endDate.setFullYear(currentYear + 1);
             }
@@ -78,21 +86,18 @@ export default function PortolaMenuPage() {
             const startDay = startDate.toLocaleDateString('en-US', options);
             const endDay = endDate.toLocaleDateString('en-US', options);
 
-            // Format: Day MM/DD - Day MM/DD
             titleText = `${startDay} ${startDateStr} - ${endDay} ${endDateStr}`;
         } catch (e) {
-            console.error("Error formatting date range:", e);
-            // Fallback to original string if formatting fails
-            titleText = topLevelDateRange;
+            console.error("Error formatting date range from topLevelDateRange:", e);
+            titleText = topLevelDateRange; // Fallback to raw string
         }
     } else {
-        // Fallback title if data is missing or date range is unavailable
         const mealCapitalized = mealType.charAt(0).toUpperCase() + mealType.slice(1).replace('lunch', 'Lunch/Brunch');
         titleText = `Portola Dining ${mealCapitalized} Menu (Unavailable)`;
     }
     setPageTitle(titleText);
-  // Depend on allMenuData, mealType, isLoading, error
-  }, [allMenuData, mealType, isLoading, error]);
+  // Depend on menuData, allMenuData, mealType, isLoading, error
+  }, [menuData, allMenuData, mealType, isLoading, error]);
 
   // Fetch all menu data once on component mount
   useEffect(() => {
