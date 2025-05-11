@@ -104,7 +104,8 @@ export const ufcChampionsData: Record<string, WeightClassData> = {
       { name: "Tyron Woodley", reignStart: "2016-07-30", reignEnd: "2019-03-02" },
       { name: "Kamaru Usman",  reignStart: "2019-03-02", reignEnd: "2022-08-20" },
       { name: "Leon Edwards",  reignStart: "2022-08-20", reignEnd: "2024-07-27" },
-      { name: "Belal Muhammad",reignStart: "2024-07-27", reignEnd: "Present" },
+      { name: "Belal Muhammad",reignStart: "2024-07-27", reignEnd: "2025-05-10" },
+      { name: "Jack Della Maddalena",reignStart: "2025-05-10", reignEnd: "Present" },
     ],
   },
 
