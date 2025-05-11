@@ -239,7 +239,7 @@ export default function Home() {
       {/* Featured Simulations Section */}
       <div className="simulations-showcase mt-8">
         <h2 className="text-2xl font-bold mb-4 text-center">
-          Featured Simulations
+          Featured Simulations and Tools
         </h2>
         {/* Use consistent grid and card structure */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
