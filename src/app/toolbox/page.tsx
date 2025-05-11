@@ -10,9 +10,7 @@ const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png";
 const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
 const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png";
-
-// Introduction text for the page
-const pageDescription = "A portfolio of interactive chemical engineering simulations developed by me!\nThese tools demonstrate practical application of core concepts in McCabe-Thiele distillation, azeotrope prediction, reaction kinetics, process dynamics, and PID controller tuning.\n Under active development, with more simulations to come!";
+const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png"; // Added new thumbnail path
 
 export default function Page() {
   const allSimulations = [
@@ -27,6 +25,12 @@ export default function Page() {
       path: "/toolbox/azeotrope-finder",
       description: "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
       thumbnailPath: azeotropeThumbnailPath
+    },
+    {
+      name: "Compound Properties",
+      path: "/toolbox/compound-properties", // Assuming this is the correct path
+      description: "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
+      thumbnailPath: compoundPropertiesThumbnailPath
     },
     {
       name: "Reaction Kinetics",
@@ -48,48 +52,12 @@ export default function Page() {
     }
   ];
 
-  // Display the first four simulations as "featured" according to the new order
-  const featuredSimulations = allSimulations.slice(0, 4);
-
   return (
     <main className="flex flex-col items-center justify-between pt-12 px-6">
-      <p className="mb-10 text-lg text-center text-muted-foreground max-w-3xl mx-auto whitespace-pre-line">
-        {pageDescription}
-      </p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
-        {featuredSimulations.map((simulation, index) => (
-          <Link
-            key={index}
-            href={simulation.path}
-            className="block h-full"
-            >
-            <Card className="h-full hover:shadow-lg transition-shadow bg-card border border-border flex flex-col">
-              <CardHeader>
-                <div className="relative mx-auto mb-4">
-                  <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
-                    <Image
-                      src={simulation.thumbnailPath}
-                      alt={`${simulation.name} Thumbnail`}
-                      layout="fill"
-                      objectFit="contain"
-                    />
-                  </div>
-                </div>
-                <CardTitle>{simulation.name}</CardTitle>
-              </CardHeader>
-              <CardContent className="flex-grow">
-                <CardDescription>{simulation.description}</CardDescription>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
-      </div>
-      
       {/* Optionally, list all simulations below or link to a page with all of them if the list grows */}
-      {/* For now, we are only showing the featured ones based on the current layout */}
-      {allSimulations.length > featuredSimulations.length && (
-        <div className="mt-12 w-full">
-          <h2 className="text-xl font-bold mb-4 text-center">All Simulations</h2>
+      {allSimulations.length > 0 && (
+        <div className="w-full">
+          {/* <h2 className="text-xl font-bold mb-4 text-center">All Simulations</h2> */} {/* Title removed */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
             {allSimulations.map((simulation, index) => (
               <Link
