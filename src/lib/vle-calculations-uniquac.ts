@@ -81,7 +81,6 @@ export function calculateUniquacGamma(
     T_K: number,
     interactionParams: UniquacInteractionParams
 ): [number, number] | null { // Returns [gamma1, gamma2] or null on error
-    console.log("!!!!!!!!!! EXECUTING calculateUniquacGamma (UNIQUAC V4) !!!!!!!!!!");
 
     if (components.length !== 2 || x.length !== 2) {
         console.error("UNIQUAC Gamma: Supports only binary mixtures.");
@@ -208,8 +207,6 @@ export function calculateUniquacGamma(
         }
     }
     
-    console.log(`UNIQUAC_DETAILS: ln_gamma_C = [${lngamma_C[0]?.toFixed(4)}, ${lngamma_C[1]?.toFixed(4)}]`);
-
     // --- Residual Part ---
     const { A12, A21 } = interactionParams;
     const tau12 = Math.exp(-A12 / T_K); 
