@@ -5,7 +5,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
-import type { EChartsOption, SeriesOption as EChartsSeriesOption } from 'echarts';
+import type { EChartsOption, SeriesOption as EChartsSeriesOption } from 'echarts'; 
 import { LineChart } from 'echarts/charts';
 import {
   TitleComponent,
@@ -91,46 +91,141 @@ const formatNumberToPrecision = (num: any, precision: number = 4): string => {
 interface PropertyDefinition {
   displayName: string;
   jsonKey: string;
-  equationType: 'eq101' | 'eq105' | 'polynomial' | 'eq106' | 'eq102_cv' | 'eq104_virial' | 'eq16_complex'; // Added eq16_complex
+  equationType: 'eq101' | 'eq105' | 'polynomial' | 'eq106' | 'eq102_cv' | 'eq104_virial' | 'eq16_complex';
   yAxisIndex: number;
-  targetUnitName: string;
-  color: string; // This will be used as a base, might need array of colors for multiple compounds
+  targetUnitName: string; // Base unit for calculations and storage
+  color: string;
   coeffs: string[];
   requiresTc?: boolean;
   requiresMolarMass?: boolean;
-  conversionFactor?: number;
+  conversionFactor?: number; // Factor to convert equation's raw output to targetUnitName
   equationTemplate?: string;
+  symbol?: string; // For display in dropdown
+  availableUnits?: Array<{ 
+    unit: string; // Display unit
+    conversionFactorFromBase: number; // Factor to convert from targetUnitName to this display unit
+    displayName?: string; // Optional: if unit string itself isn't descriptive enough
+  }>;
 }
 
 const baseColors = ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE', '#3BA272', '#FC8452', '#9A60B4', '#EA7CCC'];
 const propertiesToPlotConfig: PropertyDefinition[] = [
-  { displayName: "Vapor Pressure", jsonKey: "Vapour pressure", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa", color: baseColors[0], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "P = exp(A + B/T + C ln(T) + D T<sup>E</sup>)" },
-  { displayName: "Liquid Density", jsonKey: "Liquid density", equationType: "eq105", yAxisIndex: 0, targetUnitName: "kg/m³", color: baseColors[1], coeffs: ['A', 'B', 'C', 'D'], requiresMolarMass: true, requiresTc: true, equationTemplate: "ρ = (A / B<sup>(1+(1-T/T<sub>c</sub>)<sup>D</sup>)</sup>) MW" },
-  { displayName: "Liquid Heat Capacity", jsonKey: "Liquid heat capacity", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/mol·K", color: baseColors[2], coeffs: ['A', 'B', 'C', 'D', 'E'], conversionFactor: 1/1000, equationTemplate: "Cp = A + exp(B/T + C + D T + E T<sup>2</sup>)" },
-  { displayName: "Liquid Viscosity", jsonKey: "Liquid viscosity", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa·s", color: baseColors[3], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "μ = exp(A + B/T + C ln(T) + D T<sup>E</sup>)" },
-  { displayName: "Heat of Vaporization", jsonKey: "Heat of vaporization", equationType: "eq106", yAxisIndex: 0, targetUnitName: "J/mol", color: baseColors[4], coeffs: ['A', 'B', 'C', 'D', 'E'], requiresTc: true, equationTemplate: "ΔHᵥ = A(1-T/T<sub>c</sub>)<sup>(B+C(T/T<sub>c</sub>)+D(T/T<sub>c</sub>)<sup>2</sup>+E(T/T<sub>c</sub>)<sup>3</sup>)</sup>" },
   { 
-    displayName: "Ideal Gas Heat Capacity", 
-    jsonKey: "Ideal gas heat capacity", 
-    equationType: "eq16_complex",
-    yAxisIndex: 0, 
-    targetUnitName: "J/mol·K", 
-    color: baseColors[5], 
-    coeffs: ['A', 'B', 'C', 'D', 'E'], 
-    conversionFactor: 1/1000, 
-    equationTemplate: "Cp⁰ = A + exp(B/T + C + D·T + E·T<sup>2</sup>)" 
+    displayName: "Vapor Pressure", jsonKey: "Vapour pressure", symbol: "P", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa", 
+    availableUnits: [
+        { unit: "bar", conversionFactorFromBase: 1e-5 },
+        { unit: "Pa", conversionFactorFromBase: 1 },
+        { unit: "kPa", conversionFactorFromBase: 1e-3 },
+        { unit: "atm", conversionFactorFromBase: 1/101325 },
+        { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
+    ],
+    color: baseColors[0], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "P = exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
   },
-  // { displayName: "Ideal Gas Heat Capacity (RPP)", jsonKey: "Ideal gas heat capacity (RPP)", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/mol·K", color: baseColors[6], coeffs: ['A', 'B', 'C', 'D', 'E'], conversionFactor: 1/1000, equationTemplate: "Cp⁰(RPP) = A + B T + C T² + D T³ + E T⁴" }, 
-  { displayName: "Liquid Thermal Conductivity", jsonKey: "Liquid thermal conductivity", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "W/m·K", color: baseColors[7], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "kL = A + exp(B/T + C + D T + E T<sup>2</sup>)" },
-  { displayName: "Second Virial Coefficient", jsonKey: "Second virial coefficient", equationType: "eq104_virial", yAxisIndex: 0, targetUnitName: "m³/kmol", color: baseColors[8], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "Bᵥ = A + B/T + C/T<sup>2</sup> + D/T<sup>8</sup> + E/T<sup>9</sup>" },
-  { displayName: "Solid Density", jsonKey: "Solid density", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "kg/m³", color: '#808080', coeffs: ['A', 'B'], requiresMolarMass: true, equationTemplate: "ρS = (A + B T) MW" },
-  { displayName: "Solid Heat Capacity", jsonKey: "Solid heat capacity", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/mol·K", color: '#FFD700', coeffs: ['A', 'B', 'C', 'D', 'E'], conversionFactor: 1/1000, equationTemplate: "CpS = A + B T + C T<sup>2</sup> + D T<sup>3</sup> + E T<sup>4</sup>" },
-  { displayName: "Surface Tension", jsonKey: "Surface tension", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "N/m", color: '#00CED1', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "σ = A + exp(B/T + C + D T + E T<sup>2</sup>)" },
-  { displayName: "Vapour Thermal Conductivity", jsonKey: "Vapour thermal conductivity", equationType: "eq102_cv", yAxisIndex: 0, targetUnitName: "W/m·K", color: '#DA70D6', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "kV = (A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" },
-  { displayName: "Vapour Viscosity", jsonKey: "Vapour viscosity", equationType: "eq102_cv", yAxisIndex: 0, targetUnitName: "Pa·s", color: '#6A5ACD', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "μV = (A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" },
+  { 
+    displayName: "Liquid Density", jsonKey: "Liquid density", symbol: "ρ", equationType: "eq105", yAxisIndex: 0, targetUnitName: "kg/m³", 
+    availableUnits: [
+        { unit: "kg/m³", conversionFactorFromBase: 1 },
+        { unit: "g/cm³", conversionFactorFromBase: 1e-3 }
+    ],
+    color: baseColors[1], coeffs: ['A', 'B', 'C', 'D'], requiresMolarMass: true, requiresTc: true, equationTemplate: "ρ = (A / B<sup>(1+(1-T/T<sub>c</sub>)<sup>D</sup>)</sup>) MW" 
+  },
+  { 
+    displayName: "Liquid Heat Capacity", jsonKey: "Liquid heat capacity", symbol: "Cp", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/mol/K", 
+    conversionFactor: 1,
+    availableUnits: [
+        { unit: "kJ/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/mol/K", conversionFactorFromBase: 1 }
+    ],
+    color: baseColors[2], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "Cp = A + exp(B/T + C + D T + E T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Liquid Viscosity", jsonKey: "Liquid viscosity", symbol: "μ", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    availableUnits: [
+        { unit: "cP", conversionFactorFromBase: 1000 },
+        { unit: "Pa·s", conversionFactorFromBase: 1 },
+        { unit: "mPa·s", conversionFactorFromBase: 1000 }
+    ],
+    color: baseColors[3], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "μ = exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
+  },
+  { 
+    displayName: "Heat of Vaporization", jsonKey: "Heat of vaporization", symbol: "ΔH_v", equationType: "eq106", yAxisIndex: 0, targetUnitName: "J/mol", 
+    availableUnits: [
+        { unit: "kJ/mol", conversionFactorFromBase: 0.001 },
+        { unit: "J/mol", conversionFactorFromBase: 1 }
+    ],
+    color: baseColors[4], coeffs: ['A', 'B', 'C', 'D', 'E'], requiresTc: true, equationTemplate: "ΔHᵥ = A(1-T/T<sub>c</sub>)<sup>(B+C(T/T<sub>c</sub>)+D(T/T<sub>c</sub>)<sup>2</sup>+E(T/T<sub>c</sub>)<sup>3</sup>)</sup>" 
+  },
+  { 
+    displayName: "Ideal Gas Heat Capacity", jsonKey: "Ideal gas heat capacity", symbol: "Cp^0", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/mol/K", 
+    conversionFactor: 1,
+    availableUnits: [
+        { unit: "kJ/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/mol/K", conversionFactorFromBase: 1 }
+    ],
+    color: baseColors[5], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "Cp⁰ = A + exp(B/T + C + D T + E T<sup>2</sup>)"
+  },
+  { 
+    displayName: "Liquid Thermal Conductivity", jsonKey: "Liquid thermal conductivity", symbol: "k_L", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "W/m/K", 
+    availableUnits: [
+        { unit: "W/m/K", conversionFactorFromBase: 1 },
+        { unit: "mW/m/K", conversionFactorFromBase: 1000 }
+    ],
+    color: baseColors[7], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "k<sub>L</sub> = A + exp(B/T + C + D T + E T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Second Virial Coefficient", jsonKey: "Second virial coefficient", symbol: "B_v", equationType: "eq104_virial", yAxisIndex: 0, targetUnitName: "m³/kmol", 
+    availableUnits: [
+        { unit: "cm³/mol", conversionFactorFromBase: 1000 },
+        { unit: "m³/kmol", conversionFactorFromBase: 1 }
+    ],
+    color: baseColors[8], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "Bᵥ = A + B/T + C/T<sup>2</sup> + D/T<sup>8</sup> + E/T<sup>9</sup>" 
+  },
+  { 
+    displayName: "Solid Density", jsonKey: "Solid density", symbol: "ρ_S", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "kg/m³", 
+    availableUnits: [
+        { unit: "kg/m³", conversionFactorFromBase: 1 },
+        { unit: "g/cm³", conversionFactorFromBase: 1e-3 }
+    ],
+    color: '#808080', coeffs: ['A', 'B'], requiresMolarMass: true, equationTemplate: "ρS = (A + B T) MW" 
+  },
+  { 
+    displayName: "Solid Heat Capacity", jsonKey: "Solid heat capacity", symbol: "Cp_S", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/mol/K", 
+    conversionFactor: 1,
+    availableUnits: [
+        { unit: "kJ/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/mol/K", conversionFactorFromBase: 1 }
+    ],
+    color: '#FFD700', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "Cp<sub>S</sub> = A + B T + C T<sup>2</sup> + D T<sup>3</sup> + E T<sup>4</sup>" 
+  },
+  { 
+    displayName: "Surface Tension", jsonKey: "Surface tension", symbol: "σ", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "N/m", 
+    availableUnits: [
+        { unit: "N/m", conversionFactorFromBase: 1 },
+        { unit: "mN/m", conversionFactorFromBase: 1000 },
+        { unit: "dyn/cm", conversionFactorFromBase: 1000 }
+    ],
+    color: '#00CED1', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "σ = A + exp(B/T + C + D T + E T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Vapour Thermal Conductivity", jsonKey: "Vapour thermal conductivity", symbol: "k_V", equationType: "eq102_cv", yAxisIndex: 0, targetUnitName: "W/m/K", 
+    availableUnits: [
+        { unit: "W/m/K", conversionFactorFromBase: 1 },
+        { unit: "mW/m/K", conversionFactorFromBase: 1000 }
+    ],
+    color: '#DA70D6', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "k<sub>V</sub> = (A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Vapour Viscosity", jsonKey: "Vapour viscosity", symbol: "μ_V", equationType: "eq102_cv", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    availableUnits: [
+        { unit: "cP", conversionFactorFromBase: 1000 },
+        { unit: "Pa·s", conversionFactorFromBase: 1 },
+        { unit: "mPa·s", conversionFactorFromBase: 1000 }
+    ],
+    color: '#6A5ACD', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "μ<sub>V</sub> = (A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" 
+  },
 ];
 
-const compoundColors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']; // Colors for up to 4 compounds
+const compoundColors = ['#FAC858', '#ff7f0e', '#2ca02c', '#d62728']; // Colors for up to 4 compounds (Yellow, Orange, Green, Red)
 
 interface FetchedCompoundData {
     properties: any;
@@ -150,7 +245,6 @@ interface CompoundInputState {
     suggestionsRef: React.RefObject<HTMLDivElement | null>;  // <-- allow null here
 }
 
-
 // Debounce function
 function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
   let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -160,6 +254,54 @@ function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
   };
   return debounced as (...args: Parameters<F>) => void;
 }
+
+// Helper function to render property name with optional symbol and subscripts/superscripts
+const renderPropertyName = (displayName: string, symbol?: string): React.ReactNode => {
+  let symbolSpan: React.ReactNode | null = null;
+  if (symbol) {
+    // Aggressively trim leading/trailing whitespace from the initial symbol string
+    const baseSymbol = symbol.replace(/^\s+|\s+$/g, '');
+
+    // Regex to find parts like _X or ^Y or normal characters
+    const parts = baseSymbol.match(/([^_^+]+|_[^_^+]+|\^[^_^+]+)/g);
+
+    if (parts) {
+      symbolSpan = (
+        <span style={{ padding: '0px', margin: '0px' }}> {/* Wrap all symbol parts in a single span */}
+          {parts.map((part, index) => {
+            // Each part from regex might still have spaces if baseSymbol had internal spaces
+            // that became leading/trailing for a part. e.g. baseSymbol = "A _B" -> parts ["A ", "_B"]
+            // So, aggressively trim each part as well.
+            const cleanedPart = part.replace(/^\s+|\s+$/g, '');
+
+            if (cleanedPart.startsWith('_') && cleanedPart.length > 1) {
+              // Aggressively trim the content *after* substring
+              return <sub key={index} style={{ padding: '0px', margin: '0px' }}>{cleanedPart.substring(1).replace(/^\s+|\s+$/g, '')}</sub>;
+            } else if (cleanedPart.startsWith('^') && cleanedPart.length > 1) {
+              // Aggressively trim the content *after* substring here as well
+              return <sup key={index} style={{ padding: '0px', margin: '0px' }}>{cleanedPart.substring(1).replace(/^\s+|\s+$/g, '')}</sup>;
+            }
+            // cleanedPart is already aggressively trimmed
+            return cleanedPart; 
+          })}
+        </span>
+      );
+    } else if (baseSymbol) { // Fallback if regex doesn't match but baseSymbol has content
+      // baseSymbol is already aggressively trimmed from the start
+      symbolSpan = <span style={{ padding: '0px', margin: '0px' }}>{baseSymbol}</span>;
+    }
+  }
+
+  return (
+    <>
+      {displayName}
+      {symbolSpan && (
+        <>,{symbolSpan}</> 
+      )}
+    </>
+  );
+};
+
 
 export default function CompoundPropertiesPage() {
   const nextCompoundId = useRef(0); 
@@ -178,11 +320,17 @@ export default function CompoundPropertiesPage() {
   ]);
   
   const [loading, setLoading] = useState(false);
-  const [overallError, setOverallError] = useState<string | null>(null); // For global errors like "select a property"
+  // Corrected useState syntax for overallError
+  const [overallError, setOverallError] = useState<string | null>(null); 
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
   const echartsRef = useRef<ReactECharts | null>(null);
+  const yAxisUnitRef = useRef<string | null>(null); // Ref to store yAxisUnit for CSV export
 
   const [selectedPropertyKey, setSelectedPropertyKey] = useState<string>(propertiesToPlotConfig[0].jsonKey);
+  const [selectedUnit, setSelectedUnit] = useState<string>(() => {
+    const initialPropDef = propertiesToPlotConfig.find(p => p.jsonKey === propertiesToPlotConfig[0].jsonKey);
+    return initialPropDef?.availableUnits?.[0]?.unit || initialPropDef?.targetUnitName || '';
+  });
   const [availablePropertiesForSelection, setAvailablePropertiesForSelection] = useState<PropertyDefinition[]>(propertiesToPlotConfig);
  
 
@@ -229,7 +377,8 @@ export default function CompoundPropertiesPage() {
 
   const processAndPlotProperties = useCallback((
     allCompoundsData: CompoundInputState[],
-    propertyKey: string | null
+    propertyKey: string | null,
+    currentSelectedUnit: string // Pass selectedUnit as an argument
   ) => {
     setOverallError(null);
     if (!propertyKey) {
@@ -245,6 +394,14 @@ export default function CompoundPropertiesPage() {
       setOverallError(`Property definition for ${propertyKey} not found.`);
       return;
     }
+
+    // Determine the unit definition to use
+    const unitDefToUse = propDef.availableUnits?.find(u => u.unit === currentSelectedUnit) || 
+                         propDef.availableUnits?.[0] || 
+                         { unit: propDef.targetUnitName, conversionFactorFromBase: 1 };
+    
+    const displayUnit = unitDefToUse.unit;
+    const conversionFactorForDisplay = unitDefToUse.conversionFactorFromBase;
 
     const seriesData: EChartsSeriesOption[] = [];
     let commonTmin: number | null = null;
@@ -329,11 +486,11 @@ export default function CompoundPropertiesPage() {
         }
         if (mw_kg_kmol !== null) currentEquation = currentEquation.replace(/\bMW\b/g, formatNumberToPrecision(mw_kg_kmol, 4));
         
-        // Apply HTML for subscripts/superscripts and clean up "+ -"
+        // Apply HTML for subscripts/superscripts and clean up "+-"
         currentEquation = currentEquation.replace(/T²|T\^2/g, 'T<sup>2</sup>')
                                      .replace(/T³|T\^3/g, 'T<sup>3</sup>')
                                      .replace(/T⁴|T\^4/g, 'T<sup>4</sup>')
-                                     .replace(/\+ -/g, '- '); // Replace "+ -" with "- "
+                                     .replace(/\+\s*-\s*/g, '- '); // Use \s* to catch optional spaces around + and -
         currentEquation = currentEquation.replace(/\bTc\b/g, 'T<sub>c</sub>');
 
 
@@ -372,7 +529,8 @@ export default function CompoundPropertiesPage() {
             smooth: true,
             lineStyle: { color: compoundColors[compoundIndex % compoundColors.length], width: 2.5 },
             itemStyle: { color: compoundColors[compoundIndex % compoundColors.length] },
-            symbolSize: 6,
+            // symbolSize: 6, // Previously showed symbols
+            symbol: 'none', // Hide data point symbols
             // Store extra info for point generation
             _internal_prop_data: propData,
             _internal_compound_data: currentCompoundData,
@@ -398,19 +556,28 @@ export default function CompoundPropertiesPage() {
     const rangeCelsius = commonTmaxCelsius - commonTminCelsius;
 
     let celsiusStep;
-    if (rangeCelsius <= 10) {
-        celsiusStep = 2; // Finer step for small ranges
-    } else if (rangeCelsius <= 25) {
-        celsiusStep = 5;
+    // Revised logic for celsiusStep to make axis ticks less dense
+    if (rangeCelsius <= 20) // For very small ranges, allow smaller steps
+    {
+        celsiusStep = 2; 
     } else if (rangeCelsius <= 50) {
+        celsiusStep = 5;
+    } else if (rangeCelsius <= 100) // Prefer 10 for typical small to medium ranges
+    {
         celsiusStep = 10;
-    } else if (rangeCelsius <= 200) {
-        celsiusStep = 20;
+    } else if (rangeCelsius <= 250) {
+        celsiusStep = 25;
     } else if (rangeCelsius <= 500) {
         celsiusStep = 50;
-    } else {
+    } else { // For very large ranges
         celsiusStep = 100;
     }
+
+    // Ensure celsiusStep is at least 1 if range is extremely small but positive.
+    // This case should ideally be covered by the above, or if rangeCelsius is 0,
+    // the finalPlotTmin/Tmax logic will expand the range by celsiusStep.
+    if (rangeCelsius > 0 && celsiusStep <= 0) celsiusStep = 1; 
+
 
     let finalPlotTminCelsius = Math.floor(commonTminCelsius / celsiusStep) * celsiusStep;
     let finalPlotTmaxCelsius = Math.ceil(commonTmaxCelsius / celsiusStep) * celsiusStep;
@@ -437,8 +604,11 @@ export default function CompoundPropertiesPage() {
         const propData = s._internal_prop_data;
         const currentCompoundData = s._internal_compound_data as FetchedCompoundData;
         const points: [number, number][] = [];
-        const numSteps = 100;
-        const tempStep = (finalPlotTmaxKelvin! - finalPlotTminKelvin!) / numSteps;
+        
+        // const numSteps = 100; // Old way
+        // const tempStep = (finalPlotTmaxKelvin! - finalPlotTminKelvin!) / numSteps; // Old way
+
+        const dataPointCelsiusStep = 0.5; // New: Generate points every 0.5°C
 
         const rawCoeffs = propDef.coeffs.map(cKey => ({ key: cKey, value: parseCoefficient(propData[cKey]) }));
         const passedCoeffs = rawCoeffs.map(c => c.value);
@@ -459,19 +629,24 @@ export default function CompoundPropertiesPage() {
         let mw_kg_kmol_series: number | null = null;
         if (propDef.requiresMolarMass) mw_kg_kmol_series = currentCompoundData.molarWeight ?? null;
 
-        let displayUnit = propDef.targetUnitName;
-        let conversionFactorForDisplay = 1;
+        // let displayUnit = propDef.targetUnitName; // Replaced by logic above
+        // let conversionFactorForDisplay = 1; // Replaced by logic above
 
         // This conversion to 'bar' is specific to vapor pressure in your yAxisConfig.
         // For calculation, we use the raw value and apply targetUnitName conversion later if needed.
-        if (propDef.targetUnitName === "Pa" && propDef.jsonKey === "Vapour pressure") { // Make sure this condition is specific if needed
-            displayUnit = "bar";
-            conversionFactorForDisplay = 1 / 100000;
-        }
+        // REMOVED: Hardcoded Pa to bar conversion, now handled by availableUnits
+        // if (propDef.targetUnitName === "Pa" && propDef.jsonKey === "Vapour pressure") { 
+        //     displayUnit = "bar";
+        //     conversionFactorForDisplay = 1 / 100000;
+        // }
         s._internal_display_unit = displayUnit;
 
-        for (let i = 0; i <= numSteps; i++) {
-            const T = finalPlotTminKelvin! + i * tempStep;
+        // New loop for generating points with nice Celsius steps
+        for (let currentC = finalPlotTminCelsius; currentC <= finalPlotTmaxCelsius + 1e-9; currentC += dataPointCelsiusStep) {
+            // Add 1e-9 to currentC loop limit to handle potential floating point inaccuracies with finalPlotTmaxCelsius
+            const T = currentC + 273.15; // Convert current Celsius point to Kelvin
+
+            // const T = finalPlotTminKelvin! + i * tempStep; // Old way: i is loop counter from 0 to numSteps
             const compoundSpecificTmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
             const compoundSpecificTmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
             
@@ -481,13 +656,10 @@ export default function CompoundPropertiesPage() {
 
             let rawValue: number | null = null; // Value before conversionFactor and displayFactor
             
-            // --- START DEBUGGING BLOCK for a specific temperature point ---
-            // You can pick a T value that you have reference data for, e.g., 373.15 K for 100°C
-            const isDebugTempPoint = (Math.abs(T - 373.15) < tempStep / 2); // Check if T is close to 100C
+            const isDebugTempPoint = (Math.abs(currentC - 100.0) < dataPointCelsiusStep / 2); // Check if currentC is close to 100C
             if ((propDef.jsonKey === "Ideal gas heat capacity" || propDef.jsonKey === "Second virial coefficient") && isDebugTempPoint) {
-                console.log(`DEBUG:   Calculating at T=${T.toFixed(2)} K`);
+                console.log(`DEBUG:   Calculating at T=${T.toFixed(2)} K (${currentC.toFixed(1)} °C)`);
             }
-            // --- END DEBUGGING BLOCK ---
 
             switch (propDef.equationType) {
               case 'eq101':
@@ -520,24 +692,21 @@ export default function CompoundPropertiesPage() {
 
             let finalValue = rawValue;
             if (finalValue !== null && isFinite(finalValue)) {
-              if (propDef.conversionFactor) {
-                // --- START DEBUGGING BLOCK ---
-                if ((propDef.jsonKey === "Ideal gas heat capacity" || propDef.jsonKey === "Second virial coefficient") && isDebugTempPoint) {
-                    console.log(`DEBUG:     Raw value (from eq): ${rawValue}`);
-                    console.log(`DEBUG:     Applying conversionFactor: ${propDef.conversionFactor}`);
-                }
-                // --- END DEBUGGING BLOCK ---
+              if (propDef.conversionFactor && propDef.conversionFactor !== 1) { // Apply if it's defined and not 1
+                // This converts the equation's direct output to the propDef.targetUnitName (base unit)
                 finalValue *= propDef.conversionFactor;
               }
+              
+              // Now convert from base unit (targetUnitName) to the selected displayUnit
+              if (conversionFactorForDisplay !== 1) {
+                finalValue *= conversionFactorForDisplay;
+              }
               // --- START DEBUGGING BLOCK ---
               if ((propDef.jsonKey === "Ideal gas heat capacity" || propDef.jsonKey === "Second virial coefficient") && isDebugTempPoint) {
+                  console.log(`DEBUG:     Raw value (from eq): ${rawValue}`);
+                  console.log(`DEBUG:     Applying conversionFactor: ${propDef.conversionFactor}`);
                   console.log(`DEBUG:     Value after propDef.conversionFactor: ${finalValue}`);
                   console.log(`DEBUG:     Applying displayConversionFactor: ${conversionFactorForDisplay} (for display unit ${displayUnit})`);
-              }
-              // --- END DEBUGGING BLOCK ---
-              finalValue *= conversionFactorForDisplay; // This is mainly for Pa to bar for vapor pressure display
-              // --- START DEBUGGING BLOCK ---
-              if ((propDef.jsonKey === "Ideal gas heat capacity" || propDef.jsonKey === "Second virial coefficient") && isDebugTempPoint) {
                   console.log(`DEBUG:     Final value for plot point: ${finalValue}`);
               }
               // --- END DEBUGGING BLOCK ---
@@ -562,20 +731,21 @@ export default function CompoundPropertiesPage() {
 
     // --- determine axis unit dynamically ---
     const yAxisDisplayName = propDef.displayName;
-    let yAxisUnit = propDef.targetUnitName;
-    if (seriesData.length > 0 && (seriesData[0] as any)._internal_display_unit) {
-      yAxisUnit = (seriesData[0] as any)._internal_display_unit;
-    }
+    let yAxisUnit = displayUnit; // Use the selected display unit
+    // if (seriesData.length > 0 && (seriesData[0] as any)._internal_display_unit) { // This is already displayUnit
+    //   yAxisUnit = (seriesData[0] as any)._internal_display_unit;
+    // }
+    yAxisUnitRef.current = yAxisUnit; // Store for CSV export
 
     const yAxisConfig: any = {
       type: 'value' as const,
       name: `${yAxisDisplayName} (${yAxisUnit})`,
       nameLocation: 'middle' as const,
-      nameGap: 65,
+      nameGap: 80, // Increased gap for larger font and to prevent overlap
       position: 'left' as const,
       axisLine: { show: true, lineStyle: { color: propDef.color, width: 2 } },
-      axisLabel: { formatter: (val: number) => formatNumberToPrecision(val, 3), color: '#e0e6f1', fontSize: 14, fontFamily: 'Merriweather Sans' },
-      nameTextStyle: { color: '#e0e6f1', fontSize: 16, fontFamily: 'Merriweather Sans' },
+      axisLabel: { formatter: (val: number) => formatNumberToPrecision(val, 3), color: '#e0e6f1', fontSize: 16, fontFamily: 'Merriweather Sans' }, // Font size 16
+      nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Font size 15
       splitLine: { show: false },
       scale: true,
     };
@@ -591,8 +761,44 @@ export default function CompoundPropertiesPage() {
       },
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'cross' },
-        backgroundColor: '#1e293b',
+        axisPointer: { 
+          type: 'cross',
+          label: {
+            backgroundColor: '#ffffff', // Background of the label box
+            formatter: function (params: { value: number | string | Date; axisDimension: string; }) { 
+              let valueAsNumber: number;
+              const paramValue = params.value; 
+              const axisDim = params.axisDimension;
+
+              if (typeof paramValue === 'number') {
+                valueAsNumber = paramValue;
+              } else if (typeof paramValue === 'string') {
+                valueAsNumber = parseFloat(paramValue);
+              } else if (paramValue instanceof Date) { // paramValue can be Date
+                valueAsNumber = paramValue.getTime(); 
+              } else {
+                const valStr = String(paramValue);
+                return valStr.length > 10 ? valStr.substring(0,7) + '...' : valStr;
+              }
+
+              if (isNaN(valueAsNumber)) {
+                  const valStr = String(paramValue); 
+                  return valStr.length > 10 ? valStr.substring(0,7) + '...' : valStr;
+              }
+
+              if (axisDim === 'x') {
+                return formatNumberToPrecision(valueAsNumber - 273.15, 3) + ' °C';
+              } else if (axisDim === 'y') {
+                return formatNumberToPrecision(valueAsNumber, 3) + (yAxisUnit ? ' ' + yAxisUnit : '');
+              }
+              return formatNumberToPrecision(valueAsNumber, 3); // Fallback
+            },
+            // Moved text styling properties directly under label
+            fontFamily: 'Merriweather Sans', // Font for the text inside the label
+            color: '#333' // Color of the text inside the label
+          }
+        },
+        backgroundColor: '#1e293b', // Background of the main tooltip box
         borderColor: '#3b82f6',
         textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
         formatter: (params: any) => {
@@ -602,7 +808,8 @@ export default function CompoundPropertiesPage() {
             let tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
             params.forEach((param: any) => {
                 const seriesFullname = param.seriesName; 
-                tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)}</b><br/>`;
+                // Add yAxisUnit to the tooltip for the dependent variable
+                tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)} ${yAxisUnit || ''}</b><br/>`;
             });
             return tooltipHtml;
         }
@@ -643,7 +850,8 @@ export default function CompoundPropertiesPage() {
         axisLabel: { 
             color: '#e0e6f1', 
             fontFamily: 'Merriweather Sans', 
-            formatter: (val: number) => formatNumberToPrecision(val - 273.15, 1) // Convert K to °C for display, adjust precision
+            fontSize: 16, // Font size 16
+            formatter: (val: number) => (val - 273.15).toFixed(0) // Changed to toFixed(0) for integer display
         },
         nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
         axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
@@ -657,12 +865,15 @@ export default function CompoundPropertiesPage() {
       series: seriesData.filter(s => (s.data as any[]).length > 0), // Only plot series with data
       toolbox: {
         show: true, orient: 'vertical', right: 10, top: 'center',
-        feature: { saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' } },
+        feature: { 
+          saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' },
+          // TODO: Add data view later if needed
+        },
         iconStyle: { borderColor: '#9ca3af' }
       },
     });
 
-  }, [/* …other deps… */]);  // ← removed useLogScale here
+  }, [/* …other deps… */]);  // Add selectedUnit to dependencies if it's used directly from state, but here it's passed as arg
 
   const handleFetchAndPlot = useCallback(async () => {
     setLoading(true);
@@ -708,24 +919,92 @@ export default function CompoundPropertiesPage() {
         });
         setAvailablePropertiesForSelection(commonProps);
         if (commonProps.length > 0 && !commonProps.find(p => p.jsonKey === selectedPropertyKey)) {
-            setSelectedPropertyKey(commonProps[0].jsonKey); // Auto-select first common property if current is not available
-            processAndPlotProperties(updatedCompounds, commonProps[0].jsonKey);
+            const newPropKey = commonProps[0].jsonKey;
+            setSelectedPropertyKey(newPropKey); 
+            const newPropDef = propertiesToPlotConfig.find(p => p.jsonKey === newPropKey);
+            const newUnit = newPropDef?.availableUnits?.[0]?.unit || newPropDef?.targetUnitName || '';
+            setSelectedUnit(newUnit);
+            processAndPlotProperties(updatedCompounds, newPropKey, newUnit);
         } else if (commonProps.length === 0) {
             setAvailablePropertiesForSelection([]);
             setSelectedPropertyKey('');
-            processAndPlotProperties(updatedCompounds, null); // No common properties
+            setSelectedUnit('');
+            processAndPlotProperties(updatedCompounds, null, ''); 
             setOverallError("No common plottable properties found for the selected compounds.");
         } else {
-             processAndPlotProperties(updatedCompounds, selectedPropertyKey);
+             processAndPlotProperties(updatedCompounds, selectedPropertyKey, selectedUnit);
         }
     } else {
         // If not all data fetched, plot what's available but indicate errors
-        processAndPlotProperties(updatedCompounds, selectedPropertyKey);
+        processAndPlotProperties(updatedCompounds, selectedPropertyKey, selectedUnit);
         // availablePropertiesForSelection might need to be conservative or cleared
         setAvailablePropertiesForSelection(propertiesToPlotConfig); // Or filter based on what *did* load
     }
     setLoading(false);
   }, [compounds, selectedPropertyKey, processAndPlotProperties]);
+
+  const handleExportCSV = useCallback(() => {
+    if (!echartsOptions || !echartsOptions.series || (echartsOptions.series as EChartsSeriesOption[]).length === 0) {
+      console.warn("No data to export.");
+      return;
+    }
+
+    const seriesForCSV = echartsOptions.series as EChartsSeriesOption[];
+    if (!seriesForCSV.some(s => s.data && (s.data as any[]).length > 0)) {
+        console.warn("No data points in series to export.");
+        return;
+    }
+
+    const currentPropDef = propertiesToPlotConfig.find(p => p.jsonKey === selectedPropertyKey);
+    const propDisplayName = currentPropDef ? currentPropDef.displayName : 'Property';
+    const filename = `${propDisplayName.replace(/\s+/g, '_')}_vs_Temperature.csv`;
+    
+    const unitSuffix = yAxisUnitRef.current ? ` (${yAxisUnitRef.current})` : '';
+    
+    // Updated header for temperature and dependent variables
+    const headers = ['Temperature (°C)']; // Use degree symbol
+    seriesForCSV.forEach(s => headers.push(`${s.name} ${propDisplayName}${unitSuffix}`));
+    
+    let csvContent = '\uFEFF'; // UTF-8 BOM
+    csvContent += headers.join(',') + '\r\n';
+
+    const allKelvinTemps = new Set<number>();
+    seriesForCSV.forEach(s => {
+        if (s.data) {
+            (s.data as [number, number][]).forEach(p => allKelvinTemps.add(p[0]));
+        }
+    });
+    const sortedKelvinTemps = Array.from(allKelvinTemps).sort((a, b) => a - b);
+
+    sortedKelvinTemps.forEach(tk => {
+        const tc = tk - 273.15;
+        const row = [formatNumberToPrecision(tc, 3)]; // Temperature in Celsius
+        seriesForCSV.forEach(s => {
+            let valueFound = '';
+            if (s.data) {
+                // Find point with a small tolerance for floating point comparison
+                const point = (s.data as [number, number][]).find(p => Math.abs(p[0] - tk) < 1e-9); // Increased precision for matching
+                if (point) {
+                    valueFound = formatNumberToPrecision(point[1], 4);
+                }
+            }
+            row.push(valueFound);
+        });
+        csvContent += row.join(',') + '\r\n';
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    if (link.download !== undefined) {
+        const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url);
+        link.setAttribute("download", filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+  }, [echartsOptions, selectedPropertyKey, yAxisUnitRef]);
 
 
   const fetchSuggestionsForCompound = useCallback(debounce(async (compoundId: string, inputValue: string) => {
@@ -777,7 +1056,7 @@ export default function CompoundPropertiesPage() {
     // A simple re-plot if data existed:
     const remainingCompounds = compounds.filter(c => c.id !== idToRemove);
     if (remainingCompounds.some(c => c.data)) {
-        processAndPlotProperties(remainingCompounds, selectedPropertyKey);
+        processAndPlotProperties(remainingCompounds, selectedPropertyKey, selectedUnit);
     } else {
         setEchartsOptions({}); // Clear chart if no data left
         setAvailablePropertiesForSelection(propertiesToPlotConfig); // Reset available props
@@ -809,10 +1088,15 @@ export default function CompoundPropertiesPage() {
   // Re-plot if selectedPropertyKey changes and data is available
   useEffect(() => {
     if (compounds.some(c => c.data) && selectedPropertyKey) { // Check if any compound has data
-        processAndPlotProperties(compounds, selectedPropertyKey);
+        processAndPlotProperties(compounds, selectedPropertyKey, selectedUnit);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPropertyKey]); // Removed useLogScale dependency
+  }, [selectedPropertyKey, selectedUnit]); // Add selectedUnit dependency
+
+  const canExportCSV = echartsOptions && 
+                       echartsOptions.series && 
+                       (echartsOptions.series as EChartsSeriesOption[]).length > 0 &&
+                       (echartsOptions.series as EChartsSeriesOption[]).some(s => s.data && (s.data as any[]).length > 0);
 
   return (
     <TooltipProvider>
@@ -860,33 +1144,73 @@ export default function CompoundPropertiesPage() {
                     </Button>
                 )}
                 
-                <div className="flex items-center gap-2 pt-4">
-                  <Label htmlFor="propertySelect" className="block text-sm font-medium text-gray-300 whitespace-nowrap">
-                    Property:
-                  </Label>
-                  <Select
-                    value={selectedPropertyKey}
-                    onValueChange={(value) => {
-                        setSelectedPropertyKey(value);
-                    }}
-                    disabled={availablePropertiesForSelection.length === 0}
-                  >
-                    <SelectTrigger id="propertySelect" className="flex-1">
-                      <SelectValue placeholder="Select a property" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availablePropertiesForSelection.length > 0 ? availablePropertiesForSelection.map(prop => (
-                        <SelectItem key={prop.jsonKey} value={prop.jsonKey}>
-                          {prop.displayName}
-                        </SelectItem>
-                      )) : <SelectItem value="no-props" disabled>No common properties available</SelectItem>}
-                    </SelectContent>
-                  </Select>
+                <div className="flex items-start gap-2 pt-4"> {/* Changed to items-start for alignment */}
+                  <div className="flex-grow space-y-2"> {/* Group property and its label */}
+                    {/* <Label htmlFor="propertySelect" className="block text-sm font-medium text-gray-300 whitespace-nowrap">
+                      Property:
+                    </Label> */} {/* Label Removed */}
+                    <Select
+                      value={selectedPropertyKey}
+                      onValueChange={(value) => {
+                          setSelectedPropertyKey(value);
+                          const newPropDef = propertiesToPlotConfig.find(p => p.jsonKey === value);
+                          const newUnit = newPropDef?.availableUnits?.[0]?.unit || newPropDef?.targetUnitName || '';
+                          setSelectedUnit(newUnit);
+                      }}
+                      disabled={availablePropertiesForSelection.length === 0}
+                    >
+                      <SelectTrigger id="propertySelect" className="w-full">
+                        <SelectValue placeholder="Select a property" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availablePropertiesForSelection.length > 0 ? availablePropertiesForSelection.map(prop => (
+                          <SelectItem key={prop.jsonKey} value={prop.jsonKey}>
+                            {renderPropertyName(prop.displayName, prop.symbol)}
+                          </SelectItem>
+                        )) : <SelectItem value="no-props" disabled>No common properties available</SelectItem>}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  
+                  {(() => {
+                    const currentPropDef = propertiesToPlotConfig.find(p => p.jsonKey === selectedPropertyKey);
+                    const unitsForCurrentProp = currentPropDef?.availableUnits;
+                    if (unitsForCurrentProp && unitsForCurrentProp.length > 1) {
+                      return (
+                        <div className="flex-grow space-y-2 max-w-[150px]"> {/* Group unit and its label, limit width */}
+                          {/* <Label htmlFor="unitSelect" className="block text-sm font-medium text-gray-300 whitespace-nowrap">
+                            Unit:
+                          </Label> */} {/* Label Removed */}
+                          <Select
+                            value={selectedUnit}
+                            onValueChange={(value) => setSelectedUnit(value)}
+                          >
+                            <SelectTrigger id="unitSelect" className="w-full">
+                              <SelectValue placeholder="Unit" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {unitsForCurrentProp.map(u => (
+                                <SelectItem key={u.unit} value={u.unit}>
+                                  {u.displayName || u.unit}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      );
+                    }
+                    return null; // Don't render unit dropdown if not applicable
+                  })()}
                 </div>
 
                 <Button onClick={handleFetchAndPlot} disabled={loading} className="w-full">
                   {loading ? 'Fetching...' : 'Fetch & Plot Properties'}
                 </Button>
+                {canExportCSV && !loading && (
+                    <Button onClick={handleExportCSV} variant="outline" className="w-full mt-2">
+                        Export Data as CSV
+                    </Button>
+                )}
                 {overallError && !loading && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{overallError}</AlertDescription></Alert>}
               </CardContent>
             </Card>
@@ -895,7 +1219,7 @@ export default function CompoundPropertiesPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2">
-                <div className="relative h-[600px] md:h-[700px] rounded-md bg-[#0f172a]">
+                <div className="relative h-[600px] md:h-[700px] rounded-md bg-[#08306b]">
                   {loading && (<div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Loading Properties...</div></div></div>)}
                   {!loading && compounds.every(c => !c.data && !c.error) && !overallError && (<div className="absolute inset-0 flex items-center justify-center text-white">Please enter compound(s) and fetch properties.</div>)}
                   {overallError && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400 px-4 text-center">Error: {overallError}</div>)}

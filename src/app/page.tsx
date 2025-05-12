@@ -26,6 +26,7 @@ const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png"; // Added path
 const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png"; // Added for Azeotrope Finder
 const labIllustrationPath = "/images/lab-illustration.png"; // Added path for the illustration
+const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png"; // Ensure this is present
 
 export default function Home() {
   const homeFeaturedSimulations = [
@@ -44,6 +45,13 @@ export default function Home() {
         "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
       thumbnailPath: azeotropeThumbnailPath,
       isNew: true, // Add this property
+    },
+    {
+      name: "Compound Properties", // Added entry for Compound Properties
+      path: "/toolbox/compound-properties",
+      description: "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
+      thumbnailPath: compoundPropertiesThumbnailPath, // Use the new thumbnail
+      isNew: true, // Mark as NEW
     },
     {
       name: "Reaction Kinetics",
