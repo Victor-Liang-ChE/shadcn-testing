@@ -4,6 +4,7 @@ import { calculatePsat_Pa } from './vle-calculations-unifac'; // Re-use Psat for
 
 // --- Constants ---
 const R_gas_const_J_molK = 8.31446261815324; // J/mol·K
+const JOULES_PER_CAL = 4.184;     // 1 cal = 4.184 J
 
 // --- Interfaces ---
 export interface WilsonInteractionParams {
@@ -18,23 +19,27 @@ export interface WilsonInteractionParams {
 
 export async function fetchWilsonInteractionParams(
     supabase: SupabaseClient,
-    casn1: string,
-    casn2: string
+    casn1_query: string,
+    casn2_query: string
 ): Promise<WilsonInteractionParams> {
-    if (!casn1 || !casn2) {
-        console.warn("Wilson a_ij fetch: CAS numbers for both compounds are required. Defaulting a_ij = 0.");
-        return { a12_J_mol: 0, a21_J_mol: 0 };
+    if (!casn1_query || !casn2_query) {
+        console.warn("Wilson Aij fetch: CAS numbers for both compounds are required. Defaulting Aij_J_mol = 0.");
+        return { a12_J_mol: 0, a21_J_mol: 0, casn1: casn1_query, casn2: casn2_query };
     }
-    if (casn1 === casn2) { // For pure component, a_ii related terms effectively cancel or are zero.
-        return { a12_J_mol: 0, a21_J_mol: 0 };
+    if (casn1_query === casn2_query) {
+        // For pure component, interaction parameters a_ii are effectively zero
+        // or rather, the terms involving them in Wilson equation simplify.
+        // For (lambda_12 - lambda_11), if 1=2, then lambda_11 - lambda_11 = 0.
+        return { a12_J_mol: 0, a21_J_mol: 0, casn1: casn1_query, casn2: casn2_query };
     }
 
-    console.log(`Fetching Wilson interaction parameters for pair: casn1='${casn1}', casn2='${casn2}'`);
-    // The table is "wilson parameters" and columns are "A12", "A21"
+    console.log(`Fetching Wilson interaction parameters for query pair: comp1_cas='${casn1_query}', comp2_cas='${casn2_query}'`);
+    // Assuming table name 'wilson parameters' and columns "A12", "A21" store cal/mol values.
+    // Adjust table and column names if they differ in your database.
     const query = supabase
-        .from('wilson parameters') 
-        .select('"A12", "A21", "CASN1", "CASN2"') // Use quoted column names if they contain capitals
-        .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
+        .from('wilson parameters') // Ensure this table name is correct
+        .select('"A12", "A21", "CASN1", "CASN2"') // Ensure these column names are exact
+        .or(`and(CASN1.eq.${casn1_query},CASN2.eq.${casn2_query}),and(CASN1.eq.${casn2_query},CASN2.eq.${casn1_query})`)
         .limit(1);
 
     const { data, error } = await query;
@@ -43,17 +48,42 @@ export async function fetchWilsonInteractionParams(
         console.error(`Supabase Wilson interaction query error: ${error.message}`, error);
         throw new Error(`Supabase Wilson interaction query error: ${error.message}`);
     }
+
     if (!data || data.length === 0) {
-        console.warn(`Wilson interaction parameters (A12, A21) not found for pair ${casn1}/${casn2}. Defaulting to a12=0, a21=0.`);
-        return { a12_J_mol: 0, a21_J_mol: 0, casn1, casn2 };
+        console.warn(`Wilson interaction parameters (A12, A21 in cal/mol) not found for query pair ${casn1_query}/${casn2_query}. Defaulting to Aij_J_mol=0.`);
+        return { a12_J_mol: 0, a21_J_mol: 0, casn1: casn1_query, casn2: casn2_query };
     }
-    const params = data[0];
-    // Assuming params.A12 and params.A21 are the energy parameters a12 and a21
+
+    const dbRow = data[0];
+    let raw_A12_from_db: number; // Parameter for (casn1_query -> casn2_query) interaction, in cal/mol
+    let raw_A21_from_db: number; // Parameter for (casn2_query -> casn1_query) interaction, in cal/mol
+
+    // Check if the first CAS number in the query matches the first CAS number in the DB row
+    if (dbRow.CASN1 === casn1_query) {
+        // Order matches: casn1_query is DB's CASN1, casn2_query is DB's CASN2
+        // DB's A12 corresponds to interaction from casn1_query to casn2_query
+        // DB's A21 corresponds to interaction from casn2_query to casn1_query
+        raw_A12_from_db = typeof dbRow.A12 === 'number' ? dbRow.A12 : 0;
+        raw_A21_from_db = typeof dbRow.A21 === 'number' ? dbRow.A21 : 0;
+    } else {
+        // Order is swapped: casn1_query is DB's CASN2, casn2_query is DB's CASN1
+        // DB's A12 corresponds to interaction from casn2_query to casn1_query (this is our raw_A21_from_db)
+        // DB's A21 corresponds to interaction from casn1_query to casn2_query (this is our raw_A12_from_db)
+        raw_A12_from_db = typeof dbRow.A21 === 'number' ? dbRow.A21 : 0; // Swapped
+        raw_A21_from_db = typeof dbRow.A12 === 'number' ? dbRow.A12 : 0; // Swapped
+    }
+    
+    // Convert from cal/mol (assumed from DB) to J/mol
+    const fetched_A12_J_mol = raw_A12_from_db * JOULES_PER_CAL;
+    const fetched_A21_J_mol = raw_A21_from_db * JOULES_PER_CAL;
+    
+    console.log(`WILSON_PARAMS_FETCHED: For query ${casn1_query}/${casn2_query}, DB row (${dbRow.CASN1}/${dbRow.CASN2}) A12_cal=${raw_A12_from_db.toFixed(2)}, A21_cal=${raw_A21_from_db.toFixed(2)}. Assigned A12_J_mol=${fetched_A12_J_mol.toFixed(2)}, A21_J_mol=${fetched_A21_J_mol.toFixed(2)}`);
+
     return {
-        a12_J_mol: typeof params.A12 === 'number' ? params.A12 : 0,
-        a21_J_mol: typeof params.A21 === 'number' ? params.A21 : 0,
-        casn1: params.CASN1,
-        casn2: params.CASN2,
+        a12_J_mol: fetched_A12_J_mol,
+        a21_J_mol: fetched_A21_J_mol,
+        casn1: casn1_query, // Return based on query order
+        casn2: casn2_query
     };
 }
 

@@ -8,7 +8,6 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import TeX from '@matejmazur/react-katex';
 import 'katex/dist/katex.min.css';
-import Link from 'next/link';
 
 const GRAVITY = 9.81; // m/s^2
 const DENSITY_WATER = 1000; // kg/m³

@@ -28,23 +28,23 @@ function Navbar() {
 
     switch (pathname) {      
       
-      case "/simulations":
-        return "Chemical Engineering Simulations";
+      case "/toolbox":
+        return "Chemical Engineering Toolbox";
 
-      case "/simulations/mccabe-thiele":
+      case "/toolbox/mccabe-thiele":
         return "McCabe-Thiele Graphical Method";
 
-      case "/simulations/kinetics":
+      case "/toolbox/kinetics":
         return "Reaction Kinetics Simulator";
 
-      case "/simulations/process-dynamics":
+      case "/toolbox/process-dynamics":
         return "Process Dynamics Simulator";
 
-      case "/simulations/pid-tuning":
+      case "/toolbox/pid-tuning":
         return "PID Tuning Simulator";
 
-      case "/simulations/fug":
-        return "FUG";
+      case "/toolbox/azeotrope-finder":
+        return "Azeotrope Finder";
 
       case "/misc":
           return "Miscellaneous Projects";
@@ -76,7 +76,7 @@ function Navbar() {
       default:
         // Check for base paths if no specific match
         if (pathname === "/LearnChemE") return "LearnChemE 2.0";
-        if (pathname === "/simulations") return "Chemical Engineering Simulations";
+        if (pathname === "/toolbox") return "Chemical Engineering Toolbox";
         if (pathname === "/misc") return "Miscellaneous Projects";
         return ""; // Default empty title
     }
@@ -96,12 +96,8 @@ function Navbar() {
     >
       {/* Left: Brand */}
       <div>
-        <Link href="/" legacyBehavior passHref>
-          {/* Increased font size and applied updated brand hover style */}
-          {/* Keep legacyBehavior here for now if it's not causing issues */}
-          <a className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
+        <Link href="/" className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
             Victor Liang
-          </a>
         </Link>
       </div>
       {/* Center: Page Title */}
@@ -124,8 +120,8 @@ function Navbar() {
       {/* Desktop Menu */}
       <div className="hidden md:flex items-center space-x-1"> {/* Reduced space for tighter fit with padding */}
         {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
-        <Link href="/simulations" className={`text-xl font-semibold ${linkHoverStyle}`}>
-          Simulations
+        <Link href="/toolbox" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          Toolbox
         </Link>
         {/* Add LearnChemE Link */}
         <Link href="/LearnChemE" className={`text-xl font-semibold ${linkHoverStyle}`}>
@@ -149,8 +145,8 @@ function Navbar() {
       >
         <div className="p-4 flex flex-col space-y-2"> {/* Reduced space-y */}
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
-           <Link href="/simulations" className={`block text-xl font-semibold ${linkHoverStyle}`}>
-             Simulations
+           <Link href="/toolbox" className={`block text-xl font-semibold ${linkHoverStyle}`}>
+             Toolbox
            </Link>
            {/* Add LearnChemE Link */}
            <Link href="/LearnChemE" className={`block text-xl font-semibold ${linkHoverStyle}`}>
