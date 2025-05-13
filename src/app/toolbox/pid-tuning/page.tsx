@@ -446,7 +446,7 @@ export default function PidTuningPage() {
         const saveName = `pid_tuning_${modelLabel.replace(/[^a-z0-9]/gi, '_')}_${ruleLabel?.replace(/[^a-z0-9]/gi, '_') ?? 'no_rule'}_tc_${currentLambda.toFixed(2)}`;
 
         return {
-            backgroundColor: '#08306b',
+            backgroundColor: 'transparent',
             animation: false,
             title: {
                 text: titleText,
