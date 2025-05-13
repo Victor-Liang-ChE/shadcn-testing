@@ -256,7 +256,11 @@ export default function AzeotropeFinderPage() {
       return;
     }
     try {
-      const { data, error } = await supabase.from('compounds').select('name').ilike('name', `%${inputValue}%`).limit(5);
+      const { data, error } = await supabase
+        .from('compounds')
+        .select('name')
+        .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
+        .limit(5);
       if (error) { console.error("Azeo: Supabase suggestion fetch error:", error); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); return; }
       const suggestions = data ? data.map(item => item.name) : [];
       if (inputTarget === 'comp1') { setComp1Suggestions(suggestions); setShowComp1Suggestions(suggestions.length > 0); }
@@ -306,6 +310,54 @@ export default function AzeotropeFinderPage() {
 
   const handleSwapComponents = () => { const temp = comp1Name; setComp1Name(comp2Name); setComp2Name(temp); };
 
+
+  // --- CSV Export Function ---
+  const handleExportToCSV = () => {
+    if (azeotropeScanData.length === 0) {
+      alert("No data to export.");
+      return;
+    }
+
+    let csvContent = "";
+    let scanValHeader = "";
+    let xAzHeader = `Azeotropic ${displayedComp1 || 'Comp1'} Composition (x1)`;
+    let dependentValHeader = "";
+
+    if (displayedScanType === 'vs_P_find_T') {
+      scanValHeader = "Pressure (bar)";
+      dependentValHeader = "Azeotropic Temperature (°C)";
+    } else { // vs_T_find_P
+      scanValHeader = "Temperature (K)";
+      dependentValHeader = "Azeotropic Pressure (bar)";
+    }
+
+    const headers = [scanValHeader, xAzHeader, dependentValHeader];
+    csvContent += headers.join(",") + "\r\n";
+
+    azeotropeScanData.forEach(row => {
+      const scanValFormatted = formatNumberToPrecision(row.scanVal, 4);
+      const xAzFormatted = formatNumberToPrecision(row.x_az, 4); // Increased precision for CSV
+      const dependentValFormatted = (displayedScanType === 'vs_P_find_T')
+        ? formatNumberToPrecision(row.dependentVal, 2) // Temp to 2 decimal places
+        : formatNumberToPrecision(row.dependentVal, 4); // Pressure to 4 sig figs
+
+      const csvRow = [scanValFormatted, xAzFormatted, dependentValFormatted].join(",");
+      csvContent += csvRow + "\r\n";
+    });
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      const filename = `azeotrope_locus_${displayedComp1 || 'Comp1'}_${displayedComp2 || 'Comp2'}_${displayedFluidPackage || 'model'}.csv`;
+      link.setAttribute("href", url);
+      link.setAttribute("download", filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
 
   // --- Bisection Solver (copy from test/page.tsx) ---
   function bisectionSolve(
@@ -553,7 +605,7 @@ export default function AzeotropeFinderPage() {
         left: 'center', 
         textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
       },
-      backgroundColor: '#08306b',
+      backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'cross' },
@@ -627,7 +679,10 @@ export default function AzeotropeFinderPage() {
       ],
       // dataZoom removed
       toolbox: {
-            show: true, orient: 'vertical', right: 10, top: 'center',
+            show: true, 
+            orient: 'horizontal', // Changed from vertical
+            right: 10, 
+            bottom: 10, // Changed from top: 'center'
             feature: { saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' } },
             iconStyle: { borderColor: '#9ca3af' }
       },
@@ -719,6 +774,14 @@ export default function AzeotropeFinderPage() {
                 */}
                 <Button onClick={handleAzeotropeScan} disabled={loading} className="w-full">
                   {loading ? 'Scanning...' : 'Find Azeotropes'}
+                </Button>
+                <Button 
+                  onClick={handleExportToCSV} 
+                  disabled={loading || azeotropeScanData.length === 0} 
+                  className="w-full mt-2"
+                  variant="outline"
+                >
+                  Export to CSV
                 </Button>
                 {error && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
               </CardContent>
