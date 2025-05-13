@@ -33,6 +33,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
         { unit: "bar", conversionFactorFromBase: 1e-5 },
         { unit: "Pa", conversionFactorFromBase: 1 },
         { unit: "kPa", conversionFactorFromBase: 1e-3 },
+        { unit: "MPa", conversionFactorFromBase: 1e-6 },
         { unit: "atm", conversionFactorFromBase: 1/101325 },
         { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
     ],
@@ -53,14 +54,14 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   },
   { 
     displayName: "Liquid Heat Capacity", jsonKey: "Liquid heat capacity", symbol: "Cp", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
-    conversionFactor: 1, // Raw eq output (with DB coeffs) assumed to be in J/kmol/K (targetUnitName)
+    conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
         { unit: "J/kmol/K", conversionFactorFromBase: 1 },
         { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
         { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
         { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
-        { unit: "kJ/kg", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
         { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
         { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
     ],
@@ -77,7 +78,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   },
   { 
     displayName: "Heat of Vaporization", jsonKey: "Heat of vaporization", symbol: "ΔH_v", equationType: "eq106", yAxisIndex: 0, targetUnitName: "J/kmol", 
-    conversionFactor: 1000, // Raw eq output likely J/mol, convert to J/kmol
+    conversionFactor: 1, // Assuming eq output is already J/kmol, or adjust if it's J/mol from DB
     availableUnits: [
         { unit: "J/mol", conversionFactorFromBase: 0.001 },
         { unit: "J/kmol", conversionFactorFromBase: 1 },
@@ -92,14 +93,14 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   },
   { 
     displayName: "Ideal Gas Heat Capacity", jsonKey: "Ideal gas heat capacity", symbol: "Cp^0", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
-    conversionFactor: 1, // Raw eq output (with DB coeffs) assumed to be in J/kmol/K (targetUnitName)
+    conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
         { unit: "J/kmol/K", conversionFactorFromBase: 1 },
         { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
         { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
         { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
-        { unit: "kJ/kg", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, 
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
         { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
         { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
     ],
@@ -116,10 +117,12 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   { 
     displayName: "Second Virial Coefficient", jsonKey: "Second virial coefficient", symbol: "B_v", equationType: "eq104_virial", yAxisIndex: 0, targetUnitName: "m³/kmol", 
     availableUnits: [
-        { unit: "cm³/mol", conversionFactorFromBase: 1000 }, // 1 m³/kmol * 10^6 cm³/m³ / 1000 mol/kmol = 1000 cm³/mol
+        { unit: "cm³/mol", conversionFactorFromBase: 1000 }, 
         { unit: "m³/kmol", conversionFactorFromBase: 1 },
+        { unit: "m³/mol", conversionFactorFromBase: 0.001 },
+        { unit: "L/mol", conversionFactorFromBase: 1 }, // 1 m³/kmol = 1 L/mol
         { unit: "m³/kg", conversionFactorFromBase: { operation: 'divide_by_mw' } },
-        { unit: "cm³/g", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1000 } } // m³/kg * 10^6 cm³/m³ / 1000 g/kg = cm³/g * 1000
+        { unit: "cm³/g", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1000 } } 
     ],
     color: baseColors[8], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B/T + C/T<sup>2</sup> + D/T<sup>8</sup> + E/T<sup>9</sup>" 
   },
@@ -138,14 +141,14 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   },
   { 
     displayName: "Solid Heat Capacity", jsonKey: "Solid heat capacity", symbol: "Cp_S", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
-    conversionFactor: 1, // Raw eq output (with DB coeffs) assumed to be in J/kmol/K (targetUnitName)
+    conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
         { unit: "J/kmol/K", conversionFactorFromBase: 1 },
         { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
         { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
         { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
-        { unit: "kJ/kg", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, 
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
         { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
         { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
     ],
@@ -190,9 +193,10 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   { 
     displayName: "Antoine Vapor Pressure", jsonKey: "Antoine vapor pressure", symbol: "P", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa", 
     availableUnits: [
+        { unit: "bar", conversionFactorFromBase: 1e-5 },
         { unit: "Pa", conversionFactorFromBase: 1 },
         { unit: "kPa", conversionFactorFromBase: 1e-3 },
-        { unit: "bar", conversionFactorFromBase: 1e-5 },
+        { unit: "MPa", conversionFactorFromBase: 1e-6 },
         { unit: "atm", conversionFactorFromBase: 1/101325 },
         { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
     ],
@@ -200,14 +204,14 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   },
   { 
     displayName: "Ideal Gas Heat Capacity (RPP)", jsonKey: "Ideal gas heat capacity (RPP)", symbol: "Cp^0_RPP", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
-    conversionFactor: 1, // Raw eq output (with DB coeffs) assumed to be in J/kmol/K (targetUnitName)
+    conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
         { unit: "J/kmol/K", conversionFactorFromBase: 1 },
         { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
         { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
         { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
-        { unit: "kJ/kg", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, 
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
         { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
         { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
     ],

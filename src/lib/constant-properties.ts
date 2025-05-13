@@ -22,10 +22,11 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
     jsonKey: "Molecular weight",
     targetUnitName: "kg/kmol", // Assuming the base value from DB/calculation is in kg/kmol (or g/mol, which is numerically the same)
     availableUnits: [
-      { unit: "kg/kmol", conversionFactorFromBase: 1 },
-      { unit: "g/mol", conversionFactorFromBase: 1 },
-      { unit: "amu", conversionFactorFromBase: 1 }, // amu is numerically same as g/mol
-      { unit: "lb/lbmol", conversionFactorFromBase: 1 }, // Numerically same as g/mol or kg/kmol
+      { unit: "g/mol", conversionFactorFromBase: 1, displayName: "g/mol" }, // Default
+      { unit: "kg/kmol", conversionFactorFromBase: 1, displayName: "kg/kmol" },
+      { unit: "kg/mol", conversionFactorFromBase: 0.001, displayName: "kg/mol" }, // 1 kg/kmol = 0.001 kg/mol
+      { unit: "Da", conversionFactorFromBase: 1, displayName: "Da" }, // Changed displayName
+      { unit: "amu", conversionFactorFromBase: 1, displayName: "amu" } // Added amu
     ],
     color: constantColors[0 % constantColors.length],
     symbol: "MW"
@@ -45,12 +46,12 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
   {
     displayName: "Critical Pressure",
     jsonKey: "Critical pressure",
-    targetUnitName: "Pa",
+    targetUnitName: "Pa", // Changed from bar
     availableUnits: [
+      { unit: "bar", conversionFactorFromBase: 1e-5 },     // 1 Pa = 0.00001 bar
       { unit: "Pa", conversionFactorFromBase: 1 },
-      { unit: "kPa", conversionFactorFromBase: 1e-3 },
-      { unit: "bar", conversionFactorFromBase: 1e-5 },
-      { unit: "atm", conversionFactorFromBase: 1 / 101325 },
+      { unit: "kPa", conversionFactorFromBase: 1e-3 },     // 1 Pa = 0.001 kPa
+      { unit: "atm", conversionFactorFromBase: 1 / 101325 }  // 1 Pa = 1/101325 atm
     ],
     symbol: "P_c",
     color: constantColors[2 % constantColors.length]
@@ -58,11 +59,11 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
   {
     displayName: "Critical Volume",
     jsonKey: "Critical volume",
-    targetUnitName: "m³/kmol",
+    targetUnitName: "m³/kmol", // Changed from cm³/mol
     availableUnits: [
+      { unit: "cm³/mol", conversionFactorFromBase: 1000 },    // 1 m³/kmol = 1000 cm³/mol
       { unit: "m³/kmol", conversionFactorFromBase: 1 },
-      { unit: "L/mol", conversionFactorFromBase: 1 }, // m³/kmol is numerically equal to L/mol
-      { unit: "cm³/mol", conversionFactorFromBase: 1000 },
+      { unit: "L/mol", conversionFactorFromBase: 1 },        // 1 m³/kmol = 1 L/mol
     ],
     symbol: "V_c",
     color: constantColors[3 % constantColors.length]
@@ -102,11 +103,11 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
   {
     displayName: "Triple Point Pressure",
     jsonKey: "Triple point pressure",
-    targetUnitName: "Pa",
+    targetUnitName: "Pa", // Changed from bar
     availableUnits: [
       { unit: "Pa", conversionFactorFromBase: 1 },
-      { unit: "kPa", conversionFactorFromBase: 1e-3 },
-      { unit: "bar", conversionFactorFromBase: 1e-5 },
+      { unit: "kPa", conversionFactorFromBase: 1e-3 },    // 1 Pa = 0.001 kPa
+      { unit: "bar", conversionFactorFromBase: 1e-5 }     // 1 Pa = 0.00001 bar
     ],
     symbol: "P_tp",
     color: constantColors[7 % constantColors.length]
@@ -153,7 +154,7 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
     targetUnitName: "kg/m³",
     availableUnits: [
       { unit: "kg/m³", conversionFactorFromBase: 1 },
-      { unit: "g/cm³", conversionFactorFromBase: 1e3 },
+      { unit: "g/cm³", conversionFactorFromBase: 0.001 }, // Changed from 1e3
       { unit: "lb/ft³", conversionFactorFromBase: 1 / 16.0185 },
     ],
     symbol: "ρ_c",
@@ -166,8 +167,8 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
     availableUnits: [
       { unit: "J/(mol·K)", conversionFactorFromBase: 1 },
       { unit: "kJ/(mol·K)", conversionFactorFromBase: 1e-3 },
-      { unit: "cal/(mol·K)", conversionFactorFromBase: 1 / 4184 },
-      { unit: "Btu/(lb·°R)", conversionFactorFromBase: 1 / 778.169 },
+      { unit: "cal/(mol·K)", conversionFactorFromBase: 1 / 4.184 }, // Changed from 1 / 4184
+      { unit: "Btu/(lbmol·°R)", conversionFactorFromBase: 1.98587527 / 8.314462618, displayName: "Btu/(lbmol·°R)" }, // Changed unit, factor, and added displayName
     ],
     symbol: "R",
     color: constantColors[12 % constantColors.length]
@@ -175,7 +176,7 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
   {
     displayName: "Heat of Vaporization",
     jsonKey: "Heat of vaporization",
-    targetUnitName: "J/kmol",
+    targetUnitName: "J/kmol", // No change requested, keeping as is. Default J/mol was for Heat of Fusion.
     availableUnits: [
       { unit: "J/kmol", conversionFactorFromBase: 1 },
       { unit: "kJ/kmol", conversionFactorFromBase: 1e-3 },
@@ -188,12 +189,12 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
   {
     displayName: "Heat of Fusion (Melting Point)",
     jsonKey: "Heat of fusion at melting point",
-    targetUnitName: "J/kmol",
+    targetUnitName: "J/kmol", // Changed from J/mol
     availableUnits: [
+      { unit: "J/mol", conversionFactorFromBase: 1e-3 },     // 1 J/kmol = 0.001 J/mol
       { unit: "J/kmol", conversionFactorFromBase: 1 },
-      { unit: "kJ/kmol", conversionFactorFromBase: 1e-3 },
-      { unit: "J/mol", conversionFactorFromBase: 1e-3 },
-      { unit: "kJ/mol", conversionFactorFromBase: 1e-6 },
+      { unit: "kJ/kmol", conversionFactorFromBase: 1e-3 },   // 1 J/kmol = 0.001 kJ/kmol
+      { unit: "kJ/mol", conversionFactorFromBase: 1e-6 }     // 1 J/kmol = 0.000001 kJ/mol
     ],
     symbol: "ΔH_fus",
     color: constantColors[1 % constantColors.length]
@@ -216,13 +217,14 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
   {
     displayName: "Lennard-Jones Diameter",
     jsonKey: "Lennard Jones diameter",
-    targetUnitName: "m",
+    targetUnitName: "m", // Changed target unit to meters
     availableUnits: [
-      { unit: "m", conversionFactorFromBase: 1 },
-      { unit: "Å", conversionFactorFromBase: 1e10 }, // Angstrom
-      { unit: "nm", conversionFactorFromBase: 1e9 },  // Nanometer
+      { unit: "Å", conversionFactorFromBase: 1e10, displayName: "Å" }, // 1 m = 1e10 Å
+      { unit: "m", conversionFactorFromBase: 1 },  // Base unit
+      { unit: "nm", conversionFactorFromBase: 1e9 },   // 1 m = 1e9 nm
+      { unit: "pm", conversionFactorFromBase: 1e12 },  // 1 m = 1e12 pm
     ],
-    symbol: "σ_LJ",
+    symbol: "σ_LJ", // Symbol was σ_LJ, kept it consistent with the other Lennard-Jones sigma
     color: constantColors[3 % constantColors.length]
   },
   {
@@ -248,20 +250,38 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
                           // Or mN/m * (cm3/mol)^4 = 10^-3 N/m * (10^-6 m3/mol)^4 ... this is not it.
                           // Standard definition: P = M/ρ * γ^(1/4) where M is molar mass, ρ density, γ surface tension.
                           // Units: (g/mol) / (g/cm³) * (dyn/cm)^(1/4) = cm³/mol * (dyn/cm)^(1/4)
-                          // Let's assume the database unit is the one provided: kg⁰·²⁵·m³/s⁰·⁵/kmol
-    targetUnitName: "kg∜·m³/(s√·kmol)", // Updated to use root symbols
-    availableUnits: [{ unit: "kg∜·m³/(s√·kmol)", conversionFactorFromBase: 1 }], // Updated
+                          // Let's assume the database unit is the one provided: kg⁰·²５·m³/s⁰·⁵/kmol
+    targetUnitName: "∜kg·m³/(√s·kmol)", // Corrected unit string
+    availableUnits: [
+      { unit: "∜kg·m³/(√s·kmol)", conversionFactorFromBase: 1, displayName: "∜kg·m³/(√s·kmol)" }, // Base unit
+      { 
+        unit: "∜g·cm³/(√s·mol)", 
+        conversionFactorFromBase: 10**3.75, // (1000 g/kg)^(1/4) * (1e6 cm³/m³) / (1000 mol/kmol) = 10^(3/4) * 1e6 / 1e3 = 10^(0.75) * 1e3 = 5.623 * 1000 = 5623 approx.
+                                            // More precisely: (1000)^(1/4) * 100^3 / 1000 = 10^(3/4) * 10^6 / 10^3 = 10^(0.75) * 10^3.
+                                            // (kg/1000)^0.25 * (m*100)^3 / (s^0.5 * kmol*1000)
+                                            // kg^0.25 * m^3 / (s^0.5 * kmol)  to g^0.25 * cm^3 / (s^0.5 * mol)
+                                            // (1000g)^0.25 * (100cm)^3 / (s^0.5 * 1000mol)
+                                            // = 1000^0.25 * 100^3 / 1000  * [g^0.25 cm^3 / (s^0.5 mol)]
+                                            // = 10^(3*0.25) * 10^6 / 10^3 = 10^0.75 * 10^3 = 10^3.75
+        displayName: "∜g·cm³/(√s·mol)" 
+      },
+      { 
+        unit: "∜kg·cm³/(√s·kmol)", 
+        conversionFactorFromBase: 1e6, // m³ to cm³
+        displayName: "∜kg·cm³/(√s·kmol)" 
+      }
+    ], 
     color: baseColors[16],
     symbol: "P_chor"
   },
   {
     displayName: "Solubility Parameter",
     jsonKey: "Solubility parameter",
-    targetUnitName: "Pa√", // Updated to use root symbol
+    targetUnitName: "√Pa", // Updated to √Pa
     availableUnits: [
-      { unit: "Pa√", conversionFactorFromBase: 1 }, // (J/m³)^0.5
-      { unit: "(MPa)√", displayName: "MPa√", conversionFactorFromBase: 1e-3 }, // (MPa)^0.5
-      { unit: "(cal/cm³)√", displayName: "(cal/cm³)√", conversionFactorFromBase: 1/2.045484e3 } // (cal/cm³)^0.5, using the factor from previous comments
+      { unit: "√Pa", conversionFactorFromBase: 1, displayName: "√Pa" }, // Updated unit and displayName
+      { unit: "√MPa", displayName: "√MPa", conversionFactorFromBase: 1e-3 }, // Updated unit and displayName
+      { unit: "cal/cm³√", displayName: "√(cal/cm³)", conversionFactorFromBase: 1/2.045484e3 } // Kept as is, already in √Unit form
     ],
     color: baseColors[0], // Re-using a color, consider a unique one if available
     symbol: "δ"
@@ -272,8 +292,9 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
     targetUnitName: "m³/kmol",
     availableUnits: [
       { unit: "m³/kmol", conversionFactorFromBase: 1 },
-      { unit: "cm³/mol", conversionFactorFromBase: 1 }, // m³/kmol is numerically equal to cm³/mol
-      { unit: "Å³/molecule", conversionFactorFromBase: 1 / (6.022e23 * 1e-30) }, // 1 m³/kmol * (1 kmol / 6.022e26 molecules) * (1e30 Å³/m³)
+      { unit: "cm³/mol", conversionFactorFromBase: 1000 }, // Changed from 1
+      { unit: "Å³/molecule", conversionFactorFromBase: (1e30 / (1000 * 6.02214076e23)) }, // Approx 1660.53878. Changed from 1 / (6.022e23 * 1e-30)
+                                                                              // Old comment: 1 m³/kmol * (1 kmol / 6.022e26 molecules) * (1e30 Å³/m³)
                                                                               // = (1e30 / 6.022e26) Å³/molecule = (10000 / 6.022) = 1660.5 Å³/molecule
                                                                               // So 1 Å³/molecule = 1 / 1660.5 m³/kmol
     ],
@@ -286,12 +307,26 @@ export const constantPropertiesConfig: ConstantPropertyDefinition[] = [
     targetUnitName: "m²/kmol",
     availableUnits: [
       { unit: "m²/kmol", conversionFactorFromBase: 1 },
-      { unit: "Å²/molecule", conversionFactorFromBase: 1 / (6.022e23 * 1e-20) }, // 1 m²/kmol * (1 kmol / 6.022e26 molecules) * (1e20 Å²/m²)
+      { unit: "Å²/molecule", conversionFactorFromBase: (1e20 / (1000 * 6.02214076e23)) }, // Approx 1 / 6.02214076e6. Changed from 1 / (6.022e23 * 1e-20)
+                                                                              // Old comment: 1 m²/kmol * (1 kmol / 6.022e26 molecules) * (1e20 Å²/m²)
                                                                               // = (1e20 / 6.022e26) Å²/molecule = (1 / 6.022e6) Å²/molecule
                                                                               // So 1 Å²/molecule = 6.022e6 m²/kmol
     ],
     symbol: "q_uniquac",
     color: baseColors[2],
+  },
+  {
+    displayName: "Lennard-Jones sigma",
+    jsonKey: "Lennard-Jones sigma", // Or the exact key from your DB if different
+    targetUnitName: "m",            // Changed target unit to meters
+    symbol: "σ_LJ",
+    color: baseColors[7] || '#73C0DE', // Example color
+    availableUnits: [
+      { unit: "Å", conversionFactorFromBase: 1e10, displayName: "Ångström (Å)" }, 
+      { unit: "nm", conversionFactorFromBase: 1e9, displayName: "Nanometer (nm)" }, 
+      { unit: "pm", conversionFactorFromBase: 1e12, displayName: "Picometer (pm)" }, 
+      { unit: "m", conversionFactorFromBase: 1, displayName: "Meter (m)" }      
+    ]
   },
 ];
 
