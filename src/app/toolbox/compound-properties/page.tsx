@@ -195,6 +195,64 @@ const renderSymbolToHtml = (symbol?: string): string => {
   return baseSymbol;
 };
 
+// Helper function (can be placed inside CompoundPropertiesPage or at an accessible scope)
+function calculateDynamicAxisParams(
+    dataMinY: number,
+    dataMaxY: number,
+    baseTotalGapForName: number // Represents the original desired distance from axis line to axis name text
+) {
+    let dynamicAxisLabelMargin = 8; // Default ECharts margin for axisLabel if no data
+    let maxAbsVal = -1;
+
+    if (isFinite(dataMinY) && isFinite(dataMaxY)) {
+        maxAbsVal = Math.max(Math.abs(dataMinY), Math.abs(dataMaxY));
+        if (dataMinY <= 0 && dataMaxY >= 0) { // If range crosses zero
+             maxAbsVal = Math.max(maxAbsVal, 0); // Consider 0 if it's the max abs value
+        }
+    } else if (isFinite(dataMinY)) {
+        maxAbsVal = Math.abs(dataMinY);
+    } else if (isFinite(dataMaxY)) {
+        maxAbsVal = Math.abs(dataMaxY);
+    }
+    // else maxAbsVal remains -1, dynamicAxisLabelMargin uses default.
+
+    if (maxAbsVal !== -1) { // If we have a valid max absolute value
+        if (maxAbsVal >= 1000000) {      // For values like 1,000,000s or millions
+            dynamicAxisLabelMargin = 5;
+        } else if (maxAbsVal >= 100000) { // For values in the 100,000s range
+            dynamicAxisLabelMargin = 5;
+        } else if (maxAbsVal >= 10000) { // For values in the 10,000s range
+            dynamicAxisLabelMargin = 10;
+        } else if (maxAbsVal >= 1000) {  // For values in the 1,000s range
+            dynamicAxisLabelMargin = 15;
+        } else if (maxAbsVal >= 100) {   // For values in the 100s range
+            dynamicAxisLabelMargin = 20;
+        } else if (maxAbsVal >= 10) {    // For values in the 10s range
+            dynamicAxisLabelMargin = 25;
+        } else {                         // For values less than 10 (including 0 and fractionals)
+            if (maxAbsVal < 1 && maxAbsVal > 0) { // Fractional values that might be long when formatted (e.g., 0.0000123)
+                const order = Math.floor(Math.log10(maxAbsVal));
+                if (order <= -4) {       // e.g., 0.000x or smaller
+                    dynamicAxisLabelMargin = 0;
+                } else if (order <= -2) {  // e.g., 0.0x
+                    dynamicAxisLabelMargin = 15;
+                } else {                   // e.g., 0.x
+                    dynamicAxisLabelMargin = 18;
+                }
+            } else {                       // For values from 0 up to 9.99...
+                dynamicAxisLabelMargin = 22; // Smallest margin
+            }
+        }
+    }
+
+    let calculatedNameGap = baseTotalGapForName - dynamicAxisLabelMargin;
+    // Ensure nameGap doesn't become too small or negative
+    calculatedNameGap = Math.max(10, calculatedNameGap); // Minimum 10px gap
+
+    console.log('[DebugYAxis] calculateDynamicAxisParams:', { dataMinY, dataMaxY, baseTotalGapForName, dynamicAxisLabelMargin, calculatedNameGap });
+    return { dynamicAxisLabelMargin, calculatedNameGap };
+}
+
 
 export default function CompoundPropertiesPage() {
   const nextCompoundId = useRef(0); 
@@ -234,6 +292,52 @@ export default function CompoundPropertiesPage() {
     return initialConstDef?.availableUnits?.[0]?.unit || initialConstDef?.targetUnitName || '';
   });
   const [availableConstantsForSelection, setAvailableConstantsForSelection] = useState<ConstantPropertyDefinition[]>(constantPropertiesConfig);
+
+  // useEffect for initial data fetching (e.g., for 'Water')
+  useEffect(() => {
+    compounds.forEach(compound => {
+      if (compound.name && !compound.data && !compound.error) {
+        // Check if supabase client is available before fetching
+        if (!supabase) {
+          console.error("Supabase client not initialized. Cannot fetch initial data for", compound.name);
+          setCompounds(prev =>
+            prev.map(c =>
+              c.id === compound.id
+                ? { ...c, error: `Supabase client not ready for ${compound.name}` }
+                : c
+            )
+          );
+          return;
+        }
+
+        const fetchInitialDataForCompound = async (cmpdToFetch: CompoundInputState) => {
+          console.log(`Attempting initial fetch for ${cmpdToFetch.name}`);
+          try {
+            const fetchedData = await fetchCompoundPropertiesLocal(cmpdToFetch.name);
+            setCompounds(prev =>
+              prev.map(c =>
+                c.id === cmpdToFetch.id
+                  ? { ...c, data: fetchedData, error: null }
+                  : c
+              )
+            );
+            console.log(`Initial fetch successful for ${cmpdToFetch.name}`);
+          } catch (err: any) {
+            console.error(`Initial fetch failed for ${cmpdToFetch.name}:`, err.message);
+            setCompounds(prev =>
+              prev.map(c =>
+                c.id === cmpdToFetch.id
+                  ? { ...c, data: null, error: `Failed to load ${cmpdToFetch.name}: ${err.message}` }
+                  : c
+              )
+            );
+          }
+        };
+        fetchInitialDataForCompound(compound);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array ensures this runs only once on mount
 
 
   const fetchCompoundPropertiesLocal = async (compoundName: string): Promise<FetchedCompoundData | null> => {
@@ -383,7 +487,7 @@ export default function CompoundPropertiesPage() {
             equationBody = equationBody.replace(/\b0\s*\*?\s*T\b(?!\w)/g, "0");
             equationBody = equationBody.replace(/\+\s*0\b(?![.\d])/g, ""); 
             equationBody = equationBody.replace(/-\s*0\b(?![.\d])/g, ""); 
-            equationBody = equationBody.replace(/([(,=])\s*0\s*\+\s*/g, "$1"); 
+            equationBody = equationBody.replace(/([(,=])\s*0\s*\+?\s*/g, "$1"); 
             equationBody = equationBody.replace(/\+\s*-\s*/g, '- '); 
             equationBody = equationBody.replace(/-\s*-\s*/g, '+ '); 
             equationBody = equationBody.replace(/\+\s*\+\s*/g, '+ '); 
@@ -543,25 +647,50 @@ export default function CompoundPropertiesPage() {
             console.warn("All series ended up with no data points after processing. This might be due to Tmin/Tmax issues or all points being skipped during calculation/conversion.");
         }
 
-        // --- determine axis unit dynamically ---
+        // --- Calculate Y-axis data range for dynamic margin ---
+        let dataMinY = Infinity;
+        let dataMaxY = -Infinity;
+        if (finalSeriesToPlot && finalSeriesToPlot.length > 0) {
+            finalSeriesToPlot.forEach(series => {
+                if (series.data) {
+                    (series.data as [number, number][]).forEach(point => {
+                        if (point && typeof point[1] === 'number' && isFinite(point[1])) {
+                            if (point[1] < dataMinY) dataMinY = point[1];
+                            if (point[1] > dataMaxY) dataMaxY = point[1];
+                        }
+                    });
+                }
+            });
+        }
+        // --- End Y-axis data range calculation ---
+
         const yAxisDisplayName = propDef.displayName;
         let yAxisUnit = displayUnit; // Use the selected display unit
         yAxisUnitRef.current = yAxisUnit; // Store for CSV export
 
         let yAxisTickFormatter = (val: number) => formatNumberToPrecision(val, 7); // Increased precision from 5 to 7
+        // const desiredTotalGapTempDependent = 75; // Desired total pixels from label text to name text
+        // const axisLabelMargin = 8; // Default ECharts margin
+
+        // --- Determine dynamic axis label margin and nameGap ---
+        const originalBaseTotalGap = (propDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75); // Original (desiredTotalGap + 10 or desiredTotalGap)
+        const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGap);
+        console.log('[DebugYAxis] TempDependent Plot - Applied:', { yAxisDisplayName, yAxisUnit, dataMinY, dataMaxY, originalBaseTotalGap, dynamicAxisLabelMargin, calculatedNameGap });
+        // --- End dynamic parameter calculation ---
 
         const yAxisConfig: any = {
           type: 'value' as const,
           name: `${yAxisDisplayName} (${yAxisUnit})`,
           nameLocation: 'middle' as const,
-          nameGap: propDef.jsonKey === "Liquid viscosity (RPS)" ? 60 : 80, // Adjusted nameGap for RPS
+          nameGap: calculatedNameGap, // Use new dynamic nameGap
           position: 'left' as const,
           axisLine: { show: true, lineStyle: { color: propDef.color, width: 2 } },
           axisLabel: { 
             formatter: yAxisTickFormatter, // Use the conditional formatter
             color: '#e0e6f1', 
             fontSize: 16, 
-            fontFamily: 'Merriweather Sans' 
+            fontFamily: 'Merriweather Sans',
+            margin: dynamicAxisLabelMargin, // Use new dynamic margin
           },
           nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Font size 15
           splitLine: { show: false },
@@ -571,7 +700,7 @@ export default function CompoundPropertiesPage() {
 
 
         setEchartsOptions({
-          backgroundColor: '#08306b', // Changed background color
+          backgroundColor: 'transparent', // Changed background color
           title: {
             text: `${propDef.displayName}: ${titleCompoundNames || 'Selected Compounds'}`,
             left: 'center',
@@ -663,7 +792,7 @@ export default function CompoundPropertiesPage() {
                 }
             }
           },
-          grid: { left: '8%', right: '5%', bottom: '12%', top: '10%', containLabel: true },
+          grid: { left: '5%', right: '5%', bottom: '12%', top: '10%', containLabel: true }, // Adjusted left to 17%
           xAxis: {
             type: 'value',
             name: 'Temperature (°C)', 
@@ -686,7 +815,12 @@ export default function CompoundPropertiesPage() {
           yAxis: yAxisConfig,
           series: finalSeriesToPlot, // Only plot series with data
           toolbox: {
-            show: true, orient: 'vertical', right: 10, top: 'center',
+            show: true, 
+            orient: 'horizontal', // Changed from vertical
+            right: 20,            // Position from right
+            bottom: 20,           // Position from bottom
+            top: 'auto',          // Reset top
+            left: 'auto',         // Reset left
             feature: { 
               saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' },
               // TODO: Add data view later if needed
@@ -765,14 +899,42 @@ export default function CompoundPropertiesPage() {
             return;
         }
         
+        // --- Calculate Y-axis data range for dynamic margin ---
+        let dataMinY = Infinity;
+        let dataMaxY = -Infinity;
+        if (barChartData && barChartData.length > 0) {
+            barChartData.forEach(bar => {
+                if (typeof bar.value === 'number' && isFinite(bar.value)) {
+                    if (bar.value < dataMinY) dataMinY = bar.value;
+                    if (bar.value > dataMaxY) dataMaxY = bar.value;
+                }
+            });
+        }
+        // --- End Y-axis data range calculation ---
+        
         const yAxisDisplayName = constDef.displayName;
+        // const desiredTotalGapConstants = 70; // Original value
+        // const axisLabelMarginConst = 8;    // Original value
+
+        // --- Determine dynamic axis label margin and nameGap ---
+        const originalBaseTotalGapConst = 100; // Original desiredTotalGapConstants
+        const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGapConst);
+        console.log('[DebugYAxis] Constants Plot - Applied:', { yAxisDisplayName, displayUnit, dataMinY, dataMaxY, originalBaseTotalGapConst, dynamicAxisLabelMargin, calculatedNameGap });
+        // --- End dynamic parameter calculation ---
+
         const yAxisConfig: any = {
             type: 'value' as const,
             name: `${yAxisDisplayName} (${displayUnit})`,
             nameLocation: 'middle' as const,
-            nameGap: 50, // Adjust as needed
+            nameGap: calculatedNameGap, // Use new dynamic nameGap
             axisLine: { show: true, lineStyle: { color: constDef.color || '#EE6666', width: 2 } },
-            axisLabel: { formatter: (val: number) => formatNumberToPrecision(val, 4), color: '#e0e6f1', fontSize: 16, fontFamily: 'Merriweather Sans' },
+            axisLabel: { 
+              formatter: (val: number) => formatNumberToPrecision(val, 4), 
+              color: '#e0e6f1', 
+              fontSize: 16, 
+              fontFamily: 'Merriweather Sans',
+              margin: dynamicAxisLabelMargin, // Use new dynamic margin
+            },
             nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
             splitLine: { show: false },
             scale: true,
@@ -795,11 +957,11 @@ export default function CompoundPropertiesPage() {
                 textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
             },
             legend: { show: false }, // No legend needed for single series bar chart by default
-            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            grid: { left: '17%', right: '4%', bottom: '3%', containLabel: true }, // Adjusted left to 17%
             xAxis: {
                 type: 'category',
                 data: compoundNames,
-                axisLabel: { color: '#e0e6f1', fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 3 ? 30 : 0 },
+                axisLabel: { color: '#e0e6f1', fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, // Changed > 3 to > 4
                 axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
             },
             yAxis: yAxisConfig,
@@ -818,7 +980,18 @@ export default function CompoundPropertiesPage() {
                     color: '#e0e6f1'
                 }
             }],
-            toolbox: { show: true, orient: 'vertical', right: 10, top: 'center', feature: { saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' }, }, iconStyle: { borderColor: '#9ca3af' } },
+            toolbox: { 
+              show: true, 
+              orient: 'horizontal', // Changed from vertical
+              right: 20,            // Position from right
+              bottom: 20,           // Position from bottom
+              top: 'auto',          // Reset top
+              left: 'auto',         // Reset left
+              feature: { 
+                saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' }, 
+              }, 
+              iconStyle: { borderColor: '#9ca3af' } 
+            },
         });
     }
   }, [plotMode, /* …other deps from temp dependent mode… */]);
@@ -849,16 +1022,21 @@ export default function CompoundPropertiesPage() {
         let commonProps: PropertyDefinition[] = [];
         if (activeCompoundsWithData.length > 0) {
             commonProps = propertiesToPlotConfig.filter(propDef => {
-                return activeCompoundsWithData.every(compoundState => {
+                // First, check if every active compound meets basic criteria for this propDef
+                const allCompoundsMeetBasicCriteria = activeCompoundsWithData.every(compoundState => {
                     const propData = compoundState.data!.properties[propDef.jsonKey];
                     if (!propData) return false;
-                    const Tmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
-                    const Tmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
-                    if (Tmin === null || Tmax === null || Tmin >= Tmax) return false;
+                    
+                    // Individual Tmin/Tmax validity (not overlap yet)
+                    const TminCompound = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
+                    const TmaxCompound = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
+                    if (TminCompound === null || TmaxCompound === null || TminCompound >= TmaxCompound) return false;
+
                     if (propDef.requiresTc && compoundState.data!.criticalTemp === null) return false;
                     if (propDef.requiresMolarMass && compoundState.data!.molarWeight === null) return false;
                     const hasMwDependentUnit = propDef.availableUnits?.some(unit => typeof unit.conversionFactorFromBase === 'object' && (unit.conversionFactorFromBase.operation === 'divide_by_mw' || unit.conversionFactorFromBase.operation === 'multiply_by_mw'));
                     if (hasMwDependentUnit && compoundState.data!.molarWeight === null) return false;
+                    
                     if (propDef.coeffs.length > 0) {
                         if (propDef.equationType !== 'polynomial') {
                             const firstCoeffKey = propDef.coeffs[0];
@@ -869,11 +1047,49 @@ export default function CompoundPropertiesPage() {
                                 if (coeffBVal === null || coeffBVal <= 0) return false;
                             }
                         } else {
+                            // For polynomial, at least one coefficient must be present
                             if (!propDef.coeffs.some(cKey => parseCoefficient(propData[cKey]) !== null)) return false;
                         }
                     }
                     return true;
                 });
+
+                if (!allCompoundsMeetBasicCriteria) {
+                    return false; // This propDef is not common if any compound fails basic checks
+                }
+
+                // If all compounds meet basic criteria, now check for overlapping Tmin/Tmax
+                let overallCommonTminForProp: number | null = null;
+                let overallCommonTmaxForProp: number | any = null;
+
+                for (const compoundState of activeCompoundsWithData) {
+                    const propData = compoundState.data!.properties[propDef.jsonKey];
+                    // We know propData exists.
+                    // The filter `allCompoundsMeetBasicCriteria` ensured that parseCoefficient applied to these raw values
+                    // (for Tmin and Tmax) resulted in non-null.
+                    const tminRawValue = propData.Tmin?.value ?? propData.Tmin;
+                    const tmaxRawValue = propData.Tmax?.value ?? propData.Tmax;
+
+                    // Call parseCoefficient with the raw value (type any).
+                    // Assert that the *result* is non-null, justified by the 'allCompoundsMeetBasicCriteria' filter.
+                    const Tmin = parseCoefficient(tminRawValue)!;
+                    const Tmax = parseCoefficient(tmaxRawValue)!;
+
+                    if (overallCommonTminForProp === null) { // First compound with this property
+                        overallCommonTminForProp = Tmin;
+                        overallCommonTmaxForProp = Tmax;
+                    } else {
+                        overallCommonTminForProp = Math.max(overallCommonTminForProp, Tmin);
+                        overallCommonTmaxForProp = Math.min(overallCommonTmaxForProp, Tmax);
+                    }
+                }
+                
+                // Check if a valid overlapping range was found
+                if (overallCommonTminForProp !== null && overallCommonTmaxForProp !== null && overallCommonTminForProp < overallCommonTmaxForProp) {
+                    return true; // This propDef is common and has an overlapping T range
+                }
+
+                return false; // No overlapping T range, or something went wrong
             });
         }
         setAvailablePropertiesForSelection(commonProps);
@@ -1018,7 +1234,12 @@ export default function CompoundPropertiesPage() {
       return;
     }
     try {
-      const { data, error: fetchError } = await supabase.from('compounds').select('name').ilike('name', `%${inputValue}%`).limit(5);
+      const { data, error: fetchError } = await supabase
+        .from('compounds')
+        .select('name')
+        .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
+        .limit(5);
+
       if (fetchError) { console.error("Supabase suggestion fetch error:", fetchError); return; }
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: data ? data.map(item => item.name) : [], showSuggestions: data && data.length > 0 } : c));
     } catch (err) { console.error("Error fetching suggestions:", err); }
@@ -1055,16 +1276,21 @@ export default function CompoundPropertiesPage() {
   const removeCompoundInput = (idToRemove: string) => {
     setCompounds(prev => prev.filter(c => c.id !== idToRemove));
     // After removing, if a plot was based on this compound, it might need re-evaluation
-    // handleFetchAndPlot(); // Optionally re-plot, or let user do it. For now, manual re-plot.
-    // If the removed compound was the only one, or crucial for selectedPropertyKey, clear plot or re-evaluate available properties.
-    // This logic can be complex, for now, let's assume user will re-plot.
-    // A simple re-plot if data existed:
+    // The main useEffect hook will handle re-processing with remaining compounds.
+    // No explicit call to processAndPlotProperties or handleFetchAndPlot needed here
+    // as the change in `compounds` state will trigger the main plotting useEffect.
     const remainingCompounds = compounds.filter(c => c.id !== idToRemove);
-    if (remainingCompounds.some(c => c.data)) {
-        processAndPlotProperties(remainingCompounds, selectedPropertyKey, selectedUnit);
-    } else {
-        setEchartsOptions({}); // Clear chart if no data left
-        setAvailablePropertiesForSelection(propertiesToPlotConfig); // Reset available props
+    // If all compounds with data are removed, the main useEffect should handle clearing the chart
+    // or showing appropriate messages via processAndPlotProperties.
+    // For instance, if selectedPropertyKey becomes invalid or no data remains.
+    if (!remainingCompounds.some(c => c.data)) {
+        // If no data left, ensure available properties are reset if necessary,
+        // though handleFetchAndPlot usually does this.
+        // If the main useEffect doesn't clear the chart appropriately,
+        // an explicit setEchartsOptions({}) might be needed here,
+        // but let's rely on the main useEffect for now.
+        // setAvailablePropertiesForSelection(propertiesToPlotConfig); // Reset available props
+        // setAvailableConstantsForSelection(constantPropertiesConfig);
     }
   };
 
@@ -1082,13 +1308,22 @@ export default function CompoundPropertiesPage() {
     return () => { document.removeEventListener("mousedown", handleClickOutside); };
   }, [compounds]);
 
-  // Initial fetch for default compound
+  // Re-enable initial fetch for default compound on mount/first name change
   useEffect(() => {
-    if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading) { // Added !loading to prevent re-trigger if already in progress
-        handleFetchAndPlot();
+    if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading) {
+      handleFetchAndPlot();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, compounds[0]?.name, compounds[0]?.data]); // Refined dependencies for initial fetch
+  }, [supabase, compounds[0]?.name, compounds[0]?.data]);
+
+  // Re-enable fetch when switching between Temp‐Dependent and Constants modes
+  useEffect(() => {
+    if (plotMode === 'constants' || plotMode === 'tempDependent') {
+      if (compounds.some(c => c.name.trim() !== '')) {
+        handleFetchAndPlot();
+      }
+    }
+  }, [plotMode]); 
+
 
   // Re-plot if selectedPropertyKey/selectedConstantKey changes and data is available
   useEffect(() => {
@@ -1110,13 +1345,14 @@ export default function CompoundPropertiesPage() {
     // If no key is selected (currentKey is empty), but data exists, processAndPlotProperties will handle showing an appropriate message.
     if (compounds.some(c => c.data)) {
         if (currentKey && keyIsValidForCurrentAvailableList) {
+           
             processAndPlotProperties(compounds, currentKey, currentUnit);
         } else if (!currentKey) { 
             // If no key is selected (e.g. after filtering, no common props found, or initial state before selection)
             // Call processAndPlotProperties with null key to clear chart or show "select property"
             processAndPlotProperties(compounds, null, currentUnit);
         }
-    } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
+       } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
         // If there's no compound data (e.g., all compounds removed or failed to load),
         // and there was a chart, clear it.
         // This case might be covered if selectedKey becomes null/empty.
@@ -1237,7 +1473,7 @@ export default function CompoundPropertiesPage() {
                         const unitsForCurrentProp = currentPropDef?.availableUnits;
                         if (unitsForCurrentProp && unitsForCurrentProp.length > 1) {
                           return (
-                            <div className="flex-grow space-y-2 max-w-[150px]">
+                            <div className="flex-grow space-y-2 max-w-[224px]"> {/* Increased max-width from 150px */}
                               <Select
                                 value={selectedUnit}
                                 onValueChange={(value) => setSelectedUnit(value)}
@@ -1292,7 +1528,7 @@ export default function CompoundPropertiesPage() {
                         // Only show unit selector if there's more than one unit OR if the single unit is not "-" (dimensionless)
                         if (unitsForCurrentConst && (unitsForCurrentConst.length > 1 || (unitsForCurrentConst.length === 1 && unitsForCurrentConst[0].unit !== "-"))) {
                           return (
-                            <div className="flex-grow space-y-2 max-w-[150px]">
+                            <div className="flex-grow space-y-2 max-w-[224px]"> {/* Increased max-width from 150px */}
                               <Select
                                 value={selectedConstantUnit}
                                 onValueChange={(value) => setSelectedConstantUnit(value)}
@@ -1317,6 +1553,7 @@ export default function CompoundPropertiesPage() {
                   )}
                 </div>
 
+
                 <Button onClick={handleFetchAndPlot} disabled={loading} className="w-full">
                   {loading ? 'Fetching...' : 'Fetch & Plot Properties'}
                 </Button>
@@ -1325,7 +1562,7 @@ export default function CompoundPropertiesPage() {
                         Export Data as CSV
                     </Button>
                 )}
-                {overallError && !loading && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{overallError}</AlertDescription></Alert>}
+                {overallError && ! loading && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{overallError}</AlertDescription></Alert>}
               </CardContent>
             </Card>
           </div>
