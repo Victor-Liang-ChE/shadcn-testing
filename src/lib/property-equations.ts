@@ -1,3 +1,233 @@
+export interface PropertyDefinition {
+  displayName: string;
+  jsonKey: string;
+  equationType: 'eq101' | 'eq105' | 'polynomial' | 'eq106' | 'eq102_cv' 
+    | 'eq104_virial' | 'eq16_complex' | 'eq105_molar' | 'eq121' | 'eq13';
+  yAxisIndex: number;
+  targetUnitName: string; // Base unit for calculations and storage
+  color: string;
+  coeffs: string[];
+  requiresTc?: boolean;
+  requiresMolarMass?: boolean; // Indicates if the equation itself needs molar mass
+  conversionFactor?: number; // Factor to convert equation's raw output to targetUnitName
+  equationTemplate?: string;
+  symbol?: string; // For display in dropdown
+  availableUnits?: Array<{ 
+    unit: string; // Display unit
+    // Factor to convert from targetUnitName to this display unit.
+    // Can be a number for direct scaling, or an object for dynamic conversion (e.g., involving molar mass).
+    conversionFactorFromBase: number | { 
+        operation: 'divide_by_mw' | 'multiply_by_mw'; // MW is in kg/kmol
+        factor?: number; // Additional scaling factor applied AFTER mw operation
+    };
+    displayName?: string; // Optional: if unit string itself isn't descriptive enough
+  }>;
+}
+
+export const baseColors = ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE', '#3BA272', '#FC8452', '#9A60B4', '#EA7CCC'];
+
+export const propertiesToPlotConfig: PropertyDefinition[] = [
+  { 
+    displayName: "Vapor Pressure", jsonKey: "Vapour pressure", symbol: "P", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa", 
+    availableUnits: [
+        { unit: "bar", conversionFactorFromBase: 1e-5 },
+        { unit: "Pa", conversionFactorFromBase: 1 },
+        { unit: "kPa", conversionFactorFromBase: 1e-3 },
+        { unit: "MPa", conversionFactorFromBase: 1e-6 },
+        { unit: "atm", conversionFactorFromBase: 1/101325 },
+        { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
+    ],
+    color: baseColors[0], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
+  },
+  { 
+    displayName: "Liquid Density", jsonKey: "Liquid density", symbol: "ρ_L", equationType: "eq105_molar", yAxisIndex: 0, targetUnitName: "kmol/m³", 
+    availableUnits: [
+        { unit: "kmol/m³", conversionFactorFromBase: 1 },
+        { unit: "mol/L", conversionFactorFromBase: 1 }, // 1 kmol/m³ = 1 mol/L
+        { unit: "mol/m³", conversionFactorFromBase: 1000 },
+        { unit: "kg/m³", conversionFactorFromBase: { operation: 'multiply_by_mw' } },
+        { unit: "g/m³", conversionFactorFromBase: { operation: 'multiply_by_mw', factor: 1000 } },
+        { unit: "g/L", conversionFactorFromBase: { operation: 'multiply_by_mw' } }, // kg/m³ is numerically equal to g/L
+        { unit: "g/cm³", conversionFactorFromBase: { operation: 'multiply_by_mw', factor: 0.001 } } // kg/m³ * 0.001 = g/cm³
+    ],
+    color: baseColors[1], coeffs: ['A', 'B', 'C', 'D'], requiresMolarMass: false, requiresTc: true, conversionFactor: 1, equationTemplate: "A / B<sup>(1+(1-T/Tc)<sup>D</sup>)</sup>" 
+  },
+  { 
+    displayName: "Liquid Heat Capacity", jsonKey: "Liquid heat capacity", symbol: "Cp", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    conversionFactor: 1, 
+    availableUnits: [
+        { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/kmol/K", conversionFactorFromBase: 1 },
+        { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
+        { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
+        { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
+        { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
+    ],
+    color: baseColors[2], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Liquid Viscosity", jsonKey: "Liquid viscosity", symbol: "μ", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    availableUnits: [
+        { unit: "cP", conversionFactorFromBase: 1000 },
+        { unit: "Pa·s", conversionFactorFromBase: 1 },
+        { unit: "mPa·s", conversionFactorFromBase: 1000 }
+    ],
+    color: baseColors[3], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
+  },
+  { 
+    displayName: "Heat of Vaporization", jsonKey: "Heat of vaporization", symbol: "ΔH_v", equationType: "eq106", yAxisIndex: 0, targetUnitName: "J/kmol", 
+    conversionFactor: 1, // Assuming eq output is already J/kmol, or adjust if it's J/mol from DB
+    availableUnits: [
+        { unit: "J/mol", conversionFactorFromBase: 0.001 },
+        { unit: "J/kmol", conversionFactorFromBase: 1 },
+        { unit: "kJ/kmol", conversionFactorFromBase: 0.001 },
+        { unit: "kJ/mol", conversionFactorFromBase: 1e-6 },
+        { unit: "J/kg", conversionFactorFromBase: { operation: 'divide_by_mw' } },
+        { unit: "kJ/kg", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "J/g", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "kJ/g", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
+    ],
+    color: baseColors[4], coeffs: ['A', 'B', 'C', 'D', 'E'], requiresTc: true, equationTemplate: "A(1-T/Tc)<sup>(B+C(T/Tc)+D(T/Tc)<sup>2</sup>+E(T/Tc)<sup>3</sup>)</sup>" 
+  },
+  { 
+    displayName: "Ideal Gas Heat Capacity", jsonKey: "Ideal gas heat capacity", symbol: "Cp^0", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    conversionFactor: 1, 
+    availableUnits: [
+        { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/kmol/K", conversionFactorFromBase: 1 },
+        { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
+        { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
+        { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
+        { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
+    ],
+    color: baseColors[5], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)"
+  },
+  { 
+    displayName: "Liquid Thermal Conductivity", jsonKey: "Liquid thermal conductivity", symbol: "k_L", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "W/m/K", 
+    availableUnits: [
+        { unit: "W/m/K", conversionFactorFromBase: 1 },
+        { unit: "mW/m/K", conversionFactorFromBase: 1000 }
+    ],
+    color: baseColors[7], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Second Virial Coefficient", jsonKey: "Second virial coefficient", symbol: "B_v", equationType: "eq104_virial", yAxisIndex: 0, targetUnitName: "m³/kmol", 
+    availableUnits: [
+        { unit: "cm³/mol", conversionFactorFromBase: 1000 }, 
+        { unit: "m³/kmol", conversionFactorFromBase: 1 },
+        { unit: "m³/mol", conversionFactorFromBase: 0.001 },
+        { unit: "L/mol", conversionFactorFromBase: 1 }, // 1 m³/kmol = 1 L/mol
+        { unit: "m³/kg", conversionFactorFromBase: { operation: 'divide_by_mw' } },
+        { unit: "cm³/g", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1000 } } 
+    ],
+    color: baseColors[8], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B/T + C/T<sup>2</sup> + D/T<sup>8</sup> + E/T<sup>9</sup>" 
+  },
+  { 
+    displayName: "Solid Density", jsonKey: "Solid density", symbol: "ρ_S", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "kmol/m³", 
+    availableUnits: [
+        { unit: "kmol/m³", conversionFactorFromBase: 1 },
+        { unit: "mol/L", conversionFactorFromBase: 1 },
+        { unit: "mol/m³", conversionFactorFromBase: 1000 },
+        { unit: "kg/m³", conversionFactorFromBase: { operation: 'multiply_by_mw' } },
+        { unit: "g/m³", conversionFactorFromBase: { operation: 'multiply_by_mw', factor: 1000 } },
+        { unit: "g/L", conversionFactorFromBase: { operation: 'multiply_by_mw' } },
+        { unit: "g/cm³", conversionFactorFromBase: { operation: 'multiply_by_mw', factor: 0.001 } }
+    ],
+    color: '#808080', coeffs: ['A', 'B'], requiresMolarMass: false, conversionFactor: 1, equationTemplate: "A + B T" 
+  },
+  { 
+    displayName: "Solid Heat Capacity", jsonKey: "Solid heat capacity", symbol: "Cp_S", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    conversionFactor: 1, 
+    availableUnits: [
+        { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/kmol/K", conversionFactorFromBase: 1 },
+        { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
+        { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
+        { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
+        { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
+    ],
+    color: '#FFD700', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B T + C T<sup>2</sup> + D T<sup>3</sup> + E T<sup>4</sup>" 
+  },
+  { 
+    displayName: "Surface Tension", jsonKey: "Surface tension", symbol: "σ", equationType: "eq16_complex", yAxisIndex: 0, targetUnitName: "N/m", 
+    availableUnits: [
+        { unit: "N/m", conversionFactorFromBase: 1 },
+        { unit: "mN/m", conversionFactorFromBase: 1000 },
+        { unit: "dyn/cm", conversionFactorFromBase: 1000 }
+    ],
+    color: '#00CED1', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Vapour Thermal Conductivity", jsonKey: "Vapour thermal conductivity", symbol: "k_V", equationType: "eq102_cv", yAxisIndex: 0, targetUnitName: "W/m/K", 
+    availableUnits: [
+        { unit: "W/m/K", conversionFactorFromBase: 1 },
+        { unit: "mW/m/K", conversionFactorFromBase: 1000 }
+    ],
+    color: '#DA70D6', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "(A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Vapour Viscosity", jsonKey: "Vapour viscosity", symbol: "μ_V", equationType: "eq102_cv", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    availableUnits: [
+        { unit: "cP", conversionFactorFromBase: 1000 },
+        { unit: "Pa·s", conversionFactorFromBase: 1 },
+        { unit: "mPa·s", conversionFactorFromBase: 1000 }
+    ],
+    color: '#6A5ACD', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "(A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" 
+  },
+  { 
+    displayName: "Relative Static Permittivity", jsonKey: "Relative static permittivity", symbol: "ε_r", equationType: "eq121", yAxisIndex: 0, targetUnitName: "-", 
+    // NOTE: Coefficients for "Water" for this property in the database (as of current data)
+    // seem to produce highly incorrect values when used with calculatePolynomial.
+    // Updated to use calculateEq121 based on eqno: 121 in the database.
+    availableUnits: [
+        { unit: "-", conversionFactorFromBase: 1 }
+    ],
+    color: '#FF4500', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "A + B/T + C ln(T) + D T" 
+  },
+  { 
+    displayName: "Antoine Vapor Pressure", jsonKey: "Antoine vapor pressure", symbol: "P", equationType: "eq101", yAxisIndex: 0, targetUnitName: "Pa", 
+    availableUnits: [
+        { unit: "bar", conversionFactorFromBase: 1e-5 },
+        { unit: "Pa", conversionFactorFromBase: 1 },
+        { unit: "kPa", conversionFactorFromBase: 1e-3 },
+        { unit: "MPa", conversionFactorFromBase: 1e-6 },
+        { unit: "atm", conversionFactorFromBase: 1/101325 },
+        { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
+    ],
+    color: '#FF6347', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
+  },
+  { 
+    displayName: "Ideal Gas Heat Capacity (RPP)", jsonKey: "Ideal gas heat capacity (RPP)", symbol: "Cp^0_RPP", equationType: "polynomial", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    conversionFactor: 1, 
+    availableUnits: [
+        { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
+        { unit: "J/kmol/K", conversionFactorFromBase: 1 },
+        { unit: "kJ/kmol/K", conversionFactorFromBase: 0.001 },
+        { unit: "kJ/mol/K", conversionFactorFromBase: 1e-6 },
+        { unit: "J/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw' } },
+        { unit: "kJ/kg/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } }, // Corrected kJ/kg/K
+        { unit: "J/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 0.001 } },
+        { unit: "kJ/g/K", conversionFactorFromBase: { operation: 'divide_by_mw', factor: 1e-6 } }
+    ],
+    color: '#4682B4', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B T + C T<sup>2</sup> + D T<sup>3</sup> + E T<sup>4</sup>" 
+  },
+  { 
+    displayName: "Liquid Viscosity (RPS)", jsonKey: "Liquid viscosity (RPS)", symbol: "μ_RPS", equationType: "eq13", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    availableUnits: [
+        { unit: "cP", conversionFactorFromBase: 1000 },
+        { unit: "Pa·s", conversionFactorFromBase: 1 },
+        { unit: "mPa·s", conversionFactorFromBase: 1000 }
+    ],
+    color: '#8A2BE2', coeffs: ['A','B','C'], equationTemplate: "exp(A + B T + C T<sup>2</sup>)" 
+  }
+];
+
 /**
  * Calculates property using equation 101: P = exp(A + B/T + C*ln(T) + D*T^E)
  * Commonly used for Vapor Pressure.
@@ -64,6 +294,50 @@ export function calculateEq105(T: number, A: number, B: number, Tc: number, D: n
   }
 }
 
+// For calculating molar density directly using Eq105-like coefficients
+// ρ_molar = A / B^(1+(1-T/Tc)^D)  (output in kmol/m³)
+export function calculateEq105_molar(T: number, A: number, B: number, Tc: number, D_coeff: number): number | null {
+    const debugInfo = `(T=${T.toFixed(2)}, A=${A}, B=${B}, Tc=${Tc.toFixed(2)}, D=${D_coeff})`; // For logging
+    if (T <= 0 || Tc <= 0 || B <= 0) {
+        console.warn(`calculateEq105_molar: Returning null due to invalid initial params (T, Tc, or B <= 0). ${debugInfo}`);
+        return null;
+    }
+
+    const oneMinusTr = 1 - T / Tc;
+    let powerTerm;
+
+    if (oneMinusTr < 0) {
+        // If D_coeff is, for example, 0.35, then (-ve)^0.35 is complex.
+        // For now, let's allow calculation but be aware it might yield NaN if not handled carefully by specific D values.
+        powerTerm = Math.pow(oneMinusTr, D_coeff);
+        if (isNaN(powerTerm) && oneMinusTr < 0) { // If it resulted in NaN, it might be an issue with negative base to fractional power
+            console.warn(`calculateEq105_molar: Returning null due to NaN from (1-T/Tc)^D for T > Tc. ${debugInfo}, 1-Tr=${oneMinusTr.toFixed(4)}, powerTerm=${powerTerm}`);
+            return null;
+        }
+    } else {
+        powerTerm = Math.pow(oneMinusTr, D_coeff);
+    }
+
+    if (isNaN(powerTerm)) {
+        console.warn(`calculateEq105_molar: Returning null due to powerTerm being NaN. ${debugInfo}, 1-Tr=${oneMinusTr.toFixed(4)}, powerTerm=${powerTerm}`);
+        return null;
+    }
+
+    const term_B_exponent = 1 + powerTerm;
+    const term_B = Math.pow(B, term_B_exponent);
+
+    if (term_B === 0 || isNaN(term_B) || !isFinite(term_B)) {
+        console.warn(`calculateEq105_molar: Returning null due to term_B being zero, NaN, or non-finite. ${debugInfo}, term_B_exponent=${term_B_exponent.toFixed(4)}, term_B=${term_B}`);
+        return null;
+    }
+    const result = A / term_B;
+    if (isNaN(result) || !isFinite(result)) {
+        console.warn(`calculateEq105_molar: Returning null due to final result being NaN or non-finite. ${debugInfo}, result=${result}`);
+        return null;
+    }
+    return result;
+}
+
 /**
  * Calculates property using polynomial equation (eq 16 or 100): Val = A + BT + CT^2 + DT^3 + ET^4
  * Commonly used for Heat Capacity, Surface Tension, Liquid Thermal Conductivity.
@@ -92,14 +366,9 @@ export function calculatePolynomial(T: number, A: number, B?: number | null, C?:
  * T in Kelvin.
  */
 export function calculateEq16Complex(T: number, A: number, B: number, C: number, D: number, E: number): number | null {
-  if (T <= 0) return null;
-  try {
-    const expTerm = Math.exp((B / T) + C + (D * T) + (E * Math.pow(T, 2)));
-    return A + expTerm;
-  } catch (e) {
-    console.error("Error in calculateEq16Complex:", e);
-    return null;
-  }
+    if (T <= 0) return null;
+    // Eq 16: A + exp(B/T + C + DT + ET^2)
+    return A + Math.exp(B / T + C + D * T + E * Math.pow(T, 2));
 }
 
 /**
@@ -160,17 +429,84 @@ export function calculateEq104_virial(T: number, A: number, B_coeff: number, C_c
 /**
  * Parses a coefficient that might be a direct number or an object like { value: number }
  */
-export function parseCoefficient(coeff: any): number | null { // Changed return type to number | null
-    if (typeof coeff === 'number') {
-        return coeff;
+export function parseCoefficient(value: any): number | null {
+    if (typeof value === 'number') {
+        return value;
     }
-    if (typeof coeff === 'object' && coeff !== null && typeof coeff.value === 'number') {
-        return coeff.value;
+    if (typeof value === 'object' && value !== null && typeof value.value === 'number') {
+        return value.value;
     }
-    if (typeof coeff === 'string') {
-        const num = parseFloat(coeff);
+    if (typeof value === 'string') {
+        const num = parseFloat(value);
         if (!isNaN(num)) return num;
     }
     return null; // Changed from undefined to null
+}
+
+/**
+ * Calculates property using equation 121: Val = A + B/T + C*ln(T) + D*T
+ * Commonly used for properties like Relative Static Permittivity.
+ * Coefficients A, B, C, D.
+ * T in Kelvin.
+ */
+export function calculateEq121(
+  T: number,
+  A: number,
+  B: number,
+  C: number,
+  D: number
+): number | null {
+  if (T <= 0) {
+    console.warn("calculateEq121: Temperature must be positive Kelvin.");
+    return null;
+  }
+  try {
+    const result = A + (B / T) + (C * Math.log(T)) + (D * T);
+
+    if (isNaN(result) || !isFinite(result)) {
+      console.warn(
+        `calculateEq121: Result is NaN or Infinite for T=${T.toFixed(
+          2
+        )}K. Inputs: A=${A}, B=${B}, C=${C}, D=${D}.`
+      );
+      return null;
+    }
+    return result;
+  } catch (e) {
+    console.error("Error in calculateEq121:", e);
+    return null;
+  }
+}
+
+/**
+ * Calculates property using equation 13: Val = exp(A + B T + C T^2)
+ * Commonly used for RPS liquid viscosity.
+ * Coefficients A, B, C.
+ * T in Kelvin.
+ */
+export function calculateEq13(
+  T: number,
+  A: number,
+  B: number,
+  C: number
+): number | null {
+  if (T <= 0) {
+    console.warn("calculateEq13: Temperature must be positive Kelvin.");
+    return null;
+  }
+  try {
+    const lnProperty = A + (B * T) + (C * Math.pow(T, 2));
+    const result = Math.exp(lnProperty);
+    if (!isFinite(result)) {
+      console.warn(
+        `calculateEq13: Non-finite result at T=${T}. Inputs: A=${A}, B=${B}, C=${C}.`
+      );
+      return null;
+    }
+    return result;
+  } catch (e) {
+    console.error("Error in calculateEq13:", e);
+    return null;
+  }
 }
 

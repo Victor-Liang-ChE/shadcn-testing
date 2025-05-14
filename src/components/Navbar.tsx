@@ -46,6 +46,9 @@ function Navbar() {
       case "/toolbox/azeotrope-finder":
         return "Azeotrope Finder";
 
+      case "/toolbox/compound-properties":
+        return "Compound Properties";
+
       case "/misc":
           return "Miscellaneous Projects";
   

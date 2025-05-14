@@ -339,7 +339,7 @@ export default function McCabeThielePage() {
       const { data, error } = await supabase
         .from('compounds')
         .select('name')
-        .ilike('name', `%${inputValue}%`)
+        .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
         .limit(5);
 
       if (error) {
@@ -857,7 +857,7 @@ export default function McCabeThielePage() {
     const axisCompLabel = dispComp1Cap;
 
     setEchartsOptions({
-        backgroundColor: '#08306b',
+        backgroundColor: 'transparent',
         title: { text: titleText, left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '5%', right: '5%', bottom: '5%', top: '5%', containLabel: true },
         xAxis: {
