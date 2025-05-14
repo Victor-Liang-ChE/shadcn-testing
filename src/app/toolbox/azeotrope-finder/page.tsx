@@ -580,12 +580,7 @@ export default function AzeotropeFinderPage() {
             return tooltipHtml;
         }
       },
-      // legend: { // Legend removed as per request
-      //   data: [compositionLegendName, dependentParamName],
-      //   bottom: 10,
-      //   textStyle: { color: '#9ca3af', fontFamily: 'Merriweather Sans' }, 
-      //   inactiveColor: '#4b5563'
-      // },
+      legend: { show: false }, // Explicitly hide the legend
       grid: { left: '8%', right: '10%', bottom: '8%', top: '8%', containLabel: true }, // Adjusted grid.bottom from 15% to 8%
       xAxis: {
         show: true, 
