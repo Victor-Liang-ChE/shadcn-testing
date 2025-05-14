@@ -3,7 +3,7 @@ import type { CompoundData, WilsonPureComponentParams, BubbleDewResult, AntoineP
 import { calculatePsat_Pa } from './vle-calculations-unifac'; // Re-use Psat for initial guesses
 
 // --- Constants ---
-const R_gas_const_J_molK = 8.31446261815324; // J/mol·K
+export const R_gas_const_J_molK = 8.31446261815324; // J/mol·K
 const JOULES_PER_CAL = 4.184;     // 1 cal = 4.184 J
 
 // --- Interfaces ---
@@ -39,7 +39,7 @@ export async function fetchWilsonInteractionParams(
     const query = supabase
         .from('wilson parameters') // Ensure this table name is correct
         .select('"A12", "A21", "CASN1", "CASN2"') // Ensure these column names are exact
-        .or(`and(CASN1.eq.${casn1_query},CASN2.eq.${casn2_query}),and(CASN1.eq.${casn2_query},CASN2.eq.${casn1_query})`)
+        .or(`and(CASN1.eq.${casn1_query},CASN2.eq.${casn2_query}),and(CASN1.eq.${casn2_query},CASN1.eq.${casn1_query})`)
         .limit(1);
 
     const { data, error } = await query;
@@ -193,6 +193,9 @@ export function calculateBubbleTemperatureWilson(
 
         let T_K_new = T_K + T_change;
         if (T_K_new <= 0) T_K_new = T_K * 0.9; 
+        // Add bounds to prevent extreme temperatures if iterations go haywire
+        if (T_K_new < 150) T_K_new = 150; // Lower bound, adjust if necessary
+        if (T_K_new > 800) T_K_new = 800; // Upper bound, adjust if necessary
         T_K = T_K_new;
     }
     return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "Wilson: Bubble T max iterations reached", calculationType: 'bubbleT', iterations: maxIter };
