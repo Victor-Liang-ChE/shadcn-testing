@@ -92,7 +92,7 @@ export default function CouetteFlowPage() {
     useEffect(() => {
         const isDark = resolvedTheme === 'dark';
         const textColor = isDark ? '#E5E7EB' : '#1F2937';
-        const lineColor = isDark ? '#4B5563' : '#9CA3AF';
+        // const lineColor = isDark ? '#4B5563' : '#9CA3AF'; // No longer needed for axis lines if they are always white
         const profileColor = isDark ? '#A7F3D0' : '#10B981';
         const chartBackgroundColor = isDark ? 'hsl(215, 40%, 30%)' : 'hsl(210, 40%, 96.1%)'; // Card background colors
 
@@ -118,8 +118,8 @@ export default function CouetteFlowPage() {
                 nameGap: 30,
                 axisLabel: { color: textColor, formatter: (val: number) => val.toFixed(2) },
                 nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold' },
-                axisLine: { lineStyle: { color: lineColor } },
-                splitLine: { show: true, lineStyle: { color: lineColor, type: 'dashed', opacity: 0.5 } },
+                axisLine: { lineStyle: { color: '#FFFFFF' } }, // Changed to white
+                splitLine: { show: false }, // Grid lines removed
             },
             yAxis: {
                 type: 'value',
@@ -130,8 +130,8 @@ export default function CouetteFlowPage() {
                 max: plateDistanceH * 100, // Max value in cm
                 axisLabel: { color: textColor, formatter: (val: number) => val.toFixed(Math.max(0, Math.ceil(-Math.log10(plateDistanceH * 100))+1)) }, // Adjust precision for cm
                 nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold' },
-                axisLine: { lineStyle: { color: lineColor } },
-                splitLine: { show: true, lineStyle: { color: lineColor, type: 'dashed', opacity: 0.5 } },
+                axisLine: { lineStyle: { color: '#FFFFFF' } }, // Changed to white
+                splitLine: { show: false }, // Grid lines removed
             },
             series: [{
                 name: 'Velocity Profile',
