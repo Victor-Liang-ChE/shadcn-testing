@@ -575,7 +575,7 @@ export default function VleCalculatorPage() {
                 }
                 if (!data1.cas_number || !data2.cas_number) {
                     console.warn("CAS numbers missing for one or both compounds; PR k_ij might default to 0 if not found by other means.");
-                     activityParameters = { k12: 0 }; 
+                     activityParameters = { k_ij: 0, k_ji: 0 }; 
                 } else {
                     activityParameters = await fetchPrInteractionParams(supabase, data1.cas_number, data2.cas_number);
                 }
@@ -585,7 +585,7 @@ export default function VleCalculatorPage() {
                 }
                 if (!data1.cas_number || !data2.cas_number) {
                     console.warn("CAS numbers missing for one or both compounds; SRK k_ij might default to 0.");
-                    activityParameters = { k12: 0 };
+                    activityParameters = { k_ij: 0, k_ji: 0 };
                 } else {
                     activityParameters = await fetchSrkInteractionParams(supabase, data1.cas_number, data2.cas_number);
                 }
@@ -776,7 +776,7 @@ export default function VleCalculatorPage() {
                 }
                  if (!data1.cas_number || !data2.cas_number) {
                     console.warn("CAS numbers missing for Azeotrope scan with PR; k_ij might default to 0.");
-                    activityParameters = { k12: 0 };
+                    activityParameters = { k_ij: 0, k_ji: 0 };
                 } else {
                     activityParameters = await fetchPrInteractionParams(supabase, data1.cas_number, data2.cas_number);
                 }
@@ -786,7 +786,7 @@ export default function VleCalculatorPage() {
                 }
                 if (!data1.cas_number || !data2.cas_number) {
                    console.warn("CAS numbers missing for Azeotrope scan with SRK; k_ij might default to 0.");
-                   activityParameters = { k12: 0 };
+                   activityParameters = { k_ij: 0, k_ji: 0 };
                } else {
                    activityParameters = await fetchSrkInteractionParams(supabase, data1.cas_number, data2.cas_number);
                }
