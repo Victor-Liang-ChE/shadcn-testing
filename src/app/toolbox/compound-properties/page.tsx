@@ -342,26 +342,28 @@ export default function CompoundPropertiesPage() {
 
   const fetchCompoundPropertiesLocal = async (compoundName: string): Promise<FetchedCompoundData | null> => {
     if (!supabase) throw new Error("Supabase client not initialized.");
-    // setLoading(true); // Loading state handled by caller
-    // setError(null); // Error state handled by caller (per compound)
-    console.log(`CompoundProperties: Fetching data for ${compoundName}...`);
+    
+    const trimmedCompoundName = compoundName.trim(); // Trim the compound name
+    if (!trimmedCompoundName) { // Check if trimmed name is empty
+        console.warn("fetchCompoundPropertiesLocal: Compound name is empty after trimming.");
+        throw new Error("Compound name cannot be empty.");
+    }
+
+    console.log(`CompoundProperties: Fetching data for "${trimmedCompoundName}"...`); // Use trimmed name in log
 
     try {
       const { data: compoundDbData, error: compoundError } = await supabase
-        .from('compounds').select('id, name, cas_number, molecular_weight').ilike('name', compoundName).limit(1).single(); // Added molecular_weight
+        .from('compounds').select('id, name, cas_number, molecular_weight').ilike('name', trimmedCompoundName).limit(1).single(); // Use trimmed name
       
-      console.log(`DEBUG_FETCH_MW: For compound "${compoundName}", compoundDbData:`, JSON.stringify(compoundDbData)); // Log entire compoundDbData
+      console.log(`DEBUG_FETCH_MW: For compound "${trimmedCompoundName}", compoundDbData:`, JSON.stringify(compoundDbData)); // Use trimmed name in log
 
       if (compoundError || !compoundDbData) {
-        console.error(`DEBUG_FETCH_MW: Error or no data for compound "${compoundName}" from 'compounds' table. Error:`, compoundError);
-        throw new Error(compoundError?.message || `Compound '${compoundName}' not found in 'compounds' table.`);
+        console.error(`DEBUG_FETCH_MW: Error or no data for compound "${trimmedCompoundName}" from 'compounds' table. Error:`, compoundError); // Use trimmed name
+        throw new Error(compoundError?.message || `Compound '${trimmedCompoundName}' not found in 'compounds' table.`); // Use trimmed name
       }
       
       const compoundId = compoundDbData.id;
-      const foundName = compoundDbData.name;
-      const directMolarWeight = compoundDbData.molecular_weight; 
-      console.log(`DEBUG_FETCH_MW: For compound "${foundName}" (ID: ${compoundId}), directMolarWeight from DB: ${directMolarWeight} (type: ${typeof directMolarWeight})`);
-
+      const foundName = compoundDbData.name; // This is the name from DB, should be canonical
 
       const sourcesToTry = ['chemsep1', 'DWSIM', 'chemsep2', 'biod_db'];
       let properties: any = null;
@@ -373,12 +375,14 @@ export default function CompoundPropertiesPage() {
       if (!properties) {
         const { data: anyPropsData, error: anyPropsError } = await supabase
           .from('compound_properties').select('properties').eq('compound_id', compoundId).limit(1).single();
-        if (anyPropsError || !anyPropsData) throw new Error(`No properties found for ${foundName}.`);
+        if (anyPropsError || !anyPropsData) throw new Error(`No properties found for ${foundName}.`); // Use foundName (canonical)
         properties = anyPropsData.properties;
       }
-      if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid properties format for ${foundName}.`);
+      if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid properties format for ${foundName}.`); // Use foundName
 
-      // Prioritize directMolarWeight, then fallback to properties JSON
+      const directMolarWeight = compoundDbData.molecular_weight; 
+      console.log(`DEBUG_FETCH_MW: For compound "${foundName}" (ID: ${compoundId}), directMolarWeight from DB: ${directMolarWeight} (type: ${typeof directMolarWeight})`);
+
       let molarWeight: number | null = null;
       if (directMolarWeight !== null && typeof directMolarWeight === 'number') {
         molarWeight = directMolarWeight;
@@ -393,10 +397,9 @@ export default function CompoundPropertiesPage() {
       const criticalTemp = parseCoefficient(properties["Critical temperature"]?.value ?? properties["Critical temperature"]);
       console.log(`DEBUG_FETCH_MW: Final molarWeight for "${foundName}" being returned: ${molarWeight}, CriticalTemp: ${criticalTemp}`);
 
-      return { properties, molarWeight, criticalTemp, name: foundName };
+      return { properties, molarWeight, criticalTemp, name: foundName }; // Return canonical name
     } catch (err: any) {
-      console.error(`Error fetching data for ${compoundName}:`, err.message);
-      // setError(`Data fetch failed for ${compoundName}: ${err.message}`); // Caller will set this per compound
+      console.error(`Error fetching data for "${trimmedCompoundName}":`, err.message); // Use trimmed name
       throw err; // Re-throw to be caught by caller
     }
   };
@@ -669,8 +672,6 @@ export default function CompoundPropertiesPage() {
         yAxisUnitRef.current = yAxisUnit; // Store for CSV export
 
         let yAxisTickFormatter = (val: number) => formatNumberToPrecision(val, 7); // Increased precision from 5 to 7
-        // const desiredTotalGapTempDependent = 75; // Desired total pixels from label text to name text
-        // const axisLabelMargin = 8; // Default ECharts margin
 
         // --- Determine dynamic axis label margin and nameGap ---
         const originalBaseTotalGap = (propDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75); // Original (desiredTotalGap + 10 or desiredTotalGap)
@@ -736,15 +737,10 @@ export default function CompoundPropertiesPage() {
                   if (axisDim === 'x') {
                     return formatNumberToPrecision(valueAsNumber - 273.15, 3) + ' °C';
                   } else if (axisDim === 'y') {
-                    // Removed conditional formatting for y-axis pointer based on property
-                    // if (propDef.jsonKey === "Relative static permittivity") {
-                    //   return (valueAsNumber === 0 ? '0' : valueAsNumber.toExponential(2)) + (yAxisUnit ? ' ' + yAxisUnit : '');
-                    // }
                     return formatNumberToPrecision(valueAsNumber, 3) + (yAxisUnit ? ' ' + yAxisUnit : '');
                   }
                   return formatNumberToPrecision(valueAsNumber, 3); // Fallback
                 },
-                // Moved text styling properties directly under label
                 fontFamily: 'Merriweather Sans', // Font for the text inside the label
                 color: '#333' // Color of the text inside the label
               }
@@ -754,12 +750,10 @@ export default function CompoundPropertiesPage() {
             textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
             formatter: (params: any) => {
                 if (!Array.isArray(params) || params.length === 0) return '';
-                // Temperature conversion for tooltip display
                 const tempInCelsius = params[0].axisValue - 273.15;
                 let tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
                 params.forEach((param: any) => {
                     const seriesFullname = param.seriesName; 
-                    // Add yAxisUnit to the tooltip for the dependent variable
                     tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)} ${yAxisUnit || ''}</b><br/>`;
                 });
                 return tooltipHtml;
@@ -772,18 +766,16 @@ export default function CompoundPropertiesPage() {
             inactiveColor: '#4b5563',
             type: 'scroll',
             formatter: (name) => {
-                // Find the series to get its internal legend equation
                 const series = seriesData.find(s => s.name === name) as any;
                 if (series && series._internal_legend_equation) {
-                     // Truncate name if too long for legend display, full name in tooltip
                     const displayName = name.length > 40 ? name.substring(0, 37) + "..." : name;
-                    return `${displayName}`; // Equation shown in tooltip
+                    return `${displayName}`; 
                 }
                 return name;
             },
             tooltip: {
                 show: true,
-                formatter: (params: any) => { // params here is { name: string }
+                formatter: (params: any) => { 
                     const series = seriesData.find(s => s.name === params.name) as any;
                     if (series && series._internal_legend_equation) {
                         return `<strong>${params.name}</strong><br/>Equation: ${series._internal_legend_equation}`;
@@ -801,29 +793,28 @@ export default function CompoundPropertiesPage() {
             axisLabel: { 
                 color: '#e0e6f1', 
                 fontFamily: 'Merriweather Sans', 
-                fontSize: 16, // Font size 16
-                formatter: (val: number) => (val - 273.15).toFixed(0) // Changed to toFixed(0) for integer display
+                fontSize: 16, 
+                formatter: (val: number) => (val - 273.15).toFixed(0) 
             },
             nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
             splitLine: { show: false },
-            scale: false, // Set to false when min, max, and interval are explicitly defined
-            min: finalPlotTminKelvin, // Set x-axis range based on adjusted Kelvin Tmin
-            max: finalPlotTmaxKelvin, // Set x-axis range based on adjusted Kelvin Tmax
-            interval: celsiusStep, // Set the interval (in Kelvin units, which corresponds to Celsius step)
+            scale: false, 
+            min: finalPlotTminKelvin, 
+            max: finalPlotTmaxKelvin, 
+            interval: celsiusStep, 
           },
           yAxis: yAxisConfig,
-          series: finalSeriesToPlot, // Only plot series with data
+          series: finalSeriesToPlot, 
           toolbox: {
             show: true, 
-            orient: 'horizontal', // Changed from vertical
-            right: 20,            // Position from right
-            bottom: 20,           // Position from bottom
-            top: 'auto',          // Reset top
-            left: 'auto',         // Reset left
+            orient: 'horizontal', 
+            right: 20,            
+            bottom: 20,           
+            top: 'auto',          
+            left: 'auto',         
             feature: { 
               saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' },
-              // TODO: Add data view later if needed
             },
             iconStyle: { borderColor: '#9ca3af' }
           },
@@ -842,8 +833,8 @@ export default function CompoundPropertiesPage() {
                              constDef.availableUnits?.[0] ||
                              { unit: constDef.targetUnitName, conversionFactorFromBase: 1 };
         const displayUnit = unitDefToUse.unit;
-        const conversionFactorForDisplay = unitDefToUse.conversionFactorFromBase; // This will be 1 for K, °C, °F from temp props
-        yAxisUnitRef.current = displayUnit; // Store for CSV export
+        const conversionFactorForDisplay = unitDefToUse.conversionFactorFromBase; 
+        yAxisUnitRef.current = displayUnit; 
 
         const barChartData: { name: string, value: number, itemStyle: { color: string } }[] = [];
         const compoundNames: string[] = [];
@@ -855,32 +846,25 @@ export default function CompoundPropertiesPage() {
             const currentCompoundData = compoundState.data;
             let rawValue = parseCoefficient(currentCompoundData.properties[constDef.jsonKey]);
 
-            // Special case for Molecular Weight: prefer direct value from `compounds` table if available
             if (constDef.jsonKey === "Molecular weight" && currentCompoundData.molarWeight !== null) {
                 rawValue = currentCompoundData.molarWeight;
             }
 
             if (rawValue !== null && isFinite(rawValue)) {
                 atLeastOneCompoundHasData = true;
-                let displayValue = rawValue; // Start with raw value (which is in targetUnitName, e.g., K for temperatures)
+                let displayValue = rawValue; 
                 
-                // Apply a general numeric conversionFactorFromBase if it's provided and not 1
-                // For K, °C, °F temperature units, conversionFactorForDisplay is set to 1 in constant-properties.ts,
-                // so this block won't apply to them, specific logic below will.
                 if (typeof conversionFactorForDisplay === 'number' && conversionFactorForDisplay !== 1) {
                     displayValue *= conversionFactorForDisplay;
                 }
 
-                // Special handling for temperature units if targetUnitName is K
                 if (constDef.targetUnitName === "K") {
                     if (displayUnit === "°C") {
-                        displayValue = rawValue - 273.15; // rawValue is in K
+                        displayValue = rawValue - 273.15; 
                     } else if (displayUnit === "°F") {
-                        displayValue = (rawValue - 273.15) * 9/5 + 32; // rawValue is in K
+                        displayValue = (rawValue - 273.15) * 9/5 + 32; 
                     }
-                    // If displayUnit is "K", displayValue (initially rawValue) is already correct.
                 }
-
 
                 barChartData.push({
                     name: currentCompoundData.name,
@@ -899,7 +883,6 @@ export default function CompoundPropertiesPage() {
             return;
         }
         
-        // --- Calculate Y-axis data range for dynamic margin ---
         let dataMinY = Infinity;
         let dataMaxY = -Infinity;
         if (barChartData && barChartData.length > 0) {
@@ -910,30 +893,25 @@ export default function CompoundPropertiesPage() {
                 }
             });
         }
-        // --- End Y-axis data range calculation ---
         
         const yAxisDisplayName = constDef.displayName;
-        // const desiredTotalGapConstants = 70; // Original value
-        // const axisLabelMarginConst = 8;    // Original value
 
-        // --- Determine dynamic axis label margin and nameGap ---
-        const originalBaseTotalGapConst = 100; // Original desiredTotalGapConstants
+        const originalBaseTotalGapConst = 100; 
         const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGapConst);
         console.log('[DebugYAxis] Constants Plot - Applied:', { yAxisDisplayName, displayUnit, dataMinY, dataMaxY, originalBaseTotalGapConst, dynamicAxisLabelMargin, calculatedNameGap });
-        // --- End dynamic parameter calculation ---
 
         const yAxisConfig: any = {
             type: 'value' as const,
             name: `${yAxisDisplayName} (${displayUnit})`,
             nameLocation: 'middle' as const,
-            nameGap: calculatedNameGap, // Use new dynamic nameGap
+            nameGap: calculatedNameGap, 
             axisLine: { show: true, lineStyle: { color: constDef.color || '#EE6666', width: 2 } },
             axisLabel: { 
               formatter: (val: number) => formatNumberToPrecision(val, 4), 
               color: '#e0e6f1', 
               fontSize: 16, 
               fontFamily: 'Merriweather Sans',
-              margin: dynamicAxisLabelMargin, // Use new dynamic margin
+              margin: dynamicAxisLabelMargin, 
             },
             nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
             splitLine: { show: false },
@@ -948,7 +926,7 @@ export default function CompoundPropertiesPage() {
                 textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
             },
             tooltip: {
-                trigger: 'item', // Changed to item for bar chart
+                trigger: 'item', 
                 formatter: (params: any) => {
                     return `${params.name}<br/>${constDef.displayName}: <b>${formatNumberToPrecision(params.value, 4)} ${displayUnit}</b>`;
                 },
@@ -956,21 +934,20 @@ export default function CompoundPropertiesPage() {
                 borderColor: '#3b82f6',
                 textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
             },
-            legend: { show: false }, // No legend needed for single series bar chart by default
-            grid: { left: '17%', right: '4%', bottom: '3%', containLabel: true }, // Adjusted left to 17%
+            legend: { show: false }, 
+            grid: { left: '17%', right: '4%', bottom: '3%', containLabel: true }, 
             xAxis: {
                 type: 'category',
                 data: compoundNames,
-                axisLabel: { color: '#e0e6f1', fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, // Changed > 3 to > 4
+                axisLabel: { color: '#e0e6f1', fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, 
                 axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
             },
             yAxis: yAxisConfig,
             series: [{
                 name: constDef.displayName,
                 type: 'bar',
-                data: barChartData.map(d => d.value), // Echarts expects values directly for simple bar
+                data: barChartData.map(d => d.value), 
                 itemStyle: {
-                    // If you want each bar to have the color defined in barChartData
                      color: (params: any) => barChartData[params.dataIndex].itemStyle.color
                 },
                 label: {
@@ -982,11 +959,11 @@ export default function CompoundPropertiesPage() {
             }],
             toolbox: { 
               show: true, 
-              orient: 'horizontal', // Changed from vertical
-              right: 20,            // Position from right
-              bottom: 20,           // Position from bottom
-              top: 'auto',          // Reset top
-              left: 'auto',         // Reset left
+              orient: 'horizontal', 
+              right: 20,            
+              bottom: 20,           
+              top: 'auto',          
+              left: 'auto',         
               feature: { 
                 saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' }, 
               }, 
@@ -994,7 +971,7 @@ export default function CompoundPropertiesPage() {
             },
         });
     }
-  }, [plotMode, /* …other deps from temp dependent mode… */]);
+  }, [plotMode]);
 
   const handleFetchAndPlot = useCallback(async () => {
     setLoading(true);
@@ -1022,12 +999,10 @@ export default function CompoundPropertiesPage() {
         let commonProps: PropertyDefinition[] = [];
         if (activeCompoundsWithData.length > 0) {
             commonProps = propertiesToPlotConfig.filter(propDef => {
-                // First, check if every active compound meets basic criteria for this propDef
                 const allCompoundsMeetBasicCriteria = activeCompoundsWithData.every(compoundState => {
                     const propData = compoundState.data!.properties[propDef.jsonKey];
                     if (!propData) return false;
                     
-                    // Individual Tmin/Tmax validity (not overlap yet)
                     const TminCompound = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
                     const TmaxCompound = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
                     if (TminCompound === null || TmaxCompound === null || TminCompound >= TmaxCompound) return false;
@@ -1047,7 +1022,6 @@ export default function CompoundPropertiesPage() {
                                 if (coeffBVal === null || coeffBVal <= 0) return false;
                             }
                         } else {
-                            // For polynomial, at least one coefficient must be present
                             if (!propDef.coeffs.some(cKey => parseCoefficient(propData[cKey]) !== null)) return false;
                         }
                     }
@@ -1055,27 +1029,21 @@ export default function CompoundPropertiesPage() {
                 });
 
                 if (!allCompoundsMeetBasicCriteria) {
-                    return false; // This propDef is not common if any compound fails basic checks
+                    return false; 
                 }
 
-                // If all compounds meet basic criteria, now check for overlapping Tmin/Tmax
                 let overallCommonTminForProp: number | null = null;
                 let overallCommonTmaxForProp: number | any = null;
 
                 for (const compoundState of activeCompoundsWithData) {
                     const propData = compoundState.data!.properties[propDef.jsonKey];
-                    // We know propData exists.
-                    // The filter `allCompoundsMeetBasicCriteria` ensured that parseCoefficient applied to these raw values
-                    // (for Tmin and Tmax) resulted in non-null.
                     const tminRawValue = propData.Tmin?.value ?? propData.Tmin;
                     const tmaxRawValue = propData.Tmax?.value ?? propData.Tmax;
 
-                    // Call parseCoefficient with the raw value (type any).
-                    // Assert that the *result* is non-null, justified by the 'allCompoundsMeetBasicCriteria' filter.
                     const Tmin = parseCoefficient(tminRawValue)!;
                     const Tmax = parseCoefficient(tmaxRawValue)!;
 
-                    if (overallCommonTminForProp === null) { // First compound with this property
+                    if (overallCommonTminForProp === null) { 
                         overallCommonTminForProp = Tmin;
                         overallCommonTmaxForProp = Tmax;
                     } else {
@@ -1084,77 +1052,62 @@ export default function CompoundPropertiesPage() {
                     }
                 }
                 
-                // Check if a valid overlapping range was found
                 if (overallCommonTminForProp !== null && overallCommonTmaxForProp !== null && overallCommonTminForProp < overallCommonTmaxForProp) {
-                    return true; // This propDef is common and has an overlapping T range
+                    return true; 
                 }
 
-                return false; // No overlapping T range, or something went wrong
+                return false; 
             });
         }
         setAvailablePropertiesForSelection(commonProps);
-        // let currentPropertyKeyForPlot = selectedPropertyKey; // No longer needed here
-        // let currentUnitForPlot = selectedUnit; // No longer needed here
         if (commonProps.length > 0) {
             const currentSelectionStillValid = commonProps.find(p => p.jsonKey === selectedPropertyKey);
             if (!currentSelectionStillValid) {
                 const newPropDef = commonProps[0];
-                // currentPropertyKeyForPlot = newPropDef.jsonKey; // No longer needed here
-                // currentUnitForPlot = newPropDef.availableUnits?.[0]?.unit || newPropDef.targetUnitName || ''; // No longer needed here
                 setSelectedPropertyKey(newPropDef.jsonKey);
                 setSelectedUnit(newPropDef.availableUnits?.[0]?.unit || newPropDef.targetUnitName || '');
             }
         } else {
-            setSelectedPropertyKey(''); setSelectedUnit(''); // currentPropertyKeyForPlot = ''; currentUnitForPlot = ''; // No longer needed here
+            setSelectedPropertyKey(''); setSelectedUnit(''); 
             if (fetchedCompoundStates.filter(c => c.name.trim()).length > 0) setOverallError("No common plottable temperature-dependent properties found.");
         }
-        // REMOVED: processAndPlotProperties(fetchedCompoundStates, currentPropertyKeyForPlot || null, currentUnitForPlot);
 
-    } else { // plotMode === 'constants'
+    } else { 
         let commonConsts: ConstantPropertyDefinition[] = [];
         if (activeCompoundsWithData.length > 0) {
             commonConsts = constantPropertiesConfig.filter(constDef => {
                 return activeCompoundsWithData.every(compoundState => {
-                    // Ensure compoundState.data and compoundState.data.properties exist
                     if (!compoundState.data || !compoundState.data.properties) {
                         return false; 
                     }
-                    // Special case for Molecular Weight: prefer direct value from `compounds` table
                     if (constDef.jsonKey === "Molecular weight" && compoundState.data.molarWeight !== null) {
-                        // Assuming molarWeight, if present, is a valid finite number.
                         return true;
                     }
                     const constData = compoundState.data.properties[constDef.jsonKey];
                     const parsedValue = parseCoefficient(constData);
-                    // Ensure the parsed value is a non-null finite number to be considered common/plottable
                     return parsedValue !== null && isFinite(parsedValue);
                 });
             });
         }
         setAvailableConstantsForSelection(commonConsts);
-        // let currentConstantKeyForPlot = selectedConstantKey; // No longer needed here
-        // let currentConstantUnitForPlot = selectedConstantUnit; // No longer needed here
 
         if (commonConsts.length > 0) {
             const currentSelectionStillValid = commonConsts.find(c => c.jsonKey === selectedConstantKey);
             if (!currentSelectionStillValid) {
                 const newConstDef = commonConsts[0];
-                // currentConstantKeyForPlot = newConstDef.jsonKey; // No longer needed here
-                // currentConstantUnitForPlot = newConstDef.availableUnits?.[0]?.unit || newConstDef.targetUnitName || ''; // No longer needed here
                 setSelectedConstantKey(newConstDef.jsonKey);
                 setSelectedConstantUnit(newConstDef.availableUnits?.[0]?.unit || newConstDef.targetUnitName || '');
             }
         } else {
-            setSelectedConstantKey(''); setSelectedConstantUnit(''); // currentConstantKeyForPlot = ''; currentConstantUnitForPlot = ''; // No longer needed here
+            setSelectedConstantKey(''); setSelectedConstantUnit(''); 
              if (fetchedCompoundStates.filter(c => c.name.trim()).length > 0) setOverallError("No common constant properties found for the selected compounds.");
         }
-        // REMOVED: processAndPlotProperties(fetchedCompoundStates, currentConstantKeyForPlot || null, currentConstantUnitForPlot);
     }
     
     setLoading(false);
-  }, [compounds, selectedPropertyKey, selectedUnit, fetchCompoundPropertiesLocal, plotMode, selectedConstantKey, selectedConstantUnit, /* removed processAndPlotProperties from here if it was, but it's used by the effect */]);
+  }, [compounds, selectedPropertyKey, selectedUnit, fetchCompoundPropertiesLocal, plotMode, selectedConstantKey, selectedConstantUnit]);
 
-
+  // add back CSV export functionality
   const handleExportCSV = useCallback(() => {
     if (!echartsOptions || !echartsOptions.series || (echartsOptions.series as EChartsSeriesOption[]).length === 0) {
       console.warn("No data to export.");
@@ -1198,9 +1151,7 @@ export default function CompoundPropertiesPage() {
         const constDisplayName = currentConstDef ? currentConstDef.displayName : 'Constant';
         filename = `${constDisplayName.replace(/\s+/g, '_')}_Data.csv`;
         const unitSuffix = yAxisUnitRef.current ? ` (${yAxisUnitRef.current})` : '';
-        
-        // Assuming seriesForCSV[0].data contains objects like { name: string, value: number } for bar chart
-        // Or, if it's simpler, xAxis.data for names and series[0].data for values
+
         const xAxisData = echartsOptions.xAxis as any; // Assuming single xAxis
         const compoundNames = xAxisData?.data as string[] || [];
         const constantValues = (seriesForCSV[0]?.data as any[])?.map(item => typeof item === 'object' ? item.value : item) || [];
@@ -1225,11 +1176,11 @@ export default function CompoundPropertiesPage() {
         link.click();
         document.body.removeChild(link);
     }
-  }, [echartsOptions, selectedPropertyKey, yAxisUnitRef]);
-
+  }, [echartsOptions, plotMode, selectedPropertyKey, selectedConstantKey]); // adjust deps accordingly
 
   const fetchSuggestionsForCompound = useCallback(debounce(async (compoundId: string, inputValue: string) => {
-    if (!inputValue || inputValue.length < 2 || !supabase) {
+    const trimmedInputValue = inputValue.trim(); 
+    if (!trimmedInputValue || trimmedInputValue.length < 2 || !supabase) {
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: [], showSuggestions: false } : c));
       return;
     }
@@ -1237,20 +1188,20 @@ export default function CompoundPropertiesPage() {
       const { data, error: fetchError } = await supabase
         .from('compounds')
         .select('name')
-        .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
+        .ilike('name', `${trimmedInputValue}%`) 
         .limit(5);
 
       if (fetchError) { console.error("Supabase suggestion fetch error:", fetchError); return; }
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: data ? data.map(item => item.name) : [], showSuggestions: data && data.length > 0 } : c));
     } catch (err) { console.error("Error fetching suggestions:", err); }
-  }, 300), [supabase]); // supabase dependency for useCallback
+  }, 300), [supabase]); 
 
   const handleCompoundNameChange = (id: string, value: string) => {
-    setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, data: null, error: null } : c)); // Clear data and error on name change
-    if (value.trim() === "") {
+    setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, data: null, error: null } : c)); 
+    if (value.trim() === "") { 
       setCompounds(prev => prev.map(c => c.id === id ? { ...c, suggestions: [], showSuggestions: false } : c));
     } else {
-      fetchSuggestionsForCompound(id, value);
+      fetchSuggestionsForCompound(id, value); 
     }
   };
 
@@ -1268,29 +1219,15 @@ export default function CompoundPropertiesPage() {
     if (compounds.length < 4) {
         setCompounds(prev => [
             ...prev,
-            createNewCompoundState() // Use the new function to add compounds
+            createNewCompoundState() 
         ]);
     }
   };
 
   const removeCompoundInput = (idToRemove: string) => {
     setCompounds(prev => prev.filter(c => c.id !== idToRemove));
-    // After removing, if a plot was based on this compound, it might need re-evaluation
-    // The main useEffect hook will handle re-processing with remaining compounds.
-    // No explicit call to processAndPlotProperties or handleFetchAndPlot needed here
-    // as the change in `compounds` state will trigger the main plotting useEffect.
     const remainingCompounds = compounds.filter(c => c.id !== idToRemove);
-    // If all compounds with data are removed, the main useEffect should handle clearing the chart
-    // or showing appropriate messages via processAndPlotProperties.
-    // For instance, if selectedPropertyKey becomes invalid or no data remains.
     if (!remainingCompounds.some(c => c.data)) {
-        // If no data left, ensure available properties are reset if necessary,
-        // though handleFetchAndPlot usually does this.
-        // If the main useEffect doesn't clear the chart appropriately,
-        // an explicit setEchartsOptions({}) might be needed here,
-        // but let's rely on the main useEffect for now.
-        // setAvailablePropertiesForSelection(propertiesToPlotConfig); // Reset available props
-        // setAvailableConstantsForSelection(constantPropertiesConfig);
     }
   };
 
@@ -1308,14 +1245,12 @@ export default function CompoundPropertiesPage() {
     return () => { document.removeEventListener("mousedown", handleClickOutside); };
   }, [compounds]);
 
-  // Re-enable initial fetch for default compound on mount/first name change
   useEffect(() => {
     if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading) {
       handleFetchAndPlot();
     }
   }, [supabase, compounds[0]?.name, compounds[0]?.data]);
 
-  // Re-enable fetch when switching between Temp‐Dependent and Constants modes
   useEffect(() => {
     if (plotMode === 'constants' || plotMode === 'tempDependent') {
       if (compounds.some(c => c.name.trim() !== '')) {
@@ -1325,9 +1260,8 @@ export default function CompoundPropertiesPage() {
   }, [plotMode]); 
 
 
-  // Re-plot if selectedPropertyKey/selectedConstantKey changes and data is available
   useEffect(() => {
-    if (loading) return; // Do not re-plot if a fetch operation is in progress
+    if (loading) return; 
 
     const currentKey = plotMode === 'tempDependent' ? selectedPropertyKey : selectedConstantKey;
     const currentUnit = plotMode === 'tempDependent' ? selectedUnit : selectedConstantUnit;
@@ -1336,34 +1270,21 @@ export default function CompoundPropertiesPage() {
     if (currentKey) {
       if (plotMode === 'tempDependent') {
         keyIsValidForCurrentAvailableList = !!availablePropertiesForSelection.find(p => p.jsonKey === currentKey);
-      } else { // plotMode === 'constants'
+      } else { 
         keyIsValidForCurrentAvailableList = !!availableConstantsForSelection.find(c => c.jsonKey === currentKey);
       }
     }
 
-    // Only plot if data exists for at least one compound, a key is selected, and that key is valid for the current available list.
-    // If no key is selected (currentKey is empty), but data exists, processAndPlotProperties will handle showing an appropriate message.
     if (compounds.some(c => c.data)) {
         if (currentKey && keyIsValidForCurrentAvailableList) {
            
             processAndPlotProperties(compounds, currentKey, currentUnit);
         } else if (!currentKey) { 
-            // If no key is selected (e.g. after filtering, no common props found, or initial state before selection)
-            // Call processAndPlotProperties with null key to clear chart or show "select property"
             processAndPlotProperties(compounds, null, currentUnit);
         }
        } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
-        // If there's no compound data (e.g., all compounds removed or failed to load),
-        // and there was a chart, clear it.
-        // This case might be covered if selectedKey becomes null/empty.
-        // processAndPlotProperties(compounds, null, currentUnit); // This will show "Please select property"
-        // Or more directly:
-        // setEchartsOptions({});
-        // if (!overallError) setOverallError("No data to plot. Please add compounds and fetch properties.");
-        // Let processAndPlotProperties(..., null, ...) handle this.
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError]); // Added overallError
+  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError]); 
 
   const canExportCSV = echartsOptions && 
                        echartsOptions.series && 
@@ -1372,12 +1293,11 @@ export default function CompoundPropertiesPage() {
 
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
-      event.preventDefault(); // Prevent default form submission or other Enter key behaviors
+      event.preventDefault(); 
       handleFetchAndPlot();
     }
   };
 
-  // Generate a key for the Select component to force re-render when options change
   const propertySelectKey = availablePropertiesForSelection.map(p => p.jsonKey).join(',') || 'no-props';
   const constantSelectKey = availableConstantsForSelection.map(c => c.jsonKey).join(',') || 'no-const-props';
 
@@ -1390,7 +1310,6 @@ export default function CompoundPropertiesPage() {
             <Card>
               <CardContent className="space-y-4 pt-6">
                 <div className="flex items-center space-x-2 mb-4">
-                  {/* Replace Switch with Tabs */}
                   <Tabs value={plotMode} onValueChange={(value) => setPlotMode(value as 'tempDependent' | 'constants')} className="w-full">
                     <TabsList className="grid w-full grid-cols-2">
                       <TabsTrigger value="tempDependent">Temp. Dependent</TabsTrigger>
@@ -1401,18 +1320,18 @@ export default function CompoundPropertiesPage() {
 
                 {compounds.map((compound, index) => (
                     <div key={compound.id} className="space-y-1">
-                        <div className="flex items-center gap-2"> {/* Flex container for label and input group */}
-                            <Label htmlFor={compound.id} className="text-sm whitespace-nowrap w-28"> {/* Label on the left */}
+                        <div className="flex items-center gap-2"> 
+                            <Label htmlFor={compound.id} className="text-sm whitespace-nowrap w-28"> 
                                 Compound {index + 1}:
                             </Label>
-                            <div className="relative flex items-center gap-2 flex-grow"> {/* Input and trash icon group */}
+                            <div className="relative flex items-center gap-2 flex-grow"> 
                                 <Input
                                     ref={compound.inputRef}
                                     id={compound.id}
                                     value={compound.name}
                                     onChange={(e) => handleCompoundNameChange(compound.id, e.target.value)}
                                     onFocus={() => { setCompounds(prev => prev.map(c => c.id === compound.id ? { ...c, showSuggestions: c.suggestions.length > 0 } : c));}}
-                                    onKeyDown={handleInputKeyDown} // Added event handler
+                                    onKeyDown={handleInputKeyDown} 
                                     placeholder={`e.g., ${index === 0 ? 'Ethanol' : 'Water'}`}
                                     autoComplete="off"
                                     className="flex-grow"
@@ -1429,7 +1348,7 @@ export default function CompoundPropertiesPage() {
                                 )}
                             </div>
                         </div>
-                        {compound.error && <p className="text-xs text-red-500 mt-1 pl-32">{compound.error}</p>} {/* Indent error to align with input */}
+                        {compound.error && <p className="text-xs text-red-500 mt-1 pl-32">{compound.error}</p>} 
                    
                     </div>
                 ))}
@@ -1473,7 +1392,7 @@ export default function CompoundPropertiesPage() {
                         const unitsForCurrentProp = currentPropDef?.availableUnits;
                         if (unitsForCurrentProp && unitsForCurrentProp.length > 1) {
                           return (
-                            <div className="flex-grow space-y-2 max-w-[224px]"> {/* Increased max-width from 150px */}
+                            <div className="flex-grow space-y-2 max-w-[224px]"> 
                               <Select
                                 value={selectedUnit}
                                 onValueChange={(value) => setSelectedUnit(value)}
@@ -1495,7 +1414,7 @@ export default function CompoundPropertiesPage() {
                         return null;
                       })()}
                     </>
-                  ) : ( // plotMode === 'constants'
+                  ) : ( 
                     <>
                       <div className="flex-grow space-y-2">
                         <Select
@@ -1525,10 +1444,9 @@ export default function CompoundPropertiesPage() {
                       {(() => {
                         const currentConstDef = constantPropertiesConfig.find(c => c.jsonKey === selectedConstantKey);
                         const unitsForCurrentConst = currentConstDef?.availableUnits;
-                        // Only show unit selector if there's more than one unit OR if the single unit is not "-" (dimensionless)
                         if (unitsForCurrentConst && (unitsForCurrentConst.length > 1 || (unitsForCurrentConst.length === 1 && unitsForCurrentConst[0].unit !== "-"))) {
                           return (
-                            <div className="flex-grow space-y-2 max-w-[224px]"> {/* Increased max-width from 150px */}
+                            <div className="flex-grow space-y-2 max-w-[224px]"> 
                               <Select
                                 value={selectedConstantUnit}
                                 onValueChange={(value) => setSelectedConstantUnit(value)}
