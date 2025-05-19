@@ -54,18 +54,20 @@ export function calculatePsat_Pa(
 }
 
 
-/** Calculates UNIFAC activity coefficients gamma_i for a binary mixture */
+/** Calculates UNIFAC activity coefficients gamma_i for a mixture */
 export function calculateUnifacGamma(
     componentData: CompoundData[], // Uses imported CompoundData
-    x: number[], // mole fractions [x1, x2]
+    x: number[], // mole fractions [x1, x2, ..., xn]
     T_kelvin: number,
     params: UnifacParameters
-): [number, number] | null { // Return null on error
-    console.log("!!!!!!!!!! EXECUTING calculateUnifacGamma (NEW VERSION) !!!!!!!!!!");
+): number[] | null { // Changed return type to number[] | null
+    console.log("!!!!!!!!!! EXECUTING calculateUnifacGamma (GENERALIZED VERSION) !!!!!!!!!!");
 
     try {
         const numComponents = componentData.length;
-        if (numComponents !== 2) throw new Error("UNIFAC calculation currently supports only binary mixtures.");
+        if (numComponents === 0) throw new Error("UNIFAC calculation requires at least one component.");
+        if (x.length !== numComponents) throw new Error("Mismatch between componentData and mole fraction array lengths.");
+
         if (!params || !params.Rk || !params.Qk || !params.mainGroupMap || !params.a_mk) {
             console.error("DEBUG: Incomplete UNIFAC parameters provided to calculateUnifacGamma:", { paramsExists: !!params, RkExists: !!params?.Rk, QkExists: !!params?.Qk, mainGroupMapExists: !!params?.mainGroupMap, a_mkExists: !!params?.a_mk });
             throw new Error("Incomplete UNIFAC parameters provided.");
@@ -73,8 +75,7 @@ export function calculateUnifacGamma(
 
         const Z = 10.0; // Coordination number
 
-        // --- Ensure r_i, q_i are calculated (from previous working version) ---
-        // This loop calculates r_i and q_i and stores them on componentData if not already present.
+        // --- Ensure r_i, q_i are calculated ---
         for (let i = 0; i < componentData.length; i++) {
             const comp = componentData[i];
             if (comp.r_i === undefined || comp.q_i === undefined) {
@@ -97,7 +98,6 @@ export function calculateUnifacGamma(
             }
         }
 
-        // Make sure r and q arrays are populated correctly here.
         const r = componentData.map(c => {
             if (c.r_i === undefined) throw new Error(`r_i not defined for ${c.name}`);
             return c.r_i;
@@ -107,10 +107,10 @@ export function calculateUnifacGamma(
             return c.q_i;
         });
 
-        const Z_by_2 = Z / 2.0; // Corrected from Z_by_2 = Z;
+        const Z_by_2 = Z / 2.0;
 
         // --- 1. Combinatorial Part ---
-        const ln_gamma_C: number[] = [0.0, 0.0];
+        const ln_gamma_C: number[] = Array(numComponents).fill(0.0); // Generalized initialization
 
         // Calculate sum_xr and sum_xq for the mixture
         let sum_xr_mix = 0;
@@ -120,65 +120,41 @@ export function calculateUnifacGamma(
             sum_xq_mix += x[k] * q[k];
         }
 
-        if (sum_xr_mix < 1e-12 || sum_xq_mix < 1e-12) { // Avoid division by zero if all r or q are zero (unlikely)
+        if (sum_xr_mix < 1e-12 || sum_xq_mix < 1e-12) {
             console.warn("UNIFAC: sum_xr_mix or sum_xq_mix is zero. Gammas might be unreliable.");
-            // For now, let it proceed and potentially result in NaNs that are caught later
         }
-        
+
         const L_component_values = r.map((ri_val, idx) => Z_by_2 * (ri_val - q[idx]) - (ri_val - 1.0));
         console.log(`UNIFAC_DETAILS: L_comp = [${L_component_values.map(val => val.toFixed(4)).join(', ')}]`);
 
         for (let i = 0; i < numComponents; i++) {
-            if (x[i] < 1e-9) { // Component i is at infinite dilution
-                const j = 1 - i; // Index of the solvent component (for binary mixture)
-
-                if (r[j] < 1e-9 || q[j] < 1e-9) { // Solvent has no volume/area
-                     console.warn(`UNIFAC Combinatorial: Solvent component ${j} has zero r or q.`);
-                     ln_gamma_C[i] = L_component_values[i]; // Fallback, though potentially incorrect
-                     continue;
-                }
-
-                const Phi_i_over_x_i_limit = r[i] / r[j];
-                // const Theta_i_over_x_i_limit = q[i] / q[j]; // Not directly used in this formulation
-                
-                // For ln(Φ_i/Θ_i) limit: (Φ_i/x_i) / (Θ_i/x_i) = (r_i/r_j) / (q_i/q_j) = (r_i * q_j) / (r_j * q_i)
-                const Phi_i_over_Theta_i_limit = (r[j] * q[i] !== 0) ? (r[i] * q[j]) / (r[j] * q[i]) : 0; // Avoid division by zero
-
-                const term_A_log = (Phi_i_over_x_i_limit > 1e-9) ? Math.log(Phi_i_over_x_i_limit) : 0; // Avoid log(0)
-                const term_A_val = 1.0 - Phi_i_over_x_i_limit;
-                
-                let term_B_log = 0;
-                if (Phi_i_over_Theta_i_limit > 1e-9) { // Avoid log(0)
-                    term_B_log = Math.log(Phi_i_over_Theta_i_limit);
-                }
-                const term_B_val = 1.0 - Phi_i_over_Theta_i_limit;
-
-                ln_gamma_C[i] = term_A_log + term_A_val - Z_by_2 * q[i] * (term_B_log + term_B_val);
-                
-            } else if (Math.abs(x[i] - 1.0) < 1e-9) { // Component i is pure
+            if (Math.abs(x[i] - 1.0) < 1e-9 && numComponents > 1) { // Component i is pure in a mixture context (others are zero)
+                ln_gamma_C[i] = 0.0;
+            } else if (numComponents === 1) { // Single component system
                 ln_gamma_C[i] = 0.0;
             } else { // Mixture case
                 const Phi_i = (sum_xr_mix > 1e-12) ? (x[i] * r[i]) / sum_xr_mix : 0;
                 const Theta_i = (sum_xq_mix > 1e-12) ? (x[i] * q[i]) / sum_xq_mix : 0;
 
                 if (x[i] < 1e-9 || Phi_i < 1e-9 || Theta_i < 1e-9 || sum_xr_mix < 1e-9 || sum_xq_mix < 1e-9) {
-                     console.warn(`UNIFAC Combinatorial: Very small x, Phi, or Theta for component ${i} in mixture. x_i=${x[i]}, Phi_i=${Phi_i}, Theta_i=${Theta_i}`);
-                     // Using the alternative (older) formulation for stability
-                     const sum_xL_component = x[0] * L_component_values[0] + x[1] * L_component_values[1];
-                     const term1 = (Phi_i / x[i] > 1e-9) ? Math.log(Phi_i / x[i]) : 0;
-                     const term2 = (Theta_i / Phi_i > 1e-9 && q[i] > 1e-9) ? Z_by_2 * q[i] * Math.log(Theta_i / Phi_i) : 0;
-                     const term3 = L_component_values[i];
-                     const term4 = (Phi_i / x[i]) * sum_xL_component;
-                     ln_gamma_C[i] = (isNaN(term1) ? 0 : term1) + (isNaN(term2) ? 0 : term2) + term3 - (isNaN(term4) ? 0 : term4);
-
+                    console.warn(`UNIFAC Combinatorial: Very small x, Phi, or Theta for component ${i} in mixture. x_i=${x[i]}, Phi_i=${Phi_i}, Theta_i=${Theta_i}`);
+                    let sum_xL_component = 0;
+                    for (let comp_idx = 0; comp_idx < numComponents; comp_idx++) {
+                        sum_xL_component += x[comp_idx] * L_component_values[comp_idx];
+                    }
+                    const term1 = (Phi_i / x[i] > 1e-9) ? Math.log(Phi_i / x[i]) : 0;
+                    const term2 = (Theta_i / Phi_i > 1e-9 && q[i] > 1e-9) ? Z_by_2 * q[i] * Math.log(Theta_i / Phi_i) : 0;
+                    const term3 = L_component_values[i];
+                    const term4 = (Phi_i / x[i]) * sum_xL_component;
+                    ln_gamma_C[i] = (isNaN(term1) ? 0 : term1) + (isNaN(term2) ? 0 : term2) + term3 - (isNaN(term4) ? 0 : term4);
                 } else {
                     const Phi_i_div_xi = Phi_i / x[i];
-                    const Phi_i_div_Theta_i = (Theta_i > 1e-12) ? Phi_i / Theta_i : 0; // Avoid division by zero
+                    const Phi_i_div_Theta_i = (Theta_i > 1e-12) ? Phi_i / Theta_i : 0;
 
-                    const term_A_log = Math.log(Phi_i_div_xi); 
-                    const term_A_val = 1.0 - Phi_i_div_xi; 
-                    
-                    const term_B_log = (Phi_i_div_Theta_i > 1e-9) ? Math.log(Phi_i_div_Theta_i) : 0; // Avoid log(0)
+                    const term_A_log = Math.log(Phi_i_div_xi);
+                    const term_A_val = 1.0 - Phi_i_div_xi;
+
+                    const term_B_log = (Phi_i_div_Theta_i > 1e-9) ? Math.log(Phi_i_div_Theta_i) : 0;
                     const term_B_val = 1.0 - Phi_i_div_Theta_i;
 
                     ln_gamma_C[i] = term_A_log + term_A_val - Z_by_2 * q[i] * (term_B_log + term_B_val);
@@ -186,17 +162,12 @@ export function calculateUnifacGamma(
             }
         }
 
-        console.log(`UNIFAC_DETAILS: x = [${x[0].toFixed(4)}, ${x[1].toFixed(4)}]`);
-        console.log(`UNIFAC_DETAILS: r = [${r[0].toFixed(4)}, ${r[1].toFixed(4)}]`);
-        console.log(`UNIFAC_DETAILS: q = [${q[0].toFixed(4)}, ${q[1].toFixed(4)}]`);
-        console.log(`UNIFAC_DETAILS: ln_gamma_C = [${ln_gamma_C[0].toFixed(4)}, ${ln_gamma_C[1].toFixed(4)}]`);
+        console.log(`UNIFAC_DETAILS: x = [${x.map(val => val.toFixed(4)).join(', ')}]`);
+        console.log(`UNIFAC_DETAILS: r = [${r.map(val => val.toFixed(4)).join(', ')}]`);
+        console.log(`UNIFAC_DETAILS: q = [${q.map(val => val.toFixed(4)).join(', ')}]`);
+        console.log(`UNIFAC_DETAILS: ln_gamma_C = [${ln_gamma_C.map(val => val.toFixed(4)).join(', ')}]`);
 
         // --- 2. Residual Part ---
-        if (ln_gamma_C.some(isNaN)) {
-            console.error("UNIFAC: NaN in ln_gamma_C. Aborting residual calculation.");
-            return null;
-        }
-
         const all_subgroup_ids_present = new Set<number>();
         componentData.forEach(comp => {
             if (comp.unifacGroups) {
@@ -206,7 +177,7 @@ export function calculateUnifacGamma(
 
         if (all_subgroup_ids_present.size === 0) {
             console.warn("No UNIFAC groups found for residual part. Returning combinatorial gammas.");
-            const comb_gamma_only: [number,number] = [Math.exp(ln_gamma_C[0]), Math.exp(ln_gamma_C[1])];
+            const comb_gamma_only: number[] = ln_gamma_C.map(lng_c => Math.exp(lng_c));
             if (comb_gamma_only.some(isNaN)) {
                 console.error("NaN in combinatorial-only gamma calculation."); return null;
             }
@@ -216,28 +187,6 @@ export function calculateUnifacGamma(
         const subgroupIds = Array.from(all_subgroup_ids_present).sort((a, b) => a - b);
         const numGroups = subgroupIds.length;
         console.log(`UNIFAC_DETAILS: SubgroupIDs for residual:`, subgroupIds);
-
-        // Check if all required main groups and interactions are present (moved from earlier, better here)
-        const requiredMainGroups = new Set<number>();
-        subgroupIds.forEach(sgId => {
-            const mainGroupId = params.mainGroupMap[sgId];
-            if (mainGroupId === undefined) {
-                console.error(`DEBUG: Missing main group mapping for subgroup ${sgId}. MainGroupMap: ${JSON.stringify(params.mainGroupMap)}`);
-                throw new Error(`Missing main group mapping for subgroup ${sgId}`);
-            }
-            requiredMainGroups.add(mainGroupId);
-        });
-
-        for (const mg1 of requiredMainGroups) {
-            for (const mg2 of requiredMainGroups) {
-                const interactionKey = `${mg1}-${mg2}`;
-                if (!params.a_mk.has(interactionKey)) {
-                    console.error(`DEBUG: Missing interaction parameter a_mk for main groups ${mg1}-${mg2} (key: ${interactionKey}). Available a_mk keys: ${Array.from(params.a_mk.keys())}`);
-                    throw new Error(`Missing interaction parameter a_mk for main groups ${mg1}-${mg2}`);
-                }
-            }
-        }
-
 
         const v_ki: number[][] = Array(numComponents).fill(0).map(() => Array(numGroups).fill(0));
         subgroupIds.forEach((sgId, k_idx) => {
@@ -263,14 +212,9 @@ export function calculateUnifacGamma(
                 X_m[m_idx] = sum_x_vm / sum_x_vk_total;
             }
         }
-        subgroupIds.forEach((sgId, idx) => {
-           console.log(`UNIFAC_DETAILS: X_m[sg${sgId}] = ${X_m[idx].toFixed(4)}`);
-        });
-
 
         let sum_XQ = 0;
         for (let n_idx = 0; n_idx < numGroups; ++n_idx) {
-            if (params.Qk[subgroupIds[n_idx]] === undefined) { console.error(`Qk undefined for subgroup ${subgroupIds[n_idx]}`); return null; }
             sum_XQ += X_m[n_idx] * params.Qk[subgroupIds[n_idx]];
         }
 
@@ -280,10 +224,6 @@ export function calculateUnifacGamma(
                 theta_m[m_idx] = (X_m[m_idx] * params.Qk[subgroupIds[m_idx]]) / sum_XQ;
             }
         }
-         subgroupIds.forEach((sgId, idx) => {
-           console.log(`UNIFAC_DETAILS: theta_m[sg${sgId}] = ${theta_m[idx].toFixed(4)}`);
-        });
-
 
         const psi_matrix: number[][] = Array(numGroups).fill(0).map(() => Array(numGroups).fill(0));
         for (let n_idx = 0; n_idx < numGroups; n_idx++) {
@@ -291,7 +231,7 @@ export function calculateUnifacGamma(
                 const mainG_n = params.mainGroupMap[subgroupIds[n_idx]];
                 const mainG_m = params.mainGroupMap[subgroupIds[m_idx]];
                 const interactionKey_nm = `${mainG_n}-${mainG_m}`;
-                const a_nm = params.a_mk.get(interactionKey_nm) ?? 0.0; // Default to 0 if not found, though check above should catch it
+                const a_nm = params.a_mk.get(interactionKey_nm) ?? 0.0;
                 psi_matrix[n_idx][m_idx] = Math.exp(-a_nm / T_kelvin);
             }
         }
@@ -302,7 +242,7 @@ export function calculateUnifacGamma(
             for (let m_idx = 0; m_idx < numGroups; m_idx++) {
                 sum_theta_psi_mk += theta_m[m_idx] * psi_matrix[m_idx][k_idx];
             }
-            const term1 = (sum_theta_psi_mk > 1e-12) ? Math.log(sum_theta_psi_mk) : -Infinity;  // Avoid log(0)
+            const term1 = (sum_theta_psi_mk > 1e-12) ? Math.log(sum_theta_psi_mk) : -Infinity;
 
             let term2_sum = 0;
             for (let m_idx = 0; m_idx < numGroups; m_idx++) {
@@ -314,13 +254,8 @@ export function calculateUnifacGamma(
                     term2_sum += (theta_m[m_idx] * psi_matrix[k_idx][m_idx]) / sum_theta_psi_nm;
                 }
             }
-            if (params.Qk[subgroupIds[k_idx]] === undefined) { console.error(`Qk undefined for subgroup ${subgroupIds[k_idx]} in ln_Gamma_k`); return null; }
             ln_Gamma_k[k_idx] = params.Qk[subgroupIds[k_idx]] * (1.0 - (isFinite(term1) ? term1 : 0) - term2_sum);
         }
-         subgroupIds.forEach((sgId, idx) => {
-           console.log(`UNIFAC_DETAILS: ln_Gamma_k[sg${sgId}](mixture) = ${ln_Gamma_k[idx].toFixed(4)}`);
-        });
-
 
         const ln_Gamma_k_pure: number[][] = Array(numComponents).fill(0).map(() => Array(numGroups).fill(0));
         for (let i = 0; i < numComponents; i++) {
@@ -328,14 +263,13 @@ export function calculateUnifacGamma(
             for (let k_idx = 0; k_idx < numGroups; ++k_idx) sum_vk_pure += v_ki[i][k_idx];
 
             const X_m_pure: number[] = Array(numGroups).fill(0);
-            if (sum_vk_pure > 1e-12) { // Check sum_vk_pure instead of 0
+            if (sum_vk_pure > 1e-12) {
                 for (let m_idx = 0; m_idx < numGroups; ++m_idx) X_m_pure[m_idx] = v_ki[i][m_idx] / sum_vk_pure;
             }
 
             let sum_XQ_pure = 0;
             for (let n_idx = 0; n_idx < numGroups; ++n_idx) {
-                 if (params.Qk[subgroupIds[n_idx]] === undefined) { console.error(`Qk undefined for subgroup ${subgroupIds[n_idx]} in sum_XQ_pure`); return null; }
-                 sum_XQ_pure += X_m_pure[n_idx] * params.Qk[subgroupIds[n_idx]];
+                sum_XQ_pure += X_m_pure[n_idx] * params.Qk[subgroupIds[n_idx]];
             }
 
             const theta_m_pure: number[] = Array(numGroups).fill(0);
@@ -362,40 +296,35 @@ export function calculateUnifacGamma(
                         term2_sum_pure += (theta_m_pure[m_idx] * psi_matrix[k_idx][m_idx]) / sum_theta_psi_nm_pure;
                     }
                 }
-                 if (params.Qk[subgroupIds[k_idx]] === undefined) { console.error(`Qk undefined for subgroup ${subgroupIds[k_idx]} in ln_Gamma_k_pure`); return null; }
                 ln_Gamma_k_pure[i][k_idx] = params.Qk[subgroupIds[k_idx]] * (1.0 - (isFinite(term1_pure) ? term1_pure : 0) - term2_sum_pure);
             }
-            subgroupIds.forEach((sgId, k_idx) => {
-                console.log(`UNIFAC_DETAILS: ln_Gamma_k_pure[comp${i}][sg${sgId}] = ${ln_Gamma_k_pure[i][k_idx].toFixed(4)}`);
-            });
         }
 
-        const ln_gamma_R: number[] = [0.0, 0.0];
+        const ln_gamma_R: number[] = Array(numComponents).fill(0.0);
         for (let i = 0; i < numComponents; i++) {
             for (let k_idx = 0; k_idx < numGroups; k_idx++) {
-                if (v_ki[i][k_idx] > 0) { // Only add if the group exists in the component
+                if (v_ki[i][k_idx] > 0) {
                     ln_gamma_R[i] += v_ki[i][k_idx] * (ln_Gamma_k[k_idx] - ln_Gamma_k_pure[i][k_idx]);
                 }
             }
         }
-        console.log(`UNIFAC_DETAILS: ln_gamma_R = [${ln_gamma_R[0].toFixed(4)}, ${ln_gamma_R[1].toFixed(4)}]`);
+        console.log(`UNIFAC_DETAILS: ln_gamma_R = [${ln_gamma_R.map(val => val.toFixed(4)).join(', ')}]`);
 
-        const gamma_final: [number, number] = [
-            Math.exp(ln_gamma_C[0] + ln_gamma_R[0]),
-            Math.exp(ln_gamma_C[1] + ln_gamma_R[1])
-        ];
-        console.log(`DEBUG: Final gamma = [${gamma_final[0]?.toFixed(4)}, ${gamma_final[1]?.toFixed(4)}]`);
+        const gamma_final: number[] = Array(numComponents).fill(0.0);
+        for (let i = 0; i < numComponents; i++) {
+            gamma_final[i] = Math.exp(ln_gamma_C[i] + ln_gamma_R[i]);
+        }
+        console.log(`DEBUG: Final gamma = [${gamma_final.map(g => g?.toFixed(4)).join(', ')}]`);
 
         if (gamma_final.some(g => isNaN(g) || !isFinite(g))) {
-             console.error("UNIFAC calculation resulted in NaN or Infinity final gamma values.", {x, T_kelvin, ln_gamma_C, ln_gamma_R});
-             // throw new Error("UNIFAC calculation failed (NaN/Infinity gamma)."); // As per prompt, do not throw, return null
-             return null;
+            console.error("UNIFAC calculation resulted in NaN or Infinity final gamma values.", { x, T_kelvin, ln_gamma_C, ln_gamma_R });
+            return null;
         }
         return gamma_final;
 
     } catch (error) {
         console.error("Error during UNIFAC calculation:", error);
-        return null; // Indicate failure
+        return null;
     }
 }
 

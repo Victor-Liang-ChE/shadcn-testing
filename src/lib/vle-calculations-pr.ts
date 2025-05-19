@@ -1,60 +1,55 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-// MOVED CompoundData, PrPureComponentParams, BubbleDewResult, AntoineParams to vle-types.ts
 import type { CompoundData, PrPureComponentParams, BubbleDewResult, AntoineParams } from './vle-types'; // Import shared types
-import { calculatePsat_Pa } from './vle-calculations-unifac'; // Re-use Psat calculation for initial guesses if needed
+import { calculatePsat_Pa as importedCalculatePsat_Pa } from './vle-calculations-unifac'; // Re-use Psat calculation for initial guesses if needed
 
-// --- Constants ---
-const R_J_molK = 8.31446261815324; // Gas constant in J/mol·K or Pa·m³/mol·K
+// Define R_gas_const_J_molK locally or import from a valid common source if available
+export const R_gas_const_J_molK = 8.31446261815324; // J/mol·K
 
-// --- Interfaces ---
-export interface PrInteractionParams {
-    k12: number;
-    casn1?: string;
-    casn2?: string;
-}
+// Re-export calculatePsat_Pa if it's used by other modules importing from this file
+export { importedCalculatePsat_Pa as calculatePsat_Pa };
 
-// Helper to solve cubic equation: Z^3 + p*Z^2 + q*Z + r = 0
-// Returns real roots, sorted. For PR EOS, we expect 1 or 3 real roots.
+// Solves Z^3 + p*Z^2 + q*Z + r = 0
+// Replaces the placeholder solveCubicEOS
 function solveCubicRealRoots(p: number, q: number, r: number): number[] {
     // Convert to depressed cubic: y^3 + Ay + B = 0
     // Z = y - p/3
-    const A = q - (p * p) / 3.0;
-    const B = (2.0 * p * p * p) / 27.0 - (p * q) / 3.0 + r;
+    const A_dep = q - (p * p) / 3.0;
+    const B_dep = (2.0 * p * p * p) / 27.0 - (p * q) / 3.0 + r;
 
     let y_roots: number[] = [];
 
-    const discriminant_term1 = (B / 2.0) * (B / 2.0);
-    const discriminant_term2 = (A / 3.0) * (A / 3.0) * (A / 3.0);
-    let Delta = discriminant_term1 + discriminant_term2; // Changed const to let
+    const discriminant_term1 = (B_dep / 2.0) * (B_dep / 2.0);
+    const discriminant_term2 = (A_dep / 3.0) * (A_dep / 3.0) * (A_dep / 3.0);
+    let Delta = discriminant_term1 + discriminant_term2;
 
     if (Math.abs(Delta) < 1e-12) Delta = 0; // Treat very small Delta as zero
 
     if (Delta > 0) {
         // One real root
         const sqrtDelta = Math.sqrt(Delta);
-        const term1_val = -B / 2.0 + sqrtDelta;
-        const term2_val = -B / 2.0 - sqrtDelta;
+        const term1_val = -B_dep / 2.0 + sqrtDelta;
+        const term2_val = -B_dep / 2.0 - sqrtDelta;
         
         const y1 = Math.cbrt(term1_val) + Math.cbrt(term2_val);
         y_roots.push(y1);
     } else if (Delta === 0) {
         // Multiple real roots (all real, at least two are equal)
-        if (Math.abs(A) < 1e-9 && Math.abs(B) < 1e-9) { // A = B = 0 implies y=0 is a triple root
+        if (Math.abs(A_dep) < 1e-9 && Math.abs(B_dep) < 1e-9) { // A = B = 0 implies y=0 is a triple root
             y_roots.push(0);
         } else {
-            const y1 = -2.0 * Math.cbrt(B / 2.0);
-            const y2 = Math.cbrt(B / 2.0);
-            y_roots.push(y1);
-            if (Math.abs(y1 - y2) > 1e-7) { // Ensure distinct root before pushing
-                 y_roots.push(y2); // y2 is a double root if y1 != y2
-            } else { // y1 is a triple root (or y2 is, same value)
-                // Only one distinct value, already pushed
+            const y1_val = -2.0 * Math.cbrt(B_dep / 2.0);
+            const y2_val = Math.cbrt(B_dep / 2.0);
+            y_roots.push(y1_val);
+            // Ensure distinct root before pushing. If y1 and y2 are very close, it's effectively a triple root (or single distinct root if A=0).
+            // If A != 0, y1 is a single root and y2 is a double root.
+            if (Math.abs(y1_val - y2_val) > 1e-7) { 
+                 y_roots.push(y2_val); 
             }
         }
     } else { // Delta < 0
         // Three distinct real roots (trigonometric solution)
-        const term_cos_arg_num = (-B / 2.0);
-        const term_cos_arg_den = Math.sqrt(-discriminant_term2); // sqrt(-(A/3)^3)
+        const term_cos_arg_num = (-B_dep / 2.0);
+        const term_cos_arg_den = Math.sqrt(-discriminant_term2); // sqrt(-(A_dep/3)^3)
         
         let cos_arg = term_cos_arg_num / term_cos_arg_den;
         // Clamp cos_arg to [-1, 1] due to potential floating point inaccuracies
@@ -62,7 +57,7 @@ function solveCubicRealRoots(p: number, q: number, r: number): number[] {
         if (cos_arg < -1.0) cos_arg = -1.0;
 
         const angle_third = Math.acos(cos_arg) / 3.0;
-        const factor = 2.0 * Math.sqrt(-A / 3.0);
+        const factor = 2.0 * Math.sqrt(-A_dep / 3.0);
 
         y_roots.push(factor * Math.cos(angle_third));
         y_roots.push(factor * Math.cos(angle_third - (2.0 * Math.PI) / 3.0));
@@ -72,9 +67,10 @@ function solveCubicRealRoots(p: number, q: number, r: number): number[] {
     // Convert y roots back to Z roots: Z = y - p/3
     let Z_roots = y_roots.map(y_root => y_root - p / 3.0);
     
-    // Filter out non-physical (Z <= 0) or duplicate roots (within tolerance)
-    Z_roots = Z_roots.filter(z => z > 1e-9); // Z must be positive
-    
+    // Filter out non-physical (Z <= 0 for practical purposes, though strictly Z can be small positive)
+    // or duplicate roots (within tolerance)
+    Z_roots = Z_roots.filter(z => z > 1e-9); // Must be positive
+
     // Remove duplicates that might arise from numerical precision
     if (Z_roots.length > 1) {
         Z_roots.sort((a, b) => a - b);
@@ -84,11 +80,85 @@ function solveCubicRealRoots(p: number, q: number, r: number): number[] {
     Z_roots.sort((a, b) => a - b); // Final sort
 
     if (Z_roots.length === 0) {
-        // console.warn("Cubic EOS solver found no positive real roots after transformation.", {p, q, r, A_dep: A, B_dep: B, Delta});
+        console.warn("Cubic EOS solver found no positive real roots after transformation.", {p, q, r, A_dep, B_dep, Delta});
     }
     return Z_roots;
 }
 
+// The old solveCubicEOS placeholder is now replaced by solveCubicRealRoots.
+// We can keep the name solveCubicEOS if preferred and adapt its signature,
+// or directly use solveCubicRealRoots where needed.
+// For minimal changes to calculatePrFugacityCoefficients, let's alias or adapt.
+// Let's rename solveCubicRealRoots to solveCubicEOS and adjust its signature slightly.
+
+export function solveCubicEOS(coeff_a: number, coeff_b: number, coeff_c: number, coeff_d: number): number[] | null {
+    if (Math.abs(coeff_a) < 1e-9) { // Should not happen for EOS where coeff_a is 1
+        console.error("solveCubicEOS: Coefficient 'a' is near zero. Cannot solve.");
+        return null;
+    }
+    // Normalize to Z^3 + pZ^2 + qZ + r = 0
+    const p = coeff_b / coeff_a;
+    const q = coeff_c / coeff_a;
+    const r = coeff_d / coeff_a;
+    return solveCubicRealRoots(p, q, r);
+}
+
+// --- Interfaces ---
+export interface PrInteractionParams {
+    k_ij: number; // Binary interaction parameter for PR
+    k_ji: number; // Usually k_ji = k_ij, but allow for asymmetry if DB stores it
+    casn1?: string;
+    casn2?: string;
+}
+
+// Placeholder for Peng-Robinson fugacity coefficient calculation
+export function calculatePengRobinsonPhi(
+    T_K: number,
+    P_Pa: number,
+    compositions: number[], // liquid (x) or vapor (y) mole fractions
+    compDataArray: CompoundData[], // Array of component data (each must have prParams)
+    interactionParams: PrInteractionParams | any, // Should be TernaryPrParams for ternary systems
+                                                // For binary, it's PrInteractionParams {k_ij, k_ji}
+    phaseType: 'liquid' | 'vapor'
+): number[] | null { // Returns array of fugacity coefficients [phi_1, phi_2, ...] or null on error
+    console.warn("calculatePengRobinsonPhi is a placeholder. Returning ideal phi=1 for all components.");
+    if (!compDataArray || compDataArray.length === 0) return null;
+    if (compositions.length !== compDataArray.length) return null;
+
+    // This is a highly simplified placeholder.
+    // A real implementation would:
+    // 1. Calculate mixture parameters A_mix, B_mix using mixing rules and k_ij.
+    // 2. Formulate the cubic equation for Z: Z^3 + c2*Z^2 + c1*Z + c0 = 0
+    //    where c2, c1, c0 are functions of A_mix, B_mix.
+    //    (c2 = B_mix - 1; c1 = A_mix - 2*B_mix - 3*B_mix^2; c0 = B_mix^3 + B_mix^2 - A_mix*B_mix)
+    // 3. Solve for Z using solveCubicEOS(1, c2, c1, c0).
+    // 4. Select the appropriate Z root (smallest for liquid, largest for vapor).
+    // 5. Calculate ln(phi_i) for each component using the PR equation for fugacity coefficients.
+
+    // Placeholder: just to demonstrate call to solveCubicEOS
+    const B_mix_placeholder = 0.05; // Example value
+    const A_mix_placeholder = 0.1;  // Example value
+    const c2 = B_mix_placeholder - 1;
+    const c1 = A_mix_placeholder - 2 * B_mix_placeholder - 3 * B_mix_placeholder * B_mix_placeholder;
+    const c0 = B_mix_placeholder * B_mix_placeholder * B_mix_placeholder + B_mix_placeholder * B_mix_placeholder - A_mix_placeholder * B_mix_placeholder;
+
+    const Z_roots = solveCubicEOS(1, c2, c1, c0); // Removed phaseType
+
+    if (!Z_roots || Z_roots.length === 0) {
+        console.error("PR Phi: Failed to get Z roots from placeholder solver.");
+        return null;
+    }
+
+    let Z_phase;
+    if (phaseType === 'liquid') {
+        Z_phase = Z_roots[0]; // Smallest root
+    } else {
+        Z_phase = Z_roots[Z_roots.length - 1]; // Largest root
+    }
+    // console.log(`PR Phi Placeholder: Phase Z = ${Z_phase}`);
+
+    return compositions.map(() => 1.0); // Return ideal phi
+}
 
 /**
  * Calculates Peng-Robinson fugacity coefficients for a binary mixture.
@@ -116,7 +186,7 @@ export function calculatePrFugacityCoefficients(
     const x1 = x_or_y[0];
     const x2 = x_or_y[1];
 
-    const { k12 } = interactionParams;
+    const { k_ij } = interactionParams;
 
     // Pure component PR parameters
     const prPure = components.map(c => {
@@ -127,8 +197,8 @@ export function calculatePrFugacityCoefficients(
              kappa = 0.379642 + 1.485030 * omega - 0.164423 * omega * omega + 0.016666 * omega * omega * omega;
         }
         const alpha = Math.pow(1 + kappa * (1 - Math.sqrt(Tr)), 2);
-        const ac_i = 0.45723553 * Math.pow(R_J_molK * Tc_K, 2) / Pc_Pa * alpha;
-        const b_i = 0.07779607 * R_J_molK * Tc_K / Pc_Pa;
+        const ac_i = 0.45723553 * Math.pow(R_gas_const_J_molK * Tc_K, 2) / Pc_Pa * alpha;
+        const b_i = 0.07779607 * R_gas_const_J_molK * Tc_K / Pc_Pa;
         return { ac_i, b_i };
     });
 
@@ -139,27 +209,26 @@ export function calculatePrFugacityCoefficients(
 
     // Mixture parameters
     const b_mix = x1 * b1 + x2 * b2;
-    const a12_mix = Math.sqrt(ac1 * ac2) * (1 - k12);
+    const a12_mix = Math.sqrt(ac1 * ac2) * (1 - k_ij);
     const a_mix = x1 * x1 * ac1 + x2 * x2 * ac2 + 2 * x1 * x2 * a12_mix;
 
-    const A_mix = a_mix * P_Pa / Math.pow(R_J_molK * T_K, 2);
-    const B_mix = b_mix * P_Pa / (R_J_molK * T_K);
+    const A_mix = a_mix * P_Pa / Math.pow(R_gas_const_J_molK * T_K, 2);
+    const B_mix = b_mix * P_Pa / (R_gas_const_J_molK * T_K);
 
     // Solve cubic EOS for Z: Z^3 - (1-B)Z^2 + (A-3B^2-2B)Z - (AB-B^2-B^3) = 0
     const p_coeff = -(1 - B_mix);
     const q_coeff = A_mix - 3 * B_mix * B_mix - 2 * B_mix;
     const r_coeff = -(A_mix * B_mix - B_mix * B_mix - B_mix * B_mix * B_mix);
 
-    const Z_roots = solveCubicRealRoots(p_coeff, q_coeff, r_coeff);
+    const Z_roots = solveCubicEOS(1, p_coeff, q_coeff, r_coeff); // Call the new solver
 
     let Z: number;
-    if (Z_roots.length === 0) {
-        console.warn(`PR EOS: No positive real roots for Z at T=${T_K.toFixed(1)}, P=${(P_Pa/1000).toFixed(1)}kPa. Phase: ${phase}`, {A_mix, B_mix, x1});
+    if (!Z_roots || Z_roots.length === 0) {
+        console.warn(`PR EOS: No positive real roots for Z at T=${T_K.toFixed(1)}, P=${(P_Pa/1000).toFixed(1)}kPa. Phase: ${phase}`, {A_mix, B_mix, x1, p_coeff, q_coeff, r_coeff});
         return null;
     } else if (Z_roots.length === 1) {
         Z = Z_roots[0];
         if (phase === 'liquid' && Z <= B_mix) {
-            // console.warn(`PR EOS: Single root Z=${Z.toFixed(4)} <= B_mix=${B_mix.toFixed(4)} for liquid phase. May indicate single (vapor) phase or supercritical.`);
             return null; // No distinct liquid phase if only root is non-physical for liquid
         }
     } else { // Multiple real roots (typically 2 or 3 after filtering positive)
@@ -168,7 +237,6 @@ export function calculatePrFugacityCoefficients(
             if (liquidCandidates.length > 0) {
                 Z = liquidCandidates[0]; // Smallest root that is > B_mix
             } else {
-                // console.warn(`PR EOS: No roots Z > B_mix for liquid phase. Roots: ${Z_roots.join(', ')}, B_mix=${B_mix.toFixed(4)}`);
                 return null; // No physical liquid root
             }
         } else { // Vapor phase
@@ -176,21 +244,12 @@ export function calculatePrFugacityCoefficients(
         }
     }
     
-    // This check is now more integrated into the selection above, but an explicit final check is good.
     if (Z <= B_mix && phase === 'liquid') {
-        // This case should ideally be caught by the logic above.
-        // If it's reached, it implies an issue or a very specific state.
-        // console.warn(`PR EOS: Final selected liquid Z=${Z.toFixed(4)} is still <= B_mix=${B_mix.toFixed(4)}. Conditions might be single phase vapor or supercritical.`);
         return null; 
     }
-    // For vapor phase, Z must also be > B_mix. This is generally true for the largest root if B_mix is physical.
     if (Z <= B_mix && phase === 'vapor' && Z_roots.length > 0) {
-        // This would be unusual if B_mix is correctly calculated and positive.
-        // console.warn(`PR EOS: Selected vapor Z=${Z.toFixed(4)} is <= B_mix=${B_mix.toFixed(4)}. This is unexpected.`);
-        // It might imply that even the largest root is non-physical, which points to issues.
         return null;
     }
-
 
     // Fugacity coefficients
     const term_common = A_mix / (2 * Math.sqrt(2) * B_mix) * Math.log((Z + (1 + Math.sqrt(2)) * B_mix) / (Z + (1 - Math.sqrt(2)) * B_mix));
@@ -201,20 +260,14 @@ export function calculatePrFugacityCoefficients(
     const ln_phi1 = (b1 / b_mix) * (Z - 1) - Math.log(Z - B_mix) - term_common * ( (d_a_mix_d_n1 / a_mix) - (b1 / b_mix) );
     const ln_phi2 = (b2 / b_mix) * (Z - 1) - Math.log(Z - B_mix) - term_common * ( (d_a_mix_d_n2 / a_mix) - (b2 / b_mix) );
     
-    // Correction for the derivative term in PR fugacity expression:
-    // The term ( (2 * sum_j(x_j * A_ij_param)) / A_param - (b_i/b_m) )
-    // For component 1: (2 * (x1*ac1 + x2*a12_mix) / a_mix) - (b1/b_mix)
-    // For component 2: (2 * (x1*a12_mix + x2*ac2) / a_mix) - (b2/b_mix)
-
     const term1_phi = (2 * (x1*ac1 + x2*a12_mix) / a_mix) - (b1/b_mix);
     const term2_phi = (2 * (x1*a12_mix + x2*ac2) / a_mix) - (b2/b_mix);
 
     const ln_phi1_corrected = (b1 / b_mix) * (Z - 1) - Math.log(Z - B_mix) - term_common * term1_phi;
     const ln_phi2_corrected = (b2 / b_mix) * (Z - 1) - Math.log(Z - B_mix) - term_common * term2_phi;
 
-
-    if (isNaN(ln_phi1_corrected) || isNaN(ln_phi2_corrected) || !isFinite(ln_phi1_corrected) || !isFinite(ln_phi2_corrected)) {
-        console.warn(`PR EOS: NaN/Inf fugacity coefficient calculated. Z=${Z.toFixed(4)}, T=${T_K.toFixed(1)}, P=${(P_Pa/1000).toFixed(1)}kPa, x1=${x_or_y[0].toFixed(3)}`, {ln_phi1_corrected, ln_phi2_corrected, A_mix, B_mix, phase});
+    if (isNaN(ln_phi1_corrected) || isNaN(ln_phi2_corrected) || !isFinite(ln_phi1_corrected) || !isFinite(ln_phi2_corrected) || Z <= B_mix) { // Added Z <= B_mix check here for robustness
+        console.warn(`PR EOS: NaN/Inf fugacity coefficient or Z <= B_mix. Z=${Z.toFixed(4)}, B_mix=${B_mix.toFixed(4)}, T=${T_K.toFixed(1)}, P=${(P_Pa/1000).toFixed(1)}kPa, x1=${x_or_y[0].toFixed(3)}`, {ln_phi1_corrected, ln_phi2_corrected, A_mix, B_mix, phase});
         return null;
     }
 
@@ -224,53 +277,53 @@ export function calculatePrFugacityCoefficients(
 
 export async function fetchPrInteractionParams(
     supabase: SupabaseClient,
-    casn1: string,
-    casn2: string
+    casn1_query: string,
+    casn2_query: string
 ): Promise<PrInteractionParams> {
-    if (!casn1 || !casn2) {
-        console.warn("PR k_ij fetch: CAS numbers for both compounds are required. Defaulting k_ij = 0.");
-        return { k12: 0 };
+    if (!casn1_query || !casn2_query) {
+        console.warn("PR interaction param fetch: CAS numbers for both compounds are required. Defaulting k_ij = k_ji = 0.");
+        return { k_ij: 0, k_ji: 0, casn1: casn1_query, casn2: casn2_query };
     }
-    // If CAS numbers are the same, it's a pure component, k_ij is not applicable in the same way.
-    // For pure components, interaction parameters are not used.
-    if (casn1 === casn2) {
-        // console.log("PR k_ij fetch: Same CAS numbers, k_ij not applicable for pure component interaction.");
-        return { k12: 0 }; // Or handle as appropriate for your system
+    if (casn1_query === casn2_query) {
+        // For a pure component, interaction parameter is 0
+        return { k_ij: 0, k_ji: 0, casn1: casn1_query, casn2: casn2_query };
     }
 
-    console.log(`Fetching PR interaction parameters for pair: casn1='${casn1}', casn2='${casn2}'`);
-
-    // Ensure the table name here EXACTLY matches your database table name.
-    // If your table name is "peng - robinson parameters" (with spaces and hyphen), use that.
-    // It's generally better to use underscores_in_table_names.
+    console.log(`Fetching PR interaction parameters from "peng - robinson parameters" for query pair: comp1_cas='${casn1_query}', comp2_cas='${casn2_query}'`);
+    
+    // Assuming table name is "peng - robinson parameters" and columns are "CASN1", "CASN2" (case-sensitive), and k12 (lowercase).
+    // Double quotes are necessary for table/column names with spaces, hyphens, or enforced case sensitivity.
     const query = supabase
-        .from('peng-robinson parameters') // Corrected table name
-        .select('"k12", "CASN1", "CASN2"') // Ensure column names match DB
-        .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
+        .from('peng-robinson parameters') 
+        .select('"CASN1", "CASN2", k12') // Select k12 (lowercase as per DDL), "CASN1", "CASN2" (uppercase as per DDL)
+        // Ensure "CASN1" and "CASN2" are quoted as they are case-sensitive in the DB (from DDL).
+        .or(`and("CASN1".eq.${casn1_query},"CASN2".eq.${casn2_query}),and("CASN1".eq.${casn2_query},"CASN2".eq.${casn1_query})`)
         .limit(1);
 
     const { data, error } = await query;
 
-    console.log("Supabase PR interaction query response - data:", JSON.stringify(data, null, 2));
-    console.log("Supabase PR interaction query response - error:", JSON.stringify(error, null, 2));
-
     if (error) {
-        console.error(`Supabase PR interaction query raw error object:`, error);
-        throw new Error(`Supabase PR interaction query error: ${error.message}`);
+        console.error(`Supabase PR interaction parameter query error from "peng - robinson parameters": ${error.message}`, error);
+        throw new Error(`Supabase PR interaction parameter query error: ${error.message}`);
     }
 
     if (!data || data.length === 0) {
-        // Default to k12 = 0 if not found, with a warning.
-        // Or throw error: throw new Error(`PR interaction parameter k12 not found for pair ${casn1}/${casn2}.`);
-        console.warn(`PR interaction parameter k12 not found for pair ${casn1}/${casn2}. Defaulting to k12 = 0.`);
-        return { k12: 0, casn1, casn2 };
+        console.warn(`PR interaction parameter (k12) not found in "peng - robinson parameters" for pair ${casn1_query}/${casn2_query}. Defaulting to k_ij = k_ji = 0.`);
+        return { k_ij: 0, k_ji: 0, casn1: casn1_query, casn2: casn2_query };
     }
+
+    const dbRow = data[0];
+    // Assuming k12 is the column name for the interaction parameter.
+    // If k12 can be null in the database, provide a default (e.g., 0).
+    const k_value = typeof dbRow.k12 === 'number' ? dbRow.k12 : 0; 
     
-    const params = data[0];
+    console.log(`PR_PARAM_FETCHED: For query ${casn1_query}/${casn2_query} from "peng - robinson parameters", DB row (${dbRow.CASN1}/${dbRow.CASN2}) k12=${dbRow.k12}. Assigned k_ij=${k_value.toFixed(4)}, k_ji=${k_value.toFixed(4)}`);
+
     return {
-        k12: typeof params.k12 === 'number' ? params.k12 : 0, // Default to 0 if k12 is null/undefined
-        casn1: params.CASN1,
-        casn2: params.CASN2,
+        k_ij: k_value,
+        k_ji: k_value, // Assuming k_ij = k_ji for Peng-Robinson from a single k12 value
+        casn1: casn1_query,
+        casn2: casn2_query
     };
 }
 
@@ -373,8 +426,8 @@ export function calculateBubbleTemperaturePr(
     // Initialize K_values_iter and y_iter for the first call to objectiveFunction
     // Using simplified K = Psat/P for initial guess
     if (components[0].antoine && components[1].antoine) {
-        const Psat1_init = calculatePsat_Pa(components[0].antoine, T_K); // Removed name, assuming calculatePsat_Pa doesn't need it
-        const Psat2_init = calculatePsat_Pa(components[1].antoine, T_K); // Removed name
+        const Psat1_init = importedCalculatePsat_Pa(components[0].antoine, T_K); // Removed name, assuming calculatePsat_Pa doesn't need it
+        const Psat2_init = importedCalculatePsat_Pa(components[1].antoine, T_K); // Removed name
         if (!isNaN(Psat1_init) && !isNaN(Psat2_init) && Psat1_init > 0 && Psat2_init > 0) {
             K_values_iter = [Psat1_init / P_system_Pa, Psat2_init / P_system_Pa];
             const sumY_init = K_values_iter[0]*x[0] + K_values_iter[1]*x[1];
@@ -397,12 +450,10 @@ export function calculateBubbleTemperaturePr(
         }
 
         if (isNaN(fT)) {
-            // console.error(`PR Bubble T: Objective function returned NaN at T=${T_K.toFixed(2)}K, iter=${iter}`);
             return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, iterations: iter, error: "PR BubbleT: Objective function NaN", calculationType: 'bubbleT' };
         }
 
         if (Math.abs(fT) < tolerance_f) {
-            // console.log(`PR Bubble T: Converged on f(T) at iter=${iter}, T=${T_K.toFixed(2)}, f(T)=${fT.toExponential(3)}`);
             return {
                 comp1_feed: x1_feed,
                 comp1_equilibrium: Math.min(Math.max(y_iter[0], 0), 1), // y_comp1 from last successful K calc
@@ -416,19 +467,8 @@ export function calculateBubbleTemperaturePr(
         const dfdT = numericalDerivative(objectiveFunction, T_K, T_K * 1e-4); // Relative step for h
 
         if (isNaN(dfdT) || Math.abs(dfdT) < 1e-9) { // Avoid division by zero or small derivative
-            // console.error(`PR Bubble T: Derivative is NaN or too small at T=${T_K.toFixed(2)}K, dfdT=${dfdT?.toExponential(2)}, iter=${iter}`);
-            // Try a small perturbation if derivative is the issue
-            T_K += (fT > 0 ? -0.1 : 0.1); // Heuristic kick: if f(T) > 0 (sumKx > 1), T is too low, need to increase T. So if fT > 0, kick should be positive.
-                                          // Corrected: if f(T) > 0 (sumKx > 1), T is too low, need to increase T. So kick should be positive.
-                                          // However, the Newton step is -fT/dfdT. If dfdT is positive (usually is), and fT > 0, deltaT is negative.
-                                          // The kick here is a fallback, so its direction should aim to reduce fT.
-                                          // If fT > 0 (sumKx > 1, T too low), we want to increase T. Kick should be positive.
-                                          // If fT < 0 (sumKx < 1, T too high), we want to decrease T. Kick should be negative.
-                                          // So, if fT > 0, kick is +0.1. If fT < 0, kick is -0.1.  This means kick is Math.sign(fT) * 0.1
-                                          // The original code had (fT > 0 ? -0.1 : 0.1) which is -Math.sign(fT) * 0.1. Let's stick to the provided logic for now.
-            T_K += (fT > 0 ? -0.1 : 0.1); // Using the provided logic.
+            T_K += (fT > 0 ? -0.1 : 0.1); // Heuristic kick
             if (T_K <= 0) T_K = initialTempGuess_K * (Math.random() * 0.2 + 0.9); // Reset if T goes bad
-            // console.warn(`PR Bubble T: Derivative issue. Perturbed T to ${T_K.toFixed(2)}K`);
             continue; // Skip update and retry
         }
 
@@ -445,21 +485,15 @@ export function calculateBubbleTemperaturePr(
 
         const T_K_new = T_K + deltaT;
 
-        // console.debug(`PR Bubble T iter ${iter}: T_old=${T_K.toFixed(2)}, f(T)=${fT.toExponential(3)}, dfdT=${dfdT.toExponential(3)}, deltaT=${deltaT.toFixed(3)}, T_new=${T_K_new.toFixed(2)}`);
-
         if (T_K_new <= 0) {
-            // console.warn(`PR Bubble T: Newton step resulted in T_new <= 0 (${T_K_new.toFixed(2)}). Halving step or resetting.`);
             deltaT /= 2; // Try smaller step
             T_K = T_K + deltaT; // Re-calculate T_K with halved deltaT
-            if (T_K <= 0) T_K = (T_K + initialTempGuess_K) / 2; // Fallback if still bad (using previous T_K before this step)
-            // console.warn(`PR Bubble T: Adjusted T to ${T_K.toFixed(2)}`);
+            if (T_K <= 0) T_K = (T_K + initialTempGuess_K) / 2; // Fallback if still bad
             continue;
         }
         
         // Check for convergence on T_step (absolute and relative)
         if (Math.abs(deltaT) < tolerance_T_step && Math.abs(deltaT) < tolerance_T_step * Math.abs(T_K_new) ) {
-             // console.log(`PR Bubble T: Converged on T_step at iter=${iter}, T=${T_K_new.toFixed(2)}, deltaT=${deltaT.toExponential(3)}`);
-             // One final objective function call to ensure K and y are updated with this T_K_new
              objectiveFunction(T_K_new); // This updates internal _last_K_values and _last_y_values
              K_values_iter = (objectiveFunction as any)._last_K_values || K_values_iter;
              y_iter        = (objectiveFunction as any)._last_y_values || y_iter;
@@ -476,7 +510,6 @@ export function calculateBubbleTemperaturePr(
         T_K = T_K_new;
     }
 
-    // console.warn(`PR Bubble T: Failed to converge for x1=${x1_feed.toFixed(4)} after ${maxIter} iterations. Last T=${T_K.toFixed(2)}K, f(T)=${objectiveFunction(T_K)?.toExponential(2)}`);
     return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "PR: Bubble T max iterations reached", calculationType: 'bubbleT', iterations: maxIter };
 }
 
@@ -534,4 +567,106 @@ export function calculateBubblePressurePr(
         }
     }
     return { comp1_feed: x1_feed, comp1_equilibrium: NaN, error: "PR: Bubble P max iterations reached", calculationType: 'bubbleP', T_K: T_system_K, iterations: maxIter };
+}
+
+export async function calculateDewTemperaturePr(
+    components: CompoundData[],
+    y1_feed: number,
+    P_system_Pa: number,
+    prInteractionParams: PrInteractionParams,
+    initialTempGuess_K: number,
+    maxIter: number = 50,
+    tolerance: number = 1e-5
+): Promise<BubbleDewResult | null> {
+    console.log(`PR Dew T: y1=${y1_feed.toFixed(3)}, P=${(P_system_Pa/1000).toFixed(1)}kPa, Init_T=${initialTempGuess_K.toFixed(1)}K`);
+    let T_K = initialTempGuess_K;
+    const y = [y1_feed, 1 - y1_feed];
+
+    if (!components[0]?.prParams || !components[1]?.prParams) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: NaN, P_Pa: P_system_Pa, error: "PR: Pure component PR parameters missing.", calculationType: 'dewT' };
+    }
+    if (!components[0]?.antoine || !components[1]?.antoine) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: NaN, P_Pa: P_system_Pa, error: "PR: Antoine parameters missing.", calculationType: 'dewT' };
+    }
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        const Psat1 = importedCalculatePsat_Pa(components[0].antoine!, T_K);
+        const Psat2 = importedCalculatePsat_Pa(components[1].antoine!, T_K);
+        if (isNaN(Psat1) || isNaN(Psat2)) {
+            return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "PR: Invalid Psat values.", calculationType: 'dewT' };
+        }
+
+        const K1 = Psat1 / P_system_Pa;
+        const K2 = Psat2 / P_system_Pa;
+        if (K1 <= 0 || K2 <= 0) {
+            return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "PR: Invalid K values.", calculationType: 'dewT' };
+        }
+
+        const sum_y_div_K = y[0] / K1 + y[1] / K2;
+        const error_func = sum_y_div_K - 1.0;
+
+        if (Math.abs(error_func) < tolerance) {
+            const x1 = y[0] / K1 / sum_y_div_K;
+            return { comp1_feed: y1_feed, comp1_equilibrium: x1, T_K: T_K, P_Pa: P_system_Pa, iterations: iter + 1, calculationType: 'dewT' };
+        }
+
+        let T_change = -error_func * (T_K * 0.05);
+        const max_T_step = 5.0;
+        if (Math.abs(T_change) > max_T_step) T_change = Math.sign(T_change) * max_T_step;
+        if (iter < 3) T_change *= 0.5;
+        let T_K_new = T_K + T_change;
+        if (T_K_new <= 0) T_K_new = T_K * 0.9;
+        if (T_K_new < 150) T_K_new = 150;
+        if (T_K_new > 800) T_K_new = 800;
+        T_K = T_K_new;
+    }
+
+    return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "PR: Dew T max iterations reached", calculationType: 'dewT', iterations: maxIter };
+}
+
+export async function calculateDewPressurePr(
+    components: CompoundData[],
+    y1_feed: number,
+    T_system_K: number,
+    prInteractionParams: PrInteractionParams,
+    initialPressureGuess_Pa: number,
+    maxIter: number = 10,
+    tolerance: number = 1e-5
+): Promise<BubbleDewResult | null> {
+    console.log(`PR Dew P: y1=${y1_feed.toFixed(3)}, T=${T_system_K.toFixed(1)}K`);
+    const y = [y1_feed, 1 - y1_feed];
+
+    if (!components[0]?.prParams || !components[1]?.prParams) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "PR: Pure component PR parameters missing.", calculationType: 'dewP' };
+    }
+    if (!components[0]?.antoine || !components[1]?.antoine) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "PR: Antoine parameters missing.", calculationType: 'dewP' };
+    }
+
+    const Psat1 = importedCalculatePsat_Pa(components[0].antoine!, T_system_K);
+    const Psat2 = importedCalculatePsat_Pa(components[1].antoine!, T_system_K);
+    if (isNaN(Psat1) || isNaN(Psat2)) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "PR: Invalid Psat values.", calculationType: 'dewP' };
+    }
+
+    const sum_y_div_Psat = y[0] / Psat1 + y[1] / Psat2;
+    if (sum_y_div_Psat <= 0) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "PR: Invalid sum_y_div_Psat.", calculationType: 'dewP' };
+    }
+
+    const P_calc = 1.0 / sum_y_div_Psat;
+    if (isNaN(P_calc) || P_calc <= 0) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "PR: Invalid P_calc.", calculationType: 'dewP' };
+    }
+
+    const x1 = y[0] * P_calc / Psat1;
+
+    return {
+        comp1_feed: y1_feed,
+        comp1_equilibrium: x1,
+        T_K: T_system_K,
+        P_Pa: P_calc,
+        iterations: 1,
+        calculationType: 'dewP'
+    };
 }

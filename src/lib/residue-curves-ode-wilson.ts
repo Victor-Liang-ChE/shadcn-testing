@@ -11,8 +11,9 @@ const MIN_MOLE_FRACTION = 1e-9; // Clip mole fractions to avoid log(0) or divisi
 // --- Interfaces ---
 export interface ResidueCurvePointODE {
     x: number[]; // Mole fractions [x0, x1, x2]
-    T_K: number; // Temperature at this point
-    xi?: number; // Optional integration variable value
+    T_K: number; // Temperature in Kelvin
+    P_Pa?: number; // Pressure in Pascals (optional, as it's fixed for the simulation but good to store)
+    step?: number; // Step number in the ODE integration (Changed from xi for consistency)
 }
 export type ResidueCurveODE = ResidueCurvePointODE[];
 
@@ -145,7 +146,7 @@ function calculateVaporCompositionTernary(
     return normalizeMoleFractions(y_unnormalized);
 }
 
-function residue_curve_ode_dxdxi(
+export function residue_curve_ode_dxdxi(
     x_liq_current: number[], // [x0, x1, x2]
     P_system_Pa: number,
     components: CompoundData[],
@@ -185,14 +186,14 @@ export async function simulateSingleResidueCurveODE(
         let current_x = [...start_x];
         let last_T_K = current_T_guess;
 
-        for (let step = 0; step < max_steps_per_direction; step++) {
+        for (let loop_idx = 0; loop_idx < max_steps_per_direction; loop_idx++) { // Renamed step to loop_idx
             const ode_result = residue_curve_ode_dxdxi(current_x, P_system_Pa, componentsData, ternaryWilsonParams, last_T_K);
             if (!ode_result) break; // Stop if ODE calculation fails
 
             const { dxdxi, T_bubble_K } = ode_result;
             last_T_K = T_bubble_K; // Use current bubble T as guess for next step
 
-            curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, xi: (forward ? 1 : -1) * step * d_xi_step });
+            curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, step: (forward ? 1 : -1) * loop_idx * d_xi_step }); // Use loop_idx for step
             
             // Euler step
             const next_x_unnormalized = [
@@ -204,11 +205,11 @@ export async function simulateSingleResidueCurveODE(
             current_x = normalizeMoleFractions(next_x_unnormalized);
 
             // Termination conditions (e.g., near pure component, or x doesn't change much)
-            if (current_x.some(xi => xi >= 1.0 - MIN_MOLE_FRACTION * 2) || current_x.some(xi => xi <= MIN_MOLE_FRACTION * 2)) {
-                 curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, xi: (forward ? 1 : -1) * (step +1) * d_xi_step }); // Add final point
+            if (current_x.some(val => val >= 1.0 - MIN_MOLE_FRACTION * 2) || current_x.some(val => val <= MIN_MOLE_FRACTION * 2)) { // Use val instead of xi
+                 curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, step: (forward ? 1 : -1) * (loop_idx +1) * d_xi_step }); // Use loop_idx
                 break;
             }
-            if (step > 0) {
+            if (loop_idx > 0) { // Use loop_idx
                 const prev_x = curve[curve.length-1].x;
                 const diff_sq = prev_x.reduce((sum, px, i) => sum + (px - current_x[i])**2, 0);
                 if (Math.sqrt(diff_sq) < d_xi_step * 1e-3) break; // If change is too small

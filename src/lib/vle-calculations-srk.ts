@@ -1,25 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CompoundData, SrkPureComponentParams, BubbleDewResult, AntoineParams } from './vle-types';
-import { calculatePsat_Pa } from './vle-calculations-unifac'; // For initial guesses
+import { calculatePsat_Pa as importedCalculatePsat_Pa } from './vle-calculations-unifac'; // For initial guesses
 
 // --- Constants ---
-const R_J_molK = 8.31446261815324; // Gas constant in J/mol·K
+export const R_gas_const_J_molK = 8.31446261815324; // Renamed and Exported: Gas constant in J/mol·K
 
-// --- Interfaces ---
-export interface SrkInteractionParams {
-    k12: number;
-    casn1?: string;
-    casn2?: string;
-}
+// Re-export calculatePsat_Pa so it can be imported from this module by residue-curves-ode-srk.ts
+export { importedCalculatePsat_Pa as calculatePsat_Pa };
 
-// Re-use or adapt the cubic solver from PR calculations.
-// For SRK EOS: Z^3 - Z^2 + (A - B - B^2)Z - AB = 0
-// Mapping to Z^3 + pZ^2 + qZ + r = 0:
-// p_coeff = -1.0
-// q_coeff = A_mix - B_mix - B_mix * B_mix
-// r_coeff = -A_mix * B_mix
+// Robust cubic equation solver: Z^3 + p*Z^2 + q*Z + r = 0
 function solveCubicRealRoots(p: number, q: number, r: number): number[] {
-    // This is the same robust cubic solver from vle-calculations-pr.ts
     // Convert to depressed cubic: y^3 + Ay + B = 0
     // Z = y - p/3
     const A_dep = q - (p * p) / 3.0;
@@ -31,86 +21,156 @@ function solveCubicRealRoots(p: number, q: number, r: number): number[] {
     const discriminant_term2 = (A_dep / 3.0) * (A_dep / 3.0) * (A_dep / 3.0);
     let Delta = discriminant_term1 + discriminant_term2;
 
-    if (Math.abs(Delta) < 1e-12) Delta = 0;
+    if (Math.abs(Delta) < 1e-12) Delta = 0; // Treat very small Delta as zero
 
     if (Delta > 0) {
+        // One real root
         const sqrtDelta = Math.sqrt(Delta);
         const term1_val = -B_dep / 2.0 + sqrtDelta;
         const term2_val = -B_dep / 2.0 - sqrtDelta;
+        
         const y1 = Math.cbrt(term1_val) + Math.cbrt(term2_val);
         y_roots.push(y1);
     } else if (Delta === 0) {
-        if (Math.abs(A_dep) < 1e-9 && Math.abs(B_dep) < 1e-9) {
+        // Multiple real roots (all real, at least two are equal)
+        if (Math.abs(A_dep) < 1e-9 && Math.abs(B_dep) < 1e-9) { // A = B = 0 implies y=0 is a triple root
             y_roots.push(0);
         } else {
-            const y1 = -2.0 * Math.cbrt(B_dep / 2.0);
-            const y2 = Math.cbrt(B_dep / 2.0);
-            y_roots.push(y1);
-            if (Math.abs(y1 - y2) > 1e-7) {
-                 y_roots.push(y2);
+            const y1_val = -2.0 * Math.cbrt(B_dep / 2.0);
+            const y2_val = Math.cbrt(B_dep / 2.0);
+            y_roots.push(y1_val);
+            if (Math.abs(y1_val - y2_val) > 1e-7) { 
+                 y_roots.push(y2_val); 
             }
         }
-    } else {
+    } else { // Delta < 0
+        // Three distinct real roots (trigonometric solution)
         const term_cos_arg_num = (-B_dep / 2.0);
-        const term_cos_arg_den = Math.sqrt(-discriminant_term2);
+        const term_cos_arg_den = Math.sqrt(-discriminant_term2); 
+        
         let cos_arg = term_cos_arg_num / term_cos_arg_den;
         if (cos_arg > 1.0) cos_arg = 1.0;
         if (cos_arg < -1.0) cos_arg = -1.0;
+
         const angle_third = Math.acos(cos_arg) / 3.0;
         const factor = 2.0 * Math.sqrt(-A_dep / 3.0);
+
         y_roots.push(factor * Math.cos(angle_third));
         y_roots.push(factor * Math.cos(angle_third - (2.0 * Math.PI) / 3.0));
         y_roots.push(factor * Math.cos(angle_third + (2.0 * Math.PI) / 3.0));
     }
 
     let Z_roots = y_roots.map(y_root => y_root - p / 3.0);
-    Z_roots = Z_roots.filter(z => z > 1e-9);
+    Z_roots = Z_roots.filter(z => z > 1e-9); // Must be positive
+
     if (Z_roots.length > 1) {
         Z_roots.sort((a, b) => a - b);
         Z_roots = Z_roots.filter((z, index, self) => index === 0 || Math.abs(z - self[index-1]) > 1e-7);
     }
+    
     Z_roots.sort((a, b) => a - b);
+
+    if (Z_roots.length === 0) {
+        // console.warn("Cubic EOS solver (SRK) found no positive real roots after transformation.", {p, q, r, A_dep, B_dep, Delta});
+    }
     return Z_roots;
+}
+
+// Wrapper for the cubic solver to handle a*Z^3 + b*Z^2 + c*Z + d = 0
+export function solveCubicEOS(coeff_a: number, coeff_b: number, coeff_c: number, coeff_d: number): number[] | null {
+    if (Math.abs(coeff_a) < 1e-9) {
+        console.error("solveCubicEOS (SRK): Coefficient 'a' is near zero. Cannot solve.");
+        return null;
+    }
+    const p = coeff_b / coeff_a;
+    const q = coeff_c / coeff_a;
+    const r = coeff_d / coeff_a;
+    const roots = solveCubicRealRoots(p, q, r);
+    return roots.length > 0 ? roots : null;
+}
+
+// --- Interfaces ---
+export interface SrkInteractionParams {
+    k_ij: number; // Binary interaction parameter for SRK
+    k_ji: number; // Usually k_ji = k_ij
+    casn1?: string;
+    casn2?: string;
 }
 
 export async function fetchSrkInteractionParams(
     supabase: SupabaseClient,
-    casn1: string,
-    casn2: string
+    casn1_query: string,
+    casn2_query: string
 ): Promise<SrkInteractionParams> {
-    if (!casn1 || !casn2) {
-        console.warn("SRK k_ij fetch: CAS numbers for both compounds are required. Defaulting k_ij = 0.");
-        return { k12: 0 };
+    if (!casn1_query || !casn2_query) {
+        console.warn("SRK interaction param fetch: CAS numbers for both compounds are required. Defaulting k_ij = k_ji = 0.");
+        return { k_ij: 0, k_ji: 0, casn1: casn1_query, casn2: casn2_query };
     }
-    if (casn1 === casn2) {
-        return { k12: 0 };
+    if (casn1_query === casn2_query) {
+        return { k_ij: 0, k_ji: 0, casn1: casn1_query, casn2: casn2_query };
     }
 
-    console.log(`Fetching SRK interaction parameters for pair: casn1='${casn1}', casn2='${casn2}'`);
+    const tableName = 'srk parameters'; // Or your actual SRK table name
+    console.log(`Fetching SRK interaction parameters from "${tableName}" for query pair: comp1_cas='${casn1_query}', comp2_cas='${casn2_query}'`);
+    
     const query = supabase
-        .from('srk paramaters') // Note the space in "srk paramaters"
-        .select('"k12", "CASN1", "CASN2"')
-        .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
+        .from(tableName) 
+        .select('"CASN1", "CASN2", k12') // Assuming k12 for SRK, adjust if different (e.g., kij)
+                                         // Quote column names if they are case-sensitive or contain special chars in DB
+        .or(`and("CASN1".eq.${casn1_query},"CASN2".eq.${casn2_query}),and("CASN1".eq.${casn2_query},"CASN2".eq.${casn1_query})`)
         .limit(1);
 
     const { data, error } = await query;
-    console.log("Supabase SRK interaction query response - data:", JSON.stringify(data, null, 2));
-    console.log("Supabase SRK interaction query response - error:", JSON.stringify(error, null, 2));
 
     if (error) {
-        console.error(`Supabase SRK interaction query raw error object:`, error);
-        throw new Error(`Supabase SRK interaction query error: ${error.message}`);
+        console.error(`Supabase SRK interaction parameter query error from "${tableName}": ${error.message}`, error);
+        throw new Error(`Supabase SRK interaction parameter query error: ${error.message}`);
     }
+
     if (!data || data.length === 0) {
-        console.warn(`SRK interaction parameter k12 not found for pair ${casn1}/${casn2}. Defaulting to k12 = 0.`);
-        return { k12: 0, casn1, casn2 };
+        console.warn(`SRK interaction parameter (k12 or kij) not found in "${tableName}" for pair ${casn1_query}/${casn2_query}. Defaulting to k_ij = k_ji = 0.`);
+        return { k_ij: 0, k_ji: 0, casn1: casn1_query, casn2: casn2_query };
     }
-    const params = data[0];
+
+    const dbRow = data[0];
+    const k_value = typeof dbRow.k12 === 'number' ? dbRow.k12 : 0; // Adjust 'k12' if your column is named differently
+    
+    console.log(`SRK_PARAM_FETCHED: For query ${casn1_query}/${casn2_query} from "${tableName}", DB row (${dbRow.CASN1}/${dbRow.CASN2}) k12/kij=${dbRow.k12}. Assigned k_ij=${k_value.toFixed(4)}, k_ji=${k_value.toFixed(4)}`);
+
     return {
-        k12: typeof params.k12 === 'number' ? params.k12 : 0,
-        casn1: params.CASN1,
-        casn2: params.CASN2,
+        k_ij: k_value,
+        k_ji: k_value, // Assuming k_ij = k_ji for SRK from a single k12/kij value
+        casn1: casn1_query,
+        casn2: casn2_query
     };
+}
+
+// Placeholder for SRK fugacity coefficient calculation
+export function calculateSRKPhi(
+    T_K: number,
+    P_Pa: number,
+    compositions: number[], // liquid (x) or vapor (y) mole fractions
+    compDataArray: CompoundData[], // Array of component data (each must have srkParams)
+    interactionParams: SrkInteractionParams | any, 
+    phaseType: 'liquid' | 'vapor' // phaseType is kept for logic inside this func, not passed to solver
+): number[] | null { 
+    console.warn("calculateSRKPhi is a placeholder. Returning ideal phi=1 for all components.");
+    // Example of how solveCubicEOS would be called (coefficients are placeholders)
+    const A_mix_placeholder = 0.1;
+    const B_mix_placeholder = 0.05;
+    const p_coeff_placeholder = -1.0;
+    const q_coeff_placeholder = A_mix_placeholder - B_mix_placeholder - B_mix_placeholder * B_mix_placeholder;
+    const r_coeff_placeholder = -A_mix_placeholder * B_mix_placeholder;
+
+    const Z_roots = solveCubicEOS(1, p_coeff_placeholder, q_coeff_placeholder, r_coeff_placeholder); 
+
+    if (!Z_roots || Z_roots.length === 0) {
+        console.error("SRK Phi (Placeholder): Failed to get Z roots from solver.");
+        return null;
+    }
+    // Logic to select Z based on phaseType would go here
+    // let Z_phase = phaseType === 'liquid' ? Z_roots[0] : Z_roots[Z_roots.length - 1];
+    return compositions.map(() => 1.0); // Return ideal phi
 }
 
 export function calculateSrkFugacityCoefficients(
@@ -126,15 +186,15 @@ export function calculateSrkFugacityCoefficients(
 
     const x1 = x_or_y[0];
     const x2 = x_or_y[1];
-    const { k12 } = interactionParams;
+    const { k_ij, k_ji } = interactionParams; // k_ij and k_ji are typically the same from fetch
 
     const srkPure = components.map(c => {
         const { Tc_K, Pc_Pa, omega } = c.srkParams!;
         const Tr = T_K / Tc_K;
         const m = 0.480 + 1.574 * omega - 0.176 * omega * omega;
         const alpha = Math.pow(1 + m * (1 - Math.sqrt(Tr)), 2);
-        const ac_i = 0.42748 * Math.pow(R_J_molK * Tc_K, 2) / Pc_Pa * alpha;
-        const b_i = 0.08664 * R_J_molK * Tc_K / Pc_Pa;
+        const ac_i = 0.42748 * Math.pow(R_gas_const_J_molK * Tc_K, 2) / Pc_Pa * alpha;
+        const b_i = 0.08664 * R_gas_const_J_molK * Tc_K / Pc_Pa;
         return { ac_i, b_i, sqrt_ac_i: Math.sqrt(ac_i) }; // Store sqrt_ac_i for mixing rule
     });
 
@@ -142,35 +202,54 @@ export function calculateSrkFugacityCoefficients(
     const { ac_i: ac2, b_i: b2, sqrt_ac_i: sqrt_ac2 } = srkPure[1];
 
     const b_mix = x1 * b1 + x2 * b2;
-    const a12_mix_term = sqrt_ac1 * sqrt_ac2 * (1 - k12); // This is (a_ij) for i!=j
-    const a_mix = x1 * x1 * ac1 + x2 * x2 * ac2 + 2 * x1 * x2 * a12_mix_term;
+    const a12_mix_term = sqrt_ac1 * sqrt_ac2 * (1 - k_ij); // This is (a_ij) for i!=j
+    const a21_mix_term = sqrt_ac2 * sqrt_ac1 * (1 - k_ji); // This is (a_ji) for j!=i
+    const a_mix = x1 * x1 * ac1 + x2 * x2 * ac2 + x1 * x2 * (a12_mix_term + a21_mix_term);
 
-    const A_mix_eos = a_mix * P_Pa / Math.pow(R_J_molK * T_K, 2);
-    const B_mix_eos = b_mix * P_Pa / (R_J_molK * T_K);
+    const A_mix_eos = a_mix * P_Pa / Math.pow(R_gas_const_J_molK * T_K, 2);
+    const B_mix_eos = b_mix * P_Pa / (R_gas_const_J_molK * T_K);
 
     const p_coeff = -1.0;
     const q_coeff = A_mix_eos - B_mix_eos - B_mix_eos * B_mix_eos;
     const r_coeff = -A_mix_eos * B_mix_eos;
 
-    const Z_roots = solveCubicRealRoots(p_coeff, q_coeff, r_coeff);
+    const Z_roots = solveCubicEOS(1, p_coeff, q_coeff, r_coeff); // Call new solver
     let Z: number;
 
-    if (Z_roots.length === 0) {
-        console.warn(`SRK EOS: No positive real roots for Z at T=${T_K.toFixed(1)}, P=${(P_Pa/1000).toFixed(1)}kPa. Phase: ${phase}`, {A_mix_eos, B_mix_eos, x1});
+    if (!Z_roots || Z_roots.length === 0) {
+        console.warn(`SRK EOS: No positive real roots for Z at T=${T_K.toFixed(1)}, P=${(P_Pa/1000).toFixed(1)}kPa. Phase: ${phase}`, {A_mix_eos, B_mix_eos, x1, p_coeff, q_coeff, r_coeff});
         return null;
     } else if (Z_roots.length === 1) {
         Z = Z_roots[0];
-        if (phase === 'liquid' && Z <= B_mix_eos) return null;
-    } else {
+        // For SRK, Z must be > B_mix_eos. If only one root, it must satisfy this.
+        if (Z <= B_mix_eos) {
+            // console.warn(`SRK EOS: Single root Z=${Z.toFixed(4)} <= B_mix_eos=${B_mix_eos.toFixed(4)} for ${phase} phase. May indicate issues.`);
+            return null;
+        }
+    } else { // Multiple real roots
         if (phase === 'liquid') {
             const liquidCandidates = Z_roots.filter(r => r > B_mix_eos);
-            if (liquidCandidates.length > 0) Z = liquidCandidates[0];
-            else return null;
-        } else {
-            Z = Z_roots[Z_roots.length - 1];
+            if (liquidCandidates.length > 0) {
+                Z = liquidCandidates[0]; // Smallest positive root > B_mix_eos
+            } else {
+                // console.warn(`SRK EOS: No roots Z > B_mix_eos for liquid phase. Roots: ${Z_roots.join(', ')}, B_mix_eos=${B_mix_eos.toFixed(4)}`);
+                return null;
+            }
+        } else { // Vapor phase
+            // Largest root, should also be > B_mix_eos if physical
+            Z = Z_roots[Z_roots.length - 1]; 
+            if (Z <= B_mix_eos) {
+                // console.warn(`SRK EOS: Largest root Z=${Z.toFixed(4)} <= B_mix_eos=${B_mix_eos.toFixed(4)} for vapor phase. This is unexpected.`);
+                return null;
+            }
         }
     }
-    if (Z <= B_mix_eos) return null; // Final check for both phases
+    
+    // Final check, though covered by selection logic above
+    if (Z <= B_mix_eos) {
+        // console.warn(`SRK EOS: Final Z=${Z.toFixed(4)} <= B_mix_eos=${B_mix_eos.toFixed(4)} for ${phase}.`);
+        return null; 
+    }
 
     // Fugacity coefficients for SRK
     // ln(phi_i) = (b_i/b_mix)*(Z-1) - ln(Z-B_mix) - (A_mix_eos/B_mix_eos) * ( (2 * sum_j(x_j * sqrt(ac_i*ac_j)*(1-k_ij)))/a_mix - b_i/b_mix ) * ln(1 + B_mix_eos/Z)
@@ -277,8 +356,8 @@ export function calculateBubbleTemperatureSrk(
 
     // Initialize K_values_iter and y_iter for the first call to objectiveFunction
     if (components[0].antoine && components[1].antoine) {
-        const Psat1_init = calculatePsat_Pa(components[0].antoine, T_K); // Removed name argument
-        const Psat2_init = calculatePsat_Pa(components[1].antoine, T_K); // Removed name argument
+        const Psat1_init = importedCalculatePsat_Pa(components[0].antoine, T_K); // Changed here
+        const Psat2_init = importedCalculatePsat_Pa(components[1].antoine, T_K); // Changed here
         if (!isNaN(Psat1_init) && !isNaN(Psat2_init) && Psat1_init > 0 && Psat2_init > 0) {
             K_values_iter = [Psat1_init / P_system_Pa, Psat2_init / P_system_Pa];
             const sumY_init = K_values_iter[0]*x[0] + K_values_iter[1]*x[1];
@@ -396,8 +475,8 @@ export function calculateBubblePressureSrk(
         }
 
         if (iter === 0) {
-             const Psat1_est = components[0].antoine ? calculatePsat_Pa(components[0].antoine, T_system_K) : P_Pa;
-             const Psat2_est = components[1].antoine ? calculatePsat_Pa(components[1].antoine, T_system_K) : P_Pa;
+             const Psat1_est = components[0].antoine ? importedCalculatePsat_Pa(components[0].antoine, T_system_K) : P_Pa; // Changed here
+             const Psat2_est = components[1].antoine ? importedCalculatePsat_Pa(components[1].antoine, T_system_K) : P_Pa; // Changed here
              const K1_est = Psat1_est / P_Pa; // Approximation
              const K2_est = Psat2_est / P_Pa; // Approximation
              y = [K1_est * x[0], K2_est * x[1]];
@@ -446,4 +525,111 @@ export function calculateBubblePressureSrk(
         }
     }
     return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: P_Pa, error: "SRK: Bubble P max iterations reached", calculationType: 'bubbleP', iterations: maxIter };
+}
+
+export async function calculateDewTemperatureSrk(
+    components: CompoundData[],
+    y1_feed: number, // Vapor phase mole fraction of component 1
+    P_system_Pa: number,
+    srkInteractionParams: SrkInteractionParams,
+    initialTempGuess_K: number,
+    maxIter: number = 50,
+    tolerance: number = 1e-5
+): Promise<BubbleDewResult | null> {
+    console.log(`SRK Dew T: y1=${y1_feed.toFixed(3)}, P=${(P_system_Pa/1000).toFixed(1)}kPa, Init_T=${initialTempGuess_K.toFixed(1)}K`);
+    let T_K = initialTempGuess_K;
+    const y = [y1_feed, 1 - y1_feed];
+
+    if (!components[0]?.srkParams || !components[1]?.srkParams) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: NaN, P_Pa: P_system_Pa, error: "SRK: Pure component SRK parameters missing.", calculationType: 'dewT' };
+    }
+    if (!components[0]?.antoine || !components[1]?.antoine) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: NaN, P_Pa: P_system_Pa, error: "SRK: Antoine parameters missing for Psat.", calculationType: 'dewT' };
+    }
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        // Calculate Psat using the imported alias
+        const Psat1 = importedCalculatePsat_Pa(components[0].antoine, T_K); // Changed here
+        const Psat2 = importedCalculatePsat_Pa(components[1].antoine, T_K); // Changed here
+        if (isNaN(Psat1) || isNaN(Psat2)) {
+             return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: `SRK: Psat calculation failed at T=${T_K.toFixed(1)}K.`, calculationType: 'dewT', iterations: iter };
+        }
+
+        const phi_V = calculateSRKPhi(T_K, P_system_Pa, y, components, srkInteractionParams, 'vapor');
+        if (!phi_V) {
+            return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: `SRK: Vapor Phi calculation failed at T=${T_K.toFixed(1)}K.`, calculationType: 'dewT', iterations: iter };
+        }
+
+        const K1 = Psat1 / P_system_Pa;
+        const K2 = Psat2 / P_system_Pa;
+        if (K1 <= 0 || K2 <= 0) { // Psat can be very small but should be positive
+             return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: `SRK: Invalid K-values at T=${T_K.toFixed(1)}K.`, calculationType: 'dewT', iterations: iter };
+        }
+
+        const sum_y_div_K = y[0]/K1 + y[1]/K2;
+        const error_func = sum_y_div_K - 1.0;
+
+        if (Math.abs(error_func) < tolerance) {
+            const x1 = y[0] / K1 / sum_y_div_K; // x1 = (y1/K1) / sum(yi/Ki)
+            return { comp1_feed: y1_feed, comp1_equilibrium: x1, T_K: T_K, P_Pa: P_system_Pa, iterations: iter + 1, calculationType: 'dewT' };
+        }
+        
+        let T_change = -error_func * (T_K * 0.05); // Heuristic step
+        const max_T_step = 5.0; 
+        if (Math.abs(T_change) > max_T_step) T_change = Math.sign(T_change) * max_T_step;
+        if (iter < 3) T_change *= 0.5; 
+
+        let T_K_new = T_K + T_change;
+        if (T_K_new <= 0) T_K_new = T_K * 0.9; 
+        if (T_K_new < 150) T_K_new = 150;
+        if (T_K_new > 800) T_K_new = 800;
+        T_K = T_K_new;
+    }
+    return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_K, P_Pa: P_system_Pa, error: "SRK: Dew T max iterations reached", calculationType: 'dewT', iterations: maxIter };
+}
+
+export async function calculateDewPressureSrk(
+    components: CompoundData[],
+    y1_feed: number, // Vapor phase mole fraction of component 1
+    T_system_K: number,
+    srkInteractionParams: SrkInteractionParams,
+    initialPressureGuess_Pa: number,
+    maxIter: number = 10, // Dew P usually converges faster or is direct
+    tolerance: number = 1e-5
+): Promise<BubbleDewResult | null> {
+    console.log(`SRK Dew P: y1=${y1_feed.toFixed(3)}, T=${T_system_K.toFixed(1)}K`);
+    const y = [y1_feed, 1 - y1_feed];
+
+    if (!components[0]?.srkParams || !components[1]?.srkParams) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "SRK: Pure component SRK parameters missing.", calculationType: 'dewP' };
+    }
+    if (!components[0]?.antoine || !components[1]?.antoine) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "SRK: Antoine parameters missing for Psat.", calculationType: 'dewP' };
+    }
+
+    const Psat1 = importedCalculatePsat_Pa(components[0].antoine, T_system_K); // Changed here
+    const Psat2 = importedCalculatePsat_Pa(components[1].antoine, T_system_K); // Changed here
+    if (isNaN(Psat1) || isNaN(Psat2)) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: `SRK: Psat calculation failed at T=${T_system_K.toFixed(1)}K.`, calculationType: 'dewP' };
+    }
+
+    const sum_y_div_Psat = y[0]/Psat1 + y[1]/Psat2;
+    if (sum_y_div_Psat <= 0) {
+        return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: `SRK: Invalid sum_y_div_Psat at T=${T_system_K.toFixed(1)}K.`, calculationType: 'dewP' };
+    }
+    const P_calc = 1.0 / sum_y_div_Psat;
+    
+    if (isNaN(P_calc) || P_calc <=0) {
+         return { comp1_feed: y1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: P_calc, error: "SRK: Calculated dew pressure is invalid.", calculationType: 'dewP', iterations: 0 };
+    }
+    const x1 = y[0] * P_calc / Psat1;
+
+    return {
+        comp1_feed: y1_feed,
+        comp1_equilibrium: x1,
+        T_K: T_system_K,
+        P_Pa: P_calc,
+        iterations: 1, 
+        calculationType: 'dewP'
+    };
 }

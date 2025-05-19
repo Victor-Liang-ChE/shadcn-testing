@@ -1,29 +1,51 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import dynamic from 'next/dynamic'; // Import dynamic
+import dynamic from 'next/dynamic';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { CompoundData, WilsonPureComponentParams as WilsonPureParams } from '@/lib/vle-types';
 import { 
-    simulateSingleResidueCurveODE, 
-    ResidueCurveODE, 
+    CompoundData, 
+    WilsonPureComponentParams as WilsonPureParams, 
+    UnifacGroupComposition,
+    PrPureComponentParams, 
+    SrkPureComponentParams, 
+    UniquacPureComponentParams,
+    AntoineParams, 
+} from '@/lib/vle-types';
+import { 
+    simulateSingleResidueCurveODE as simulateWilsonODE, 
     TernaryWilsonParams
 } from '@/lib/residue-curves-ode-wilson';
-import { fetchWilsonInteractionParams } from '@/lib/vle-calculations-wilson'; 
+import { simulateSingleResidueCurveODE_Unifac as simulateUnifacODE } from '@/lib/residue-curves-ode-unifac';
+import { simulateSingleResidueCurveODE_Nrtl as simulateNrtlODE, TernaryNrtlParams } from '@/lib/residue-curves-ode-nrtl';
+import { simulateSingleResidueCurveODE_Pr as simulatePrODE, TernaryPrParams } from '@/lib/residue-curves-ode-pr';
+import { simulateSingleResidueCurveODE_Srk as simulateSrkODE, TernarySrkParams } from '@/lib/residue-curves-ode-srk';
+import { simulateSingleResidueCurveODE_Uniquac as simulateUniquacODE, TernaryUniquacParams } from '@/lib/residue-curves-ode-uniquac';
+
+import { fetchWilsonInteractionParams, R_gas_const_J_molK } from '@/lib/vle-calculations-wilson'; 
+import { fetchUnifacInteractionParams, UnifacParameters, calculatePsat_Pa } from '@/lib/vle-calculations-unifac'; 
+import { fetchNrtlParameters, type NrtlInteractionParams } from '@/lib/vle-calculations-nrtl';
+import { fetchPrInteractionParams, type PrInteractionParams } from '@/lib/vle-calculations-pr';
+import { fetchSrkInteractionParams, type SrkInteractionParams } from '@/lib/vle-calculations-srk';
+import { fetchUniquacInteractionParams, type UniquacInteractionParams } from '@/lib/vle-calculations-uniquac';
 
 import { fetchAndConvertThermData, FetchedCompoundThermData } from '@/lib/antoine-utils'; 
 import type { Data, Layout } from 'plotly.js'; 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"; 
 
 // Dynamically import Plotly to avoid SSR issues
-const Plot = dynamic(() => import('react-plotly.js'), {
-  ssr: false,
-  loading: () => <div className="flex justify-center items-center h-[600px]"><p>Loading plot...</p></div>
-});
+const Plot = dynamic(
+  () => import('react-plotly.js').then((mod) => mod.default),
+  {
+    ssr: false,
+    loading: () => <div className="flex justify-center items-center h-[600px]"><p>Loading plot...</p></div>
+  }
+);
 
 // Initialize Supabase client (replace with your actual URL and anon key)
 // Ensure these are environment variables in a real application
@@ -55,8 +77,9 @@ interface ComponentInputState {
 interface ProcessedComponentData {
     name: string;
     casNumber: string;
-    thermData: FetchedCompoundThermData; // This should include Antoine, NBP, and V_L_m3mol
+    thermData: FetchedCompoundThermData; // This now contains criticalProperties
     originalIndex: number; // 0, 1, or 2 based on input order
+    bp_at_Psys_K?: number | null; // Boiling point at system pressure
 }
 
 const initialComponentState = (): ComponentInputState => ({
@@ -83,6 +106,16 @@ const convertTernaryToPaperCoordinates = (
     return { x: x_paper, y: y_paper };
 };
 
+export type FluidPackageTypeResidue = 'wilson' | 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac';
+
+// define a tiny generic curve type that all models satisfy
+interface ResidueCurvePoint { 
+  x: number[]; 
+  T_K: number; 
+  step?: number; 
+}
+type ResidueCurve = ResidueCurvePoint[];
+
 export default function TernaryResidueMapPage() {
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
         { name: 'Acetone' },
@@ -95,8 +128,10 @@ export default function TernaryResidueMapPage() {
     const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
     const suggestionsContainerRefs = useRef<(HTMLUListElement | null)[]>([]);
     const [systemPressure, setSystemPressure] = useState<string>('1'); // System pressure in bar, default to 1
-    const [residueCurves, setResidueCurves] = useState<ResidueCurveODE[]>([]); // NEW: Using ResidueCurveODE
-    const [cleanedResidueCurves, setCleanedResidueCurves] = useState<ResidueCurveODE[]>([]); // For filtered curves
+    const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeResidue>('wilson'); // New state for fluid package
+    const [displayedFluidPackage, setDisplayedFluidPackage] = useState<FluidPackageTypeResidue>(fluidPackage); // State for title
+    const [residueCurves, setResidueCurves] = useState<ResidueCurve[]>([]);
+    const [cleanedResidueCurves, setCleanedResidueCurves] = useState<ResidueCurve[]>([]); // For filtered curves
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
     const [plotlyData, setPlotlyData] = useState<Data[]>([]);
@@ -150,7 +185,7 @@ export default function TernaryResidueMapPage() {
             const { data, error } = await supabase
                 .from('compounds')
                 .select('name')
-                .ilike('name', `%${query.trim()}%`)
+                .ilike('name', `${query.trim()}%`) // Changed to "starts with" pattern
                 .limit(5);
 
             if (error) {
@@ -262,7 +297,7 @@ export default function TernaryResidueMapPage() {
         document.addEventListener("mousedown", handleClickOutside);
         return () => {
             document.removeEventListener("mousedown", handleClickOutside);
-        };
+        }
     }, [activeSuggestionIndex]);
 
     const generateStartingPoints = (numPerEdge: number = 8): number[][] => {
@@ -325,27 +360,103 @@ export default function TernaryResidueMapPage() {
 
     const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string): Promise<string> => {
         if (!name.trim()) {
+            console.error("fetchCasNumberByName: Name is empty.");
             throw new Error("Component name cannot be empty.");
         }
+        const trimmedName = name.trim();
+        console.log(`fetchCasNumberByName: Fetching CAS for name: "${trimmedName}"`); // Added log
         const { data, error } = await supabaseClient
             .from('compounds')
-            .select('cas_number')
-            .ilike('name', `%${name.trim()}%`)
+            .select('cas_number, name') // Also select name for logging
+            .ilike('name', trimmedName) // Changed from %${trimmedName}% to trimmedName for exact match (case-insensitive)
             .limit(1)
             .single();
 
-        if (error || !data || !data.cas_number) {
-            console.error(`Error fetching CAS for name '${name}':`, error);
-            throw new Error(`CAS number not found for component "${name}". Ensure the name is correct and exists in the database.`);
+        if (error) {
+            console.error(`fetchCasNumberByName: Error fetching CAS for "${trimmedName}":`, error);
+            throw new Error(`Could not fetch CAS number for ${trimmedName}: ${error.message}`);
         }
+        if (!data || !data.cas_number) {
+            console.error(`fetchCasNumberByName: No CAS number found for "${trimmedName}". Data received:`, data);
+            throw new Error(`No CAS number found for ${trimmedName}.`);
+        }
+        console.log(`fetchCasNumberByName: Found CAS: ${data.cas_number} for DB name: "${data.name}" (queried as "${trimmedName}")`); // Added log
         return data.cas_number;
     };
-    
+
+    // Helper function to calculate boiling point of a pure component at P_sys_Pa using Secant method
+    function calculateBoilingPointAtPressureSecant(
+        antoine: AntoineParams,
+        P_sys_Pa: number,
+        initialT_K: number,
+        psatFunc: (antoine: AntoineParams, T_K: number) => number,
+        maxIter: number = 30,
+        relTolerance: number = 1e-5, // Relative tolerance for f(T)/P_sys
+        absTolerancePa: number = 0.1, // Absolute tolerance for f(T) in Pa
+        tempStepTol: number = 0.01 // Kelvin tolerance for T_new - T_curr
+    ): number | null {
+        let T_curr = initialT_K > 0 ? initialT_K : (antoine.Tmin_K || 273.15);
+        let f_curr_val = psatFunc(antoine, T_curr) - P_sys_Pa;
+
+        if (isNaN(f_curr_val)) return null;
+
+        // Initial perturbation for T_prev
+        let T_prev = T_curr * (f_curr_val > 0 ? 1.05 : 0.95); // Perturb based on f_curr sign
+        if (T_prev <= 0 || Math.abs(T_prev - T_curr) < tempStepTol / 2) { // Ensure T_prev is valid and distinct
+            T_prev = T_curr + (T_curr > antoine.Tmin_K + tempStepTol ? -tempStepTol : tempStepTol); 
+        }
+        if (T_prev <=0) T_prev = T_curr * 0.9; // Final fallback for T_prev
+
+        let f_prev_val = psatFunc(antoine, T_prev) - P_sys_Pa;
+
+        if (isNaN(f_prev_val)) { // If first perturbation failed, try another direction
+            T_prev = T_curr + (T_prev > T_curr ? -2 * (T_prev - T_curr) : 2 * (T_curr - T_prev)); // Reverse and double perturbation
+            if (T_prev <=0) T_prev = T_curr * 1.1; // Fallback
+            f_prev_val = psatFunc(antoine, T_prev) - P_sys_Pa;
+            if (isNaN(f_prev_val)) return null; // Still NaN, give up
+        }
+
+        for (let i = 0; i < maxIter; i++) {
+            if (Math.abs(f_curr_val / P_sys_Pa) < relTolerance || Math.abs(f_curr_val) < absTolerancePa) {
+                return T_curr;
+            }
+
+            const denominator = f_curr_val - f_prev_val;
+            if (Math.abs(denominator) < 1e-6) { // Denominator too small
+                return (Math.abs(f_curr_val / P_sys_Pa) < relTolerance * 10) ? T_curr : null;
+            }
+
+            const T_next = T_curr - f_curr_val * (T_curr - T_prev) / denominator;
+
+            if (isNaN(T_next) || !isFinite(T_next) || T_next <= 0 || T_next < (antoine.Tmin_K || 0) * 0.8 || T_next > (antoine.Tmax_K || Infinity) * 1.2 ) {
+                T_prev = T_curr;
+                f_prev_val = f_curr_val;
+                T_curr = T_curr + (f_curr_val > 0 ? -0.5 : 0.5) * (T_curr * 0.005 + 0.05);
+                if (T_curr <=0) T_curr = initialT_K * (0.5 + Math.random()*0.5);
+                f_curr_val = psatFunc(antoine, T_curr) - P_sys_Pa;
+                if(isNaN(f_curr_val)) return null;
+                continue;
+            }
+            
+            if (Math.abs(T_next - T_curr) < tempStepTol) {
+                 return T_next;
+            }
+
+            T_prev = T_curr;
+            f_prev_val = f_curr_val;
+            T_curr = T_next;
+            f_curr_val = psatFunc(antoine, T_curr) - P_sys_Pa;
+            if (isNaN(f_curr_val)) return null;
+        }
+        return (Math.abs(f_curr_val / P_sys_Pa) < relTolerance * 10) ? T_curr : null;
+    }
+
     const handleGenerateMap = useCallback(async () => {
         if (!supabase) {
             setError("Supabase client is not initialized. Cannot fetch parameters.");
             return;
         }
+        const generatingFluidPackage = fluidPackage; // Capture fluid package for this generation run
         setIsLoading(true);
         setError(null);
 
@@ -365,21 +476,45 @@ export default function TernaryResidueMapPage() {
             );
             const fetchedThermDataArray = await Promise.all(thermoDataPromises);
 
-            const processedComponents: ProcessedComponentData[] = componentsInput.map((input, index) => ({
-                name: input.name,
-                casNumber: fetchedCasNumbers[index],
-                thermData: fetchedThermDataArray[index],
-                originalIndex: index,
-            }));
-            
-            if (processedComponents.some(pc => pc.thermData.V_L_m3mol == null || pc.thermData.V_L_m3mol <= 0)) {
-                throw new Error("Liquid molar volume (V_L_m3mol) missing or invalid for one or more components.");
+            const processedComponents: ProcessedComponentData[] = componentsInput.map((input, index) => {
+                const thermData = fetchedThermDataArray[index];
+                let bp_at_Psys_K_val: number | null = null;
+                if (thermData.antoine) {
+                    bp_at_Psys_K_val = calculateBoilingPointAtPressureSecant(
+                        thermData.antoine,
+                        P_system_Pa,
+                        thermData.nbp_K || DEFAULT_INITIAL_T_K, // Use NBP as initial guess, or default
+                        calculatePsat_Pa // Pass the imported Psat function
+                    );
+                }
+                return {
+                    name: input.name,
+                    casNumber: fetchedCasNumbers[index],
+                    thermData: thermData,
+                    originalIndex: index,
+                    bp_at_Psys_K: bp_at_Psys_K_val,
+                };
+            });
+
+            // Validate pure component parameters based on selected fluid package
+            if (fluidPackage === 'wilson' && processedComponents.some(pc => pc.thermData.V_L_m3mol == null || pc.thermData.V_L_m3mol <= 0)) {
+                throw new Error("Wilson: Liquid molar volume (V_L_m3mol) missing or invalid.");
             }
-             if (processedComponents.some(pc => !pc.thermData.antoine)) {
+            if (fluidPackage === 'unifac' && processedComponents.some(pc => !pc.thermData.unifacGroups || Object.keys(pc.thermData.unifacGroups).length === 0)) {
+                throw new Error("UNIFAC: UNIFAC groups missing for one or more components.");
+            }
+            if ((fluidPackage === 'pr' || fluidPackage === 'srk') && processedComponents.some(pc => !pc.thermData.criticalProperties)) {
+                throw new Error(`${fluidPackage.toUpperCase()}: Critical parameters (Tc, Pc, omega) missing.`);
+            }
+            if (fluidPackage === 'uniquac' && processedComponents.some(pc => !pc.thermData.uniquacParams)) {
+                throw new Error("UNIQUAC: r and q parameters missing.");
+            }
+            if (processedComponents.some(pc => !pc.thermData.antoine)) {
                 throw new Error("Antoine parameters missing for one or more components.");
             }
 
             const sortedForPlot = [...processedComponents].sort((a, b) => {
+                // Sorting for plot axes (L, M, H) should still be based on NBP @ 1atm for consistency
                 if (a.thermData.nbp_K === null && b.thermData.nbp_K === null) return 0;
                 if (a.thermData.nbp_K === null) return 1;
                 if (b.thermData.nbp_K === null) return -1;
@@ -393,84 +528,193 @@ export default function TernaryResidueMapPage() {
                     name: pc.name,
                     cas_number: pc.casNumber,
                     antoine: pc.thermData.antoine!,
-                    wilsonParams: { V_L_m3mol: pc.thermData.V_L_m3mol! } as WilsonPureParams,
-                    unifacGroups: [], 
+                    wilsonParams: fluidPackage === 'wilson' ? { V_L_m3mol: pc.thermData.V_L_m3mol! } as WilsonPureParams : undefined,
+                    unifacGroups: fluidPackage === 'unifac' ? pc.thermData.unifacGroups! : undefined,
+                    prParams: fluidPackage === 'pr' ? pc.thermData.criticalProperties! as PrPureComponentParams : undefined,
+                    srkParams: fluidPackage === 'srk' ? pc.thermData.criticalProperties! as SrkPureComponentParams : undefined,
+                    uniquacParams: fluidPackage === 'uniquac' ? pc.thermData.uniquacParams! : undefined,
             }));
 
             const cas = compoundsForBackend.map(c => c.cas_number!);
-            const params01 = await fetchWilsonInteractionParams(supabase, cas[0], cas[1]);
-            const params02 = await fetchWilsonInteractionParams(supabase, cas[0], cas[2]);
-            const params12 = await fetchWilsonInteractionParams(supabase, cas[1], cas[2]);
+            let activityModelParams: any;
 
-            const ternaryWilsonParams: TernaryWilsonParams = {
-                a01_J_mol: params01.a12_J_mol, a10_J_mol: params01.a21_J_mol,
-                a02_J_mol: params02.a12_J_mol, a20_J_mol: params02.a21_J_mol,
-                a12_J_mol: params12.a12_J_mol, a21_J_mol: params12.a21_J_mol,
-            };
+            if (fluidPackage === 'wilson') {
+                const params01 = await fetchWilsonInteractionParams(supabase, cas[0], cas[1]);
+                const params02 = await fetchWilsonInteractionParams(supabase, cas[0], cas[2]);
+                const params12 = await fetchWilsonInteractionParams(supabase, cas[1], cas[2]);
+                activityModelParams = {
+                    a01_J_mol: params01.a12_J_mol, a10_J_mol: params01.a21_J_mol,
+                    a02_J_mol: params02.a12_J_mol, a20_J_mol: params02.a21_J_mol,
+                    a12_J_mol: params12.a12_J_mol, a21_J_mol: params12.a21_J_mol,
+                } as TernaryWilsonParams;
+            } else if (fluidPackage === 'unifac') {
+                const allSubgroupIds = new Set<number>();
+                compoundsForBackend.forEach(comp => {
+                    if (comp.unifacGroups) {
+                        Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id)));
+                    }
+                });
+                if (allSubgroupIds.size === 0 && compoundsForBackend.some(c => !c.unifacGroups || Object.keys(c.unifacGroups).length === 0)) {
+                     throw new Error("UNIFAC selected, but no UNIFAC subgroup IDs found for any component after fetching data.");
+                }
+                activityModelParams = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds)) as UnifacParameters;
+                if (!activityModelParams) {
+                    throw new Error("Failed to fetch UNIFAC interaction parameters. The parameters object is null.");
+                }
+            } else if (fluidPackage === 'nrtl') {
+                const params01 = await fetchNrtlParameters(supabase, cas[0], cas[1]);
+                const params02 = await fetchNrtlParameters(supabase, cas[0], cas[2]);
+                const params12 = await fetchNrtlParameters(supabase, cas[1], cas[2]);
+                if (!params01 || !params02 || !params12) {
+                    throw new Error("NRTL parameters for one or more binary pairs could not be fetched.");
+                }
+                activityModelParams = {
+                    g01_J_mol: (params01 as any).g_ij_J_mol ?? 0, g10_J_mol: (params01 as any).g_ji_J_mol ?? 0, alpha01: (params01 as any).alpha_ij ?? 0,
+                    g02_J_mol: (params02 as any).g_ij_J_mol ?? 0, g20_J_mol: (params02 as any).g_ji_J_mol ?? 0, alpha02: (params02 as any).alpha_ij ?? 0,
+                    g12_J_mol: (params12 as any).g_ij_J_mol ?? 0, g21_J_mol: (params12 as any).g_ji_J_mol ?? 0, alpha12: (params12 as any).alpha_ij ?? 0,
+                } as TernaryNrtlParams;
+            } else if (fluidPackage === 'pr') {
+                const params01 = await fetchPrInteractionParams(supabase, cas[0], cas[1]); 
+                const params02 = await fetchPrInteractionParams(supabase, cas[0], cas[2]);
+                const params12 = await fetchPrInteractionParams(supabase, cas[1], cas[2]);
+                activityModelParams = {
+                    k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
+                    k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
+                    k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
+                } as TernaryPrParams;
+            } else if (fluidPackage === 'srk') {
+                const params01 = await fetchSrkInteractionParams(supabase, cas[0], cas[1]); 
+                const params02 = await fetchSrkInteractionParams(supabase, cas[0], cas[2]);
+                const params12 = await fetchSrkInteractionParams(supabase, cas[1], cas[2]);
+                activityModelParams = {
+                    k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
+                    k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
+                    k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
+                } as TernarySrkParams;
+            } else if (fluidPackage === 'uniquac') {
+                const params01 = await fetchUniquacInteractionParams(supabase, cas[0], cas[1]);
+                const params02 = await fetchUniquacInteractionParams(supabase, cas[0], cas[2]);
+                const params12 = await fetchUniquacInteractionParams(supabase, cas[1], cas[2]);
+                if (!params01 || !params02 || !params12) {
+                    throw new Error("UNIQUAC parameters for one or more binary pairs could not be fetched.");
+                }
+                activityModelParams = {
+                    a01_J_mol: ((params01 as any).a_ij_K ?? 0) * R_gas_const_J_molK, a10_J_mol: ((params01 as any).a_ji_K ?? 0) * R_gas_const_J_molK,
+                    a02_J_mol: ((params02 as any).a_ij_K ?? 0) * R_gas_const_J_molK, a20_J_mol: ((params02 as any).a_ji_K ?? 0) * R_gas_const_J_molK,
+                    a12_J_mol: ((params12 as any).a_ij_K ?? 0) * R_gas_const_J_molK, a21_J_mol: ((params12 as any).a_ji_K ?? 0) * R_gas_const_J_molK,
+                } as TernaryUniquacParams;
+            } else {
+                throw new Error(`Unsupported fluid package: ${fluidPackage}`);
+            }
             
-            const avgNBP = processedComponents
-                .map(p => p.thermData.nbp_K)
-                .filter(nbp => nbp !== null) as number[];
-            const initialTempGuess_K = avgNBP.length > 0 
-                ? avgNBP.reduce((sum, val) => sum + val, 0) / avgNBP.length 
-                : DEFAULT_INITIAL_T_K;
+            const avgNBP_at_Psys = processedComponents
+                .map(p => p.bp_at_Psys_K) // Use BP at system pressure
+                .filter(bp => bp !== null && bp !== undefined) as number[];
+            
+            const initialTempGuess_K = avgNBP_at_Psys.length > 0 
+                ? avgNBP_at_Psys.reduce((sum, val) => sum + val, 0) / avgNBP_at_Psys.length 
+                : (processedComponents
+                    .map(p => p.thermData.nbp_K)
+                    .filter(nbp => nbp !== null) as number[]
+                  ).length > 0 
+                    ? (processedComponents
+                        .map(p => p.thermData.nbp_K)
+                        .filter(nbp => nbp !== null) as number[]
+                      ).reduce((sum, val) => sum + val, 0) / (processedComponents
+                        .map(p => p.thermData.nbp_K)
+                        .filter(nbp => nbp !== null) as number[]
+                      ).length
+                    : DEFAULT_INITIAL_T_K;
 
-            const startingCompositions = generateStartingPoints(8); // Increased numPerEdge, internal points are fixed in the function
-            const allCurvesPromises: Promise<ResidueCurveODE | null>[] = [];
+            const numPerEdge = (fluidPackage === 'pr' || fluidPackage === 'srk') ? 20 : 8;
+            let startingCompositions = generateStartingPoints(numPerEdge);
+            // add near‐corner seeds for dense coverage at each apex
+            if (fluidPackage === 'pr' || fluidPackage === 'srk') {
+                const cornerEps = 0.005;
+                startingCompositions = startingCompositions.concat([
+                    [1 - cornerEps, cornerEps, cornerEps],
+                    [cornerEps, 1 - cornerEps, cornerEps],
+                    [cornerEps, cornerEps, 1 - cornerEps],
+                ]);
+            }
+
+            const allCurvesPromises: Promise<ResidueCurve | null>[] = [];
+
+            // Adjust d_xi_step for each model
+            const base_d_xi_step = 0.02; // This is used for Wilson, NRTL, UNIFAC, UNIQUAC
+            // For PR and SRK, start with the same step size (0.02)
+            const d_xi_step_for_model =
+                (fluidPackage === 'pr' || fluidPackage === 'srk')
+                    ? base_d_xi_step * 1.0  // 0.02 for PR/SRK
+                    : base_d_xi_step;       // 0.02 otherwise
+
+            const max_steps = (fluidPackage === 'pr' || fluidPackage === 'srk') ? 12000 : 1000;
 
             for (const start_x_3comp of startingCompositions) {
-                allCurvesPromises.push(
-                    simulateSingleResidueCurveODE(
-                        start_x_3comp,
-                        P_system_Pa,
-                        compoundsForBackend,
-                        ternaryWilsonParams,
-                        0.02, // dt_frac
-                        1000,  // max_steps increased from 300
-                        initialTempGuess_K 
-                    )
-                );
+                let promise: Promise<ResidueCurve | null>;
+                switch (fluidPackage) {
+                    case 'wilson':
+                        promise = simulateWilsonODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryWilsonParams, base_d_xi_step, 1000, initialTempGuess_K); // Original d_xi_step
+                        break;
+                    case 'unifac':
+                        promise = simulateUnifacODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as UnifacParameters, base_d_xi_step, 1000, initialTempGuess_K); // Original d_xi_step
+                        break;
+                    case 'nrtl':
+                        promise = simulateNrtlODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryNrtlParams, base_d_xi_step, 1000, initialTempGuess_K); // Original d_xi_step
+                        break;
+                    case 'pr':
+                        promise = simulatePrODE(
+                            start_x_3comp,
+                            P_system_Pa,
+                            compoundsForBackend,
+                            activityModelParams as TernaryPrParams,
+                            d_xi_step_for_model,
+                            max_steps,           // ← replaced 1000
+                            initialTempGuess_K
+                        );
+                        break;
+                    case 'srk':
+                        promise = simulateSrkODE(
+                            start_x_3comp,
+                            P_system_Pa,
+                            compoundsForBackend,
+                            activityModelParams as TernarySrkParams,
+                            d_xi_step_for_model,
+                            max_steps,           // ← replaced 1000
+                            initialTempGuess_K
+                        );
+                        break;
+                    case 'uniquac':
+                        promise = simulateUniquacODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryUniquacParams, base_d_xi_step, 1000, initialTempGuess_K); // Original d_xi_step
+                        break;
+                    default:
+                        throw new Error(`Simulation function not implemented for ${fluidPackage}`);
+                }
+                allCurvesPromises.push(promise);
             }
             
             const resolvedCurves = await Promise.all(allCurvesPromises);
-            const validCurves = resolvedCurves.filter(curve => curve !== null && curve.length > 1) as ResidueCurveODE[];
 
-            // Apply new cleaning logic to validCurves before setting state
-            const cleanedCurves = validCurves.map(curve => {
-                if (curve.length < 2) return curve;
-                const uniquePointsCurve: ResidueCurveODE = [curve[0]]; // Start with the first point
-                for (let k = 1; k < curve.length; k++) {
-                    const prevP = uniquePointsCurve[uniquePointsCurve.length - 1].x;
-                    const currP = curve[k].x;
-                    const isDuplicate =
-                        Math.abs(prevP[0] - currP[0]) < 1e-7 &&
-                        Math.abs(prevP[1] - currP[1]) < 1e-7 &&
-                        Math.abs(prevP[2] - currP[2]) < 1e-7;
-                    if (!isDuplicate) {
-                        uniquePointsCurve.push(curve[k]);
-                    }
+            const validCurves = resolvedCurves.filter(curve => curve !== null && curve.length > 1) as ResidueCurve[];
+
+            console.log(`Residue Curve Generation (${fluidPackage}): Total starting points: ${startingCompositions.length}. Resolved curves (pre-filter): ${resolvedCurves.length}. Null/Short curves: ${resolvedCurves.filter(c => c === null || c.length <=1).length}. Valid curves (length > 1): ${validCurves.length}`);
+            if (validCurves.length > 0) {
+                console.log(`First valid curve (first 5 points): `, validCurves[0].slice(0, 5).map(p => ({x: p.x.map(val => val.toFixed(4)), T: p.T_K.toFixed(2)})));
+                 if (validCurves[0].length > 5) {
+                    console.log(`First valid curve (last 5 points): `, validCurves[0].slice(-5).map(p => ({x: p.x.map(val => val.toFixed(4)), T: p.T_K.toFixed(2)})));
                 }
-                return uniquePointsCurve;
-            }).filter(curve => curve.length > 0); // Ensure no empty curves if all points were identical
-
-
-            if (cleanedCurves.length === 0 && startingCompositions.length > 0) {
-                const errorMsg = "No valid residue curves generated (or all points were duplicates). This might be due to: \n1. Calculation failures for all starting points (e.g., bubble point errors). \n2. Missing or incorrect interaction parameters (e.g., Aij=0 for some pairs). \n3. Issues with pure component parameters. \nPlease check console logs and database for parameter completeness.";
-                console.warn(errorMsg);
-                setError(errorMsg); // Display a more informative error to the user
-            } else if (cleanedCurves.length < startingCompositions.length * 0.5) { // If many curves failed
-                 console.warn(`Many residue curve calculations failed or resulted in very short/duplicate curves (${startingCompositions.length - cleanedCurves.length} out of ${startingCompositions.length}). Check parameters and console for errors.`);
-                 // Optionally, append a warning to the existing error or set a non-critical warning message
             }
-            setResidueCurves(cleanedCurves); // Set the 1e-7 cleaned curves
+
+            setResidueCurves(validCurves);
 
         } catch (err: any) {
             console.error("Error generating map:", err);
             setError(err.message || "An unknown error occurred.");
         } finally {
             setIsLoading(false);
+            setDisplayedFluidPackage(generatingFluidPackage); // Update displayed fluid package when generation finishes
         }
-    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData]);
+    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage]);
 
     useEffect(() => {
         if (supabase && !initialMapGenerated.current) {
@@ -482,16 +726,19 @@ export default function TernaryResidueMapPage() {
     useEffect(() => {
         if (!residueCurves || residueCurves.length === 0) {
             setCleanedResidueCurves([]);
+            console.log(`Plotting useEffect: No residueCurves or empty. Setting cleanedResidueCurves to [].`);
             return;
         }
 
-        const moleFractionThreshold = 1e-5; // Threshold for considering points different
+        // Use a much tighter threshold for PR and SRK (small steps) to keep more points for line drawing.
+        // Other models use a more standard threshold.
+        const moleFractionThreshold = (fluidPackage === 'pr' || fluidPackage === 'srk') ? 1e-9 : 1e-5; 
 
-        const filterCurves = (curves: ResidueCurveODE[]): ResidueCurveODE[] => {
+        const filterCurves = (curves: ResidueCurve[]): ResidueCurve[] => {
             return curves.map(curve => {
                 if (curve.length < 2) return curve; // Keep short curves (0 or 1 point) as is
 
-                const cleanedCurve: ResidueCurveODE = [curve[0]]; // Always include the first point
+                const cleanedCurve: ResidueCurve = [curve[0]]; // Always include the first point
                 for (let i = 1; i < curve.length; i++) {
                     const currentPoint = curve[i];
                     const lastCleanedPoint = cleanedCurve[cleanedCurve.length - 1];
@@ -510,12 +757,22 @@ export default function TernaryResidueMapPage() {
             }).filter(curve => curve.length > 0); // Ensure no empty curves if all points were identical
         };
 
-        setCleanedResidueCurves(filterCurves(residueCurves));
-    }, [residueCurves]);
+        const filteredForPlotting = filterCurves(residueCurves);
+        console.log(`Plotting useEffect: residueCurves length: ${residueCurves.length}. Filtered for plotting (${moleFractionThreshold.toExponential()} threshold for ${fluidPackage}): ${filteredForPlotting.length}`);
+        if (residueCurves.length > 0 && filteredForPlotting.length === 0) {
+            console.warn(`Plotting useEffect: All curves were filtered out by the ${moleFractionThreshold.toExponential()} threshold. Original curves might be too short or stagnant.`);
+        }
+        if (filteredForPlotting.length > 0 && filteredForPlotting[0].length > 0) { // Added check for filteredForPlotting[0].length
+            console.log(`Plotting useEffect: First filtered curve for plotting (first 5 points): `, filteredForPlotting[0].slice(0,5).map(p => ({x: p.x.map(val => typeof val === 'number' ? val.toFixed(4) : 'N/A'), T_K: typeof p.T_K === 'number' ? p.T_K.toFixed(2) : 'N/A'})));
+        }
+
+        setCleanedResidueCurves(filteredForPlotting);
+    }, [residueCurves, fluidPackage]); // Ensure fluidPackage is a dependency
 
     useEffect(() => {
         const pressureInUnits = parseFloat(systemPressure); 
         const pressureDisplay = isNaN(pressureInUnits) ? systemPressure : pressureInUnits.toFixed(3);
+        const modelName = displayedFluidPackage.charAt(0).toUpperCase() + displayedFluidPackage.slice(1); // Use displayedFluidPackage
 
         let traces: Data[] = []; 
 
@@ -529,15 +786,21 @@ export default function TernaryResidueMapPage() {
         let titleC = componentsInput[0]?.name || 'Comp 1 (L)'; // c-axis (Right) = Lightest
 
         if (plotSortedComponents.length === 3) {
-            const formatNbp = (nbp_K: number | null | undefined) => 
-                nbp_K ? `${(nbp_K - 273.15).toFixed(1)}°C` : 'N/A';
+            const formatBp = (bp_K: number | null | undefined) => 
+                bp_K ? `${(bp_K - 273.15).toFixed(1)}°C` : 'N/A';
 
             // a-axis (Top) = Intermediate component (plotSortedComponents[1])
-            titleA = `${plotSortedComponents[1].name} (M, ${formatNbp(plotSortedComponents[1].thermData.nbp_K)})`;
+            // Display BP at system pressure if available, else NBP
+            const bpA = plotSortedComponents[1].bp_at_Psys_K ?? plotSortedComponents[1].thermData.nbp_K;
+            titleA = `${plotSortedComponents[1].name} (M, ${formatBp(bpA)})`;
+            
             // b-axis (Left) = Heaviest component (plotSortedComponents[2])
-            titleB = `${plotSortedComponents[2].name} (H, ${formatNbp(plotSortedComponents[2].thermData.nbp_K)})`;
+            const bpB = plotSortedComponents[2].bp_at_Psys_K ?? plotSortedComponents[2].thermData.nbp_K;
+            titleB = `${plotSortedComponents[2].name} (H, ${formatBp(bpB)})`;
+
             // c-axis (Right) = Lightest component (plotSortedComponents[0])
-            titleC = `${plotSortedComponents[0].name} (L, ${formatNbp(plotSortedComponents[0].thermData.nbp_K)})`;
+            const bpC = plotSortedComponents[0].bp_at_Psys_K ?? plotSortedComponents[0].thermData.nbp_K;
+            titleC = `${plotSortedComponents[0].name} (L, ${formatBp(bpC)})`;
         }
         
         const plotTitleColor = currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'; 
@@ -547,7 +810,7 @@ export default function TernaryResidueMapPage() {
 
         const baseLayout: Partial<Layout> = {
             title: {
-                text: 'Ternary Residue Curve Map (Wilson Model, ODE Simulation)',
+                text: `Ternary Residue Curve Map (${modelName} Model, ODE Simulation)`,
                 font: { family: 'Merriweather Sans, Arial, sans-serif', size: 18, color: plotTitleColor }, 
             },
             ternary: {
@@ -629,7 +892,7 @@ export default function TernaryResidueMapPage() {
                 ...baseLayout, 
                 title: {
                     ...(typeof baseLayout.title === 'object' ? baseLayout.title : {}), // Keep base title properties
-                    text: 'Ternary Residue Curve Map (No data or NBP info pending)' // Specific title for this case
+                    text: `Ternary Residue Curve Map (${modelName} - No data or NBP info pending)` // Specific title for this case
                 },
                 annotations: [{ 
                     text: isLoading ? "Generating initial map..." : "Enter component data and click 'Generate Residue Map'.",
@@ -646,30 +909,36 @@ export default function TernaryResidueMapPage() {
             return;
         }
 
-        traces = cleanedResidueCurves.map((curve, index) => { // Use cleanedResidueCurves
-            const getFractionForAxis = (point_x_array: number[], targetOriginalIndex: number): number => {
-                return point_x_array[targetOriginalIndex];
-            };
-
+        traces = cleanedResidueCurves.map((curve, index) => {
+            const compNameA = plotSortedComponents[1]?.name || 'Comp A';
+            const compNameB = plotSortedComponents[2]?.name || 'Comp B';
+            const compNameC = plotSortedComponents[0]?.name || 'Comp C';
             return {
                 type: 'scatterternary',
-                mode: 'lines',
-                a: curve.map(p => getFractionForAxis(p.x, plotSortedComponents[1].originalIndex)), 
-                b: curve.map(p => getFractionForAxis(p.x, plotSortedComponents[2].originalIndex)), 
-                c: curve.map(p => getFractionForAxis(p.x, plotSortedComponents[0].originalIndex)), 
+                mode: curve.length > 1 ? 'lines' : 'markers',
+                a: curve.map(p => p.x[plotSortedComponents[1].originalIndex]), 
+                b: curve.map(p => p.x[plotSortedComponents[2].originalIndex]), 
+                c: curve.map(p => p.x[plotSortedComponents[0].originalIndex]), 
                 name: `Curve ${index + 1}`,
-                showlegend: false,          // <--- ADDED THIS LINE
-                line: { width: 1.5, color: '#60a5fa' }, // Restored color
-                customdata: curve.map(p => p.T_K),  // Restored customdata
-                hovertemplate:  // Restored hovertemplate
-                    `<b>${plotSortedComponents[1].name} (M)</b>: %{a:.3f}<br>` + 
-                    `<b>${plotSortedComponents[2].name} (H)</b>: %{b:.3f}<br>` + 
-                    `<b>${plotSortedComponents[0].name} (L)</b>: %{c:.3f}<br>` + 
-                    `<b>T</b>: %{customdata:.1f} K<extra></extra>`,
+                showlegend: false,
+                line: { width: 1.5, color: '#60a5fa' }, // Example color
+                customdata: curve.map(p => p.T_K), // Keep customdata in Kelvin
+                hovertemplate:
+                    `<b>${compNameA} (M)</b>: %{a:.3f}<br>` + 
+                    `<b>${compNameB} (H)</b>: %{b:.3f}<br>` + 
+                    `<b>${compNameC} (L)</b>: %{c:.3f}<br>` + 
+                    `<b>T</b>: %{customdata:.1f} °C<extra></extra>`, // Display calculated Celsius
+                hoverlabel: {
+                    font: {
+                        family: 'Merriweather Sans, Arial, sans-serif',
+                        size: 14,
+                        color: plotFont.color
+                    }
+                }
             };
         });
 
-        const arrowMarkerTraceData = { // This is already being reset
+        const arrowMarkerTraceData = {
             a: [] as number[],
             b: [] as number[],
             c: [] as number[],
@@ -679,8 +948,8 @@ export default function TernaryResidueMapPage() {
         // --- Globals for arrow placement ---
         const allPlacedArrowIdealCoords: { x: number; y: number }[] = [];
         // ADJUST THESE:
-        const minSqDistBetweenPlacedArrows_ideal = (0.05) * (0.05); // Smaller value for denser arrows
-        const maxTotalArrowsOnPlot = 250;                             // Allow more arrows overall
+        const minSqDistBetweenPlacedArrows_ideal = (0.025) * (0.025); // Smaller value for denser arrows
+        const maxTotalArrowsOnPlot = 500;                             // Allow more arrows overall
         let placedArrowCountOverall = 0;
 
 
@@ -697,7 +966,7 @@ export default function TernaryResidueMapPage() {
                 if (placedArrowCountOverall >= maxTotalArrowsOnPlot) return;
 
                 let lastCheckedPointIdealCoords: { x: number; y: number } | null = null;
-                const minIdealDistSqForCheckingNextPointOnCurve = (0.03) * (0.03); 
+                const minIdealDistSqForCheckingNextPointOnCurve = (0.02) * (0.02); 
 
                 for (let headIndex = 0; headIndex < curve.length; headIndex++) {
                     if (placedArrowCountOverall >= maxTotalArrowsOnPlot) break;
@@ -779,11 +1048,13 @@ export default function TernaryResidueMapPage() {
                         let raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
                         let final_angle_deg = raw_screen_angle_deg + 90; 
 
+                        // Convert T_K to Celsius for display in hover text
+                        const temp_C = centroidPointData.T_K - 273.15;
                         arrowMarkerTraceData.a.push(centroidPointData.x[plotSortedComponents[1].originalIndex]);
                         arrowMarkerTraceData.b.push(centroidPointData.x[plotSortedComponents[2].originalIndex]);
                         arrowMarkerTraceData.c.push(centroidPointData.x[plotSortedComponents[0].originalIndex]);
                         arrowMarkerTraceData.angles.push(final_angle_deg);
-                        arrowMarkerTraceData.text.push(`Arrow on Curve ${curveIndex + 1}<br>T=${centroidPointData.T_K.toFixed(1)}K`);
+                        arrowMarkerTraceData.text.push(`Arrow on Curve ${curveIndex + 1}<br>T=${temp_C.toFixed(1)}°C`);
                         
                         allPlacedArrowIdealCoords.push(currentPointIdealCoords); 
                         placedArrowCountOverall++;
@@ -810,14 +1081,21 @@ export default function TernaryResidueMapPage() {
                 c: arrowMarkerTraceData.c,
                 text: arrowMarkerTraceData.text,
                 hoverinfo: 'text',
+                hoverlabel: {
+                    bgcolor: '#ffffff',              // Ensure background is white
+                    font: {
+                        family: 'Merriweather Sans, Arial, sans-serif',
+                        size: 14,
+                        color: '#000000'             // Black text
+                    }
+                },
                 marker: {
                     symbol: 'triangle-up',
-                    color: arrowMarkerColor,
                     size: targetArrowPixelSize,
+                    color: arrowMarkerColor,
                     angle: arrowMarkerTraceData.angles,
-                    line: { width: 0 }
-                },
-                name: 'Direction Arrows',
+                    standoff: 5,
+                } as any,
                 showlegend: false,
             } as Data);
         }
@@ -828,7 +1106,7 @@ export default function TernaryResidueMapPage() {
             annotations: [...(baseLayout.annotations || [])], 
             title: { 
                 ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: 'Merriweather Sans, Arial, sans-serif', size: 18, color: plotTitleColor} } ), 
-                text: `Ternary Residue Curve Map @ ${pressureDisplay} bar` 
+                text: `Ternary Residue Curve Map @ ${pressureDisplay} bar (${modelName} Model)` 
             },
             legend: { font: plotFont }
         };
@@ -836,123 +1114,132 @@ export default function TernaryResidueMapPage() {
         setPlotlyData(allTraces);
         setPlotlyLayout(finalLayout);
 
-    }, [cleanedResidueCurves, componentsInput, systemPressure, plotSortedComponents, isLoading, currentTheme]); // Depend on cleanedResidueCurves
+    }, [cleanedResidueCurves, componentsInput, systemPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage]); // Depend on displayedFluidPackage
+
+    const handleGenerateClick = () => {
+        handleGenerateMap();
+    };
 
     return (
         <div className="container mx-auto p-4">
-            <Card className="mb-6">
-                <CardHeader><CardTitle>Ternary Residue Curve Map Inputs (Wilson ODE)</CardTitle></CardHeader>
-                <CardContent className="space-y-6">
-                    <div className="flex flex-col md:flex-row items-stretch gap-2 md:gap-4">
-                        {componentsInput.map((component, index) => (
-                            <Card className="flex-1" key={index}>
-                                <CardHeader className="pb-2 pt-4">
-                                    <CardTitle className="text-base">Component {index + 1}</CardTitle>
-                                </CardHeader>
-                                <CardContent className="space-y-3">
-                                    <div className="relative">
-                                        <Label htmlFor={`name-${index}`}>Name</Label>
-                                        <Input
-                                            id={`name-${index}`}
-                                            ref={el => { inputRefs.current[index] = el; }}
-                                            value={component.name}
-                                            onChange={(e) => handleComponentInputChange(index, 'name', e.target.value)}
-                                            placeholder={`e.g., Acetone`}
-                                            autoComplete="off"
-                                            onFocus={() => {
-                                                setActiveSuggestionIndex(index);
-                                                // Fetch suggestions if input is not empty and suggestions are not already shown
-                                                if (component.name.trim() && (!showSuggestions[index] || componentSuggestions[index].length === 0) ) {
-                                                    debouncedFetchComponentSuggestions(component.name, index);
-                                                } else if (component.name.trim() && componentSuggestions[index].length > 0) {
-                                                     setShowSuggestions(prev => {
-                                                        const updated = [...prev];
-                                                        updated[index] = true; 
-                                                        return updated;
-                                                    });
-                                                }
-                                            }}
-                                        />
-                                        {showSuggestions[index] && componentSuggestions[index].length > 0 && (
-                                            <ul 
-                                                ref={el => { suggestionsContainerRefs.current[index] = el; }}
-                                                className={`absolute z-10 rounded-md shadow-md mt-1 max-h-40 overflow-y-auto w-full
-                                                ${currentTheme === 'dark' 
-                                                    ? 'bg-gray-800 border border-gray-700 text-gray-200' 
-                                                    : 'bg-white border border-gray-300 text-gray-900'}`}
-                                            >
-                                                {componentSuggestions[index].map((suggestion, suggestionIndex) => (
-                                                    <li
-                                                        key={suggestionIndex}
-                                                        className={`px-4 py-2 cursor-pointer 
-                                                            ${currentTheme === 'dark' 
-                                                                ? 'hover:bg-gray-700' 
-                                                                : 'hover:bg-gray-100'}`}
-                                                        onMouseDown={() => handleSuggestionClick(index, suggestion)} // Use onMouseDown to fire before onBlur
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left panel: Inputs */}
+                <div className="lg:col-span-1 space-y-6">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Residue Map Inputs</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                            {/* Component names */}
+                            <div className="space-y-2">
+                                {componentsInput.map((component, index) => (
+                                    <Card className="flex-1" key={index}>
+                                        <CardContent className="space-y-3">
+                                            <div className="relative">
+                                                <Label htmlFor={`name-${index}`}>Name</Label>
+                                                <Input
+                                                    id={`name-${index}`}
+                                                    ref={el => { inputRefs.current[index] = el; }}
+                                                    value={component.name}
+                                                    onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
+                                                    placeholder={`e.g. Acetone`}
+                                                    autoComplete="off"
+                                                    onFocus={() => {
+                                                        setActiveSuggestionIndex(index);
+                                                        if (componentsInput[index].name.trim()) {
+                                                            debouncedFetchComponentSuggestions(componentsInput[index].name, index);
+                                                        }
+                                                    }}
+                                                />
+                                                {showSuggestions[index] && componentSuggestions[index].length > 0 && (
+                                                    <ul
+                                                        ref={el => { suggestionsContainerRefs.current[index] = el; }}
+                                                        className={`absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-md shadow-md
+                                                          ${currentTheme === 'dark'
+                                                            ? 'bg-gray-800 border border-gray-700 text-gray-200'
+                                                            : 'bg-white border border-gray-300 text-gray-900'}`}
                                                     >
-                                                        {suggestion}
-                                                    </li>
-                                                ))}
-                                            </ul>
-                                        )}
-                                    </div>
-                                </CardContent>
-                            </Card>
-                        ))}
-                    </div>
-                    <div>
-                        <Label htmlFor="systemPressure">System Pressure (bar)</Label>
-                        <Input 
-                            id="systemPressure" 
-                            value={systemPressure} 
-                            onChange={(e) => setSystemPressure(e.target.value)} 
-                            placeholder="e.g., 1.01325" 
-                            type="number"
-                        />
-                    </div>
-                    <Button onClick={handleGenerateMap} disabled={isLoading || !supabase}>
-                        {isLoading ? 'Generating (Wilson ODE)...' : 'Generate Residue Map (Wilson ODE)'}
-                    </Button>
-                    {error && <p className="text-red-500">{error}</p>}
-                    {!supabase && <p className="text-orange-500">Supabase client not configured. Parameters cannot be fetched.</p>}
-                </CardContent>
-            </Card>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle style={{ fontFamily: 'Merriweather Sans', color: '#08306b' }}>
-                        Residue Curve Map (Wilson Model, ODE Simulation)
-                    </CardTitle>
-                </CardHeader>
-                <CardContent className="bg-[#08306b] p-1 rounded-md">
-                  <div ref={plotContainerRef} style={{ width: '100%', height: '600px' }}> {/* Added ref here */}
-                    {(isLoading && cleanedResidueCurves.length === 0) ? ( // Use cleanedResidueCurves
-                        <div className="text-center p-10 text-slate-300 min-h-[600px] flex items-center justify-center" style={{fontFamily: 'Merriweather Sans'}}>
-                            <div>Generating initial map...</div>
-                        </div>
-                    ) : (cleanedResidueCurves.length > 0 || isLoading) ? ( // Use cleanedResidueCurves
-                        <Plot
-                            data={plotlyData}
-                            layout={plotlyLayout}
-                            style={{ width: '100%', height: '100%' }} // Changed to 100% to fill parent div
-                            useResizeHandler={true}
-                            config={{ responsive: true, displaylogo: false }}
-                        />
-                    ) : (
-                        <div className="text-center p-10 text-slate-300 min-h-[600px] flex items-center justify-center" style={{fontFamily: 'Merriweather Sans'}}>
-                            <div>
-                                <p>Enter component names and system pressure, then click "Generate Residue Map" to see the plot.</p>
-                                <p>CAS, Antoine, V<sub>L</sub> (molar vol), NBP will be fetched. Wilson binary params also fetched.</p>
-                                <p className="mt-2">
-                                    Plotly Ternary Axes: a (Intermediate NBP), b (Highest NBP), c (Lowest NBP).
-                                </p>
-                                <p className="text-xs mt-1">Ensure `fetchAndConvertThermData` provides liquid molar volumes (V_L_m3mol).</p>
+                                                        {componentSuggestions[index].map((suggestion, si) => (
+                                                            <li
+                                                                key={si}
+                                                                className={`px-4 py-2 cursor-pointer
+                                                                  ${currentTheme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                                                                onMouseDown={() => handleSuggestionClick(index, suggestion)}
+                                                            >
+                                                                {suggestion}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                            </div>
+                                        </CardContent>
+                                    </Card>
+                                ))}
                             </div>
-                        </div>
-                    )}
-                   </div> {/* Closing plotContainerRef div */}
-                </CardContent>
-            </Card>
+                            {/* Pressure on same line */}
+                            <div className="flex items-center space-x-2">
+                                <Label htmlFor="systemPressure" className="whitespace-nowrap">
+                                    Pressure (bar)
+                                </Label>
+                                <Input
+                                    id="systemPressure"
+                                    type="number"
+                                    value={systemPressure}
+                                    onChange={e => setSystemPressure(e.target.value)}
+                                    placeholder="1.0"
+                                />
+                            </div>
+                            {/* Activity model on same line */}
+                            <div className="flex items-center space-x-2">
+                                <Label htmlFor="fluidPackage" className="whitespace-nowrap">
+                                    Activity Model
+                                </Label>
+                                <Select
+                                    value={fluidPackage}
+                                    onValueChange={v => setFluidPackage(v as FluidPackageTypeResidue)}
+                                >
+                                    <SelectTrigger id="fluidPackage">
+                                        <SelectValue placeholder="Select model" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="wilson">Wilson</SelectItem>
+                                        <SelectItem value="unifac">UNIFAC</SelectItem>
+                                        <SelectItem value="nrtl">NRTL</SelectItem>
+                                        <SelectItem value="pr">Peng–Robinson</SelectItem>
+                                        <SelectItem value="srk">SRK</SelectItem>
+                                        <SelectItem value="uniquac">UNIQUAC</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <Button onClick={handleGenerateClick} disabled={isLoading} className="w-full">
+                                {isLoading ? "Generating..." : "Generate Map"}
+                            </Button>
+                        </CardContent>
+                    </Card>
+                </div>
+
+                {/* Right panel: Plot */}
+                <div className="lg:col-span-2">
+                    <Card>
+                        <CardHeader>
+                            <CardTitle>Ternary Residue Curve Map</CardTitle>
+                        </CardHeader>
+                        <CardContent className="bg-[#08306b] p-1 rounded-md">
+                            <div 
+                                className="relative h-[600px]" 
+                                ref={plotContainerRef}
+                            >
+                                <Plot 
+                                    data={plotlyData} 
+                                    layout={plotlyLayout} 
+                                    useResizeHandler 
+                                    style={{ width: '100%', height: '100%' }} 
+                                />
+                            </div>
+                        </CardContent>
+                    </Card>
+                </div>
+            </div>
         </div>
     );
 }

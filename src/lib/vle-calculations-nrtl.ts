@@ -1,9 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AntoineParams, CompoundData, BubbleDewResult } from './vle-types'; // Import shared types
-import { calculatePsat_Pa } from './vle-calculations-unifac'; // Psat can still be imported from unifac or moved to a common util
+import { calculatePsat_Pa as importedCalculatePsat_Pa } from './vle-calculations-unifac'; // Import calculatePsat_Pa from unifac and re-export it
 
-// const R_J_molK = 8.31446261815324; // Gas constant in J/mol·K - REMOVED
-const R_cal_molK = 1.98720425864083; // Gas constant in cal/mol·K - ADDED
+export { importedCalculatePsat_Pa as calculatePsat_Pa };
+
+const R_cal_molK = 1.98720425864083; // Gas constant in cal/mol·K
 
 export interface NrtlInteractionParams {
     A12: number;    // NRTL parameter A12 (e.g., J/mol)
@@ -37,18 +38,12 @@ export async function fetchNrtlParameters(
         .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
         .limit(1);
 
-    // For debugging, you could log the query string if the library supports it, e.g., query.toString() or similar.
-    // console.log("Supabase NRTL query:", query.toString()); // This might not be a standard Supabase JS client feature.
-
     const { data, error } = await query;
 
-    // ADDED: Log raw Supabase response
     console.log("Supabase NRTL query response - data:", JSON.stringify(data, null, 2));
     console.log("Supabase NRTL query response - error:", JSON.stringify(error, null, 2));
 
-
     if (error) {
-        // Log the detailed error before throwing a generic one
         console.error(`Supabase NRTL query raw error object:`, error);
         throw new Error(`Supabase NRTL query error: ${error.message}`);
     }
@@ -59,23 +54,20 @@ export async function fetchNrtlParameters(
 
     const params = data[0];
     if (params.CASN1 === casn1) {
-        // Order matches: casn1 is CASN1, casn2 is CASN2
         return {
             A12: params.A12,
             A21: params.A21,
-            alpha: params.alpha12, // Assuming alpha12 in table is the symmetric alpha
+            alpha: params.alpha12,
             casn1: params.CASN1,
             casn2: params.CASN2,
         };
     } else {
-        // Order is reversed: casn1 is CASN2, casn2 is CASN1
-        // So, the table's A12 is our A21, and table's A21 is our A12
         return {
             A12: params.A21,
             A21: params.A12,
-            alpha: params.alpha12, // Assuming alpha12 in table is the symmetric alpha
-            casn1: params.CASN2, // original casn1 from table
-            casn2: params.CASN1, // original casn2 from table
+            alpha: params.alpha12,
+            casn1: params.CASN2,
+            casn2: params.CASN1,
         };
     }
 }
@@ -89,7 +81,7 @@ export async function fetchNrtlParameters(
  * @returns A tuple [gamma1, gamma2] or null if calculation fails.
  */
 export function calculateNrtlGamma(
-    components: CompoundData[], // Added for signature consistency, though not directly used in this specific gamma calculation
+    components: CompoundData[],
     x: number[],
     T_K: number,
     params: NrtlInteractionParams
@@ -102,7 +94,6 @@ export function calculateNrtlGamma(
         console.error("Mole fractions do not sum to 1 in calculateNrtlGamma:", x1, x2);
         return null;
     }
-     // Handle pure components: gamma should be 1
     if (Math.abs(x1 - 1.0) < 1e-9 || Math.abs(x2 - 1.0) < 1e-9) {
         return [1.0, 1.0];
     }
@@ -111,11 +102,10 @@ export function calculateNrtlGamma(
         return null;
     }
 
+    const { A12, A21, alpha } = params;
 
-    const { A12, A21, alpha } = params; // A12 and A21 are now assumed to be in cal/mol
-
-    const tau12 = A12 / (R_cal_molK * T_K); // USE R_cal_molK
-    const tau21 = A21 / (R_cal_molK * T_K); // USE R_cal_molK
+    const tau12 = A12 / (R_cal_molK * T_K);
+    const tau21 = A21 / (R_cal_molK * T_K);
 
     const G12 = Math.exp(-alpha * tau12);
     const G21 = Math.exp(-alpha * tau21);
@@ -125,7 +115,7 @@ export function calculateNrtlGamma(
 
     if (term1_denom === 0 || term2_denom === 0) {
         console.warn("NRTL calculation encountered division by zero. Check parameters/composition.");
-        return null; // Avoid division by zero
+        return null;
     }
 
     const lnGamma1 = x2 * x2 * (tau21 * (G21 / term1_denom) * (G21 / term1_denom) + tau12 * G12 / (term2_denom * term2_denom));
@@ -142,32 +132,31 @@ export function calculateNrtlGamma(
     return [gamma1, gamma2];
 }
 
-
 /**
  * NRTL-based Bubble Point Temperature Calculation.
  * Iteratively solves for T given P_total and x1.
  */
 export function calculateBubbleTemperatureNrtl(
-    components: CompoundData[], // Uses imported CompoundData
+    components: CompoundData[],
     x1_feed: number,
     P_system_Pa: number,
     nrtlParams: NrtlInteractionParams,
     initialTempGuess_K: number = 350,
     maxIter: number = 50,
     tolerance: number = 1e-4
-): BubbleDewResult | null { // Uses imported BubbleDewResult
+): BubbleDewResult | null {
     console.log(`NRTL Bubble T: x1=${x1_feed.toFixed(3)}, P=${(P_system_Pa/1000).toFixed(1)}kPa, Init_T=${initialTempGuess_K.toFixed(1)}K`);
     let T = initialTempGuess_K;
     const x = [x1_feed, 1 - x1_feed];
-    let y = [...x]; // Initial guess for vapor composition
+    let y = [...x];
 
     if (!components[0]?.antoine || !components[1]?.antoine) {
         return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: NaN, P_Pa: P_system_Pa, error: "NRTL: Antoine parameters missing for one or both components.", calculationType: 'bubbleT' };
     }
 
     for (let iter = 0; iter < maxIter; iter++) {
-        const Psat1 = calculatePsat_Pa(components[0].antoine, T, components[0].name);
-        const Psat2 = calculatePsat_Pa(components[1].antoine, T, components[1].name);
+        const Psat1 = importedCalculatePsat_Pa(components[0].antoine, T, components[0].name);
+        const Psat2 = importedCalculatePsat_Pa(components[1].antoine, T, components[1].name);
         if (isNaN(Psat1) || isNaN(Psat2)) {
             return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T, P_Pa: P_system_Pa, error: `NRTL: Psat calculation failed at T=${T.toFixed(1)}K`, calculationType: 'bubbleT', iterations: iter };
         }
@@ -177,49 +166,37 @@ export function calculateBubbleTemperatureNrtl(
             return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T, P_Pa: P_system_Pa, error: `NRTL: Gamma calculation failed at T=${T.toFixed(1)}K`, calculationType: 'bubbleT', iterations: iter };
         }
 
-        // P_calc = y1*P + y2*P = (gamma1*x1*Psat1) + (gamma2*x2*Psat2)
-        // Target: P_calc = P_system_Pa
-        // f(T) = gamma1*x1*Psat1 + gamma2*x2*Psat2 - P_system_Pa = 0
         const P_calc = gamma[0] * x[0] * Psat1 + gamma[1] * x[1] * Psat2;
         const f_T = P_calc - P_system_Pa;
 
-        if (Math.abs(f_T) < tolerance * P_system_Pa || Math.abs(f_T) < 1) { // Relative or absolute tolerance
+        if (Math.abs(f_T) < tolerance * P_system_Pa || Math.abs(f_T) < 1) {
             y = [ (gamma[0] * x[0] * Psat1) / P_calc, (gamma[1] * x[1] * Psat2) / P_calc ];
-            // Normalize y just in case of small numerical errors, though P_calc should be P_system_Pa here
             const sumY = y[0] + y[1];
-            if (sumY !== 0) { y[0] /= sumY; y[1] /= sumY;}
-
+            if (sumY !== 0) { y[0] /= sumY; y[1] /= sumY; }
 
             return {
                 comp1_feed: x1_feed,
                 comp1_equilibrium: y[0],
                 T_K: T,
-                P_Pa: P_system_Pa, // P_calc should be very close to P_system_Pa
+                P_Pa: P_system_Pa,
                 iterations: iter + 1,
                 calculationType: 'bubbleT'
             };
         }
 
-        // Temperature adjustment (simplified - Newton or Brent would be better)
-        // Estimate d(f_T)/dT. d(gamma)/dT is complex. Approx d(Psat)/dT.
-        // For simplicity, use a bisection-like or scaled step.
-        // If f_T > 0 (P_calc > P_system), T is too high, decrease T.
-        // If f_T < 0 (P_calc < P_system), T is too low, increase T.
-        const T_step_factor = 0.02; // Smaller step factor
-        let T_change = -f_T / P_system_Pa * T * T_step_factor; // Heuristic step, scaled by error
+        const T_step_factor = 0.02;
+        let T_change = -f_T / P_system_Pa * T * T_step_factor;
         
-        // Limit step size
-        const max_T_change = T * 0.1; // Max 10% change per iteration
+        const max_T_change = T * 0.1;
         if (Math.abs(T_change) > max_T_change) {
             T_change = Math.sign(T_change) * max_T_change;
         }
-        if (Math.abs(T_change) < 0.01 && f_T !==0) { // Min step if not converged
+        if (Math.abs(T_change) < 0.01 && f_T !== 0) {
              T_change = Math.sign(-f_T) * 0.01;
         }
 
-
         let T_new = T + T_change;
-        if (T_new <= 0) T_new = T * 0.5; // Prevent non-physical temperatures
+        if (T_new <= 0) T_new = T * 0.5;
 
         T = T_new;
     }
@@ -227,30 +204,27 @@ export function calculateBubbleTemperatureNrtl(
     return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T, P_Pa: P_system_Pa, error: "NRTL: Bubble T max iterations reached", calculationType: 'bubbleT', iterations: maxIter };
 }
 
-
 /**
  * NRTL-based Bubble Point Pressure Calculation.
  * Calculates P_total and y1 given T and x1.
  */
 export function calculateBubblePressureNrtl(
-    components: CompoundData[], // Uses imported CompoundData
+    components: CompoundData[],
     x1_feed: number,
     T_system_K: number,
     nrtlParams: NrtlInteractionParams,
-    initialPressureGuess_Pa: number = 101325, // Typical atmospheric pressure
+    initialPressureGuess_Pa: number = 101325,
     maxIter: number = 20,
     tolerance: number = 1e-5
-): BubbleDewResult | null { // Uses imported BubbleDewResult
+): BubbleDewResult | null {
     console.log(`NRTL Bubble P: x1=${x1_feed.toFixed(3)}, T=${T_system_K.toFixed(1)}K, Init_P=${(initialPressureGuess_Pa/1000).toFixed(1)}kPa`);
-    // For Bubble P, P is the unknown. Gamma is often assumed independent of P for liquids.
-    // P = sum(gamma_i * x_i * Psat_i)
 
     if (!components[0]?.antoine || !components[1]?.antoine) {
         return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: "NRTL: Antoine parameters missing for one or both components.", calculationType: 'bubbleP' };
     }
 
-    const Psat1 = calculatePsat_Pa(components[0].antoine, T_system_K, components[0].name);
-    const Psat2 = calculatePsat_Pa(components[1].antoine, T_system_K, components[1].name);
+    const Psat1 = importedCalculatePsat_Pa(components[0].antoine, T_system_K, components[0].name);
+    const Psat2 = importedCalculatePsat_Pa(components[1].antoine, T_system_K, components[1].name);
 
     if (isNaN(Psat1) || isNaN(Psat2)) {
         return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: NaN, error: `NRTL: Psat calculation failed at T=${T_system_K.toFixed(1)}K`, calculationType: 'bubbleP' };
@@ -270,19 +244,17 @@ export function calculateBubblePressureNrtl(
     }
     
     const y1_calculated = (gamma[0] * x[0] * Psat1) / P_calculated;
-    // const y2_calculated = (gamma[1] * x[1] * Psat2) / P_calculated; // y2 = 1 - y1
 
     if (isNaN(y1_calculated)) {
          return { comp1_feed: x1_feed, comp1_equilibrium: NaN, T_K: T_system_K, P_Pa: P_calculated, error: `NRTL: Calculated y1 is NaN`, calculationType: 'bubbleP' };
     }
-
 
     return {
         comp1_feed: x1_feed,
         comp1_equilibrium: y1_calculated,
         T_K: T_system_K,
         P_Pa: P_calculated,
-        iterations: 1, // Direct calculation for ideal gas phase assumption
+        iterations: 1,
         calculationType: 'bubbleP'
     };
 }
