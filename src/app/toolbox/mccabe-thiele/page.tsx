@@ -138,6 +138,36 @@ function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
   return debounced as (...args: Parameters<F>) => void;
 }
 
+// Function to fetch CAS number by name
+const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string): Promise<string | null> => {
+    if (!name || !name.trim()) {
+        console.error("fetchCasNumberByName (McCabe-Thiele): Name is empty.");
+        return null;
+    }
+    const trimmedName = name.trim();
+    console.log(`fetchCasNumberByName (McCabe-Thiele): Fetching CAS for name: "${trimmedName}"`);
+
+    const { data, error } = await supabaseClient
+        .from('compounds')
+        .select('cas_number, name')
+        .ilike('name', trimmedName)
+        .limit(1)
+        .single();
+
+    if (error) {
+        console.error(`fetchCasNumberByName (McCabe-Thiele): Error fetching CAS for "${trimmedName}":`, error);
+        return null;
+    }
+
+    if (!data || !data.cas_number) {
+        console.warn(`fetchCasNumberByName (McCabe-Thiele): No CAS number found for "${trimmedName}". Data received:`, data);
+        return null;
+    }
+
+    console.log(`fetchCasNumberByName (McCabe-Thiele): Found CAS: ${data.cas_number} for DB name: "${data.name}" (queried as "${trimmedName}")`);
+    return data.cas_number;
+};
+
 export default function McCabeThielePage() {
   // Input States - Updated defaults for initial load
   const [comp1Name, setComp1Name] = useState('methanol');
