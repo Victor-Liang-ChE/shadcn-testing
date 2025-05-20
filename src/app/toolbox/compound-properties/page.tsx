@@ -681,7 +681,7 @@ export default function CompoundPropertiesPage() {
 
         const yAxisConfig: any = {
           type: 'value' as const,
-          name: `${yAxisDisplayName} (${yAxisUnit})`,
+          name: displayUnit === '-' ? yAxisDisplayName : `${yAxisDisplayName} (${displayUnit})`,
           nameLocation: 'middle' as const,
           nameGap: calculatedNameGap, // Use new dynamic nameGap
           position: 'left' as const,
@@ -753,8 +753,8 @@ export default function CompoundPropertiesPage() {
                 const tempInCelsius = params[0].axisValue - 273.15;
                 let tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
                 params.forEach((param: any) => {
-                    const seriesFullname = param.seriesName; 
-                    tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)} ${yAxisUnit || ''}</b><br/>`;
+                    const seriesFullname = param.seriesName;
+                    tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b><br/>`;
                 });
                 return tooltipHtml;
             }
@@ -902,10 +902,11 @@ export default function CompoundPropertiesPage() {
 
         const yAxisConfig: any = {
             type: 'value' as const,
-            name: `${yAxisDisplayName} (${displayUnit})`,
+            name: displayUnit === '-' ? yAxisDisplayName : `${yAxisDisplayName} (${displayUnit})`,
             nameLocation: 'middle' as const,
             nameGap: calculatedNameGap, 
             axisLine: { show: true, lineStyle: { color: constDef.color || '#EE6666', width: 2 } },
+            axisTick: { show: true, lineStyle: { color: '#e0e6f1' } }, // Added Y-axis tick marks
             axisLabel: { 
               formatter: (val: number) => formatNumberToPrecision(val, 4), 
               color: '#e0e6f1', 
@@ -921,14 +922,14 @@ export default function CompoundPropertiesPage() {
         setEchartsOptions({
             backgroundColor: '#08306b',
             title: {
-                text: `${constDef.displayName} for ${allCompoundsData.filter(c => c.data).map(c => c.data!.name).join(', ')}`,
+                text: `${constDef.displayName} for ${allCompoundsData.filter(c => c.data && c.name.trim()).map(c => c.data!.name).join(' vs ')}`, // Updated title format
                 left: 'center',
                 textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
             },
             tooltip: {
                 trigger: 'item', 
                 formatter: (params: any) => {
-                    return `${params.name}<br/>${constDef.displayName}: <b>${formatNumberToPrecision(params.value, 4)} ${displayUnit}</b>`;
+                    return `${params.name}<br/>${constDef.displayName}: <b>${formatNumberToPrecision(params.value, 4)}${displayUnit !== '-' ? ' ' + displayUnit : ''}</b>`;
                 },
                 backgroundColor: '#1e293b',
                 borderColor: '#3b82f6',
@@ -954,7 +955,8 @@ export default function CompoundPropertiesPage() {
                     show: true,
                     position: 'top',
                     formatter: (params: any) => formatNumberToPrecision(params.value, 3),
-                    color: '#e0e6f1'
+                    color: '#e0e6f1',
+                    fontFamily: 'Merriweather Sans' // Added font family for bar labels
                 }
             }],
             toolbox: { 
@@ -1096,7 +1098,7 @@ export default function CompoundPropertiesPage() {
             if (!currentSelectionStillValid) {
                 const newConstDef = commonConsts[0];
                 setSelectedConstantKey(newConstDef.jsonKey);
-                setSelectedConstantUnit(newConstDef.availableUnits?.[0]?.unit || newConstDef.targetUnitName || '');
+                setSelectedConstantUnit(newConstDef.availableUnits?.[0]?.unit || newConstDef?.targetUnitName || '');
             }
         } else {
             setSelectedConstantKey(''); setSelectedConstantUnit(''); 
@@ -1508,4 +1510,3 @@ export default function CompoundPropertiesPage() {
     </TooltipProvider>
   );
 }
-
