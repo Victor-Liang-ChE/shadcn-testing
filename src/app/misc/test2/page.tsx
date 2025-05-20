@@ -1222,7 +1222,7 @@ export default function TernaryResidueMapPage() {
                 <div className="lg:col-span-2">
                     <Card>
                         <CardHeader>
-                            <CardTitle>Ternary Residue Curve Map</CardTitle>
+                            {/* <CardTitle>Ternary Residue Curve Map</CardTitle> */} {/* Removed this line */}
                         </CardHeader>
                         <CardContent className="bg-[#08306b] p-1 rounded-md">
                             <div 
