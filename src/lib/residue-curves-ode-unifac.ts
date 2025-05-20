@@ -7,12 +7,15 @@ const R_gas_const_J_molK = 8.31446261815324; // J/mol·K - Defined locally
 const MAX_BUBBLE_T_ITERATIONS = 50;
 const BUBBLE_T_TOLERANCE_K = 0.01;
 const MIN_MOLE_FRACTION = 1e-6; // Adjusted from 1e-9 to 1e-6
+const azeotrope_dxdt_threshold = 1e-7; // Azeotrope detection threshold
 
 // --- Interfaces ---
 export interface ResidueCurvePointODE {
     x: number[]; // Mole fractions [x0, x1, x2]
     T_K: number; // Temperature at this point
-    xi?: number; // Optional integration variable value
+    step?: number; // Optional integration variable value
+    dxdt_norm?: number;
+    isPotentialAzeotrope?: boolean;
 }
 export type ResidueCurveODE = ResidueCurvePointODE[];
 
@@ -128,7 +131,7 @@ export async function simulateSingleResidueCurveODE_Unifac(
         let current_x = [...start_x];
         let last_T_K = current_T_guess;
 
-        for (let step = 0; step < max_steps_per_direction; step++) {
+        for (let loop_step = 0; loop_step < max_steps_per_direction; loop_step++) { // Changed step to loop_step
             // Yield to the event loop to prevent freezing
             await new Promise(resolve => setTimeout(resolve, 0));
 
@@ -138,26 +141,85 @@ export async function simulateSingleResidueCurveODE_Unifac(
             const { dxdxi, T_bubble_K } = ode_result;
             last_T_K = T_bubble_K;
 
-            curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, xi: (forward ? 1 : -1) * step * d_xi_step });
+            const y_vap = [current_x[0] - dxdxi[0], current_x[1] - dxdxi[1], current_x[2] - dxdxi[2]];
+            const dxdt = dxdxi;
+            const dxdt_norm = Math.sqrt(dxdt[0]**2 + dxdt[1]**2 + dxdt[2]**2);
+
+            const currentPointData: ResidueCurvePointODE = {
+                x: normalizeMoleFractions(current_x),
+                T_K: T_bubble_K,
+                step: (forward ? 1 : -1) * loop_step * d_xi_step, // Use loop_step
+                dxdt_norm,
+                isPotentialAzeotrope: false // Initialize to false
+            };
+            
+            if (curve.length > 0) {
+                const lastPoint = curve[curve.length - 1];
+                const x_diff_sq = lastPoint.x.reduce((sum, val, i) => sum + (val - currentPointData.x[i])**2, 0);
+                if (Math.sqrt(x_diff_sq) < 1e-7 && Math.abs(lastPoint.T_K - currentPointData.T_K) < 1e-4) {
+                    if (dxdt_norm < azeotrope_dxdt_threshold) { 
+                        lastPoint.isPotentialAzeotrope = true; 
+                        lastPoint.dxdt_norm = Math.min(lastPoint.dxdt_norm ?? Infinity, dxdt_norm);
+                        break; 
+                    }
+                } else {
+                    curve.push(currentPointData);
+                }
+            } else {
+                curve.push(currentPointData);
+            }
+
+            if (dxdt_norm < azeotrope_dxdt_threshold) {
+                if (curve.length > 0) {
+                    curve[curve.length-1].isPotentialAzeotrope = true;
+                }
+                break; 
+            }
             
             const next_x_unnormalized = [
                 current_x[0] + (forward ? 1 : -1) * dxdxi[0] * d_xi_step,
                 current_x[1] + (forward ? 1 : -1) * dxdxi[1] * d_xi_step,
                 current_x[2] + (forward ? 1 : -1) * dxdxi[2] * d_xi_step,
             ];
+            const prev_current_x_for_stagnation_check = [...current_x];
             current_x = normalizeMoleFractions(next_x_unnormalized);
 
-            // Stop if very close to a pure component vertex
-            // The check uses MIN_MOLE_FRACTION * 2 because one component might be (1 - 2*MIN_MOLE_FRACTION) 
-            // and the other two are MIN_MOLE_FRACTION each.
-            if (current_x.some(xi_val => xi_val >= 1.0 - MIN_MOLE_FRACTION * (componentsData.length > 1 ? (componentsData.length -1) : 0) ) || current_x.some(xi_val => xi_val <= MIN_MOLE_FRACTION)) { // Renamed xi to xi_val to avoid conflict
-                 curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, xi: (forward ? 1 : -1) * (step +1) * d_xi_step });
+            const upper_bound_limit = 1.0 - MIN_MOLE_FRACTION * (componentsData.length > 1 ? (componentsData.length - 1) : 0);
+            if (current_x.some(val => val >= upper_bound_limit) || current_x.some(val => val <= MIN_MOLE_FRACTION)) { 
+                const final_x_normalized = normalizeMoleFractions(current_x);
+                let lastPushedPoint = curve.length > 0 ? curve[curve.length - 1] : null;
+                if (lastPushedPoint && final_x_normalized.every((val, i) => Math.abs(val - lastPushedPoint!.x[i]) < 1e-7)) {
+                    lastPushedPoint.isPotentialAzeotrope = true; 
+                    lastPushedPoint.dxdt_norm = 0;
+                } else {
+                    curve.push({ 
+                        x: final_x_normalized, 
+                        T_K: last_T_K, 
+                        step: (forward ? 1 : -1) * (loop_step + 1) * d_xi_step, // Use loop_step
+                        dxdt_norm: 0,
+                        isPotentialAzeotrope: true
+                    });
+                }
                 break;
             }
-            if (step > 0) {
-                const prev_x = curve[curve.length-1].x;
-                const diff_sq = prev_x.reduce((sum, px, i) => sum + (px - current_x[i])**2, 0);
-                if (Math.sqrt(diff_sq) < d_xi_step * 1e-3) break;
+            if (loop_step > 0 && curve.length > 0) { // Use loop_step
+                const lastAddedPoint = curve[curve.length - 1];
+                const x_before_euler_step = curve.length > 1 ? curve[curve.length - 2].x : start_x;
+                
+                const diff_sq_from_prev_step = lastAddedPoint.x.reduce((sum, px, i) => sum + (px - x_before_euler_step[i]) ** 2, 0);
+
+                if (Math.sqrt(diff_sq_from_prev_step) < d_xi_step * 1e-5) { // Adjusted threshold
+                    if (lastAddedPoint.dxdt_norm !== undefined && lastAddedPoint.dxdt_norm < azeotrope_dxdt_threshold) {
+                        lastAddedPoint.isPotentialAzeotrope = true;
+                    }
+                    break; 
+                }
+            }
+        }
+        if (curve.length > 0) {
+            const lastCurvePoint = curve[curve.length - 1];
+            if (lastCurvePoint.dxdt_norm !== undefined && lastCurvePoint.dxdt_norm < azeotrope_dxdt_threshold && !lastCurvePoint.isPotentialAzeotrope) {
+                lastCurvePoint.isPotentialAzeotrope = true;
             }
         }
         return curve;

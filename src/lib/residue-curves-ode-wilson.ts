@@ -1,4 +1,3 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
 import type { CompoundData, WilsonPureComponentParams, AntoineParams } from './vle-types'; // WilsonInteractionParams removed from here
 import { type WilsonInteractionParams as BinaryWilsonInteractionParams, R_gas_const_J_molK as R } from './vle-calculations-wilson'; // Corrected import
 import { calculatePsat_Pa } from './vle-calculations-unifac'; 
@@ -7,13 +6,16 @@ import { calculatePsat_Pa } from './vle-calculations-unifac';
 const MAX_BUBBLE_T_ITERATIONS = 50;
 const BUBBLE_T_TOLERANCE_K = 0.01; // Tolerance for bubble T convergence
 const MIN_MOLE_FRACTION = 1e-9; // Clip mole fractions to avoid log(0) or division by zero
+const azeotrope_dxdt_threshold = 1e-7; // Azeotrope detection threshold
 
 // --- Interfaces ---
 export interface ResidueCurvePointODE {
     x: number[]; // Mole fractions [x0, x1, x2]
     T_K: number; // Temperature in Kelvin
     P_Pa?: number; // Pressure in Pascals (optional, as it's fixed for the simulation but good to store)
-    step?: number; // Step number in the ODE integration (Changed from xi for consistency)
+    step?: number; // Step number in the ODE integration
+    dxdt_norm?: number; // Norm of (x - y)
+    isPotentialAzeotrope?: boolean; // Flag for potential azeotropes
 }
 export type ResidueCurveODE = ResidueCurvePointODE[];
 
@@ -32,7 +34,9 @@ export interface TernaryWilsonParams {
 function normalizeMoleFractions(x: number[]): number[] {
     const sum = x.reduce((acc, val) => acc + val, 0);
     if (sum === 0) return x.map(() => 1 / x.length); // Avoid division by zero, distribute equally
-    return x.map(val => Math.max(MIN_MOLE_FRACTION, Math.min(1.0 - MIN_MOLE_FRACTION * (x.length -1), val / sum)));
+    // Consistent upper bound calculation
+    const upper_bound_val = 1.0 - MIN_MOLE_FRACTION * (x.length > 1 ? (x.length - 1) : 0);
+    return x.map(val => Math.max(MIN_MOLE_FRACTION, Math.min(upper_bound_val, val / sum)));
 }
 
 
@@ -186,14 +190,47 @@ export async function simulateSingleResidueCurveODE(
         let current_x = [...start_x];
         let last_T_K = current_T_guess;
 
-        for (let loop_idx = 0; loop_idx < max_steps_per_direction; loop_idx++) { // Renamed step to loop_idx
+        for (let loop_idx = 0; loop_idx < max_steps_per_direction; loop_idx++) {
             const ode_result = residue_curve_ode_dxdxi(current_x, P_system_Pa, componentsData, ternaryWilsonParams, last_T_K);
-            if (!ode_result) break; // Stop if ODE calculation fails
+            if (!ode_result) break; 
 
             const { dxdxi, T_bubble_K } = ode_result;
-            last_T_K = T_bubble_K; // Use current bubble T as guess for next step
+            last_T_K = T_bubble_K; 
 
-            curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, step: (forward ? 1 : -1) * loop_idx * d_xi_step }); // Use loop_idx for step
+            const y_vap = [current_x[0] - dxdxi[0], current_x[1] - dxdxi[1], current_x[2] - dxdxi[2]];
+            const dxdt = dxdxi; 
+            const dxdt_norm = Math.sqrt(dxdt[0]**2 + dxdt[1]**2 + dxdt[2]**2);
+
+            const currentPointData: ResidueCurvePointODE = {
+                x: normalizeMoleFractions(current_x),
+                T_K: T_bubble_K,
+                step: (forward ? 1 : -1) * loop_idx * d_xi_step,
+                dxdt_norm,
+                isPotentialAzeotrope: false // Initialize to false
+            };
+
+            if (curve.length > 0) {
+                const lastPoint = curve[curve.length - 1];
+                const x_diff_sq = lastPoint.x.reduce((sum, val, i) => sum + (val - currentPointData.x[i])**2, 0);
+                if (Math.sqrt(x_diff_sq) < 1e-7 && Math.abs(lastPoint.T_K - currentPointData.T_K) < 1e-4) {
+                    if (dxdt_norm < azeotrope_dxdt_threshold) { 
+                        lastPoint.isPotentialAzeotrope = true; 
+                        lastPoint.dxdt_norm = Math.min(lastPoint.dxdt_norm ?? Infinity, dxdt_norm);
+                        break; 
+                    }
+                } else {
+                    curve.push(currentPointData);
+                }
+            } else {
+                curve.push(currentPointData);
+            }
+            
+            if (dxdt_norm < azeotrope_dxdt_threshold) {
+                if (curve.length > 0) {
+                    curve[curve.length-1].isPotentialAzeotrope = true;
+                }
+                break; 
+            }
             
             // Euler step
             const next_x_unnormalized = [
@@ -202,17 +239,49 @@ export async function simulateSingleResidueCurveODE(
                 current_x[2] + (forward ? 1 : -1) * dxdxi[2] * d_xi_step,
             ];
             
+            const prev_current_x_for_stagnation_check = [...current_x]; // Save before normalization for stagnation check
             current_x = normalizeMoleFractions(next_x_unnormalized);
 
-            // Termination conditions (e.g., near pure component, or x doesn't change much)
-            if (current_x.some(val => val >= 1.0 - MIN_MOLE_FRACTION * 2) || current_x.some(val => val <= MIN_MOLE_FRACTION * 2)) { // Use val instead of xi
-                 curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, step: (forward ? 1 : -1) * (loop_idx +1) * d_xi_step }); // Use loop_idx
+            // Termination conditions
+            const upper_bound_limit = 1.0 - MIN_MOLE_FRACTION * (componentsData.length > 1 ? (componentsData.length - 1) : 0);
+            if (current_x.some(val => val >= upper_bound_limit) || current_x.some(val => val <= MIN_MOLE_FRACTION)) {
+                const final_x_normalized = normalizeMoleFractions(current_x); // Ensure it's normalized
+                let lastPushedPoint = curve.length > 0 ? curve[curve.length - 1] : null;
+                if (lastPushedPoint && final_x_normalized.every((val, i) => Math.abs(val - lastPushedPoint!.x[i]) < 1e-7)) {
+                    lastPushedPoint.isPotentialAzeotrope = true; 
+                    lastPushedPoint.dxdt_norm = 0;
+                } else {
+                    curve.push({ 
+                        x: final_x_normalized, 
+                        T_K: last_T_K, // Use T from before this step
+                        step: (forward ? 1 : -1) * (loop_idx + 1) * d_xi_step,
+                        dxdt_norm: 0, // At pure component vertex
+                        isPotentialAzeotrope: true // Pure components are nodes
+                    });
+                }
                 break;
             }
-            if (loop_idx > 0) { // Use loop_idx
-                const prev_x = curve[curve.length-1].x;
-                const diff_sq = prev_x.reduce((sum, px, i) => sum + (px - current_x[i])**2, 0);
-                if (Math.sqrt(diff_sq) < d_xi_step * 1e-3) break; // If change is too small
+
+            if (loop_idx > 0 && curve.length > 0) {
+                const lastAddedPoint = curve[curve.length - 1];
+                // Point before the one just added. If only one point in curve, compare to start_x.
+                const x_before_euler_step = curve.length > 1 ? curve[curve.length - 2].x : start_x; 
+                
+                const diff_sq_from_prev_step = lastAddedPoint.x.reduce((sum, px, i) => sum + (px - x_before_euler_step[i]) ** 2, 0);
+
+                if (Math.sqrt(diff_sq_from_prev_step) < d_xi_step * 1e-5) { 
+                    if (lastAddedPoint.dxdt_norm !== undefined && lastAddedPoint.dxdt_norm < azeotrope_dxdt_threshold) {
+                        lastAddedPoint.isPotentialAzeotrope = true;
+                    }
+                    break; 
+                }
+            }
+        }
+        // After loop, check last point if not already marked by break conditions
+        if (curve.length > 0) {
+            const lastCurvePoint = curve[curve.length - 1];
+            if (lastCurvePoint.dxdt_norm !== undefined && lastCurvePoint.dxdt_norm < azeotrope_dxdt_threshold && !lastCurvePoint.isPotentialAzeotrope) {
+                lastCurvePoint.isPotentialAzeotrope = true;
             }
         }
         return curve;

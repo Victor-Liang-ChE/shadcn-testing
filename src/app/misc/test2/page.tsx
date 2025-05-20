@@ -22,10 +22,30 @@ import {
     TernaryWilsonParams
 } from '@/lib/residue-curves-ode-wilson';
 import { simulateSingleResidueCurveODE_Unifac as simulateUnifacODE } from '@/lib/residue-curves-ode-unifac';
-import { simulateSingleResidueCurveODE_Nrtl as simulateNrtlODE, TernaryNrtlParams } from '@/lib/residue-curves-ode-nrtl';
-import { simulateSingleResidueCurveODE_Pr as simulatePrODE, TernaryPrParams } from '@/lib/residue-curves-ode-pr';
-import { simulateSingleResidueCurveODE_Srk as simulateSrkODE, TernarySrkParams } from '@/lib/residue-curves-ode-srk';
-import { simulateSingleResidueCurveODE_Uniquac as simulateUniquacODE, TernaryUniquacParams } from '@/lib/residue-curves-ode-uniquac';
+import { simulateSingleResidueCurveODE_Nrtl as simulateNrtlODE, TernaryNrtlParams, findAzeotropeNRTL, type AzeotropeResult as NrtlAzeotropeResult } from '@/lib/residue-curves-ode-nrtl';
+import { 
+    simulateSingleResidueCurveODE_Pr as simulatePrODE, 
+    TernaryPrParams, 
+    findAzeotropePr, 
+    type AzeotropeResult as PrAzeotropeResult 
+} from '@/lib/residue-curves-ode-pr';
+import { 
+    simulateSingleResidueCurveODE_Srk as simulateSrkODE, 
+    TernarySrkParams,
+    findAzeotropeSrk, // Added import
+    type AzeotropeResult as SrkAzeotropeResult // Added import
+} from '@/lib/residue-curves-ode-srk';
+import { 
+    simulateSingleResidueCurveODE_Uniquac as simulateUniquacODE, 
+    TernaryUniquacParams,
+    // Placeholder: Assume findAzeotropeUniquac and its result type exist
+    // findAzeotropeUniquac, // Will be uncommented effectively by adding the import below
+    // type AzeotropeResult as UniquacAzeotropeResult // Will be uncommented effectively
+} from '@/lib/residue-curves-ode-uniquac';
+
+// Assuming residue-curves-ode-uniquac.ts will export these:
+// If not, these are placeholders and the actual implementation is needed in the uniquac file.
+import { findAzeotropeUniquac, type AzeotropeResult as UniquacAzeotropeResult } from '@/lib/residue-curves-ode-uniquac';
 
 import { fetchWilsonInteractionParams, R_gas_const_J_molK } from '@/lib/vle-calculations-wilson'; 
 import { fetchUnifacInteractionParams, UnifacParameters, calculatePsat_Pa } from '@/lib/vle-calculations-unifac'; 
@@ -116,6 +136,20 @@ interface ResidueCurvePoint {
 }
 type ResidueCurve = ResidueCurvePoint[];
 
+
+// Define a common interface for displaying azeotropes on the page
+interface AzeotropeDisplayInfo {
+    x: number[];
+    T_K: number;
+    errorNorm?: number;
+    // Other fields like 'converged', 'iterations', 'message' can be part of specific results
+    // but are not strictly needed for basic plotting.
+}
+
+// Placeholder type for UniquacAzeotropeResult if not properly imported.
+// Ensure this matches the actual structure from residue-curves-ode-uniquac.ts
+// type UniquacAzeotropeResult = NrtlAzeotropeResult; // Example if similar to NRTL
+
 export default function TernaryResidueMapPage() {
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
         { name: 'Acetone' },
@@ -139,7 +173,8 @@ export default function TernaryResidueMapPage() {
     const [plotSortedComponents, setPlotSortedComponents] = useState<ProcessedComponentData[]>([]);
     const initialMapGenerated = useRef(false); // Ref to track initial generation
     const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>('dark'); // Default to dark
-    const plotContainerRef = useRef<HTMLDivElement>(null); // Ref for the plot container div
+    const [plotContainerRef, setPlotContainerRef] = React.useState<HTMLDivElement | null>(null); // State to hold the div element
+    const [directAzeotropes, setDirectAzeotropes] = useState<AzeotropeDisplayInfo[]>([]); // Use common display info
 
     useEffect(() => {
         // Function to check and set theme
@@ -459,6 +494,7 @@ export default function TernaryResidueMapPage() {
         const generatingFluidPackage = fluidPackage; // Capture fluid package for this generation run
         setIsLoading(true);
         setError(null);
+        setDirectAzeotropes([]); // Clear previous direct azeotropes
 
         try {
             const P_system_Pa = parseFloat(systemPressure) * 100000; // Convert bar to Pa
@@ -707,6 +743,165 @@ export default function TernaryResidueMapPage() {
 
             setResidueCurves(validCurves);
 
+            // --- Call Direct Azeotrope Solver ---
+            let foundAzeotropes: AzeotropeDisplayInfo[] = [];
+
+            if (compoundsForBackend.length === 3) {
+                const initialGuessesRaw: { x: number[], T_K: number }[] = [ // Added type for initialGuessesRaw elements
+                    { x: [0.333, 0.333, 0.334], T_K: initialTempGuess_K }, // Center
+                ];
+                if (plotSortedComponents.length === 3) {
+                    initialGuessesRaw.push({ x: [0.9, 0.05, 0.05], T_K: plotSortedComponents[0].bp_at_Psys_K || plotSortedComponents[0].thermData.nbp_K || initialTempGuess_K });
+                    initialGuessesRaw.push({ x: [0.05, 0.9, 0.05], T_K: plotSortedComponents[1].bp_at_Psys_K || plotSortedComponents[1].thermData.nbp_K || initialTempGuess_K });
+                    initialGuessesRaw.push({ x: [0.05, 0.05, 0.9], T_K: plotSortedComponents[2].bp_at_Psys_K || plotSortedComponents[2].thermData.nbp_K || initialTempGuess_K });
+                }
+                if (compoundsForBackend.length === 3) {
+                    const T0 = plotSortedComponents.find(c => c.originalIndex === 0)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 0)?.thermData.nbp_K || initialTempGuess_K;
+                    const T1 = plotSortedComponents.find(c => c.originalIndex === 1)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 1)?.thermData.nbp_K || initialTempGuess_K;
+                    const T2 = plotSortedComponents.find(c => c.originalIndex === 2)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 2)?.thermData.nbp_K || initialTempGuess_K;
+                    initialGuessesRaw.push({ x: [0.5, 0.5, 0.001], T_K: (T0+T1)/2 });
+                    initialGuessesRaw.push({ x: [0.5, 0.001, 0.5], T_K: (T0+T2)/2 });
+                    initialGuessesRaw.push({ x: [0.001, 0.5, 0.5], T_K: (T1+T2)/2 });
+                }
+
+                let results: (NrtlAzeotropeResult | PrAzeotropeResult | SrkAzeotropeResult | UniquacAzeotropeResult | null)[] = [];
+
+                if (generatingFluidPackage === 'nrtl') {
+                    const foundAzeotropesPromises = initialGuessesRaw.map(guess => // 'guess' type is inferred from initialGuessesRaw
+                        findAzeotropeNRTL(
+                            P_system_Pa,
+                            compoundsForBackend,
+                            activityModelParams as TernaryNrtlParams,
+                            guess.x,
+                            guess.T_K,
+                            150, 1e-7
+                        )
+                    );
+                    results = await Promise.all(foundAzeotropesPromises);
+                } else if (generatingFluidPackage === 'pr') {
+                    results = initialGuessesRaw.map(guess => // 'guess' type is inferred
+                        findAzeotropePr(
+                            P_system_Pa,
+                            compoundsForBackend,
+                            activityModelParams as TernaryPrParams,
+                            guess.x,
+                            guess.T_K,
+                            150, 1e-7
+                        )
+                    );
+                } else if (generatingFluidPackage === 'srk') {
+                    results = initialGuessesRaw.map(guess => // 'guess' type is inferred
+                        findAzeotropeSrk(
+                            guess.x, 
+                            P_system_Pa,
+                            compoundsForBackend,
+                            activityModelParams as TernarySrkParams,
+                            [1, 1, 1] 
+                        )
+                    );
+                } else if (generatingFluidPackage === 'uniquac') {
+                    // Assuming findAzeotropeUniquac and UniquacAzeotropeResult are properly defined and imported
+                    // from '@/lib/residue-curves-ode-uniquac'
+                    if (typeof findAzeotropeUniquac === 'function') {
+                        results = initialGuessesRaw.map(guess =>
+                            findAzeotropeUniquac(
+                                P_system_Pa,
+                                compoundsForBackend,
+                                activityModelParams as TernaryUniquacParams,
+                                guess.x, 
+                                guess.T_K,
+                                150, 1e-7 // Assuming similar parameters to NRTL/PR
+                            )
+                        );
+                    } else {
+                        console.warn("UNIQUAC direct azeotrope solver (findAzeotropeUniquac) is not available. Skipping.");
+                        results = [];
+                    }
+                }
+
+                const convergedResults = results.filter(r => {
+                    if (!r) return false;
+                    if (generatingFluidPackage === 'srk') {
+                        const srkRes = r as SrkAzeotropeResult;
+                        // Ensure y exists and is an array of 3 numbers for SRK
+                        if (!srkRes.y || srkRes.y.length !== 3 || !srkRes.x || srkRes.x.length !== 3) {
+                            console.warn("SRK Azeotrope result is missing x or y, or they are not 3-component arrays. Skipping.", srkRes);
+                            return false;
+                        }
+                        const errorNormYX = Math.sqrt(
+                            (srkRes.y[0] - srkRes.x[0])**2 +
+                            (srkRes.y[1] - srkRes.x[1])**2 +
+                            (srkRes.y[2] - srkRes.x[2])**2
+                        );
+                        (r as any).calculatedErrorNormYX = errorNormYX;
+                        return errorNormYX < 0.01; // Threshold for considering SRK result an azeotrope
+                    }
+                    // For PR, NRTL, and now UNIQUAC, they should have a 'converged' property
+                    return (r as NrtlAzeotropeResult | PrAzeotropeResult | UniquacAzeotropeResult).converged;
+                }) as Array<NrtlAzeotropeResult | PrAzeotropeResult | UniquacAzeotropeResult | (SrkAzeotropeResult & { calculatedErrorNormYX?: number })>;
+
+
+                const uniqueDirectAzeotropes: AzeotropeDisplayInfo[] = [];
+                const minSqDistAzeo = 0.02 * 0.02;
+
+                for (const res of convergedResults) {
+                    // Ensure x is a 3-component array. SRK result should already be.
+                    if (!res.x || res.x.length !== 3) {
+                        console.warn("Azeotrope result 'x' is not a 3-component array. Skipping.", res);
+                        continue;
+                    }
+
+                    let displayErrorNorm: number | undefined;
+                    let res_T_K = res.T_K;
+
+                    if (generatingFluidPackage === 'srk') {
+                        displayErrorNorm = (res as any).calculatedErrorNormYX;
+                        // If T_K from SRK result is 0 or invalid, use initialTempGuess_K as a fallback.
+                        // This is a workaround; findAzeotropeSrk should ideally return a correct T_K.
+                        if (!res_T_K || res_T_K <= 0) {
+                            console.warn(`SRK Azeotrope result has T_K = ${res_T_K}. Using initialTempGuess_K (${initialTempGuess_K.toFixed(2)} K) as fallback.`);
+                            res_T_K = initialTempGuess_K; 
+                        }
+                    } else {
+                        // For PR/NRTL/UNIQUAC
+                        displayErrorNorm = (res as NrtlAzeotropeResult | PrAzeotropeResult | UniquacAzeotropeResult).errorNorm;
+                    }
+                    
+                    let isTooClose = false;
+                    for (const uniqueAzeo of uniqueDirectAzeotropes) {
+                        const distSq = (res.x[0] - uniqueAzeo.x[0]) ** 2 +
+                                       (res.x[1] - uniqueAzeo.x[1]) ** 2 +
+                                       (res.x[2] - uniqueAzeo.x[2]) ** 2;
+                        if (distSq < minSqDistAzeo) {
+                            isTooClose = true;
+                            // If this result is better (smaller error norm), replace the existing one
+                            if (displayErrorNorm !== undefined && (uniqueAzeo.errorNorm === undefined || displayErrorNorm < uniqueAzeo.errorNorm)) {
+                                 uniqueAzeo.x = [...res.x];
+                                 uniqueAzeo.T_K = res_T_K; // Use T_K from the current result
+                                 uniqueAzeo.errorNorm = displayErrorNorm;
+                            }
+                            break;
+                        }
+                    }
+                    if (!isTooClose) {
+                        uniqueDirectAzeotropes.push({
+                            x: [...res.x],
+                            T_K: res_T_K, // Use T_K from the current result
+                            errorNorm: displayErrorNorm
+                        });
+                    }
+                }
+                foundAzeotropes = uniqueDirectAzeotropes;
+            }
+            
+            setDirectAzeotropes(foundAzeotropes);
+            if (foundAzeotropes.length > 0) {
+                console.log(`Directly found ${foundAzeotropes.length} potential azeotrope(s) using ${generatingFluidPackage}:`, foundAzeotropes.map(az => ({x: az.x, T_K: az.T_K, err: az.errorNorm})));
+            } else {
+                console.log(`No azeotropes found directly using ${generatingFluidPackage} with the given initial guesses.`);
+            }
+            // --- End Direct Azeotrope Solver Call ---
+
         } catch (err: any) {
             console.error("Error generating map:", err);
             setError(err.message || "An unknown error occurred.");
@@ -714,7 +909,7 @@ export default function TernaryResidueMapPage() {
             setIsLoading(false);
             setDisplayedFluidPackage(generatingFluidPackage); // Update displayed fluid package when generation finishes
         }
-    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage]);
+    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage, plotSortedComponents]); // Removed initialTempGuess_K
 
     useEffect(() => {
         if (supabase && !initialMapGenerated.current) {
@@ -804,7 +999,7 @@ export default function TernaryResidueMapPage() {
         }
         
         const plotTitleColor = currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'; 
-        const plotFont = { family: 'Merriweather Sans, Arial, sans-serif', color: '#e5e7eb' }; 
+        const plotFont = { family: 'Merriweather Sans, Arial, sans-serif', color: currentTheme === 'dark' ? '#e5e7eb' : '#1f2937' }; 
         const axisTitleFont = { ...plotFont, size: 15 };
         const tickFont = { ...plotFont, size: 14 };
 
@@ -815,16 +1010,16 @@ export default function TernaryResidueMapPage() {
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: titleA, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: '#2d3748' }, // Top (Intermediate)
-                baxis: { title: { text: titleB, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: '#2d3748' }, // Left (Heaviest)
-                caxis: { title: { text: titleC, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: '#2d3748' }, // Right (Lightest)
-                bgcolor: '#08306b',
+                aaxis: { title: { text: titleA, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Top (Intermediate)
+                baxis: { title: { text: titleB, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Left (Heaviest)
+                caxis: { title: { text: titleC, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Right (Lightest)
+                bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8',
             },
             margin: { l: 70, r: 70, b: 70, t: 90, pad: 5 }, // Standard margins
             autosize: true,
-            paper_bgcolor: '#08306b', 
+            paper_bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8', 
             font: plotFont, 
-            plot_bgcolor: '#08306b', 
+            plot_bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8', 
             annotations: [], 
             shapes: [], 
         };
@@ -832,9 +1027,9 @@ export default function TernaryResidueMapPage() {
         // Get container dimensions for coordinate transformation
         let containerWidthPx = 800; // Default/fallback
         let containerHeightPx = 600; // Default/fallback
-        if (plotContainerRef.current) {
-            containerWidthPx = plotContainerRef.current.offsetWidth;
-            containerHeightPx = plotContainerRef.current.offsetHeight;
+        if (plotContainerRef) { // Check if plotContainerRef (the div element) exists
+            containerWidthPx = plotContainerRef.offsetWidth;
+            containerHeightPx = plotContainerRef.offsetHeight;
         }
 
         const marginLeftPx = baseLayout.margin?.l ?? 70;
@@ -913,6 +1108,9 @@ export default function TernaryResidueMapPage() {
             const compNameA = plotSortedComponents[1]?.name || 'Comp A';
             const compNameB = plotSortedComponents[2]?.name || 'Comp B';
             const compNameC = plotSortedComponents[0]?.name || 'Comp C';
+            // Convert T_K to Celsius directly for customdata for hovertemplate
+            const tempsCelsius = curve.map(p => (p.T_K - 273.15).toFixed(1));
+
             return {
                 type: 'scatterternary',
                 mode: curve.length > 1 ? 'lines' : 'markers',
@@ -922,12 +1120,12 @@ export default function TernaryResidueMapPage() {
                 name: `Curve ${index + 1}`,
                 showlegend: false,
                 line: { width: 1.5, color: '#60a5fa' }, // Example color
-                customdata: curve.map(p => p.T_K), // Keep customdata in Kelvin
+                customdata: tempsCelsius, // Store Celsius strings for hover
                 hovertemplate:
                     `<b>${compNameA} (M)</b>: %{a:.3f}<br>` + 
                     `<b>${compNameB} (H)</b>: %{b:.3f}<br>` + 
                     `<b>${compNameC} (L)</b>: %{c:.3f}<br>` + 
-                    `<b>T</b>: %{customdata:.1f} °C<extra></extra>`, // Display calculated Celsius
+                    `<b>T</b>: %{customdata} °C<extra></extra>`, // Use customdata directly
                 hoverlabel: {
                     font: {
                         family: 'Merriweather Sans, Arial, sans-serif',
@@ -955,12 +1153,12 @@ export default function TernaryResidueMapPage() {
 
         let firstArrowLogged = false; 
         const targetArrowPixelSize = 10; 
-        const arrowMarkerColor = '#FFFFFF';
+        const arrowMarkerColor = currentTheme === 'dark' ? '#FFFFFF' : '#333333'; // Adjusted for theme
 
         const plotAreaPxWidth = containerWidthPx - (baseLayout.margin?.l ?? 70) - (baseLayout.margin?.r ?? 70);
         const plotAreaPxHeight = containerHeightPx - (baseLayout.margin?.t ?? 90) - (baseLayout.margin?.b ?? 90);
 
-        if (plotSortedComponents.length === 3 && plotContainerRef.current && actualRenderedTriangleBase_paper > 0 && actualRenderedTriangleHeight_paper > 0 && plotAreaPxWidth > 0 && plotAreaPxHeight > 0) {
+        if (plotSortedComponents.length === 3 && plotContainerRef && actualRenderedTriangleBase_paper > 0 && actualRenderedTriangleHeight_paper > 0 && plotAreaPxWidth > 0 && plotAreaPxHeight > 0) { // Check plotContainerRef
             cleanedResidueCurves.forEach((curve, curveIndex) => { 
                 if (curve.length < 2) return;
                 if (placedArrowCountOverall >= maxTotalArrowsOnPlot) return;
@@ -1082,23 +1280,77 @@ export default function TernaryResidueMapPage() {
                 text: arrowMarkerTraceData.text,
                 hoverinfo: 'text',
                 hoverlabel: {
-                    bgcolor: '#ffffff',              // Ensure background is white
+                    bgcolor: currentTheme === 'dark' ? 'rgba(50,50,50,0.85)' : 'rgba(250,250,250,0.85)', // Adjusted for theme
                     font: {
                         family: 'Merriweather Sans, Arial, sans-serif',
                         size: 14,
-                        color: '#000000'             // Black text
-                    }
+                        color: plotFont.color // Already theme-aware
+                    },
+                    bordercolor: currentTheme === 'dark' ? '#777' : '#ccc'
                 },
                 marker: {
                     symbol: 'triangle-up',
                     size: targetArrowPixelSize,
-                    color: arrowMarkerColor,
+                    color: arrowMarkerColor, // Theme-aware
                     angle: arrowMarkerTraceData.angles,
                     standoff: 5,
                 } as any,
                 showlegend: false,
             } as Data);
         }
+
+        // --- Add Directly Found Azeotropes to Plot ---
+        if (directAzeotropes.length > 0 && plotSortedComponents.length === 3) {
+            const directAzeotropePointsData = {
+                a: [] as number[],
+                b: [] as number[],
+                c: [] as number[],
+                text: [] as string[],
+            };
+
+            directAzeotropes.forEach(az => {
+                if (!az.x || az.x.length !== 3) return;
+                directAzeotropePointsData.a.push(az.x[plotSortedComponents[1].originalIndex]);
+                directAzeotropePointsData.b.push(az.x[plotSortedComponents[2].originalIndex]);
+                directAzeotropePointsData.c.push(az.x[plotSortedComponents[0].originalIndex]);
+                directAzeotropePointsData.text.push(
+                    `<b>Azeotrope</b><br>` +
+                    `${plotSortedComponents[1].name}: ${az.x[plotSortedComponents[1].originalIndex].toFixed(4)}<br>` +
+                    `${plotSortedComponents[2].name}: ${az.x[plotSortedComponents[2].originalIndex].toFixed(4)}<br>` +
+                    `${plotSortedComponents[0].name}: ${az.x[plotSortedComponents[0].originalIndex].toFixed(4)}<br>` +
+                    `T: ${(az.T_K - 273.15).toFixed(2)}°C<br>` +
+                    `||y-x||: ${az.errorNorm ? az.errorNorm.toExponential(2) : 'N/A'}`
+                );
+            });
+
+            if (directAzeotropePointsData.a.length > 0) {
+                allTraces.push({
+                    type: 'scatterternary',
+                    mode: 'markers',
+                    a: directAzeotropePointsData.a,
+                    b: directAzeotropePointsData.b,
+                    c: directAzeotropePointsData.c,
+                    text: directAzeotropePointsData.text,
+                    hoverinfo: 'text',
+                    marker: {
+                        symbol: 'star', // Different symbol
+                        size: 14,
+                        color: '#FFD700', // Gold color
+                        line: { color: currentTheme === 'dark' ? '#FFFFFF' : '#000000', width: 1.5 }
+                    },
+                    name: 'Azeotropes', 
+                    showlegend: true,
+                    legendgroup: 'azeotropes', // Use a common group name
+                    hoverlabel: { 
+                        font: { family: 'Merriweather Sans, Arial, sans-serif', size: 12, color: plotFont.color},
+                        bgcolor: currentTheme === 'dark' ? 'rgba(40,40,40,0.9)' : 'rgba(240,240,240,0.9)',
+                        bordercolor: currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'
+                    }
+                } as Data);
+            }
+        }
+        // --- End Add Directly Found Azeotropes to Plot ---
+
 
         const finalLayout = {
             ...baseLayout,
@@ -1108,13 +1360,19 @@ export default function TernaryResidueMapPage() {
                 ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: 'Merriweather Sans, Arial, sans-serif', size: 18, color: plotTitleColor} } ), 
                 text: `Ternary Residue Curve Map @ ${pressureDisplay} bar (${modelName} Model)` 
             },
-            legend: { font: plotFont }
+            legend: { // Ensure legend is configured
+                font: plotFont,
+                bgcolor: currentTheme === 'dark' ? 'rgba(8, 48, 107, 0.8)' : 'rgba(220, 230, 240, 0.8)', // Semi-transparent background
+                bordercolor: currentTheme === 'dark' ? '#4b5563' : '#9ca3af',
+                borderwidth: 1,
+                tracegroupgap: 5, // Gap between legend groups
+            }
         };
 
         setPlotlyData(allTraces);
         setPlotlyLayout(finalLayout);
 
-    }, [cleanedResidueCurves, componentsInput, systemPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage]); // Depend on displayedFluidPackage
+    }, [cleanedResidueCurves, componentsInput, systemPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes]); // Depend on directAzeotropes
 
     const handleGenerateClick = () => {
         handleGenerateMap();
@@ -1227,7 +1485,7 @@ export default function TernaryResidueMapPage() {
                         <CardContent className="bg-[#08306b] p-1 rounded-md">
                             <div 
                                 className="relative h-[600px]" 
-                                ref={plotContainerRef}
+                                ref={setPlotContainerRef} // Assign the state setter to the ref prop
                             >
                                 <Plot 
                                     data={plotlyData} 

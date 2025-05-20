@@ -10,12 +10,15 @@ const BUBBLE_T_TOLERANCE_K = 0.001; // Tolerance for temperature convergence
 const K_VALUE_TOLERANCE = 1e-6;     // Tolerance for K-value convergence (sqrt(sum(Knew-Kold)^2))
 const MIN_MOLE_FRACTION = 1e-9;
 const BUBBLE_T_CONVERGENCE_TOLERANCE = 1e-5; // Tolerance for sum Ki*xi - 1
+// const azeotrope_dxdt_threshold = 1e-7; // Azeotrope detection threshold // REMOVED
 
 // --- Interfaces ---
 export interface ResidueCurvePointODE {
     x: number[]; // Mole fractions [x0, x1, x2]
     T_K: number; // Temperature at this point
     step?: number; // Changed from xi to step
+    // dxdt_norm?: number; // REMOVED
+    // isPotentialAzeotrope?: boolean; // REMOVED
 }
 export type ResidueCurveODE = ResidueCurvePointODE[];
 
@@ -26,10 +29,20 @@ export interface TernaryPrParams {
     k12: number; k21?: number; 
 }
 
+// Add AzeotropeResult interface
+export interface AzeotropeResult {
+    x: number[];
+    T_K: number;
+    iterations: number;
+    converged: boolean;
+    errorNorm?: number;
+}
+
 function normalizeMoleFractions(x: number[]): number[] {
     const sum = x.reduce((acc, val) => acc + val, 0);
-    if (sum === 0) return x.map(() => 1 / x.length); // Should not happen with valid inputs
-    return x.map(val => Math.max(MIN_MOLE_FRACTION, Math.min(1.0 - MIN_MOLE_FRACTION * (x.length - 1), val / sum)));
+    if (sum === 0) return x.map(() => 1 / x.length); 
+    const upper_bound_val = 1.0 - MIN_MOLE_FRACTION * (x.length > 1 ? (x.length - 1) : 0);
+    return x.map(val => Math.max(MIN_MOLE_FRACTION, Math.min(upper_bound_val, val / sum)));
 }
 
 // --- Helper functions ---
@@ -326,7 +339,7 @@ function residue_curve_ode_dxdxi_pr(
     components: CompoundData[],
     ternaryPrParams: TernaryPrParams,
     initialTempGuess_K: number
-): { dxdxi: number[], T_bubble_K: number } | null {
+): { dxdxi: number[], T_bubble_K: number, y_vap: number[] } | null { // Added y_vap to return
     const x_norm = normalizeMoleFractions(x_liq_current);
 
     const bubbleResult = findBubblePointTemperatureTernaryPr(x_norm, P_system_Pa, components, ternaryPrParams, initialTempGuess_K);
@@ -338,14 +351,14 @@ function residue_curve_ode_dxdxi_pr(
     if (!y_vap) return null;
 
     const dxdxi = [x_norm[0] - y_vap[0], x_norm[1] - y_vap[1], x_norm[2] - y_vap[2]];
-    return { dxdxi, T_bubble_K };
+    return { dxdxi, T_bubble_K, y_vap }; // Return y_vap
 }
 
 export async function simulateSingleResidueCurveODE_Pr(
     initial_x: number[], 
     P_system_Pa: number,
     componentsData: CompoundData[], 
-    ternaryPrParams: TernaryPrParams, // Changed type to match internal usage
+    ternaryPrParams: TernaryPrParams, 
     d_xi_step: number,
     max_steps_per_direction: number,
     initialTemp_K: number
@@ -356,34 +369,93 @@ export async function simulateSingleResidueCurveODE_Pr(
         let current_x = [...start_x];
         let last_T_K = current_T_guess;
 
-        for (let loop_step = 0; loop_step < max_steps_per_direction; loop_step++) { // Renamed step to loop_step
+        for (let loop_step = 0; loop_step < max_steps_per_direction; loop_step++) { 
             const ode_result = residue_curve_ode_dxdxi_pr(current_x, P_system_Pa, componentsData, ternaryPrParams, last_T_K);
             if (!ode_result) break;
 
-            const { dxdxi, T_bubble_K } = ode_result;
+            const { dxdxi, T_bubble_K, y_vap } = ode_result; 
             last_T_K = T_bubble_K;
 
-            curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, step: (forward ? 1 : -1) * loop_step * d_xi_step }); // Use loop_step for 'step'
+            // const dxdt = dxdxi; // dxdt_norm and related logic removed
+            // const dxdt_norm = Math.sqrt(dxdt[0]**2 + dxdt[1]**2 + dxdt[2]**2); // REMOVED
+
+            const currentPointData: ResidueCurvePointODE = {
+                x: normalizeMoleFractions(current_x),
+                T_K: T_bubble_K,
+                step: (forward ? 1 : -1) * loop_step * d_xi_step,
+                // dxdt_norm, // REMOVED
+                // isPotentialAzeotrope: false // REMOVED
+            };
+            
+            if (curve.length > 0) {
+                const lastPoint = curve[curve.length - 1];
+                const x_diff_sq = lastPoint.x.reduce((sum, val, i) => sum + (val - currentPointData.x[i])**2, 0);
+                if (Math.sqrt(x_diff_sq) < 1e-7 && Math.abs(lastPoint.T_K - currentPointData.T_K) < 1e-4) {
+                    // Stagnation detected, break without setting azeotrope flags
+                    // if (dxdt_norm < azeotrope_dxdt_threshold) {  // REMOVED
+                        // lastPoint.isPotentialAzeotrope = true;  // REMOVED
+                        // lastPoint.dxdt_norm = Math.min(lastPoint.dxdt_norm ?? Infinity, dxdt_norm); // REMOVED
+                        break; 
+                    // } // REMOVED
+                } else {
+                    curve.push(currentPointData);
+                }
+            } else {
+                curve.push(currentPointData);
+            }
+
+            // if (dxdt_norm < azeotrope_dxdt_threshold) { // REMOVED
+                // if (curve.length > 0) { // REMOVED
+                    // curve[curve.length-1].isPotentialAzeotrope = true; // REMOVED
+                // } // REMOVED
+                // break;  // REMOVED
+            // } // REMOVED
 
             const next_x_unnormalized = [
                 current_x[0] + (forward ? 1 : -1) * dxdxi[0] * d_xi_step,
                 current_x[1] + (forward ? 1 : -1) * dxdxi[1] * d_xi_step,
                 current_x[2] + (forward ? 1 : -1) * dxdxi[2] * d_xi_step,
             ];
+            const prev_current_x_for_stagnation_check = [...current_x];
             current_x = normalizeMoleFractions(next_x_unnormalized);
 
-            if (current_x.some(val => val >= 1.0 - MIN_MOLE_FRACTION * 2) || current_x.some(val => val <= MIN_MOLE_FRACTION * 2)) { // Use val
-                curve.push({ x: normalizeMoleFractions(current_x), T_K: T_bubble_K, step: (forward ? 1 : -1) * (loop_step + 1) * d_xi_step }); // Use loop_step
+            const upper_bound_limit = 1.0 - MIN_MOLE_FRACTION * (componentsData.length > 1 ? (componentsData.length - 1) : 0);
+            if (current_x.some(val => val >= upper_bound_limit) || current_x.some(val => val <= MIN_MOLE_FRACTION)) { 
+                const final_x_normalized = normalizeMoleFractions(current_x);
+                let lastPushedPoint = curve.length > 0 ? curve[curve.length - 1] : null;
+                if (lastPushedPoint && final_x_normalized.every((val, i) => Math.abs(val - lastPushedPoint!.x[i]) < 1e-7)) {
+                    // lastPushedPoint.isPotentialAzeotrope = true; // REMOVED
+                    // lastPushedPoint.dxdt_norm = 0; // REMOVED
+                } else {
+                    curve.push({ 
+                        x: final_x_normalized, 
+                        T_K: last_T_K, 
+                        step: (forward ? 1 : -1) * (loop_step + 1) * d_xi_step, 
+                        // dxdt_norm: 0, // REMOVED
+                        // isPotentialAzeotrope: true // REMOVED
+                    });
+                }
                 break;
             }
-            if (loop_step > 0) { // prevent stagnation
-                const prev_x_in_curve = curve[curve.length - 1].x;
-                const diff_sq = prev_x_in_curve.reduce((sum, px, i) => sum + (px - current_x[i]) ** 2, 0);
-                if (Math.sqrt(diff_sq) < d_xi_step * 1e-4) { // was 1e-3
-                    break;
+            if (loop_step > 0 && curve.length > 0) { 
+                const lastAddedPoint = curve[curve.length - 1];
+                const x_before_euler_step = curve.length > 1 ? curve[curve.length - 2].x : start_x;
+                
+                const diff_sq_from_prev_step = lastAddedPoint.x.reduce((sum, px, i) => sum + (px - x_before_euler_step[i]) ** 2, 0);
+                if (Math.sqrt(diff_sq_from_prev_step) < d_xi_step * 1e-5) { 
+                    // if (lastAddedPoint.dxdt_norm !== undefined && lastAddedPoint.dxdt_norm < azeotrope_dxdt_threshold) { // REMOVED
+                        // lastAddedPoint.isPotentialAzeotrope = true; // REMOVED
+                    // } // REMOVED
+                    break; 
                 }
             }
         }
+        // if (curve.length > 0) { // REMOVED
+            // const lastCurvePoint = curve[curve.length - 1]; // REMOVED
+            // if (lastCurvePoint.dxdt_norm !== undefined && lastCurvePoint.dxdt_norm < azeotrope_dxdt_threshold && !lastCurvePoint.isPotentialAzeotrope) { // REMOVED
+                // lastCurvePoint.isPotentialAzeotrope = true; // REMOVED
+            // } // REMOVED
+        // } // REMOVED
         return curve;
     };
 
@@ -399,5 +471,100 @@ export async function simulateSingleResidueCurveODE_Pr(
     const combined_curve: ResidueCurveODE = [...curve_backward.reverse().slice(1), ...curve_forward];
 
     return combined_curve.length < 2 ? (curve_forward.length > 0 ? curve_forward : (curve_backward.length > 0 ? curve_backward.reverse() : null)) : combined_curve;
+}
+
+// Assuming normalizeMoleFractions and findBubblePointTemperatureTernaryPr are defined in this file or imported.
+// Ensure CompoundData and TernaryPrParams types are correctly defined/imported.
+
+export function findAzeotropePr(
+    P_system_Pa: number,
+    components: CompoundData[], // Each component must have prParams
+    ternaryPrKij: TernaryPrParams,
+    initialGuess_x: number[], // Initial guess for mole fractions [x0, x1, x2]
+    initialGuess_T_K: number, // Initial guess for temperature
+    maxIterations: number = 150, // Max iterations for the azeotrope search (increased slightly)
+    tolerance: number = 1e-7,    // Tolerance for ||y-x|| norm for azeotrope convergence
+    dampingFactor: number = 0.1 // Damping factor for x updates; Reduced from 0.25
+): AzeotropeResult | null {
+
+    if (components.length !== 3 || components.some(c => !c.prParams)) {
+        console.error("Azeotrope search (PR): Requires 3 components with PR parameters.");
+        return null;
+    }
+    if (initialGuess_x.length !== 3) {
+        console.error("Azeotrope search (PR): Initial guess for x must have 3 components.");
+        return null;
+    }
+
+    let current_x = normalizeMoleFractions([...initialGuess_x]);
+    let current_T_K = initialGuess_T_K;
+    let last_errorNorm = Infinity;
+
+    console.log(`--- findAzeotropePr START ---`);
+    console.log(`Initial x_guess: [${current_x.join(', ')}], Init_T_guess: ${current_T_K.toFixed(2)}`);
+
+
+    for (let iter = 0; iter < maxIterations; iter++) {
+        // 1. Calculate bubble point T and corresponding vapor composition y_vap
+        //    for the current liquid composition estimate (current_x) at P_system_Pa.
+        const bubbleResult = findBubblePointTemperatureTernaryPr(
+            current_x,
+            P_system_Pa,
+            components,
+            ternaryPrKij,
+            current_T_K // Use current T_K as the initial guess for the bubble T solver
+        );
+
+        if (!bubbleResult || !bubbleResult.y_vap) {
+            console.warn(`Azeotrope search (PR, iter ${iter}): Bubble point calculation failed for x = [${current_x.map(v => v.toFixed(4)).join(', ')}], T_guess=${current_T_K.toFixed(2)}`);
+            // Attempt a slight perturbation of T_K if bubble point fails, or return current state.
+            // This might indicate the guess is too far off or in a non-physical region.
+            current_T_K *= (iter % 2 === 0 ? 1.02 : 0.98); // Small nudge
+            if (iter > 5 && last_errorNorm === Infinity) { // If consistently failing early
+                 return { x: current_x, T_K: initialGuess_T_K, iterations: iter, converged: false, errorNorm: last_errorNorm };
+            }
+            continue; // Try next iteration with potentially adjusted T_K if bubbleResult was null
+        }
+
+        current_T_K = bubbleResult.T_K; // Update T_K to the converged bubble point temperature
+        const y_vap_at_bubble_T = normalizeMoleFractions(bubbleResult.y_vap);
+
+        // 2. Check for azeotropic condition: ||y - x|| < tolerance
+        const errorVector = [
+            y_vap_at_bubble_T[0] - current_x[0],
+            y_vap_at_bubble_T[1] - current_x[1],
+            y_vap_at_bubble_T[2] - current_x[2]
+        ];
+        const errorNorm = Math.sqrt(
+            errorVector[0]**2 + errorVector[1]**2 + errorVector[2]**2
+        );
+        last_errorNorm = errorNorm;
+        
+        console.log(`  AzeoIter ${iter}: T_K=${current_T_K.toFixed(2)}, x=[${current_x.map(v=>v.toFixed(4)).join(', ')}], y=[${y_vap_at_bubble_T.map(v=>v.toFixed(4)).join(', ')}], ||y-x||=${errorNorm.toExponential(3)}`);
+
+
+        if (errorNorm < tolerance) {
+            console.log(`Azeotrope (PR) converged at iter ${iter}.`);
+            return { x: normalizeMoleFractions(current_x), T_K: current_T_K, iterations: iter, converged: true, errorNorm };
+        }
+
+        // 3. Update liquid composition estimate (current_x) for the next iteration.
+        //    Using damped fixed-point iteration: x_new = x_old + lambda * (y_calc - x_old)
+        let next_x_unnormalized = [
+            current_x[0] + dampingFactor * errorVector[0],
+            current_x[1] + dampingFactor * errorVector[1],
+            current_x[2] + dampingFactor * errorVector[2],
+        ];
+        current_x = normalizeMoleFractions(next_x_unnormalized);
+        
+        // Optional: Check for stagnation if x isn't changing much but error is still high
+        if (iter > 10 && errorNorm > last_errorNorm * 0.999 && errorNorm > tolerance * 100) {
+             // console.warn(`Azeotrope (PR) search may be stagnating or diverging. errorNorm: ${errorNorm.toExponential(3)}`);
+        }
+
+    }
+
+    console.warn(`Azeotrope search (PR): Did not converge after ${maxIterations} iterations. Final ||y-x||: ${last_errorNorm.toExponential(3)} for x=[${current_x.map(v=>v.toFixed(4)).join(',')}] T=${current_T_K.toFixed(2)}`);
+    return { x: current_x, T_K: current_T_K, iterations: maxIterations, converged: false, errorNorm: last_errorNorm };
 }
 
