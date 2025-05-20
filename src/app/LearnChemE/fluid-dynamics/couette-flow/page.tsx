@@ -57,10 +57,10 @@ const SliderWithValue = ({ id, label, min, max, step, value, unit, onValueChange
 export default function CouetteFlowPage() {
     // --- State and Logic from CouetteFlowSimulation ---
     const { resolvedTheme } = useTheme();
-    const [plateVelocityU, setPlateVelocityU] = useState<number>(1); // m/s
-    const [plateDistanceH, setPlateDistanceH] = useState<number>(0.01); // m (1 cm)
-    const [fluidViscosityMu, setFluidViscosityMu] = useState<number>(0.001); // Pa.s (water approx)
-    const [pressureGradientDpDx, setPressureGradientDpDx] = useState<number>(0); // Pa/m
+    const [plateVelocityU, setPlateVelocityU] = useState<number>(0); // m/s
+    const [plateDistanceH, setPlateDistanceH] = useState<number>(0.02); // m (2 cm)
+    const [fluidViscosityMu, setFluidViscosityMu] = useState<number>(0.0001); // Pa.s
+    const [pressureGradientDpDx, setPressureGradientDpDx] = useState<number>(-0.15); // Pa/m
 
     // DEBUG LOG: Log state values on re-render (optional, can be removed)
     // console.log(
@@ -89,25 +89,55 @@ export default function CouetteFlowPage() {
         return fluidViscosityMu * du_dy_0;
     }, [plateVelocityU, plateDistanceH, fluidViscosityMu, pressureGradientDpDx]);
 
+    const markPointData = useMemo(() => {
+        const points = [];
+        // Only consider marking if there's a pressure gradient that could cause a parabolic peak
+        if (pressureGradientDpDx < 0) {
+            // y-coordinate (in meters) where shear stress is zero (du/dy = 0)
+            // This formula is derived from setting du/dy = 0 for the combined Couette-Poiseuille flow equation
+            const y_peak_m = (plateDistanceH / 2) - (fluidViscosityMu * plateVelocityU) / (plateDistanceH * pressureGradientDpDx);
+
+            // Check if this peak is strictly within the plates
+            if (y_peak_m > 0 && y_peak_m < plateDistanceH) {
+                // Calculate velocity at this y_peak_m
+                const term1 = (plateVelocityU * y_peak_m) / plateDistanceH;
+                const term2 = (1 / (2 * fluidViscosityMu)) * pressureGradientDpDx * (y_peak_m * y_peak_m - plateDistanceH * y_peak_m);
+                const u_at_peak = term1 + term2;
+
+                points.push({
+                    name: 'Parabolic Max', // Optional: for tooltip on the mark point
+                    coord: [u_at_peak, y_peak_m * 100], // [velocity (m/s), y_position (cm)]
+                    itemStyle: { color: 'red' },
+                    symbol: 'circle',
+                    symbolSize: 8
+                });
+            }
+        }
+        return points;
+    }, [plateVelocityU, plateDistanceH, fluidViscosityMu, pressureGradientDpDx]);
+
     useEffect(() => {
         const isDark = resolvedTheme === 'dark';
         const textColor = isDark ? '#E5E7EB' : '#1F2937';
-        const lineColor = isDark ? '#4B5563' : '#9CA3AF';
         const profileColor = isDark ? '#A7F3D0' : '#10B981';
-        const chartBackgroundColor = isDark ? 'hsl(215, 40%, 30%)' : 'hsl(210, 40%, 96.1%)'; // Card background colors
+        const chartBackgroundColor = isDark ? 'hsl(215, 40%, 30%)' : 'hsl(210, 40%, 96.1%)';
+        const chartFontFamily = '"Merriweather Sans", sans-serif';
 
         setChartOptions({
-            backgroundColor: chartBackgroundColor, // Set chart background color
+            backgroundColor: chartBackgroundColor,
             title: {
                 text: 'Velocity Profile u(y)',
                 left: 'center',
-                textStyle: { color: textColor, fontSize: 16 }
+                textStyle: { color: textColor, fontSize: 16, fontFamily: chartFontFamily }
             },
             tooltip: {
                 trigger: 'axis',
                 formatter: (params: any) => {
                     const point = params[0];
-                    return `Velocity: ${parseFloat(point.value[0]).toFixed(4)} m/s<br />Height (y): ${parseFloat(point.value[1]).toFixed(4)} m`;
+                    return `Velocity: ${parseFloat(point.value[0]).toFixed(4)} m/s<br />Height (y): ${parseFloat(point.value[1]).toFixed(4)} cm`; // y-axis is in cm
+                },
+                textStyle: { // Added font family for tooltip
+                    fontFamily: chartFontFamily
                 }
             },
             grid: { left: '15%', right: '10%', bottom: '15%', top: '15%' },
@@ -116,22 +146,22 @@ export default function CouetteFlowPage() {
                 name: 'Velocity u (m/s)',
                 nameLocation: 'middle',
                 nameGap: 30,
-                axisLabel: { color: textColor, formatter: (val: number) => val.toFixed(2) },
-                nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold' },
-                axisLine: { lineStyle: { color: lineColor } },
-                splitLine: { show: true, lineStyle: { color: lineColor, type: 'dashed', opacity: 0.5 } },
+                axisLabel: { color: textColor, formatter: (val: number) => val.toFixed(4), fontFamily: chartFontFamily },
+                nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
+                axisLine: { lineStyle: { color: '#FFFFFF' } },
+                splitLine: { show: false },
             },
             yAxis: {
                 type: 'value',
-                name: 'Distance y (cm)', // Changed unit to cm
+                name: 'Distance y (cm)',
                 nameLocation: 'middle',
                 nameGap: 50,
                 min: 0,
-                max: plateDistanceH * 100, // Max value in cm
-                axisLabel: { color: textColor, formatter: (val: number) => val.toFixed(Math.max(0, Math.ceil(-Math.log10(plateDistanceH * 100))+1)) }, // Adjust precision for cm
-                nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold' },
-                axisLine: { lineStyle: { color: lineColor } },
-                splitLine: { show: true, lineStyle: { color: lineColor, type: 'dashed', opacity: 0.5 } },
+                max: plateDistanceH * 100,
+                axisLabel: { color: textColor, formatter: (val: number) => val.toFixed(Math.max(0, Math.ceil(-Math.log10(plateDistanceH * 100))+1)), fontFamily: chartFontFamily },
+                nameTextStyle: { color: textColor, fontSize: 14, fontWeight: 'bold', fontFamily: chartFontFamily },
+                axisLine: { lineStyle: { color: '#FFFFFF' } },
+                splitLine: { show: false },
             },
             series: [{
                 name: 'Velocity Profile',
@@ -141,24 +171,12 @@ export default function CouetteFlowPage() {
                 lineStyle: { color: profileColor, width: 3 },
                 data: velocityProfileData,
                 animation: false,
-                // markPoint configuration removed
-                // markPoint: {
-                //     symbol: 'arrow',
-                //     symbolSize: [15,10],
-                //     symbolRotate: velocityProfileData[velocityProfileData.length-1][0] >= 0 ? 0 : 180,
-                //     itemStyle: {color: 'orange'},
-                //     data: [
-                //         {
-                //             name: 'Top Plate Velocity',
-                //             coord: [velocityProfileData[velocityProfileData.length-1][0], plateDistanceH],
-                //             value: plateVelocityU.toFixed(2) + ' m/s',
-                //             label: { show: true, position: 'right', color: textColor, formatter: '{c}' }
-                //         }
-                //     ]
-                // }
+                markPoint: { // Added markPoint configuration
+                    data: markPointData
+                }
             }]
         });
-    }, [velocityProfileData, plateDistanceH, plateVelocityU, resolvedTheme]);
+    }, [velocityProfileData, plateDistanceH, plateVelocityU, resolvedTheme, markPointData, fluidViscosityMu, pressureGradientDpDx]); // Added markPointData and its dependencies to ensure updates
     // --- End of State and Logic from CouetteFlowSimulation ---
 
     return (
@@ -180,7 +198,7 @@ export default function CouetteFlowPage() {
                                     <SliderWithValue id="plateVelocityU" label="Top Plate Velocity (U)" min={0} max={5} step={0.1} value={plateVelocityU} unit="m/s" onValueChange={setPlateVelocityU} precision={1} />
                                     <SliderWithValue id="plateDistanceH" label="Plate Spacing (h)" min={0.001} max={0.1} step={0.001} value={plateDistanceH} unit="cm" onValueChange={setPlateDistanceH} precision={1} displayMultiplier={100} />
                                     <SliderWithValue id="fluidViscosityMu" label="Viscosity (µ)" min={0.0001} max={0.1} step={0.0001} value={fluidViscosityMu} unit="Pa·s" onValueChange={setFluidViscosityMu} precision={4} />
-                                    <SliderWithValue id="pressureGradientDpDx" label="Pressure Gradient (dp/dx)" min={-1000} max={1000} step={10} value={pressureGradientDpDx} unit="Pa/m" onValueChange={setPressureGradientDpDx} precision={0} />
+                                    <SliderWithValue id="pressureGradientDpDx" label="Pressure Gradient (dp/dx)" min={-0.3} max={0.1} step={0.01} value={pressureGradientDpDx} unit="Pa/m" onValueChange={setPressureGradientDpDx} precision={2} />
                                 </CardContent>
                             </Card>
                             <Card>
