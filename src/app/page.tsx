@@ -252,7 +252,7 @@ export default function Home() {
         {/* Use consistent grid and card structure */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
           {homeFeaturedSimulations.map((simulation) => (
-            <Link href={simulation.path} key={simulation.name}>
+            <Link href={simulation.path} key={simulation.name} legacyBehavior>
               <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col relative overflow-hidden">
                 {simulation.isUpdated && (
                   <div className="absolute top-3 right-[-32px] transform rotate-45 bg-yellow-400 text-black text-xs font-semibold py-2 px-8 shadow-lg z-10">

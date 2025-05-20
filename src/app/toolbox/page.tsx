@@ -67,7 +67,7 @@ export default function Page() {
                 key={index}
                 href={simulation.path}
                 className="block h-full"
-              >
+                legacyBehavior>
                 <Card className="h-full hover:shadow-lg transition-shadow bg-card border border-border flex flex-col relative overflow-hidden">
                   {simulation.isNew && (
                     <div className="absolute top-3 right-[-28px] transform rotate-45 bg-orange-500 text-white text-xs font-semibold py-2 px-10 shadow-lg z-10">
@@ -75,9 +75,8 @@ export default function Page() {
                     </div>
                   )}
                   {simulation.isUpdated && ( // Added UPDATED badge rendering
-                    <div className="absolute top-3 right-[-32px] transform rotate-45 bg-yellow-400 text-black text-xs font-semibold py-2 px-8 shadow-lg z-10">
-                      UPDATED
-                    </div>
+                    (<div className="absolute top-3 right-[-32px] transform rotate-45 bg-yellow-400 text-black text-xs font-semibold py-2 px-8 shadow-lg z-10">UPDATED
+                                          </div>)
                   )}
                   <CardHeader>
                     <div className="relative mx-auto mb-4">

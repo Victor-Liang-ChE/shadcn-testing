@@ -54,7 +54,7 @@ const FluidDynamicsContent = () => (
        <Link
          href="/LearnChemE/fluid-dynamics/bernoulli-equation"
          className="block"
-         >
+         legacyBehavior>
          <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
            <CardHeader>
              <CardTitle>Bernoulli Equation</CardTitle>
@@ -69,7 +69,7 @@ const FluidDynamicsContent = () => (
        <Link
          href="/LearnChemE/fluid-dynamics/buoyancy"
          className="block"
-         >
+         legacyBehavior>
          <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
            <CardHeader>
              <CardTitle>Buoyancy of a Floating Cube</CardTitle>
@@ -84,7 +84,7 @@ const FluidDynamicsContent = () => (
        <Link
          href="/LearnChemE/fluid-dynamics/couette-flow"
          className="block"
-         >
+         legacyBehavior>
          <Card className="hover:shadow-md transition-shadow h-full flex flex-col">
            <CardHeader>
              <CardTitle>Couette Flow</CardTitle>
