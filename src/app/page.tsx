@@ -167,7 +167,7 @@ export default function Home() {
 
               <div className="bio-paragraph flex items-center flex-wrap gap-2">
                 <span>Python Packages:</span>
-                <span className="text-muted-foreground">
+                <span className="">
                   NumPy, SciPy, Pandas, Matplotlib, Scikit-learn, Plotly, RegEx,
                   Control, BeautifulSoup4
                 </span>
