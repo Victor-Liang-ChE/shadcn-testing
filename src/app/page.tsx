@@ -15,18 +15,20 @@ const githubLogoPath = "/logos/github.svg";
 const linkedinLogoPath = "/logos/linkedin.svg";
 const ucsbLogoPath = "/logos/ucsb.svg";
 const pythonLogoPath = "/logos/python.svg";
+const reactLogoPath = "/logos/react.svg";
+const nextjsLogoPath = "/logos/nextjs.svg"; // Added Next.js logo path
 const javascriptLogoPath = "/logos/javascript.svg";
 const html5LogoPath = "/logos/html5.svg";
 const css3LogoPath = "/logos/css.svg";
 const typescriptLogoPath = "/logos/typescript.svg";
 const dockerLogoPath = "/logos/docker.svg";
-const reactLogoPath = "/logos/react.svg";
-const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png"; // Added path
+const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png";
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
-const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png"; // Added path
-const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png"; // Added for Azeotrope Finder
-const labIllustrationPath = "/images/lab-illustration.png"; // Added path for the illustration
-const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png"; // Ensure this is present
+const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
+const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png";
+const labIllustrationPath = "/images/lab-illustration.png";
+const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png";
+const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.png"; // Added for Residue Curve Map
 
 export default function Home() {
   const homeFeaturedSimulations = [
@@ -36,7 +38,7 @@ export default function Home() {
       description:
         "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
       thumbnailPath: mccabeThumbnailPath,
-      isUpdated: true, // To show the "UPDATED" badge
+      isUpdated: true,
     },
     {
       name: "Azeotrope Finder",
@@ -44,14 +46,23 @@ export default function Home() {
       description:
         "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
       thumbnailPath: azeotropeThumbnailPath,
-      isNew: true, // Add this property
+      isNew: true,
     },
     {
-      name: "Compound Properties", // Added entry for Compound Properties
+      name: "Compound Properties",
       path: "/toolbox/compound-properties",
-      description: "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
-      thumbnailPath: compoundPropertiesThumbnailPath, // Use the new thumbnail
-      isNew: true, // Mark as NEW
+      description:
+        "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.", // Updated description
+      thumbnailPath: compoundPropertiesThumbnailPath,
+      isNew: true,
+    },
+    {
+      name: "Residue Curve Map",
+      path: "/toolbox/residue-curve-map",
+      description:
+        "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.", // Updated description
+      thumbnailPath: residueCurveMapThumbnailPath,
+      isNew: true,
     },
     {
       name: "Reaction Kinetics",
@@ -80,9 +91,7 @@ export default function Home() {
             </CardDescription>
           </CardHeader>
 
-          {/* Modified CardContent to use 5-column grid */}
           <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-6 bio-section">
-            {/* Left Column for Bio Text - Takes 3/5ths width */}
             <div className="md:col-span-3 space-y-4">
               <div className="bio-paragraph flex items-center flex-wrap gap-2">
                 <span>Languages and Frameworks:</span>
@@ -100,6 +109,14 @@ export default function Home() {
                     width={25}
                     height={25}
                     title="React"
+                  />
+                  {/* Added Next.js Logo here */}
+                  <Image
+                    src={nextjsLogoPath}
+                    alt="Next.js Logo"
+                    width={25} // Adjust if Next.js logo is better with different dimensions
+                    height={25}
+                    title="Next.js"
                   />
                   <Image
                     src={javascriptLogoPath}
@@ -125,7 +142,7 @@ export default function Home() {
                   <Image
                     src={css3LogoPath}
                     alt="CSS3 Logo"
-                    width={35}
+                    width={35} // Note: original width/height was 35 for CSS3
                     height={35}
                     title="CSS3"
                   />
@@ -182,9 +199,7 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Right Column for Image - Takes 2/5ths width */}
             <div className="md:col-span-2 flex items-center justify-center h-full">
-              {/* Image container fills its parent column's height and width */}
               <div className="relative w-full h-full rounded-lg overflow-hidden">
                 <Image
                   src={labIllustrationPath}
@@ -197,7 +212,6 @@ export default function Home() {
           </CardContent>
 
           <CardFooter className="flex flex-col items-start pt-0">
-            {/* Remove justify-center and w-full to align left */}
             <div className="social-links flex gap-2">
               <Button
                 variant="outline"
@@ -249,7 +263,6 @@ export default function Home() {
         <h2 className="text-2xl font-bold mb-4 text-center">
           Featured Simulations and Tools
         </h2>
-        {/* Use consistent grid and card structure */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
           {homeFeaturedSimulations.map((simulation) => (
             <Link href={simulation.path} key={simulation.name}>
