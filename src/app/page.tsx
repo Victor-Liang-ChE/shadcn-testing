@@ -22,6 +22,7 @@ const html5LogoPath = "/logos/html5.svg";
 const css3LogoPath = "/logos/css.svg";
 const typescriptLogoPath = "/logos/typescript.svg";
 const dockerLogoPath = "/logos/docker.svg";
+const supabaseLogoPath = "/logos/supabase.svg"; // Added Supabase logo path
 const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png";
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
@@ -152,6 +153,14 @@ export default function Home() {
                     width={25}
                     height={25}
                     title="Docker"
+                  />
+                  {/* Added Supabase Logo here */}
+                  <Image
+                    src={supabaseLogoPath}
+                    alt="Supabase Logo"
+                    width={25} 
+                    height={25}
+                    title="Supabase"
                   />
                 </span>
               </div>
