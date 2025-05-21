@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, Suspense } from 'react';
+import React, { useMemo, Suspense } from 'react';
 import * as THREE from 'three';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 
-const latticeConstant = 1.0; // Define a unit for lattice constant
+const latticeConstant = 1.0;
 
 interface Atom {
   x: number;
@@ -25,7 +25,7 @@ interface CrystalSceneProps {
   crystalStructure: string;
   repeats: number;
   radiusPrimary: number;
-  radiusSecondary: number;
+  radiusSecondary: number; // Stays in props, though might not be used in CrystalScene
   shiftX: number;
   shiftY: number;
   shiftZ: number;
@@ -34,7 +34,7 @@ interface CrystalSceneProps {
   millerH: string;
   millerK: string;
   millerL: string;
-  unitCellSceneOrigin: THREE.Vector3; // Added prop
+  // unitCellSceneOrigin removed from props
 }
 
 function CrystalScene({
@@ -49,11 +49,10 @@ function CrystalScene({
   showMillerPlane,
   millerH,
   millerK,
-  millerL,
-  unitCellSceneOrigin // Consumed as prop
+  millerL
 }: CrystalSceneProps) {
 
-  const atoms = useMemo(() => { // Changed: unitCellSceneOrigin removed from return
+  const { atoms, unitCellSceneOrigin } = useMemo(() => {
     const generatedAtoms: Atom[] = [];
     let basePositions: { x: number; y: number; z: number }[] = [];
 
@@ -79,52 +78,43 @@ function CrystalScene({
         basePositions = [{ x: 0, y: 0, z: 0 }];
     }
 
-    // This offset centers the entire supercell block if repeats > 1.
-    // If repeats = 1, offset is 0.
     const supercellCenteringOffset = (repeats > 1) ? (repeats * latticeConstant - latticeConstant) / 2 : 0;
-    
-    // unitCellSceneOrigin is now passed as a prop, so its direct calculation here is removed.
-    // The atom positions will be relative to an ideal lattice origin (0,0,0)
-    // and then the entire scene (including the unit cell box and miller plane)
-    // will be effectively shifted by unitCellSceneOrigin in the parent component
-    // or by how unitCellSceneOrigin is used in positioning those elements.
-    // For atom generation, we use the supercellCenteringOffset to place them correctly
-    // relative to the scene's center, assuming the unitCellSceneOrigin prop handles
-    // the (0,0,0) unit cell's corner position.
+    const calculatedUnitCellSceneOrigin = new THREE.Vector3(
+        -supercellCenteringOffset,
+        -supercellCenteringOffset,
+        -supercellCenteringOffset
+    );
 
     for (let rX = 0; rX < repeats; rX++) {
       for (let rY = 0; rY < repeats; rY++) {
         for (let rZ = 0; rZ < repeats; rZ++) {
-          // Corner of the current cell in ideal lattice coordinates (before any centering)
           const cellCornerX_ideal = rX * latticeConstant;
           const cellCornerY_ideal = rY * latticeConstant;
           const cellCornerZ_ideal = rZ * latticeConstant;
-
           basePositions.forEach(bp => {
+            // Simplify atom coloring: all primary atoms are the same prominent color
+            const atomColor = '#FF6B6B'; 
+
             generatedAtoms.push({
-              // Atom position: ideal cell corner + (basis pos + fractional shift) * lc - supercell centering
               x: cellCornerX_ideal + (bp.x + shiftX) * latticeConstant - supercellCenteringOffset,
               y: cellCornerY_ideal + (bp.y + shiftY) * latticeConstant - supercellCenteringOffset,
               z: cellCornerZ_ideal + (bp.z + shiftZ) * latticeConstant - supercellCenteringOffset,
-              radius: radiusPrimary, // For now, all atoms use primary radius
-              color: '#FF6B6B' // Example: Red for primary
-              // TODO: Could use radiusSecondary and different colors for different basis atoms if needed
+              radius: radiusPrimary,
+              color: atomColor
             });
           });
         }
       }
     }
-    return generatedAtoms; // Changed: only return atoms
-  }, [crystalStructure, repeats, radiusPrimary, shiftX, shiftY, shiftZ]); // unitCellSceneOrigin removed from dependencies here
+    return { atoms: generatedAtoms, unitCellSceneOrigin: calculatedUnitCellSceneOrigin };
+  }, [crystalStructure, repeats, radiusPrimary, shiftX, shiftY, shiftZ]);
 
   const unitCellEdges = useMemo(() => {
     if (!showUnitCell) return null;
-    
     const points: THREE.Vector3[] = [];
     const ucX = unitCellSceneOrigin.x; 
     const ucY = unitCellSceneOrigin.y; 
     const ucZ = unitCellSceneOrigin.z;
-
     const a = latticeConstant;
     const p = [ // Vertices of the unit cell
       new THREE.Vector3(ucX,     ucY,     ucZ), new THREE.Vector3(ucX + a, ucY,     ucZ), 
@@ -132,53 +122,53 @@ function CrystalScene({
       new THREE.Vector3(ucX,     ucY,     ucZ + a), new THREE.Vector3(ucX + a, ucY,     ucZ + a), 
       new THREE.Vector3(ucX + a, ucY + a, ucZ + a), new THREE.Vector3(ucX,     ucY + a, ucZ + a)
     ];
-
     // Edges
     [ p[0],p[1], p[1],p[2], p[2],p[3], p[3],p[0], // bottom face
       p[4],p[5], p[5],p[6], p[6],p[7], p[7],p[4], // top face
       p[0],p[4], p[1],p[5], p[2],p[6], p[3],p[7]  // vertical edges
     ].forEach(point => points.push(point));
-    
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     return geometry;
-
-  }, [showUnitCell, unitCellSceneOrigin]); // unitCellSceneOrigin is now a prop
+  }, [showUnitCell, unitCellSceneOrigin]);
 
   const millerPlaneData = useMemo(() => {
     if (!showMillerPlane) return null;
-    
-    const h_val = parseInt(millerH);
-    const k_val = parseInt(millerK);
-    const l_val = parseInt(millerL);
-
-    if (isNaN(h_val) || isNaN(k_val) || isNaN(l_val) || (h_val === 0 && k_val === 0 && l_val === 0)) {
-      return null; 
-    }
-
-    const normalVec = new THREE.Vector3(h_val, k_val, l_val);
-    if (normalVec.lengthSq() === 0) return null; // Should be caught by above, but defensive
-    
-    // Distance from the unit cell's origin to the plane (for N=1 family member)
-    // d = a / |(h,k,l)| if plane eq is hx+ky+lz = a
-    const distToPlaneFromCellOrigin = latticeConstant / normalVec.length(); 
-    const planeNormalNormalized = normalVec.clone().normalize();
-    
-    // Position of the plane's center, relative to the visualized unit cell's origin
-    const planeCenterRelativeToCellOrigin = planeNormalNormalized.clone().multiplyScalar(distToPlaneFromCellOrigin);
-
-    // Final absolute position of the plane's center in the scene
-    const finalPlaneCenterPosition = unitCellSceneOrigin.clone().add(planeCenterRelativeToCellOrigin);
-    
-    // Make plane large enough to be seen across the supercell
-    const planeSize = repeats * latticeConstant * Math.max(1.5, Math.abs(h_val||1), Math.abs(k_val||1), Math.abs(l_val||1));
-    const geometry = new THREE.PlaneGeometry(planeSize, planeSize);
-    
-    const defaultPlaneNormal = new THREE.Vector3(0, 0, 1); // PlaneGeometry default normal
-    const quaternion = new THREE.Quaternion().setFromUnitVectors(defaultPlaneNormal, planeNormalNormalized);
-
-    return { geometry, position: finalPlaneCenterPosition, quaternion };
-
-  }, [showMillerPlane, millerH, millerK, millerL, repeats, unitCellSceneOrigin]); // unitCellSceneOrigin is now a prop
+  
+    const h = parseInt(millerH), k = parseInt(millerK), l = parseInt(millerL);
+    if (isNaN(h) || isNaN(k) || isNaN(l) || (h === 0 && k === 0 && l === 0)) return null;
+  
+    // 1.  Geometry big enough to cover the super-cell -------------------
+    const size      = repeats * latticeConstant * 3;
+    const geometry  = new THREE.PlaneGeometry(size, size);
+  
+    // 2.  Quaternion that fixes the in-plane spin -----------------------
+    const n = new THREE.Vector3(h, k, l).normalize();
+  
+    const almostParallel = (a: THREE.Vector3, b: THREE.Vector3) => Math.abs(a.dot(b)) > 0.999;
+    let ref = new THREE.Vector3(0, 0, 1);
+    if (almostParallel(n, ref)) ref.set(0, 1, 0);
+    if (almostParallel(n, ref)) ref.set(1, 0, 0);
+  
+    const u = new THREE.Vector3().crossVectors(ref, n).normalize();
+    const v = new THREE.Vector3().crossVectors(n, u); // v is already normalized if u and n are ortho-normalized
+  
+    const quaternion = new THREE.Quaternion()
+          .setFromRotationMatrix(new THREE.Matrix4().makeBasis(u, v, n));
+  
+    // 3.  Position: “centroid” rule (keeps every plane inside the cell) --
+    const a = latticeConstant;
+    const center = new THREE.Vector3(
+        h ? a / h : a * 0.5,
+        k ? a / k : a * 0.5,
+        l ? a / l : a * 0.5
+    );
+    const position = unitCellSceneOrigin.clone().add(center);
+  
+    return { geometry, position, quaternion };
+  }, [
+    showMillerPlane, millerH, millerK, millerL,
+    repeats, unitCellSceneOrigin // latticeConstant is a module-level const, unitCellSceneOrigin depends on repeats
+  ]);
 
   return (
     <>
@@ -216,29 +206,27 @@ function CrystalScene({
 }
 
 export default function CrystalVisualizationPage() {
-  const [crystalStructure, setCrystalStructure] = useState("SC");
-  const [repeats, setRepeats] = useState(1); // Default to 1 from screenshot
-  const [radiusPrimary, setRadiusPrimary] = useState(0.071); // From screenshot
-  const [radiusSecondary, setRadiusSecondary] = useState(0.215); // From screenshot
-  const [shiftX, setShiftX] = useState(-0.06); // From screenshot
-  const [shiftY, setShiftY] = useState(0.00);
-  const [shiftZ, setShiftZ] = useState(0.00);
-  const [showUnitCell, setShowUnitCell] = useState(true);
-  const [showMillerPlane, setShowMillerPlane] = useState(true); // From screenshot
-  const [millerH, setMillerH] = useState("1");
-  const [millerK, setMillerK] = useState("1");
-  const [millerL, setMillerL] = useState("1");
+  const [crystalStructure, setCrystalStructure] = React.useState("FCC");  // Changed to FCC
+  const [repeats, setRepeats] = React.useState(1); 
+  const [radiusPrimary, setRadiusPrimary] = React.useState(0.15); // Adjusted
+  const [radiusSecondary, setRadiusSecondary] = React.useState(0.1); // Adjusted
+  const [shiftX, setShiftX] = React.useState(0.00); 
+  const [shiftY, setShiftY] = React.useState(0.00);
+  const [shiftZ, setShiftZ] = React.useState(0.00);
+  const [showUnitCell, setShowUnitCell] = React.useState(true);
+  const [showMillerPlane, setShowMillerPlane] = React.useState(true); 
+  const [millerH, setMillerH] = React.useState("1"); // Defaulting to 101
+  const [millerK, setMillerK] = React.useState("0");
+  const [millerL, setMillerL] = React.useState("1");
 
   // Force re-mount of Canvas for camera re-calculation if repeats change significantly
-  const canvasKey = useMemo(() => `${repeats}-${crystalStructure}`, [repeats, crystalStructure]); 
+  const canvasKey = React.useMemo(() => `${repeats}-${crystalStructure}`, [repeats, crystalStructure]); 
 
-  const unitCellSceneOrigin = useMemo(() => {
+  // Calculate gridHelper Y position based on repeats, as unitCellSceneOrigin is internal to CrystalScene
+  // unitCellSceneOrigin.y is -supercellCenteringOffset
+  const gridHelperYPosition = React.useMemo(() => {
     const supercellCenteringOffset = (repeats > 1) ? (repeats * latticeConstant - latticeConstant) / 2 : 0;
-    return new THREE.Vector3(
-        -supercellCenteringOffset,
-        -supercellCenteringOffset,
-        -supercellCenteringOffset
-    );
+    return -supercellCenteringOffset - latticeConstant * 0.01;
   }, [repeats]);
 
   return (
@@ -280,7 +268,7 @@ export default function CrystalVisualizationPage() {
             </Label>
             <Slider
               id="radius-primary"
-              min={0.01} max={0.75} step={0.001} // Min radius smaller
+              min={0.01} max={0.75} step={0.001} 
               value={[radiusPrimary]}
               onValueChange={(val) => setRadiusPrimary(val[0])}
             />
@@ -295,7 +283,7 @@ export default function CrystalVisualizationPage() {
               min={0.01} max={0.75} step={0.001}
               value={[radiusSecondary]}
               onValueChange={(val) => setRadiusSecondary(val[0])}
-              disabled // Keep disabled unless specific use case for it arises
+              disabled 
             />
           </div>
 
@@ -363,7 +351,7 @@ export default function CrystalVisualizationPage() {
           shadows
         >
           <Suspense fallback={<Html center><p style={{color: 'white'}}>Loading 3D Scene...</p></Html>}>
-            <ambientLight intensity={Math.PI / 2 * 0.6} /> {/* Adjusted intensity based on common three examples */}
+            <ambientLight intensity={Math.PI} /> 
             <directionalLight 
               position={[latticeConstant * repeats * 1.5, latticeConstant * repeats * 2.5, latticeConstant * repeats * 2]} 
               intensity={Math.PI * 0.8}
@@ -384,7 +372,7 @@ export default function CrystalVisualizationPage() {
               millerH={millerH}
               millerK={millerK}
               millerL={millerL}
-              unitCellSceneOrigin={unitCellSceneOrigin} // Pass as prop
+              // unitCellSceneOrigin prop removed
             />
             <OrbitControls 
               enableDamping 
@@ -394,7 +382,7 @@ export default function CrystalVisualizationPage() {
             />
             <gridHelper 
                 args={[latticeConstant * repeats * 2.5, repeats * 10, '#555555', '#777777']} 
-                position={[0, unitCellSceneOrigin.y - latticeConstant * 0.01, 0]} // Use lifted state
+                position={[0, gridHelperYPosition, 0]} // Use calculated Y position
             />
           </Suspense>
         </Canvas>

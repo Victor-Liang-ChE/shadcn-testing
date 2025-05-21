@@ -11,6 +11,7 @@ const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
 const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png";
 const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png"; // Added new thumbnail path
+const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.png"; // Placeholder for new thumbnail
 
 export default function Page() {
   const allSimulations = [
@@ -34,6 +35,13 @@ export default function Page() {
       description: "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
       thumbnailPath: compoundPropertiesThumbnailPath,
       isNew: true, // Added NEW badge
+    },
+    {
+      name: "Residue Curve Map",
+      path: "/toolbox/residue-curve-map",
+      description: "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
+      thumbnailPath: residueCurveMapThumbnailPath, // Use the new thumbnail path
+      isNew: true, 
     },
     {
       name: "Reaction Kinetics",

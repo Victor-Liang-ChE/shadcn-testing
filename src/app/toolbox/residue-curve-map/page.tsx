@@ -772,7 +772,7 @@ export default function TernaryResidueMapPage() {
             // --- Call Direct Azeotrope Solver ---
             let foundAzeotropes: AzeotropeDisplayInfo[] = [];
 
-            if (compoundsForBackend.length === 3) {
+            if (compoundsForBackend.length === 3) { // Ensure this uses compoundsForBackend
                 const initialGuessesRaw: { x: number[], T_K: number }[] = [ // Added type for initialGuessesRaw elements
                     { x: [0.333, 0.333, 0.334], T_K: initialTempGuess_K }, // Center
                 ];
@@ -781,7 +781,7 @@ export default function TernaryResidueMapPage() {
                     initialGuessesRaw.push({ x: [0.05, 0.9, 0.05], T_K: plotSortedComponents[1].bp_at_Psys_K || plotSortedComponents[1].thermData.nbp_K || initialTempGuess_K });
                     initialGuessesRaw.push({ x: [0.05, 0.05, 0.9], T_K: plotSortedComponents[2].bp_at_Psys_K || plotSortedComponents[2].thermData.nbp_K || initialTempGuess_K });
                 }
-                if (compoundsForBackend.length === 3) {
+                if (compoundsForBackend.length === 3) { // Ensure this uses compoundsForBackend
                     const T0 = plotSortedComponents.find(c => c.originalIndex === 0)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 0)?.thermData.nbp_K || initialTempGuess_K;
                     const T1 = plotSortedComponents.find(c => c.originalIndex === 1)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 1)?.thermData.nbp_K || initialTempGuess_K;
                     const T2 = plotSortedComponents.find(c => c.originalIndex === 2)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 2)?.thermData.nbp_K || initialTempGuess_K;
@@ -1025,26 +1025,32 @@ export default function TernaryResidueMapPage() {
         }
         
         const plotTitleColor = currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'; 
-        const plotFont = { family: 'Merriweather Sans, Arial, sans-serif', color: currentTheme === 'dark' ? '#e5e7eb' : '#1f2937' }; 
-        const axisTitleFont = { ...plotFont, size: 15 };
-        const tickFont = { ...plotFont, size: 14 };
+        // Define font family string and color for consistent use
+        const merriweatherFamilyString = 'Merriweather Sans, Arial, sans-serif';
+        const plotFontColor = currentTheme === 'dark' ? '#e5e7eb' : '#1f2937';
+
+        // Base font object for global settings and easy reuse
+        const basePlotFontObject = { family: merriweatherFamilyString, color: plotFontColor };
+
+        const axisTitleFont = { ...basePlotFontObject, size: 15 };
+        const tickFont = { ...basePlotFontObject, size: 14 };
 
         const baseLayout: Partial<Layout> = {
             title: {
                 text: `Ternary Residue Curve Map (${modelName} Model, ODE Simulation)`,
-                font: { family: 'Merriweather Sans, Arial, sans-serif', size: 18, color: plotTitleColor }, 
+                font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor }, 
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: titleA, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Top (Intermediate)
-                baxis: { title: { text: titleB, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Left (Heaviest)
-                caxis: { title: { text: titleC, font: axisTitleFont }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Right (Lightest)
+                aaxis: { title: { text: titleA, font: axisTitleFont, standoff: 25 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Top (Intermediate)
+                baxis: { title: { text: titleB, font: axisTitleFont, standoff: 25 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Left (Heaviest)
+                caxis: { title: { text: titleC, font: axisTitleFont, standoff: 25 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Right (Lightest)
                 bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8',
             },
             margin: { l: 70, r: 70, b: 70, t: 90, pad: 5 }, // Standard margins
             autosize: true,
             paper_bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8', 
-            font: plotFont, 
+            font: basePlotFontObject, // Global font setting
             plot_bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8', 
             annotations: [], 
             shapes: [], 
@@ -1122,7 +1128,7 @@ export default function TernaryResidueMapPage() {
                     yref: 'paper',
                     x: 0.5,
                     y: 0.5,
-                    font: plotFont,
+                    font: basePlotFontObject, // Use defined base font object
                 }],
                 shapes: [] 
             };
@@ -1154,9 +1160,9 @@ export default function TernaryResidueMapPage() {
                     `<b>T</b>: %{customdata} °C<extra></extra>`, // Use customdata directly
                 hoverlabel: {
                     font: {
-                        family: 'Merriweather Sans, Arial, sans-serif',
+                        family: merriweatherFamilyString, // Explicitly set family
                         size: 14,
-                        color: plotFont.color
+                        color: plotFontColor // Use defined color
                     }
                 }
             };
@@ -1237,7 +1243,7 @@ export default function TernaryResidueMapPage() {
                             point2_for_direction_ternary = curve[headIndex + 1].x;
                         } else if (headIndex > 0) {
                             point1_for_direction_ternary = curve[headIndex - 1].x;
-                            point2_for_direction_ternary = curve[headIndex].x;
+                                                       point2_for_direction_ternary = curve[headIndex].x;
                         } else {
                             continue; 
                         }
@@ -1270,6 +1276,7 @@ export default function TernaryResidueMapPage() {
                             continue; 
                         }
                             
+
                         let raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
                         let final_angle_deg = raw_screen_angle_deg + 90; 
 
@@ -1309,9 +1316,9 @@ export default function TernaryResidueMapPage() {
                 hoverlabel: {
                     bgcolor: currentTheme === 'dark' ? 'rgba(50,50,50,0.85)' : 'rgba(250,250,250,0.85)', // Adjusted for theme
                     font: {
-                        family: 'Merriweather Sans, Arial, sans-serif',
+                        family: merriweatherFamilyString, // Explicitly set family
                         size: 14,
-                        color: plotFont.color // Already theme-aware
+                        color: plotFontColor // Use defined color
                     },
                     bordercolor: currentTheme === 'dark' ? '#777' : '#ccc'
                 },
@@ -1369,7 +1376,7 @@ export default function TernaryResidueMapPage() {
                     showlegend: true,
                     legendgroup: 'azeotropes', // Use a common group name
                     hoverlabel: { 
-                        font: { family: 'Merriweather Sans, Arial, sans-serif', size: 12, color: plotFont.color},
+                        font: { family: merriweatherFamilyString, size: 12, color: plotFontColor}, // Explicitly set family and color
                         bgcolor: currentTheme === 'dark' ? 'rgba(40,40,40,0.9)' : 'rgba(240,240,240,0.9)',
                         bordercolor: currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'
                     }
@@ -1384,11 +1391,11 @@ export default function TernaryResidueMapPage() {
             shapes: [], // Clear old shapes if any, or manage them if other shapes are needed
             annotations: [...(baseLayout.annotations || [])], 
             title: { 
-                ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: 'Merriweather Sans, Arial, sans-serif', size: 18, color: plotTitleColor} } ), 
+                ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor} } ), 
                 text: `Ternary Residue Curve Map @ ${pressureDisplay} bar (${modelName} Model)` 
             },
             legend: { // Ensure legend is configured
-                font: plotFont,
+                font: basePlotFontObject, // Use defined base font object for legend
                 bgcolor: currentTheme === 'dark' ? 'rgba(8, 48, 107, 0.8)' : 'rgba(220, 230, 240, 0.8)', // Semi-transparent background
                 bordercolor: currentTheme === 'dark' ? '#4b5563' : '#9ca3af',
                 borderwidth: 1,
@@ -1416,68 +1423,71 @@ export default function TernaryResidueMapPage() {
                         </CardHeader>
                         <CardContent className="space-y-4">
                             {/* Component names */}
-                            <div className="space-y-2">
+                            <div className="space-y-3"> {/* Grouping div for component inputs */}
                                 {componentsInput.map((component, index) => (
-                                    <Card className="flex-1" key={index}>
-                                        <CardContent className="space-y-3">
-                                            <div className="relative">
-                                                <Label htmlFor={`name-${index}`}>Name</Label>
-                                                <Input
-                                                    id={`name-${index}`}
-                                                    ref={el => { inputRefs.current[index] = el; }}
-                                                    value={component.name}
-                                                    onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
-                                                    placeholder={`e.g. Acetone`}
-                                                    autoComplete="off"
-                                                    onFocus={() => {
-                                                        setActiveSuggestionIndex(index);
-                                                        if (componentsInput[index].name.trim()) {
-                                                            debouncedFetchComponentSuggestions(componentsInput[index].name, index);
-                                                        }
-                                                    }}
-                                                />
-                                                {showSuggestions[index] && componentSuggestions[index].length > 0 && (
-                                                    <ul
-                                                        ref={el => { suggestionsContainerRefs.current[index] = el; }}
-                                                        className={`absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-md shadow-md
-                                                          ${currentTheme === 'dark'
-                                                            ? 'bg-gray-800 border border-gray-700 text-gray-200'
-                                                            : 'bg-white border border-gray-300 text-gray-900'}`}
-                                                    >
-                                                        {componentSuggestions[index].map((suggestion, si) => (
-                                                            <li
-                                                                key={si}
-                                                                className={`px-4 py-2 cursor-pointer
-                                                                  ${currentTheme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                                                                onMouseDown={() => handleSuggestionClick(index, suggestion)}
-                                                            >
-                                                                {suggestion}
-                                                            </li>
-                                                        ))}
-                                                    </ul>
-                                                )}
-                                            </div>
-                                        </CardContent>
-                                    </Card>
+                                    <div className="flex items-center space-x-2" key={index}> {/* Flex container for label and input */}
+                                        <Label htmlFor={`name-${index}`} className="whitespace-nowrap">{`Component ${index + 1}:`}</Label>
+                                        <div className="relative w-full"> {/* Relative container for input and suggestions */}
+                                            <Input
+                                                id={`name-${index}`}
+                                                ref={el => { inputRefs.current[index] = el; }}
+                                                value={component.name}
+                                                onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
+                                                placeholder={`e.g. Acetone`}
+                                                autoComplete="off"
+                                                onFocus={() => {
+                                                    setActiveSuggestionIndex(index);
+                                                    if (componentsInput[index].name.trim()) {
+                                                        debouncedFetchComponentSuggestions(componentsInput[index].name, index);
+                                                    }
+                                                }}
+                                            />
+                                            {showSuggestions[index] && componentSuggestions[index].length > 0 && (
+                                                <ul
+                                                    ref={el => { suggestionsContainerRefs.current[index] = el; }}
+                                                    className={`absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-md shadow-md
+                                                      ${currentTheme === 'dark'
+                                                        ? 'bg-gray-800 border border-gray-700 text-gray-200'
+                                                        : 'bg-white border border-gray-300 text-gray-900'}`}
+                                                >
+                                                    {componentSuggestions[index].map((suggestion, si) => (
+                                                        <li
+                                                            key={si}
+                                                            className={`px-4 py-2 cursor-pointer
+                                                              ${currentTheme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                                                            onMouseDown={() => handleSuggestionClick(index, suggestion)}
+                                                        >
+                                                            {suggestion}
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            )}
+                                        </div> {/* End of relative container for input and suggestions */}
+                                    </div>
                                 ))}
-                            </div>
+
+                            </div> {/* End of grouping div for component inputs */}
                             {/* Pressure on same line */}
                             <div className="flex items-center space-x-2">
                                 <Label htmlFor="systemPressure" className="whitespace-nowrap">
-                                    Pressure (bar)
+                                    Pressure:
                                 </Label>
-                                <Input
-                                    id="systemPressure"
-                                    type="number"
-                                    value={systemPressure}
-                                    onChange={e => setSystemPressure(e.target.value)}
-                                    placeholder="1.0"
-                                />
+                                <div className="flex items-center w-full"> {/* Wrapper for input and unit */}
+                                    <Input
+                                        id="systemPressure"
+                                        type="number"
+                                        value={systemPressure}
+                                        onChange={e => setSystemPressure(e.target.value)}
+                                        placeholder="1.0"
+                                        className="flex-grow" // Make input take available space
+                                    />
+                                    <span className="ml-2 text-muted-foreground">bar</span> {/* Unit display */}
+                                </div>
                             </div>
                             {/* Activity model on same line */}
                             <div className="flex items-center space-x-2">
                                 <Label htmlFor="fluidPackage" className="whitespace-nowrap">
-                                    Activity Model
+                                    Activity Model:
                                 </Label>
                                 <Select
                                     value={fluidPackage}

@@ -49,6 +49,9 @@ function Navbar() {
       case "/toolbox/compound-properties":
         return "Compound Properties";
 
+      case "/toolbox/residue-curve-map":
+        return "Residue Curve Map";
+
       case "/misc":
           return "Miscellaneous Projects";
   

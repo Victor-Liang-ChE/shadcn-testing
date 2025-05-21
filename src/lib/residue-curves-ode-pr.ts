@@ -188,138 +188,171 @@ export function findBubblePointTemperatureTernaryPr(
     x_liq: number[],
     P_system_Pa: number,
     components: CompoundData[],
-    ternaryPrKij: TernaryPrParams, // Changed variable name and ensured type is TernaryPrParams
+    ternaryPrKij: TernaryPrParams, 
     initialTempGuess_K: number
 ): { T_K: number, y_vap: number[], K_values: number[], ZL: number, ZV: number } | null {
-    console.log(`--- findBubblePointTemperatureTernaryPr START ---`);
-    console.log(`Initial x_liq: [${x_liq.join(', ')}], P_sys: ${P_system_Pa}, Init_T_guess: ${initialTempGuess_K}`);
+    // console.log(`--- findBubblePointTemperatureTernaryPr START ---`);
+    // console.log(`Initial x_liq: [${x_liq.join(', ')}], P_sys: ${P_system_Pa}, Init_T_guess: ${initialTempGuess_K}`);
 
     let T_K = initialTempGuess_K;
     const x = normalizeMoleFractions(x_liq);
-    console.log(`Normalized x: [${x.join(', ')}]`);
+    // console.log(`Normalized x: [${x.join(', ')}]`);
 
     if (components.some(c => !c.antoine || !c.prParams) || components.length !== 3) {
-        console.error("PR BubbleT ERR: Invalid component data or not 3 components.");
+        // console.error("PR BubbleT ERR: Invalid component data or not 3 components.");
         return null;
     }
 
-    let y_vap = [...x]; // Initialize y_vap
+    // let y_vap = [...x]; // y_vap will be calculated inside K-loop as y_vap_final
     let K_values = components.map(c => {
         const psat = calculatePsat_Pa(c.antoine!, T_K);
-        return isNaN(psat) || P_system_Pa === 0 ? 1.0 : psat / P_system_Pa; // Corrected typo
+        return isNaN(psat) || P_system_Pa === 0 ? 1.0 : psat / P_system_Pa; 
     });
-    if (K_values.some(isNaN)) K_values = [1, 1, 1]; // Fallback if any K is NaN
-    console.log(`Initial K_values (Raoult): [${K_values.map(k => k.toFixed(3)).join(', ')}]`);
+    if (K_values.some(isNaN)) K_values = [1, 1, 1]; 
+    // console.log(`Initial K_values (Raoult): [${K_values.map(k => k.toFixed(3)).join(', ')}]`);
 
-    let sum_Kx_from_K_loop = 0; // Will hold the sum Kx from the K-loop
-    let ZL_K_loop: number | null = null; // To store ZL from K-loop for final check
-    let ZV_K_loop: number | null = null; // To store ZV from K-loop for final check
+    let sum_Kx_from_K_loop = 0; 
+    let ZL_K_loop: number | null = null; 
+    let ZV_K_loop: number | null = null; 
 
     for (let T_iter = 0; T_iter < MAX_BUBBLE_T_ITERATIONS; T_iter++) {
-        console.log(`\nT_iter: ${T_iter}, Current T_K: ${T_K.toFixed(3)}`);
+        // console.log(`\nT_iter: ${T_iter}, Current T_K: ${T_K.toFixed(3)}`);
         
+        let K_converged_inner_loop = false;
+        // K_values holds the result from the previous T_iter or the initial Raoult's guess.
+
         for (let K_iter = 0; K_iter < MAX_K_VALUE_ITERATIONS; K_iter++) {
-            y_vap = normalizeMoleFractions(K_values.map((Ki, i) => Ki * x[i]));
-            console.log(`  K_iter: ${K_iter}, y_vap guess: [${y_vap.map(yi => yi.toFixed(3)).join(', ')}]`);
+            const K_values_at_K_iter_start = [...K_values]; 
 
+            // 1. Calculate y_vap_final based on K_values_at_K_iter_start
+            const y_unnormalized_for_iter = K_values_at_K_iter_start.map((Ki, i) => Ki * x[i]);
+            const sum_Kx_for_y_norm = y_unnormalized_for_iter.reduce((sum, val) => sum + val, 0);
+
+            if (Math.abs(sum_Kx_for_y_norm) < MIN_MOLE_FRACTION * 1e-3) {
+                ZL_K_loop = null; ZV_K_loop = null; // Ensure failure state for T-loop
+                break; // K-loop fails
+            }
+            const y_vap_final = normalizeMoleFractions(y_unnormalized_for_iter);
+            // console.log(`  K_iter: ${K_iter}, y_vap_final guess: [${y_vap_final.map(yi => yi.toFixed(3)).join(', ')}]`);
+            if (y_vap_final.some(isNaN)) { ZL_K_loop = null; ZV_K_loop = null; break; }
+
+
+            // 2. Calculate mixture params, ZL, ZV based on y_vap_final
             const liqMix = calculatePrMixtureParamsTernary(x, T_K, components, ternaryPrKij);
-            const vapMix = calculatePrMixtureParamsTernary(y_vap, T_K, components, ternaryPrKij);
-
+            const vapMix = calculatePrMixtureParamsTernary(y_vap_final, T_K, components, ternaryPrKij);
             const liqEosCoeffs = calculatePrCoefficients(liqMix.mixture_a, liqMix.mixture_b, T_K, P_system_Pa);
             const vapEosCoeffs = calculatePrCoefficients(vapMix.mixture_a, vapMix.mixture_b, T_K, P_system_Pa);
-
             const ZL_all_roots = solveCubicEOS(1, liqEosCoeffs.p, liqEosCoeffs.q, liqEosCoeffs.r);
             const ZV_all_roots = solveCubicEOS(1, vapEosCoeffs.p, vapEosCoeffs.q, vapEosCoeffs.r);
             
-            console.log(`    Liq EOS: A=${liqEosCoeffs.A_mix_eos.toExponential(2)}, B=${liqEosCoeffs.B_mix_eos.toExponential(2)}, p=${liqEosCoeffs.p.toFixed(3)}, q=${liqEosCoeffs.q.toFixed(3)}, r=${liqEosCoeffs.r.toFixed(3)}, Roots=${ZL_all_roots?.map(r => r.toFixed(3))}`);
-            console.log(`    Vap EOS: A=${vapEosCoeffs.A_mix_eos.toExponential(2)}, B=${vapEosCoeffs.B_mix_eos.toExponential(2)}, p=${vapEosCoeffs.p.toFixed(3)}, q=${vapEosCoeffs.q.toFixed(3)}, r=${vapEosCoeffs.r.toFixed(3)}, Roots=${ZV_all_roots?.map(r => r.toFixed(3))}`);
-
-            ZL_K_loop = null; // Reset for this K-iteration
-            if (ZL_all_roots && ZL_all_roots.length > 0) {
-                const valid_ZL = ZL_all_roots.filter(z => z > liqEosCoeffs.B_mix_eos + MIN_MOLE_FRACTION); // Ensure Z > B_mix
-                if (valid_ZL.length > 0) ZL_K_loop = valid_ZL[0]; // Smallest positive root > B_mix
+            ZL_K_loop = null; ZV_K_loop = null; // Reset for this K-iteration's Z calculation
+            if (ZL_all_roots?.length) {
+                const valid_ZL = ZL_all_roots.filter(z => z > liqEosCoeffs.B_mix_eos + MIN_MOLE_FRACTION * 1e-3);
+                if (valid_ZL.length > 0) ZL_K_loop = Math.min(...valid_ZL);
             }
-
-            ZV_K_loop = null; // Reset for this K-iteration
-            if (ZV_all_roots && ZV_all_roots.length > 0) {
-                const valid_ZV = ZV_all_roots.filter(z => z > vapEosCoeffs.B_mix_eos + MIN_MOLE_FRACTION); // Ensure Z > B_mix
-                if (valid_ZV.length > 0) ZV_K_loop = valid_ZV[valid_ZV.length - 1]; // Largest positive root > B_mix
+            if (ZV_all_roots?.length) {
+                const valid_ZV = ZV_all_roots.filter(z => z > vapEosCoeffs.B_mix_eos + MIN_MOLE_FRACTION * 1e-3);
+                if (valid_ZV.length > 0) ZV_K_loop = Math.max(...valid_ZV);
             }
-            console.log(`    Selected ZL=${ZL_K_loop?.toFixed(4)}, ZV=${ZV_K_loop?.toFixed(4)} (B_liq=${liqEosCoeffs.B_mix_eos.toFixed(4)}, B_vap=${vapEosCoeffs.B_mix_eos.toFixed(4)})`);
-
+            // console.log(`    Selected ZL=${ZL_K_loop?.toFixed(4)}, ZV=${ZV_K_loop?.toFixed(4)} (B_liq=${liqEosCoeffs.B_mix_eos.toFixed(4)}, B_vap=${vapEosCoeffs.B_mix_eos.toFixed(4)})`);
             if (ZL_K_loop === null || ZV_K_loop === null) {
-                console.warn(`  PR Bubble T (K-loop) ERR: No valid ZL/ZV. T_K=${T_K.toFixed(2)}, K_iter=${K_iter}`);
-                break; 
+                // console.warn(`  PR Bubble T (K-loop) ERR: No valid ZL/ZV. T_K=${T_K.toFixed(2)}, K_iter=${K_iter}`);
+                break; // K-loop fails, ZL_K_loop/ZV_K_loop are null for T-loop check
             }
 
+            // 3. Calculate phi_L and phi_V
             const phi_L = calculatePrFugacityCoefficientsTernary(x, T_K, P_system_Pa, ZL_K_loop, liqMix.mixture_a, liqMix.mixture_b, liqMix.component_a_values, liqMix.component_b_values, ternaryPrKij);
-            const phi_V = calculatePrFugacityCoefficientsTernary(y_vap, T_K, P_system_Pa, ZV_K_loop, vapMix.mixture_a, vapMix.mixture_b, vapMix.component_a_values, vapMix.component_b_values, ternaryPrKij);
-            console.log(`    phi_L: [${phi_L.map(p => p?.toFixed(3) ?? 'NaN').join(', ')}], phi_V: [${phi_V.map(p => p?.toFixed(3) ?? 'NaN').join(', ')}]`);
-
-            if (phi_L.some(isNaN) || phi_V.some(isNaN)) {
-                console.error(`  PR Bubble T (K-loop) ERR: NaN in phi_L or phi_V. T_K=${T_K.toFixed(2)}`);
-                ZL_K_loop = null; ZV_K_loop = null; // Mark as failed for outer loop check
+            const phi_V = calculatePrFugacityCoefficientsTernary(y_vap_final, T_K, P_system_Pa, ZV_K_loop, vapMix.mixture_a, vapMix.mixture_b, vapMix.component_a_values, vapMix.component_b_values, ternaryPrKij);
+            // console.log(`    phi_L: [${phi_L.map(p => p?.toFixed(3) ?? 'NaN').join(', ')}], phi_V: [${phi_V.map(p => p?.toFixed(3) ?? 'NaN').join(', ')}]`);
+            if (phi_L.some(isNaN) || phi_V.some(isNaN) || phi_V.some(p => p < MIN_MOLE_FRACTION * 1e-3)) {
+                // console.error(`  PR Bubble T (K-loop) ERR: NaN or too small phi_V. T_K=${T_K.toFixed(2)}`);
+                ZL_K_loop = null; ZV_K_loop = null; // Signal failure
                 break; 
             }
-
-            const new_K_values = phi_L.map((phiL_i, i) => phi_V[i] === 0 ? Infinity : phiL_i / phi_V[i]); // Corrected typo
-             if (new_K_values.some(k => isNaN(k) || !isFinite(k))) {
-                console.error(`  PR Bubble T (K-loop) ERR: NaN/Inf in new K_values. T_K=${T_K.toFixed(2)} K_values were: [${new_K_values.map(kv => kv?.toString()).join(',')}]`);
-                 ZL_K_loop = null; ZV_K_loop = null; // Mark as failed
-                 break;
+            
+            // 4. Calculate new K-values for this K-iteration
+            const K_values_updated_this_K_iter = phi_L.map((phiL_i, i) => Math.max(MIN_MOLE_FRACTION, phiL_i / phi_V[i]));
+            if (K_values_updated_this_K_iter.some(k => isNaN(k) || !isFinite(k))) {
+                // console.error(`  PR Bubble T (K-loop) ERR: NaN/Inf in K_values_updated_this_K_iter. T_K=${T_K.toFixed(2)}`);
+                ZL_K_loop = null; ZV_K_loop = null; // Signal failure
+                break;
             }
-            console.log(`    New K_values: [${new_K_values.map(k => k.toFixed(3)).join(', ')}]`);
+            // console.log(`    K_values_updated_this_K_iter: [${K_values_updated_this_K_iter.map(k => k.toFixed(3)).join(', ')}]`);
 
-            const K_diff_sq_sum = K_values.reduce((sum, oldK, i) => sum + (new_K_values[i] - oldK)**2, 0);
-            K_values = new_K_values;
+            // 5. Check convergence: Compare K_values_updated_this_K_iter with K_values_at_K_iter_start
+            const K_diff_sq_sum = K_values_at_K_iter_start.reduce((sum, oldK_for_iter, i) => sum + (K_values_updated_this_K_iter[i] - oldK_for_iter)**2, 0);
+            
+            // Update K_values for the *next* K-iteration or for the T-loop using damping
+            const K_damping = (K_iter < 3 ? 0.3 : 0.7); // More damping initially
+            K_values = K_values_at_K_iter_start.map((oldK, idx) => oldK + K_damping * (K_values_updated_this_K_iter[idx] - oldK));
+            
+            // This sum_Kx_from_K_loop is what the T-loop tries to drive to 1.
             sum_Kx_from_K_loop = K_values.reduce((sum, Ki, i) => sum + Ki * x[i], 0);
-            console.log(`    Sum Kx = ${sum_Kx_from_K_loop.toFixed(5)}, K_diff_sqrt = ${Math.sqrt(K_diff_sq_sum).toExponential(3)}`);
 
-            if (Math.sqrt(K_diff_sq_sum) < K_VALUE_TOLERANCE * K_values.length && K_iter > 0) {
-                console.log(`  K-loop converged at K_iter=${K_iter}.`);
+            // console.log(`    Damped K_values for next iter/T-loop: [${K_values.map(k => k.toFixed(3)).join(', ')}]`);
+            // console.log(`    Sum Kx (for T-loop) = ${sum_Kx_from_K_loop.toFixed(5)}, K_diff_sqrt (updated vs start_of_K_iter) = ${Math.sqrt(K_diff_sq_sum).toExponential(3)}`);
+
+            if (Math.sqrt(K_diff_sq_sum) < K_VALUE_TOLERANCE && K_iter > 0) {
+                K_converged_inner_loop = true;
+                // console.log(`  K-loop converged at K_iter=${K_iter}.`);
                 break; 
             }
-            if (K_iter === MAX_K_VALUE_ITERATIONS - 1) {
-                console.warn(`  PR Bubble T: K-value loop MAX iter at T=${T_K.toFixed(2)}K.`);
-            }
+             if (K_iter === MAX_K_VALUE_ITERATIONS - 1) {
+                // console.warn(`  PR Bubble T: K-value loop MAX iter at T=${T_K.toFixed(2)}K.`);
+             }
         } // End K-value loop
 
-        if (ZL_K_loop === null || ZV_K_loop === null) { // If K-loop broke due to ZL/ZV failure
-            let T_K_change_factor = (T_iter % 2 === 0) ? 1.05 : 0.95; // Try nudging T
-            console.warn(`  Adjusting T due to ZL/ZV failure in K-loop. Old T_K=${T_K.toFixed(2)}, Factor=${T_K_change_factor}`);
-            T_K *= T_K_change_factor;
-            if (T_K <= 100 || isNaN(T_K)) T_K = initialTempGuess_K * (0.8 + Math.random() * 0.4); // Ensure T_K is reasonable
-             console.warn(`  New T_K for next T_iter = ${T_K.toFixed(2)}`);
+        if (ZL_K_loop === null || ZV_K_loop === null || !K_converged_inner_loop) { 
+            // console.warn(`  Adjusting T due to K-loop failure/non-convergence. Old T_K=${T_K.toFixed(2)}. ZL/ZV null: ${ZL_K_loop === null || ZV_K_loop === null}, K_converged: ${K_converged_inner_loop}`);
+            T_K *= (1 + (Math.random() - 0.5) * 0.04); 
+            if (T_K <= 100 || isNaN(T_K)) T_K = initialTempGuess_K * (0.8 + Math.random() * 0.4);
+            K_values = components.map(c => {
+                const psat = calculatePsat_Pa(c.antoine!, T_K); 
+                return isNaN(psat) || P_system_Pa === 0 ? 1.0 : psat / P_system_Pa;
+            });
+            if (K_values.some(isNaN)) K_values = [1, 1, 1];
+            // console.warn(`  New T_K for next T_iter = ${T_K.toFixed(2)}, K-values reset to Raoult's.`);
             continue; 
         }
 
         const error_T_loop = sum_Kx_from_K_loop - 1.0;
 
         if (Math.abs(error_T_loop) < BUBBLE_T_CONVERGENCE_TOLERANCE) {
-            const final_y_vap = normalizeMoleFractions(K_values.map((Ki, i) => Ki * x[i]));
-            return { T_K, y_vap: final_y_vap, K_values, ZL: ZL_K_loop!, ZV: ZV_K_loop! };
+            const final_y_vap_for_return = normalizeMoleFractions(K_values.map((Ki, i) => Ki * x[i]));
+            return { T_K, y_vap: final_y_vap_for_return, K_values, ZL: ZL_K_loop!, ZV: ZV_K_loop! };
         }
 
-        // conservative damped temperature update
+        if (Math.abs(error_T_loop) > 0.2 && T_iter > 1) { 
+            // console.warn(`  Sum Kx = ${sum_Kx_from_K_loop.toFixed(3)} is far from 1. Resetting K-values to Raoult's.`);
+            K_values = components.map(c => {
+                const psat = calculatePsat_Pa(c.antoine!, T_K); 
+                return isNaN(psat) || P_system_Pa === 0 ? 1.0 : psat / P_system_Pa;
+            });
+            if (K_values.some(isNaN)) K_values = [1, 1, 1];
+        }
+        
         const target_T_ratio = 1.0 / sum_Kx_from_K_loop;
-        let damped_T_ratio_change = (target_T_ratio - 1.0) * (T_iter < 5 ? 0.1 : 0.25);
+        let damped_T_ratio_change = (target_T_ratio - 1.0) * (T_iter < 3 ? 0.05 : (T_iter < 10 ? 0.1 : 0.15));
+        
+        const max_T_change_factor = 0.05; 
+        damped_T_ratio_change = Math.max(-max_T_change_factor, Math.min(max_T_change_factor, damped_T_ratio_change));
+
         let T_K_new_ratio = 1.0 + damped_T_ratio_change;
-        T_K_new_ratio = Math.max(0.90, Math.min(1.10, T_K_new_ratio));
         const T_K_new = T_K * T_K_new_ratio;
 
         if (Math.abs(T_K_new - T_K) < BUBBLE_T_TOLERANCE_K && T_iter > 2) {
-            if (Math.abs(error_T_loop) < BUBBLE_T_CONVERGENCE_TOLERANCE * 20) {
-                const final_y_vap = normalizeMoleFractions(K_values.map((Ki, i) => Ki * x[i]));
-                return { T_K, y_vap: final_y_vap, K_values, ZL: ZL_K_loop!, ZV: ZV_K_loop! };
+            if (Math.abs(error_T_loop) < BUBBLE_T_CONVERGENCE_TOLERANCE * 20) { // Looser tolerance if T is stable
+                const final_y_vap_for_return = normalizeMoleFractions(K_values.map((Ki, i) => Ki * x[i]));
+                return { T_K, y_vap: final_y_vap_for_return, K_values, ZL: ZL_K_loop!, ZV: ZV_K_loop! };
             }
         }
-        T_K = Math.max(150, Math.min(800, T_K_new));
+        T_K = Math.max(150, Math.min(800, T_K_new)); // Ensure T_K stays within reasonable bounds
         if (isNaN(T_K) || T_K <= 0) {
-            T_K = initialTempGuess_K * (0.7 + Math.random() * 0.6);
-            if (T_K <= 0) T_K = 273.15;
+            T_K = initialTempGuess_K * (0.7 + Math.random() * 0.6); // More aggressive reset if T becomes invalid
+            if (T_K <= 0) T_K = 273.15; // Absolute fallback
         }
     }
-    console.warn(`PR Bubble T ERR: Max T-iterations reached for x=[${x.join(', ')}]. Last T_K=${T_K.toFixed(2)}, Last Sum Kx=${sum_Kx_from_K_loop.toFixed(4)}`);
+    // console.warn(`PR Bubble T ERR: Max T-iterations reached for x=[${x.join(', ')}]. Last T_K=${T_K.toFixed(2)}, Last Sum Kx=${sum_Kx_from_K_loop.toFixed(4)}`);
     return null;
 }
 
@@ -354,12 +387,19 @@ function residue_curve_ode_dxdxi_pr(
     return { dxdxi, T_bubble_K, y_vap }; // Return y_vap
 }
 
+// --- Constants for simulateSingleResidueCurveODE_Pr ---
+const AZEOTROPE_NORM_THRESHOLD = 1e-5; // If ||x-y|| is below this, potential azeotrope
+const STAGNATION_DXDXI_NORM_THRESHOLD = 1e-7; // If ||x-y|| is very small, strong stagnation/azeotrope
+const MIN_DIST_SQ_TO_ADD_POINT_SIM = 1e-10 * 1e-10; // sqrt is 1e-10; for adding points to curve
+const PURE_COMPONENT_THRESHOLD = 0.9999; // Threshold for a component to be considered "pure"
+const OTHER_COMPONENTS_TINY_THRESHOLD = 1e-4; // Threshold for other components when one is pure
+
 export async function simulateSingleResidueCurveODE_Pr(
     initial_x: number[], 
     P_system_Pa: number,
     componentsData: CompoundData[], 
     ternaryPrParams: TernaryPrParams, 
-    d_xi_step: number,
+    fixed_d_xi_step: number, // Renamed from d_xi_step
     max_steps_per_direction: number,
     initialTemp_K: number
 ): Promise<ResidueCurveODE | null> {
@@ -376,101 +416,152 @@ export async function simulateSingleResidueCurveODE_Pr(
             const { dxdxi, T_bubble_K, y_vap } = ode_result; 
             last_T_K = T_bubble_K;
 
-            // const dxdt = dxdxi; // dxdt_norm and related logic removed
-            // const dxdt_norm = Math.sqrt(dxdt[0]**2 + dxdt[1]**2 + dxdt[2]**2); // REMOVED
+            const dxdxi_norm = Math.sqrt(dxdxi[0]**2 + dxdxi[1]**2 + dxdxi[2]**2);
 
             const currentPointData: ResidueCurvePointODE = {
-                x: normalizeMoleFractions(current_x),
+                x: normalizeMoleFractions(current_x), // Ensure current_x is normalized before storing
                 T_K: T_bubble_K,
-                step: (forward ? 1 : -1) * loop_step * d_xi_step,
-                // dxdt_norm, // REMOVED
-                // isPotentialAzeotrope: false // REMOVED
+                step: (forward ? 1 : -1) * loop_step * fixed_d_xi_step,
             };
             
             if (curve.length > 0) {
                 const lastPoint = curve[curve.length - 1];
                 const x_diff_sq = lastPoint.x.reduce((sum, val, i) => sum + (val - currentPointData.x[i])**2, 0);
-                if (Math.sqrt(x_diff_sq) < 1e-7 && Math.abs(lastPoint.T_K - currentPointData.T_K) < 1e-4) {
-                    // Stagnation detected, break without setting azeotrope flags
-                    // if (dxdt_norm < azeotrope_dxdt_threshold) {  // REMOVED
-                        // lastPoint.isPotentialAzeotrope = true;  // REMOVED
-                        // lastPoint.dxdt_norm = Math.min(lastPoint.dxdt_norm ?? Infinity, dxdt_norm); // REMOVED
-                        break; 
-                    // } // REMOVED
+                if (x_diff_sq < MIN_DIST_SQ_TO_ADD_POINT_SIM && Math.abs(lastPoint.T_K - currentPointData.T_K) < BUBBLE_T_TOLERANCE_K * 10) {
+                    // Point is virtually identical to the last one, likely stagnation
+                    if (dxdxi_norm < STAGNATION_DXDXI_NORM_THRESHOLD * 10) break; // More aggressive break if dxdxi is also tiny
+                    // otherwise, might just be a very small step, continue but don't add
                 } else {
                     curve.push(currentPointData);
                 }
-            } else {
+            } else { // First point of this direction
                 curve.push(currentPointData);
             }
 
-            // if (dxdt_norm < azeotrope_dxdt_threshold) { // REMOVED
-                // if (curve.length > 0) { // REMOVED
-                    // curve[curve.length-1].isPotentialAzeotrope = true; // REMOVED
-                // } // REMOVED
-                // break;  // REMOVED
-            // } // REMOVED
+            if (dxdxi_norm < STAGNATION_DXDXI_NORM_THRESHOLD) {
+                console.log(`Stagnation detected (dxdxi_norm < ${STAGNATION_DXDXI_NORM_THRESHOLD.toExponential()}) at step ${loop_step}`);
+                break; 
+            }
+            if (loop_step > 5 && dxdxi_norm < AZEOTROPE_NORM_THRESHOLD) { // Check after a few steps
+                console.log(`Potential azeotrope detected (dxdxi_norm < ${AZEOTROPE_NORM_THRESHOLD.toExponential()}) at step ${loop_step}`);
+                break;
+            }
 
             const next_x_unnormalized = [
-                current_x[0] + (forward ? 1 : -1) * dxdxi[0] * d_xi_step,
-                current_x[1] + (forward ? 1 : -1) * dxdxi[1] * d_xi_step,
-                current_x[2] + (forward ? 1 : -1) * dxdxi[2] * d_xi_step,
+                current_x[0] + (forward ? 1 : -1) * dxdxi[0] * fixed_d_xi_step,
+                current_x[1] + (forward ? 1 : -1) * dxdxi[1] * fixed_d_xi_step,
+                current_x[2] + (forward ? 1 : -1) * dxdxi[2] * fixed_d_xi_step,
             ];
-            const prev_current_x_for_stagnation_check = [...current_x];
             current_x = normalizeMoleFractions(next_x_unnormalized);
 
-            const upper_bound_limit = 1.0 - MIN_MOLE_FRACTION * (componentsData.length > 1 ? (componentsData.length - 1) : 0);
-            if (current_x.some(val => val >= upper_bound_limit) || current_x.some(val => val <= MIN_MOLE_FRACTION)) { 
-                const final_x_normalized = normalizeMoleFractions(current_x);
-                let lastPushedPoint = curve.length > 0 ? curve[curve.length - 1] : null;
-                if (lastPushedPoint && final_x_normalized.every((val, i) => Math.abs(val - lastPushedPoint!.x[i]) < 1e-7)) {
-                    // lastPushedPoint.isPotentialAzeotrope = true; // REMOVED
-                    // lastPushedPoint.dxdt_norm = 0; // REMOVED
-                } else {
+            // Pure component check
+            const isPureComponentTermination = current_x.some((val, idx, arr) => {
+                if (val > PURE_COMPONENT_THRESHOLD) {
+                    return arr.every((otherVal, otherIdx) => otherIdx === idx || otherVal < OTHER_COMPONENTS_TINY_THRESHOLD);
+                }
+                if (val < (1.0 - PURE_COMPONENT_THRESHOLD)) { // e.g. val < 0.0001
+                    // Check if sum of other two is high
+                    let sumOfOthers = 0;
+                    for(let k=0; k<arr.length; k++) if(k !== idx) sumOfOthers += arr[k];
+                    if (sumOfOthers > PURE_COMPONENT_THRESHOLD) { // This implies one of the others is high
+                        // This condition is a bit complex, let's simplify:
+                        // If one component is very high OR very low (and others make up the bulk)
+                    }
+                }
+                return false;
+            });
+            
+            // Simpler pure component check: if any component is > PURE_COMPONENT_THRESHOLD or < (1-PURE_COMPONENT_THRESHOLD)
+            // and the others are small enough.
+            let pureFound = false;
+            for(let i=0; i<current_x.length; i++) {
+                if (current_x[i] > PURE_COMPONENT_THRESHOLD) {
+                    let othersSmall = true;
+                    for(let j=0; j<current_x.length; j++) {
+                        if (i === j) continue;
+                        if (current_x[j] > OTHER_COMPONENTS_TINY_THRESHOLD) {
+                            othersSmall = false;
+                            break;
+                        }
+                    }
+                    if (othersSmall) { pureFound = true; break; }
+                }
+            }
+
+
+            if (pureFound) { 
+                const final_x_normalized = normalizeMoleFractions(current_x); // Ensure it's fully normalized to the vertex
+                 // Add this terminal point if it's different enough from the last added one
+                if (curve.length === 0 || curve[curve.length-1].x.reduce((s,v,i) => s + (v-final_x_normalized[i])**2, 0) > MIN_DIST_SQ_TO_ADD_POINT_SIM) {
                     curve.push({ 
                         x: final_x_normalized, 
                         T_K: last_T_K, 
-                        step: (forward ? 1 : -1) * (loop_step + 1) * d_xi_step, 
-                        // dxdt_norm: 0, // REMOVED
-                        // isPotentialAzeotrope: true // REMOVED
+                        step: (forward ? 1 : -1) * (loop_step + 1) * fixed_d_xi_step, 
                     });
                 }
+                console.log(`Pure component vertex reached at step ${loop_step}`);
                 break;
             }
+            
+            // Stagnation check based on change in x per step
             if (loop_step > 0 && curve.length > 0) { 
                 const lastAddedPoint = curve[curve.length - 1];
-                const x_before_euler_step = curve.length > 1 ? curve[curve.length - 2].x : start_x;
+                // x_before_euler_step was the x that *produced* lastAddedPoint via ODE
+                // So, compare lastAddedPoint.x with current_x (which is x_after_euler_step)
+                const diff_sq_from_last_added_x = lastAddedPoint.x.reduce((sum, px, i) => sum + (px - current_x[i]) ** 2, 0);
                 
-                const diff_sq_from_prev_step = lastAddedPoint.x.reduce((sum, px, i) => sum + (px - x_before_euler_step[i]) ** 2, 0);
-                if (Math.sqrt(diff_sq_from_prev_step) < d_xi_step * 1e-5) { 
-                    // if (lastAddedPoint.dxdt_norm !== undefined && lastAddedPoint.dxdt_norm < azeotrope_dxdt_threshold) { // REMOVED
-                        // lastAddedPoint.isPotentialAzeotrope = true; // REMOVED
-                    // } // REMOVED
+                // If the change in x from the last *added* point to the current *candidate* point (after Euler step)
+                // is much smaller than the step size itself, it implies stagnation.
+                if (Math.sqrt(diff_sq_from_last_added_x) < fixed_d_xi_step * 1e-4) { 
+                    console.log(`Stagnation (small dx) detected at step ${loop_step}`);
                     break; 
                 }
             }
         }
-        // if (curve.length > 0) { // REMOVED
-            // const lastCurvePoint = curve[curve.length - 1]; // REMOVED
-            // if (lastCurvePoint.dxdt_norm !== undefined && lastCurvePoint.dxdt_norm < azeotrope_dxdt_threshold && !lastCurvePoint.isPotentialAzeotrope) { // REMOVED
-                // lastCurvePoint.isPotentialAzeotrope = true; // REMOVED
-            // } // REMOVED
-        // } // REMOVED
         return curve;
     };
 
     const initial_x_norm = normalizeMoleFractions(initial_x);
     const initialBubbleResult = findBubblePointTemperatureTernaryPr(initial_x_norm, P_system_Pa, componentsData, ternaryPrParams, initialTemp_K);
-    if (!initialBubbleResult) return null;
+    if (!initialBubbleResult) {
+        console.warn("PR simulateSingle: Initial bubble point failed. Returning null.");
+        return null;
+    }
 
     const T_start_K = initialBubbleResult.T_K;
 
     const curve_forward = await run_direction(initial_x_norm, true, T_start_K);
     const curve_backward = await run_direction(initial_x_norm, false, T_start_K);
 
-    const combined_curve: ResidueCurveODE = [...curve_backward.reverse().slice(1), ...curve_forward];
+    let combined_curve: ResidueCurveODE = [];
 
-    return combined_curve.length < 2 ? (curve_forward.length > 0 ? curve_forward : (curve_backward.length > 0 ? curve_backward.reverse() : null)) : combined_curve;
+    if (curve_backward.length > 0) {
+        combined_curve = curve_backward.reverse(); // Starts far, ends at P0
+    }
+
+    if (curve_forward.length > 0) {
+        if (combined_curve.length > 0) { 
+            // curve_forward starts with P0. combined_curve currently ends with P0.
+            // Pop P0 from combined_curve before appending curve_forward (which starts with P0)
+            combined_curve.pop(); 
+            combined_curve.push(...curve_forward);
+        } else {
+            // Only forward ran
+            combined_curve = curve_forward;
+        }
+    }
+    // If only backward ran, combined_curve is already correctly set.
+    // If neither ran (e.g. run_direction returned empty for both), combined_curve is [].
+
+    // If the combined curve is empty after attempts, but we had a valid start point, add it.
+    // This ensures at least the starting point is plotted if simulations fail immediately.
+    if (combined_curve.length === 0 && initial_x_norm) {
+         console.log("PR simulateSingle: Both directions yielded no points, adding initial point.");
+         combined_curve.push({ x: initial_x_norm, T_K: T_start_K, step: 0 });
+    }
+    
+    console.log(`PR simulateSingle: Combined curve length: ${combined_curve.length}. Forward: ${curve_forward.length}, Backward: ${curve_backward.length}`);
+    return combined_curve.length > 0 ? combined_curve : null;
 }
 
 // Assuming normalizeMoleFractions and findBubblePointTemperatureTernaryPr are defined in this file or imported.
