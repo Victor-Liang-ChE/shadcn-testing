@@ -12,6 +12,7 @@ export interface PropertyDefinition {
   conversionFactor?: number; // Factor to convert equation's raw output to targetUnitName
   equationTemplate?: string;
   symbol?: string; // For display in dropdown
+  isValueAtPressure?: boolean; // If true, "Get Value at..." section is pressure-based
   availableUnits?: Array<{ 
     unit: string; // Display unit
     // Factor to convert from targetUnitName to this display unit.
@@ -38,6 +39,26 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
         { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
     ],
     color: baseColors[0], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
+  },
+  { 
+    displayName: "Boiling Point", 
+    jsonKey: "Vapour pressure", // Uses the same data source as Vapor Pressure
+    symbol: "T_b", // Conceptual symbol for the dropdown
+    equationType: "eq101", // Uses the same calculation logic (plots P vs T)
+    yAxisIndex: 0, 
+    targetUnitName: "Pa", // Base unit for the *pressure* input to the solver
+    isValueAtPressure: true, // Indicates this property's "Get Value at" is pressure-based
+    availableUnits: [ // These are PRESSURE units for the X-axis
+        { unit: "bar", conversionFactorFromBase: 1e-5 },
+        { unit: "Pa", conversionFactorFromBase: 1 },
+        { unit: "kPa", conversionFactorFromBase: 1e-3 },
+        { unit: "MPa", conversionFactorFromBase: 1e-6 },
+        { unit: "atm", conversionFactorFromBase: 1/101325 },
+        { unit: "mmHg", conversionFactorFromBase: 1/133.322 }
+    ],
+    color: baseColors[6] || '#FC8452', // A distinct color (e.g., Orange-Red from baseColors)
+    coeffs: ['A', 'B', 'C', 'D', 'E'], 
+    equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" // Original equation string for reference
   },
   { 
     displayName: "Liquid Density", jsonKey: "Liquid density", symbol: "ρ_L", equationType: "eq105_molar", yAxisIndex: 0, targetUnitName: "kmol/m³", 
@@ -243,7 +264,7 @@ export function calculateEq101(T: number, A: number, B: number, C: number, D: nu
     // If E is not provided or is for T^E where E=1, D*T is used.
     // The example JSON for Vapour Pressure has E=2, so it's D*T^2.
     // The general form is D*T^E. If E is not present in JSON, it might imply E=1 or the term is not D*T^E.
-    // For now, assuming E is provided if the term is T^E. If D is the last coeff and E is not given, it might be D*T.
+    // For now, assuming E is provided if the term is T^E. If D is present but E is not given, it might be D*T.
     // The example JSON for Vapour Pressure has A, B, C, D, E.
     let termE = 0;
     if (typeof D === 'number' && typeof E === 'number') { // Check if D and E are numbers
@@ -269,6 +290,121 @@ export function calculateEq101(T: number, A: number, B: number, C: number, D: nu
     console.error("Error in calculateEq101:", e);
     return null;
   }
+}
+
+/**
+ * Helper function to calculate the D*T^E term and its derivative for boiling point calculation.
+ * This is kept internal to the boiling point calculation logic.
+ */
+function _calculate_dte_term_and_derivative_for_boiling_point(
+  T: number,
+  coeffD: number,
+  coeffE_exponent: number | undefined
+): { value: number; derivative: number } {
+  let value = 0;
+  let derivative = 0;
+
+  // Only calculate if coeffE_exponent is a number.
+  // If coeffE_exponent is undefined, the D*T^E term is considered absent.
+  if (typeof coeffE_exponent === 'number') {
+    if (coeffE_exponent === 0) {
+      value = coeffD; // D * T^0 = D
+      derivative = 0; // d(D)/dT = 0
+    } else {
+      value = coeffD * Math.pow(T, coeffE_exponent);
+      derivative = coeffD * coeffE_exponent * Math.pow(T, coeffE_exponent - 1);
+    }
+  }
+  return { value, derivative };
+}
+
+/**
+ * Calculates Boiling Point Temperature for a given pressure using Equation 101 form.
+ * Solves for T in P = exp(A + B/T + C*ln(T) + D*T^E) using Newton-Raphson method.
+ * @param targetPressurePa Target pressure in Pascals.
+ * @param coeffA Coefficient A.
+ * @param coeffB Coefficient B (for B/T term).
+ * @param coeffC Coefficient C (for C*ln(T) term).
+ * @param coeffD Coefficient D (for D*T^E term).
+ * @param coeffE_exponent Exponent E (for D*T^E term). Can be undefined if the term is not present.
+ * @param initialTempGuessK Initial guess for temperature in Kelvin.
+ * @param maxIter Maximum number of iterations for Newton-Raphson.
+ * @param tolerance Convergence tolerance.
+ * @returns Calculated temperature in Kelvin, or null if not converged or error.
+ */
+export function calculateBoilingPointEq101(
+  targetPressurePa: number,
+  coeffA: number,
+  coeffB: number,
+  coeffC: number,
+  coeffD: number, // This is the coefficient for the T^E term
+  coeffE_exponent: number | undefined, // This is the E exponent
+  initialTempGuessK: number = 373.15,
+  maxIter: number = 100,
+  tolerance: number = 1e-7
+): number | null {
+  if (targetPressurePa <= 0) {
+    console.warn("calculateBoilingPointEq101: Target pressure must be positive.");
+    return null;
+  }
+  if (initialTempGuessK <= 0) {
+    console.warn("calculateBoilingPointEq101: Initial temperature guess must be positive.");
+    return null; // Or use a default positive guess
+  }
+
+  const lnP_target = Math.log(targetPressurePa);
+  let T_current = initialTempGuessK;
+
+  for (let i = 0; i < maxIter; i++) {
+    if (T_current <= 0) {
+      // Temperature became non-positive, which is invalid for log(T) or T in denominator
+      console.warn(`calculateBoilingPointEq101: Temperature became non-positive during iteration (${T_current.toFixed(2)} K).`);
+      return null;
+    }
+
+    const { value: term_DTE, derivative: deriv_term_DTE } = _calculate_dte_term_and_derivative_for_boiling_point(
+      T_current,
+      coeffD,
+      coeffE_exponent
+    );
+
+    // f(T) = A + B/T + C*ln(T) + D*T^E - ln(P_target)
+    const f_T = coeffA + (coeffB / T_current) + (coeffC * Math.log(T_current)) + term_DTE - lnP_target;
+
+    if (isNaN(f_T) || !isFinite(f_T)) {
+        console.warn(`calculateBoilingPointEq101: f(T) is NaN or non-finite at T=${T_current.toFixed(2)}K.`);
+        return null;
+    }
+
+    if (Math.abs(f_T) < tolerance) {
+      return T_current; // Converged
+    }
+
+    // f'(T) = -B/T^2 + C/T + D*E*T^(E-1)
+    const f_prime_T = (-coeffB / Math.pow(T_current, 2)) + (coeffC / T_current) + deriv_term_DTE;
+
+    if (isNaN(f_prime_T) || !isFinite(f_prime_T)) {
+        console.warn(`calculateBoilingPointEq101: f'(T) is NaN or non-finite at T=${T_current.toFixed(2)}K.`);
+        return null;
+    }
+
+    if (Math.abs(f_prime_T) < 1e-10) {
+      // Derivative is too small, Newton-Raphson may fail or oscillate
+      console.warn(`calculateBoilingPointEq101: Derivative too small at T=${T_current.toFixed(2)}K. f'(T)=${f_prime_T}.`);
+      return null;
+    }
+
+    const T_next = T_current - f_T / f_prime_T;
+
+    // Basic step damping: if T_next is drastically different or invalid, adjust or fail.
+    // For simplicity, we'll rely on T_current <= 0 check at the start of the next iteration.
+    // More advanced solvers might limit the step size or use bounds.
+
+    T_current = T_next;
+  }
+
+  console.warn(`calculateBoilingPointEq101: Did not converge after ${maxIter} iterations for P=${targetPressurePa} Pa.`);
+  return null; // Did not converge
 }
 
 /**
