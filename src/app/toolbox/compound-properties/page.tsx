@@ -5,8 +5,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
-import type { EChartsOption, SeriesOption as EChartsSeriesOption } from 'echarts'; 
-import { LineChart } from 'echarts/charts';
+import { LineChart, LineSeriesOption } from 'echarts/charts'; // Added LineSeriesOption
 import {
   TitleComponent,
   TooltipComponent,
@@ -15,7 +14,8 @@ import {
   ToolboxComponent,
   DataZoomComponent, // Keep DataZoomComponent if you plan to re-add zoom later
 } from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
+import { CanvasRenderer } from 'echarts/renderers'; // Added CanvasRenderer
+import type { EChartsOption } from 'echarts'; 
 
 echarts.use([
   TitleComponent, TooltipComponent, GridComponent, LegendComponent, ToolboxComponent, DataZoomComponent, LineChart, CanvasRenderer
@@ -40,6 +40,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import {
     calculateEq101,
+    calculateBoilingPointEq101, // Added import
     calculateEq105,
     calculatePolynomial,
     calculateEq106,
@@ -253,6 +254,16 @@ function calculateDynamicAxisParams(
     return { dynamicAxisLabelMargin, calculatedNameGap };
 }
 
+// Define the specific sampling options ECharts uses
+type SeriesSamplingOption = 'sum' | 'min' | 'max' | 'none' | 'average' | 'minmax' | 'lttb';
+
+// Define a custom series option type at module scope
+interface AppLineSeriesOption extends LineSeriesOption {
+  _internal_legend_equation?: string;
+  _internal_display_unit?: string;
+  large?: boolean; // Explicitly add large
+  sampling?: SeriesSamplingOption; // Explicitly add sampling with the correct type
+}
 
 export default function CompoundPropertiesPage() {
   const nextCompoundId = useRef(0); 
@@ -277,9 +288,9 @@ export default function CompoundPropertiesPage() {
   const echartsRef = useRef<ReactECharts | null>(null);
   const yAxisUnitRef = useRef<string | null>(null); // Ref to store yAxisUnit for CSV export
 
-  const [selectedPropertyKey, setSelectedPropertyKey] = useState<string>(propertiesToPlotConfig[0].jsonKey);
+  const [selectedPropertyKey, setSelectedPropertyKey] = useState<string>(propertiesToPlotConfig[0].displayName); // Changed to displayName
   const [selectedUnit, setSelectedUnit] = useState<string>(() => {
-    const initialPropDef = propertiesToPlotConfig.find(p => p.jsonKey === propertiesToPlotConfig[0].jsonKey);
+    const initialPropDef = propertiesToPlotConfig[0]; // Simpler: directly use the first definition
     return initialPropDef?.availableUnits?.[0]?.unit || initialPropDef?.targetUnitName || '';
   });
   const [availablePropertiesForSelection, setAvailablePropertiesForSelection] = useState<PropertyDefinition[]>(propertiesToPlotConfig);
@@ -292,6 +303,21 @@ export default function CompoundPropertiesPage() {
     return initialConstDef?.availableUnits?.[0]?.unit || initialConstDef?.targetUnitName || '';
   });
   const [availableConstantsForSelection, setAvailableConstantsForSelection] = useState<ConstantPropertyDefinition[]>(constantPropertiesConfig);
+
+  // State for manual temperature input and points
+  const [manualTempInput, setManualTempInput] = useState<string>('');
+  type ManualTempPoint = {
+    compoundName: string;
+    seriesName: string; // To match ECharts series name
+    tempCelsius: number; // For Boiling Point: stores INPUT PRESSURE. For others: INPUT TEMP C.
+    tempKelvin: number; // For Boiling Point: not directly used for input. For others: INPUT TEMP K.
+    value: number | null; // For Boiling Point: stores CALCULATED TEMP C. For others: CALCULATED PROP VALUE.
+    unit: string; // For Boiling Point: stores INPUT PRESSURE UNIT. For others: PROP VALUE UNIT.
+    isValid: boolean;
+    message?: string;
+  };
+  const [manualTempPointsData, setManualTempPointsData] = useState<ManualTempPoint[]>([]);
+
 
   // useEffect for initial data fetching (e.g., for 'Water')
   useEffect(() => {
@@ -406,8 +432,9 @@ export default function CompoundPropertiesPage() {
 
   const processAndPlotProperties = useCallback((
     allCompoundsData: CompoundInputState[],
-    propertyKey: string | null, // This will be for temp-dependent or constant key based on plotMode
-    currentSelectedUnit: string // Pass selectedUnit as an argument
+    propertyKey: string | null, // This will be displayName for temp-dependent or jsonKey for constant
+    currentSelectedUnit: string, // Pass selectedUnit as an argument
+    manualPointsToAnnotate: ManualTempPoint[] // Adapted for annotations
   ) => {
     setOverallError(null);
     if (!propertyKey) {
@@ -417,7 +444,7 @@ export default function CompoundPropertiesPage() {
     }
 
     if (plotMode === 'tempDependent') {
-        const propDef = propertiesToPlotConfig.find(p => p.jsonKey === propertyKey);
+        const propDef = propertiesToPlotConfig.find(p => p.displayName === propertyKey); // Changed to find by displayName
         if (!propDef) {
           console.warn(`Property definition for key ${propertyKey} not found.`);
           setEchartsOptions({});
@@ -428,16 +455,120 @@ export default function CompoundPropertiesPage() {
         const unitDefToUse = propDef.availableUnits?.find(u => u.unit === currentSelectedUnit) || 
                              propDef.availableUnits?.[0] || 
                              { unit: propDef.targetUnitName, conversionFactorFromBase: 1 };
-        const displayUnit = unitDefToUse.unit;
+        const displayUnit = unitDefToUse.unit; // For Boiling Point, this is the selected PRESSURE unit for X-axis
+        const isBoilingPointPlot = propDef.displayName === "Boiling Point";
 
-        const seriesData: EChartsSeriesOption[] = [];
-        let commonTmin: number | null = null;
-        let commonTmax: number | null = null;
+        const seriesData: AppLineSeriesOption[] = []; // Use the custom type here
+        // let commonTmin: number | null = null; // Removed, replaced by commonTminK_forPlot
+        // let commonTmax: number | null = null; // Removed, replaced by commonTmaxK_forPlot
         let atLeastOneCompoundHasData = false;
         let titleCompoundNames = allCompoundsData.filter(c => c.data).map(c => c.data!.name).join(' vs ');
         if (!titleCompoundNames && allCompoundsData.length > 0 && allCompoundsData[0].name) {
             titleCompoundNames = allCompoundsData[0].name; 
         }
+
+        // Variables for common temperature range calculation (for non-Boiling Point plots)
+        let commonTminK_forPlot: number | null = null;
+        let commonTmaxK_forPlot: number | null = null;
+        let finalPlotTminKelvin: number | undefined = undefined;
+        let finalPlotTmaxKelvin: number | undefined = undefined;
+        let xAxisKelvinInterval: number | undefined = undefined; // Interval in Kelvin for X-axis ticks
+
+        // Define pressure range and step for Boiling Point X-axis (data generation and axis ticks)
+        let finalPlotPressureMin: number | undefined = undefined;
+        let finalPlotPressureMax: number | undefined = undefined;
+        let pressureAxisInterval: number | undefined = undefined; // For X-axis ticks (in displayUnit)
+
+        if (isBoilingPointPlot) {
+            // These define the conceptual range of pressures you want to see data for.
+            const dataDisplayPressureMin = 0.01; // e.g., 0.01 bar (smallest pressure for the curve)
+            const dataDisplayPressureMax = 20;   // e.g., 20 bar (largest pressure for the curve)
+            const pressureRangeForStepping = dataDisplayPressureMax - dataDisplayPressureMin;
+
+            // Determine a "nice" step for the pressure axis ticks
+            if (pressureRangeForStepping <= 0) {
+                pressureAxisInterval = 1;
+            } else if (pressureRangeForStepping <= 0.1) pressureAxisInterval = 0.01;
+            else if (pressureRangeForStepping <= 0.5) pressureAxisInterval = 0.05;
+            else if (pressureRangeForStepping <= 1.0) pressureAxisInterval = 0.1;
+            else if (pressureRangeForStepping <= 2.0) pressureAxisInterval = 0.2;
+            else if (pressureRangeForStepping <= 5.0) pressureAxisInterval = 0.5;
+            else if (pressureRangeForStepping <= 10.0) pressureAxisInterval = 1;
+            else if (pressureRangeForStepping <= 20.0) pressureAxisInterval = 2;
+            else if (pressureRangeForStepping <= 50.0) pressureAxisInterval = 5;
+            else pressureAxisInterval = 10;
+
+            // Calculate axis min/max to align with the interval, similar to temperature axis
+            finalPlotPressureMin = Math.floor(dataDisplayPressureMin / pressureAxisInterval) * pressureAxisInterval;
+            // If dataDisplayPressureMin is small (e.g. 0.01) and interval is larger (e.g. 0.1),
+            // finalPlotPressureMin might become 0. We need data generation to start > 0.
+            // The axis itself can start at 0 if appropriate.
+            if (finalPlotPressureMin < 0) finalPlotPressureMin = 0; // Ensure axis doesn't start negative
+
+            finalPlotPressureMax = Math.ceil(dataDisplayPressureMax / pressureAxisInterval) * pressureAxisInterval;
+
+            if (finalPlotPressureMin >= finalPlotPressureMax) { // Ensure max > min
+                finalPlotPressureMax = finalPlotPressureMin + pressureAxisInterval;
+            }
+            // `finalPlotPressureMin` and `finalPlotPressureMax` now define the x-axis range for the plot.
+        } else { // Not Boiling Point Plot - existing logic for temperature axis
+            // First pass to determine common Tmin/Tmax for plotting range
+            allCompoundsData.forEach(compoundState => {
+                if (compoundState.data && compoundState.data.properties) {
+                    const propDataForRange = compoundState.data.properties[propDef.jsonKey];
+                    if (propDataForRange) {
+                        const tMinK_compound = parseCoefficient(propDataForRange.Tmin?.value ?? propDataForRange.Tmin);
+                        const tMaxK_compound = parseCoefficient(propDataForRange.Tmax?.value ?? propDataForRange.Tmax);
+
+                        if (tMinK_compound !== null && tMaxK_compound !== null && tMinK_compound < tMaxK_compound) {
+                            commonTminK_forPlot = (commonTminK_forPlot === null) ? tMinK_compound : Math.max(commonTminK_forPlot, tMinK_compound);
+                            commonTmaxK_forPlot = (commonTmaxK_forPlot === null) ? tMaxK_compound : Math.min(commonTmaxK_forPlot, tMaxK_compound);
+                        }
+                    }
+                }
+            });
+
+            if (commonTminK_forPlot === null || commonTmaxK_forPlot === null || commonTminK_forPlot >= commonTmaxK_forPlot) {
+                if (allCompoundsData.some(c => c.data && c.data.properties[propDef.jsonKey])) {
+                     console.warn(`No overlapping temperature range found for property: ${propDef.displayName}. CommonTminK: ${commonTminK_forPlot}, CommonTmaxK: ${commonTmaxK_forPlot}. Plot will auto-scale.`);
+                     // setOverallError(`No overlapping temperature range for ${propDef.displayName}.`); // Optionally set error
+                }
+                // finalPlotTmin/maxKelvin remain undefined, xAxisKelvinInterval remains undefined. Axis will auto-scale.
+            } else {
+                const commonTminCelsius_plot = commonTminK_forPlot - 273.15;
+                const commonTmaxCelsius_plot = commonTmaxK_forPlot - 273.15;
+                const rangeCelsius_plot = commonTmaxCelsius_plot - commonTminCelsius_plot;
+
+                let celsiusStepForAxisTicks: number;
+                if (rangeCelsius_plot <= 0) { 
+                    celsiusStepForAxisTicks = 10; 
+                } else if (rangeCelsius_plot <= 20) celsiusStepForAxisTicks = 2;
+                else if (rangeCelsius_plot <= 50) celsiusStepForAxisTicks = 5;
+                else if (rangeCelsius_plot <= 100) celsiusStepForAxisTicks = 10;
+                else if (rangeCelsius_plot <= 250) celsiusStepForAxisTicks = 25;
+                else if (rangeCelsius_plot <= 500) celsiusStepForAxisTicks = 50;
+                else celsiusStepForAxisTicks = 100;
+                
+                if (rangeCelsius_plot > 0 && celsiusStepForAxisTicks <= 0) celsiusStepForAxisTicks = 1;
+
+
+                let calculatedPlotTminCelsius = Math.floor(commonTminCelsius_plot / celsiusStepForAxisTicks) * celsiusStepForAxisTicks;
+                let calculatedPlotTmaxCelsius = Math.ceil(commonTmaxCelsius_plot / celsiusStepForAxisTicks) * celsiusStepForAxisTicks;
+
+                if (calculatedPlotTminCelsius >= calculatedPlotTmaxCelsius) { // Ensure max > min
+                    calculatedPlotTmaxCelsius = calculatedPlotTminCelsius + celsiusStepForAxisTicks;
+                }
+                
+                finalPlotTminKelvin = calculatedPlotTminCelsius + 273.15;
+                finalPlotTmaxKelvin = calculatedPlotTmaxCelsius + 273.15;
+                xAxisKelvinInterval = celsiusStepForAxisTicks; // Interval is in Kelvin, magnitude matches Celsius step
+            }
+        }
+
+        // Define pressure range for Boiling Point X-axis (data generation)
+        // const boilingPointPressureMinDisplay = 0.01; // Replaced by curveDataStartPressure
+        // const boilingPointPressureMaxDisplay = 20;   // Replaced by curveDataEndPressure
+        // const numPressurePoints = 100; // Replaced by numDataPointsForCurve
 
         allCompoundsData.forEach((compoundState, compoundIndex) => {
             if (!compoundState.data || !compoundState.data.properties) return;
@@ -448,207 +579,250 @@ export default function CompoundPropertiesPage() {
                 console.warn(`Property ${propDef.displayName} (${propDef.jsonKey}) not found for ${currentCompoundData.name}.`);
                 return;
             }
-            const Tmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
-            const Tmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
-            if (Tmin === null || Tmax === null || Tmin >= Tmax) {
-                console.warn(`Invalid Tmin/Tmax for ${propDef.displayName} for ${currentCompoundData.name}. Tmin: ${Tmin}, Tmax: ${Tmax}`);
+            const Tmin_compound_K = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
+            const Tmax_compound_K = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
+            if (Tmin_compound_K === null || Tmax_compound_K === null || Tmin_compound_K >= Tmax_compound_K) {
+                console.warn(`Invalid Tmin/Tmax for ${propDef.displayName} for ${currentCompoundData.name}. Tmin: ${Tmin_compound_K}, Tmax: ${Tmax_compound_K}`);
                 return;
             }
-            if (commonTmin === null || Tmin > commonTmin) commonTmin = Tmin;
-            if (commonTmax === null || Tmax < commonTmax) commonTmax = Tmax;
 
             const rawCoeffs = propDef.coeffs.map(cKey => ({ key: cKey, value: parseCoefficient(propData[cKey]) }));
-            let Tc_K: number | null = null;
-            if (propDef.requiresTc) {
-                Tc_K = currentCompoundData.criticalTemp ?? null;
-                if (Tc_K === null) {
-                    console.warn(`Critical Temperature (Tc) required for ${propDef.displayName} for ${currentCompoundData.name} but not found.`);
-                    return;
-                }
-            }
-            const mw_kg_kmol_series: number | null = currentCompoundData.molarWeight ?? null;
-            let equationBody = propDef.equationTemplate || "";
-            rawCoeffs.forEach(c => {
-                if (c.value !== null) {
-                    equationBody = equationBody.replace(new RegExp(`\\b${c.key}\\b`, 'g'), formatNumberToPrecision(c.value, 2));
-                } else {
-                    equationBody = equationBody.replace(new RegExp(`\\b${c.key}\\b`, 'g'), "0"); 
-                }
-            });
-            if (Tc_K !== null) {
-                const tcCelsiusDisplay = formatNumberToPrecision(Tc_K - 273.15, 2);
-                equationBody = equationBody.replace(/\bTc\b/g, `${tcCelsiusDisplay}°C`); 
-            }
-            if (mw_kg_kmol_series !== null) {
-                equationBody = equationBody.replace(/\bMW\b/g, formatNumberToPrecision(mw_kg_kmol_series, 4));
-            }
-            equationBody = equationBody.replace(/T\^(\d+)/g, 'T<sup>$1</sup>');
-            equationBody = equationBody.replace(/T\^([A-Za-z]+)/g, 'T<sup>$1</sup>');
-            equationBody = equationBody.replace(/\b0\s*\*?\s*T<sup>[^<]+<\/sup>/g, "0");
-            equationBody = equationBody.replace(/\b0\s*\*?\s*ln\(T\)/g, "0");
-            equationBody = equationBody.replace(/\b0\/T\b/g, "0");
-            equationBody = equationBody.replace(/\b0\s*\*?\s*T\b(?!\w)/g, "0");
-            equationBody = equationBody.replace(/\+\s*0\b(?![.\d])/g, ""); 
-            equationBody = equationBody.replace(/-\s*0\b(?![.\d])/g, ""); 
-            equationBody = equationBody.replace(/([(,=])\s*0\s*\+?\s*/g, "$1"); 
-            equationBody = equationBody.replace(/\+\s*-\s*/g, '- '); 
-            equationBody = equationBody.replace(/-\s*-\s*/g, '+ '); 
-            equationBody = equationBody.replace(/\+\s*\+\s*/g, '+ '); 
-            equationBody = equationBody.replace(/([(,=])\s*\+\s*/g, '$1'); 
-            equationBody = equationBody.trim();
-            equationBody = equationBody.replace(/\(\s+/g, '(');
-            equationBody = equationBody.replace(/\s+\)/g, ')');
-            if (equationBody === "" || equationBody === "()") equationBody = "0";
-            equationBody = equationBody.replace(/exp\(\s*\)/g, "exp(0)");
-            equationBody = equationBody.replace(/ln\(\s*\)/g, "ln(0)");
-            const legendEquation = renderSymbolToHtml(propDef.symbol) + " = " + equationBody;
-
-            seriesData.push({
-                name: `${currentCompoundData.name}`,
-                type: 'line',
-                data: [], 
-                yAxisIndex: 0,
-                smooth: true,
-                lineStyle: { color: compoundColors[compoundIndex % compoundColors.length], width: 2.5 },
-                itemStyle: { color: compoundColors[compoundIndex % compoundColors.length] },
-                symbol: 'none', 
-                _internal_prop_data: propData,
-                _internal_compound_data: currentCompoundData,
-                _internal_legend_equation: legendEquation,
-            } as any); 
-        });
-
-        if (!atLeastOneCompoundHasData) {
-            setEchartsOptions({});
-            setOverallError("No data available for the selected property and compounds.");
-            return;
-        }
-        if (commonTmin === null || commonTmax === null || commonTmin >= commonTmax) {
-            setEchartsOptions({});
-            setOverallError(`No overlapping temperature range found for property '${propDef.displayName}' across selected compounds.`);
-            return;
-        }
-
-        const commonTminCelsius = commonTmin - 273.15;
-        const commonTmaxCelsius = commonTmax - 273.15;
-        const rangeCelsius = commonTmaxCelsius - commonTminCelsius;
-        let celsiusStep;
-        if (rangeCelsius <= 20) celsiusStep = 2; 
-        else if (rangeCelsius <= 50) celsiusStep = 5;
-        else if (rangeCelsius <= 100) celsiusStep = 10;
-        else if (rangeCelsius <= 250) celsiusStep = 25;
-        else if (rangeCelsius <= 500) celsiusStep = 50;
-        else celsiusStep = 100;
-        if (rangeCelsius > 0 && celsiusStep <= 0) celsiusStep = 1; 
-        let finalPlotTminCelsius = Math.floor(commonTminCelsius / celsiusStep) * celsiusStep;
-        let finalPlotTmaxCelsius = Math.ceil(commonTmaxCelsius / celsiusStep) * celsiusStep;
-        if (finalPlotTminCelsius === finalPlotTmaxCelsius) finalPlotTmaxCelsius = finalPlotTminCelsius + celsiusStep;
-        if (finalPlotTmaxCelsius <= finalPlotTminCelsius) finalPlotTmaxCelsius = finalPlotTminCelsius + celsiusStep;
-        const finalPlotTminKelvin = finalPlotTminCelsius + 273.15;
-        const finalPlotTmaxKelvin = finalPlotTmaxCelsius + 273.15;
-
-        seriesData.forEach(series => {
-            const s = series as any;
-            const propData = s._internal_prop_data;
-            const currentCompoundData = s._internal_compound_data as FetchedCompoundData;
-            const points: [number, number][] = [];
-            const dataPointCelsiusStep = 0.5;
-            const rawCoeffs = propDef.coeffs.map(cKey => ({ key: cKey, value: parseCoefficient(propData[cKey]) }));
-            const passedCoeffs = rawCoeffs.map(c => c.value);
+            const passedCoeffs = rawCoeffs.map((c: { key: string, value: number | null }) => c.value);
             let Tc_K_series: number | null = null;
-            if (propDef.requiresTc) Tc_K_series = currentCompoundData.criticalTemp ?? null;
+            if (propDef.requiresTc && !isBoilingPointPlot) Tc_K_series = currentCompoundData.criticalTemp ?? null;
             const mw_kg_kmol_series: number | null = currentCompoundData.molarWeight ?? null;
-            s._internal_display_unit = displayUnit;
+            
+            const points: [number, number][] = [];
+            const equationString = propDef.equationTemplate 
+                ? propDef.equationTemplate.replace(/([A-E])/g, (match, p1) => {
+                    const coeffIndex = propDef.coeffs.indexOf(p1);
+                    if (coeffIndex !== -1 && passedCoeffs[coeffIndex] !== null) {
+                        return formatNumberToPrecision(passedCoeffs[coeffIndex]!, 3);
+                    }
+                    return match;
+                  })
+                : 'N/A';
 
-            for (let currentC = finalPlotTminCelsius; currentC <= finalPlotTmaxCelsius + 1e-9; currentC += dataPointCelsiusStep) {
-                const T = currentC + 273.15;
-                const compoundSpecificTmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
-                const compoundSpecificTmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
-                if (T < (compoundSpecificTmin ?? -Infinity) - 1e-6 || T > (compoundSpecificTmax ?? Infinity) + 1e-6 ) continue;
-                let rawValue: number | null = null;
-                switch (propDef.equationType) {
-                  case 'eq101':
-                    if (passedCoeffs.length >= 5) rawValue = calculateEq101(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4] ?? undefined);
-                    break;
-                  case 'eq105':
-                    if (passedCoeffs.length >= 4 && Tc_K_series !== null && mw_kg_kmol_series !== null) {
-                         rawValue = calculateEq105(T, passedCoeffs[0]!, passedCoeffs[1]!, Tc_K_series, passedCoeffs[3]!, mw_kg_kmol_series);
-                    } else if (passedCoeffs.length >=3 && Tc_K_series === null && parseCoefficient(propData.C) !== null && mw_kg_kmol_series !== null) {
-                         const tcFromCoeffC = parseCoefficient(propData.C)!; 
-                         rawValue = calculateEq105(T, passedCoeffs[0]!, passedCoeffs[1]!, tcFromCoeffC, passedCoeffs[2]!, mw_kg_kmol_series);
+            if (isBoilingPointPlot) {
+                if (passedCoeffs.length >= 5 && passedCoeffs.every((c: number | null) => c !== null)) {
+                    const [coeffA, coeffB, coeffC, coeffD, coeffE] = passedCoeffs as [number, number, number, number, number | undefined];
+                    
+                    const xUnitDef = propDef.availableUnits?.find(u => u.unit === displayUnit);
+                    const conversionToPaFactor = xUnitDef ? (typeof xUnitDef.conversionFactorFromBase === 'number' ? 1 / xUnitDef.conversionFactorFromBase : 1) : 1;
+
+                    // Determine the actual pressure range for generating curve points
+                    // Start from the larger of the calculated plot minimum or a very small positive number (e.g., 0.001 in display units)
+                    // to avoid issues with log(0) or P=0 in calculations, especially if finalPlotPressureMin ended up as 0.
+                    const curveDataStartPressure = Math.max(finalPlotPressureMin!, 0.001); // Ensure positive start for calc
+                    const curveDataEndPressure = finalPlotPressureMax!;
+
+                    const numDataPointsForCurve = 200; // For a smooth curve
+                    let dataPointPressureStep = (curveDataEndPressure - curveDataStartPressure) / numDataPointsForCurve;
+                    
+                    if (dataPointPressureStep <= 0 && curveDataEndPressure > curveDataStartPressure) {
+                        // This case should ideally not happen if curveDataEndPressure > curveDataStartPressure
+                        dataPointPressureStep = (curveDataEndPressure - curveDataStartPressure) / 2; // Minimal 2 points
                     }
-                    break;
-                  case 'eq105_molar':
-                    if (passedCoeffs.length >= 4 && Tc_K_series !== null) { 
-                        const coeffA = passedCoeffs[0]!
-                        const coeffB = passedCoeffs[1]!
-                        const coeffD_for_eq105_molar = passedCoeffs[3];
-                        if (coeffD_for_eq105_molar !== null && coeffD_for_eq105_molar !== undefined) {
-                             rawValue = calculateEq105_molar(T, coeffA, coeffB, Tc_K_series, coeffD_for_eq105_molar);
-                        } else {
-                            console.warn(`eq105_molar: Coefficient D is missing or null/undefined for ${currentCompoundData.name}. D_val: ${coeffD_for_eq105_molar}`);
+                    
+                    if (dataPointPressureStep > 0) {
+                        for (let pDisplay = curveDataStartPressure; pDisplay <= curveDataEndPressure + 1e-9; pDisplay += dataPointPressureStep) {
+                            const currentPressureInPa = pDisplay * conversionToPaFactor;
+
+                            if (currentPressureInPa <= 0) continue; // Safeguard, should be handled by curveDataStartPressure
+                            
+                            let initialTempGuess = 373.15; 
+                            if (coeffA && coeffB && currentPressureInPa > 0) { // Antoine-like pre-guess
+                                const lnP = Math.log(currentPressureInPa);
+                                if (coeffA - lnP !== 0) {
+                                    const T_antoine_approx = coeffB / (coeffA - lnP);
+                                    if (T_antoine_approx > 0 && T_antoine_approx < 1000) { // Plausible temp range
+                                        initialTempGuess = T_antoine_approx;
+                                    }
+                                }
+                            }
+                            const tempKelvin = calculateBoilingPointEq101(
+                                currentPressureInPa,
+                                coeffA, coeffB, coeffC, coeffD, coeffE,
+                                initialTempGuess, 50, 1e-6
+                            );
+                            if (tempKelvin !== null && isFinite(tempKelvin) && tempKelvin > 0) {
+                                const tempCelsius = tempKelvin - 273.15;
+                                points.push([pDisplay, tempCelsius]);
+                            }
                         }
+                    } else if (curveDataStartPressure === curveDataEndPressure) { // Single point if range is zero
+                        const currentPressureInPa = curveDataStartPressure * conversionToPaFactor;
+                         if (currentPressureInPa > 0) {
+                            let initialTempGuessSingle = 373.15;
+                            if (coeffA && coeffB) {
+                                const lnPSingle = Math.log(currentPressureInPa);
+                                if (coeffA - lnPSingle !== 0) {
+                                    const T_antoine_approx_single = coeffB / (coeffA - lnPSingle);
+                                    if (T_antoine_approx_single > 0 && T_antoine_approx_single < 1000) {
+                                        initialTempGuessSingle = T_antoine_approx_single;
+                                    }
+                                }
+                            }
+                            const tempKelvin = calculateBoilingPointEq101(
+                                currentPressureInPa,
+                                coeffA, coeffB, coeffC, coeffD, coeffE,
+                                initialTempGuessSingle, 50, 1e-6
+                            );
+                            if (tempKelvin !== null && isFinite(tempKelvin) && tempKelvin > 0) {
+                                points.push([curveDataStartPressure, tempKelvin - 273.15]);
+                            }
+                         }
                     }
-                    break;
-                  case 'polynomial':
-                    rawValue = calculatePolynomial(T, passedCoeffs[0]!, passedCoeffs[1] ?? undefined, passedCoeffs[2] ?? undefined, passedCoeffs[3] ?? undefined, passedCoeffs[4] ?? undefined); 
-                    break;
-                  case 'eq16_complex': 
-                    if (passedCoeffs.length >= 5) rawValue = calculateEq16Complex(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
-                    break;
-                  case 'eq106':
-                    if (passedCoeffs.length >= 5 && Tc_K_series !== null) rawValue = calculateEq106(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!, Tc_K_series);
-                    break;
-                  case 'eq102_cv':
-                    if (passedCoeffs.length >= 4) rawValue = calculateEq102_conductivity_viscosity(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
-                    break;
-                  case 'eq104_virial':
-                    if (passedCoeffs.length >= 5) rawValue = calculateEq104_virial(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
-                    break;
-                  case 'eq121':
-                    if (passedCoeffs.length >= 4) rawValue = calculateEq121(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
-                    break;
-                  case 'eq13':
-                    if (passedCoeffs.length >= 3) rawValue = calculateEq13(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!);
-                    break;
                 }
+            } else {
+                // Determine loop range for data points for this specific compound
+                const loopStartCelsius = (finalPlotTminKelvin !== undefined) ? (finalPlotTminKelvin - 273.15) : (Tmin_compound_K - 273.15);
+                const loopEndCelsius = (finalPlotTmaxKelvin !== undefined) ? (finalPlotTmaxKelvin - 273.15) : (Tmax_compound_K - 273.15);
+                
+                const numDataPointsForLoop = 200; // Desired number of points over the range
+                let dataPointCelsiusStep = (loopEndCelsius - loopStartCelsius) / numDataPointsForLoop;
+                
+                if (dataPointCelsiusStep <= 0) dataPointCelsiusStep = 0.5; // Fallback if range is zero or negative
+                dataPointCelsiusStep = Math.max(dataPointCelsiusStep, 0.01); // Minimum step
 
-                let valueInBaseUnit = rawValue;
-                if (valueInBaseUnit !== null && isFinite(valueInBaseUnit)) {
-                  if (propDef.conversionFactor && propDef.conversionFactor !== 1) {
-                    valueInBaseUnit *= propDef.conversionFactor;
-                  }
-                  let finalDisplayValue = valueInBaseUnit;
-                  const cFactorBase = unitDefToUse.conversionFactorFromBase;
-                  if (typeof cFactorBase === 'number') {
-                    if (cFactorBase !== 1) finalDisplayValue *= cFactorBase;
-                  } else if (typeof cFactorBase === 'object' && cFactorBase !== null) {
-                    if (mw_kg_kmol_series === null && (cFactorBase.operation === 'divide_by_mw' || cFactorBase.operation === 'multiply_by_mw')) {
-                        console.warn(`Molar mass required for unit conversion to ${displayUnit} for ${currentCompoundData.name}, but not available. Skipping point.`);
-                        continue; 
+                for (let currentC = loopStartCelsius; currentC <= loopEndCelsius + 1e-9; currentC += dataPointCelsiusStep) {
+                    const T = currentC + 273.15; // T is in Kelvin for calculations
+                    
+                    // Ensure T is within the specific compound's valid range before calculation
+                    if (T < Tmin_compound_K - 1e-6 || T > Tmax_compound_K + 1e-6) {
+                        continue;
                     }
-                    if (mw_kg_kmol_series !== null) {
-                        if (cFactorBase.operation === 'divide_by_mw') {
-                            if (mw_kg_kmol_series === 0) { console.warn(`Molar mass is zero for ${currentCompoundData.name}, cannot divide. Skipping point for unit ${displayUnit}.`); continue; }
-                            finalDisplayValue /= mw_kg_kmol_series;
-                        } else if (cFactorBase.operation === 'multiply_by_mw') {
-                            finalDisplayValue *= mw_kg_kmol_series;
+                        
+                    let rawValue: number | null = null;
+                    switch (propDef.equationType) {
+                      case 'eq101':
+                        if (passedCoeffs.length >= 5) rawValue = calculateEq101(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4] ?? undefined);
+                        break;
+                      case 'eq105':
+                        if (passedCoeffs.length >= 4 && Tc_K_series !== null && mw_kg_kmol_series !== null) {
+                             rawValue = calculateEq105(T, passedCoeffs[0]!, passedCoeffs[1]!, Tc_K_series, passedCoeffs[3]!, mw_kg_kmol_series);
+                        } else if (passedCoeffs.length >=3 && Tc_K_series === null && parseCoefficient(propData.C) !== null && mw_kg_kmol_series !== null) {
+                             const tcFromCoeffC = parseCoefficient(propData.C)!; 
+                             rawValue = calculateEq105(T, passedCoeffs[0]!, passedCoeffs[1]!, tcFromCoeffC, passedCoeffs[2]!, mw_kg_kmol_series);
                         }
+                        break;
+                      case 'eq105_molar':
+                        if (passedCoeffs.length >= 4 && Tc_K_series !== null) { 
+                            const coeffA = passedCoeffs[0]!
+                            const coeffB = passedCoeffs[1]!
+                            const coeffD_for_eq105_molar = passedCoeffs[3];
+                            if (coeffD_for_eq105_molar !== null && coeffD_for_eq105_molar !== undefined) {
+                                 rawValue = calculateEq105_molar(T, coeffA, coeffB, Tc_K_series, coeffD_for_eq105_molar);
+                            }
+                        }
+                        break;
+                      case 'polynomial':
+                        rawValue = calculatePolynomial(T, passedCoeffs[0]!, passedCoeffs[1] ?? undefined, passedCoeffs[2] ?? undefined, passedCoeffs[3] ?? undefined, passedCoeffs[4] ?? undefined); 
+                        break;
+                      case 'eq16_complex': 
+                        if (passedCoeffs.length >= 5) rawValue = calculateEq16Complex(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
+                        break;
+                      case 'eq106':
+                        if (passedCoeffs.length >= 5 && Tc_K_series !== null) rawValue = calculateEq106(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!, Tc_K_series);
+                        break;
+                      case 'eq102_cv':
+                        if (passedCoeffs.length >= 4) rawValue = calculateEq102_conductivity_viscosity(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
+                        break;
+                      case 'eq104_virial':
+                        if (passedCoeffs.length >= 5) rawValue = calculateEq104_virial(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
+                        break;
+                      case 'eq121':
+                        if (passedCoeffs.length >= 4) rawValue = calculateEq121(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
+                        break;
+                      case 'eq13':
+                        if (passedCoeffs.length >= 3) rawValue = calculateEq13(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!);
+                        break;
                     }
-                    if (typeof cFactorBase.factor === 'number' && cFactorBase.factor !== 1) {
-                        finalDisplayValue *= cFactorBase.factor;
+
+                    let valueInBaseUnit = rawValue;
+                    if (valueInBaseUnit !== null && isFinite(valueInBaseUnit)) {
+                      if (propDef.conversionFactor && propDef.conversionFactor !== 1) {
+                        valueInBaseUnit *= propDef.conversionFactor;
+                      }
+                      let finalDisplayValue = valueInBaseUnit;
+                      const cFactorBase = unitDefToUse.conversionFactorFromBase;
+                      if (typeof cFactorBase === 'number') {
+                        if (cFactorBase !== 1) finalDisplayValue *= cFactorBase;
+                      } else if (typeof cFactorBase === 'object' && cFactorBase !== null) {
+                        if (mw_kg_kmol_series === null && (cFactorBase.operation === 'divide_by_mw' || cFactorBase.operation === 'multiply_by_mw')) {
+                            console.warn(`Molar mass required for unit conversion to ${displayUnit} for ${currentCompoundData.name}, but not available. Skipping point.`);
+                            continue; 
+                        }
+                        if (mw_kg_kmol_series !== null) {
+                            if (cFactorBase.operation === 'divide_by_mw') {
+                                if (mw_kg_kmol_series === 0) { console.warn(`Molar mass is zero for ${currentCompoundData.name}, cannot divide. Skipping point for unit ${displayUnit}.`); continue; }
+                                finalDisplayValue /= mw_kg_kmol_series;
+                            } else if (cFactorBase.operation === 'multiply_by_mw') {
+                                finalDisplayValue *= mw_kg_kmol_series;
+                            }
+                        }
+                        if (typeof cFactorBase.factor === 'number' && cFactorBase.factor !== 1) {
+                            finalDisplayValue *= cFactorBase.factor;
+                        }
+                      }
+                      // For non-boiling point plots, X is TempK, Y is finalDisplayValue
+                      points.push([T, finalDisplayValue]);
                     }
-                  }
-                  points.push([T, finalDisplayValue]);
                 }
             }
-            s.data = points;
+            
+            seriesData.push({
+                name: currentCompoundData.name,
+                type: 'line', // Ensures this is treated as a LineSeriesOption
+                data: points,
+                lineStyle: { width: 2.5 },
+                color: compoundColors[compoundIndex % compoundColors.length],
+                symbol: 'none',
+                emphasis: { lineStyle: { width: 3.5 } },
+                animationDuration: 500,
+                animationEasing: 'cubicInOut',
+                large: true, 
+                sampling: 'lttb', 
+                _internal_legend_equation: equationString,
+                _internal_display_unit: displayUnit,
+            });
         });
 
         const finalSeriesToPlot = seriesData.filter(s => (s.data as any[]).length > 0);
         if (seriesData.length > 0 && finalSeriesToPlot.length === 0 && atLeastOneCompoundHasData) {
             console.warn("All series ended up with no data points after processing. This might be due to Tmin/Tmax issues or all points being skipped during calculation/conversion.");
         }
+
+        // Add manual annotations if any
+        if (manualPointsToAnnotate && manualPointsToAnnotate.length > 0) {
+            finalSeriesToPlot.forEach(series => {
+                const seriesName = series.name as string;
+                const pointForThisSeries = manualPointsToAnnotate.find(p => p.seriesName === seriesName && p.isValid && p.value !== null);
+                if (pointForThisSeries) {
+                    if (!series.markPoint) {
+                        series.markPoint = { data: [] };
+                    }
+                    // For Boiling Point: pointForThisSeries.tempCelsius is INPUT PRESSURE, pointForThisSeries.value is CALC TEMP C
+                    // For others: pointForThisSeries.tempCelsius is INPUT TEMP C, pointForThisSeries.value is CALC PROP VALUE
+                    const xCoord = isBoilingPointPlot ? pointForThisSeries.tempCelsius : (pointForThisSeries.tempCelsius + 273.15);
+                    const yCoord = pointForThisSeries.value;
+
+                    (series.markPoint as any).data.push({
+                        name: isBoilingPointPlot 
+                            ? `Point at ${formatNumberToPrecision(xCoord, 2)} ${pointForThisSeries.unit}`
+                            : `Point at ${formatNumberToPrecision(pointForThisSeries.tempCelsius, 2)}°C`,
+                        coord: [xCoord, yCoord], 
+                        itemStyle: { color: 'red' },
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        label: {
+                            show: false, // Changed to false to hide label on graph
+                        }
+                    });
+                }
+            });
+        }
+
 
         // --- Calculate Y-axis data range for dynamic margin ---
         let dataMinY = Infinity;
@@ -657,6 +831,7 @@ export default function CompoundPropertiesPage() {
             finalSeriesToPlot.forEach(series => {
                 if (series.data) {
                     (series.data as [number, number][]).forEach(point => {
+                        // point[1] is Y-value (TempC for Boiling Point, Prop Value for others)
                         if (point && typeof point[1] === 'number' && isFinite(point[1])) {
                             if (point[1] < dataMinY) dataMinY = point[1];
                             if (point[1] > dataMaxY) dataMaxY = point[1];
@@ -667,43 +842,79 @@ export default function CompoundPropertiesPage() {
         }
         // --- End Y-axis data range calculation ---
 
-        const yAxisDisplayName = propDef.displayName;
-        let yAxisUnit = displayUnit; // Use the selected display unit
-        yAxisUnitRef.current = yAxisUnit; // Store for CSV export
+        const yAxisDisplayName = isBoilingPointPlot ? "Temperature" : propDef.displayName;
+        let yAxisUnit = isBoilingPointPlot ? "°C" : displayUnit;
+        // yAxisUnitRef.current stores X-axis unit for Boiling Point (pressure unit), or Y-axis unit for others.
+        yAxisUnitRef.current = isBoilingPointPlot ? displayUnit : yAxisUnit; 
 
-        let yAxisTickFormatter = (val: number) => formatNumberToPrecision(val, 7); // Increased precision from 5 to 7
+        let yAxisTickFormatter = isBoilingPointPlot 
+            ? (val: number) => val.toFixed(0) // Temp C
+            : (val: number) => formatNumberToPrecision(val, 7); // Property value
 
         // --- Determine dynamic axis label margin and nameGap ---
-        const originalBaseTotalGap = (propDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75); // Original (desiredTotalGap + 10 or desiredTotalGap)
-        const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGap);
-        console.log('[DebugYAxis] TempDependent Plot - Applied:', { yAxisDisplayName, yAxisUnit, dataMinY, dataMaxY, originalBaseTotalGap, dynamicAxisLabelMargin, calculatedNameGap });
+        // For Boiling Point, Y-axis is Temperature (°C).
+        // For other plots, Y-axis is the property value.
+        const yAxisRangeForGapCalc = { min: dataMinY, max: dataMaxY }; // dataMinY/MaxY are already correct for Y-axis
+
+        const originalBaseTotalGap = (propDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75);
+        const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(yAxisRangeForGapCalc.min, yAxisRangeForGapCalc.max, originalBaseTotalGap);
+        
+        console.log('[DebugYAxis] TempDependent Plot - Applied:', { yAxisDisplayName, yAxisUnit, dataMinY: yAxisRangeForGapCalc.min, dataMaxY: yAxisRangeForGapCalc.max, originalBaseTotalGap, dynamicAxisLabelMargin, calculatedNameGap });
         // --- End dynamic parameter calculation ---
 
         const yAxisConfig: any = {
           type: 'value' as const,
-          name: displayUnit === '-' ? yAxisDisplayName : `${yAxisDisplayName} (${displayUnit})`,
+          name: yAxisUnit === '-' ? yAxisDisplayName : `${yAxisDisplayName} (${yAxisUnit})`,
           nameLocation: 'middle' as const,
-          nameGap: calculatedNameGap, // Use new dynamic nameGap
+          nameGap: calculatedNameGap, 
           position: 'left' as const,
           axisLine: { show: true, lineStyle: { color: propDef.color, width: 2 } },
           axisLabel: { 
-            formatter: yAxisTickFormatter, // Use the conditional formatter
+            formatter: yAxisTickFormatter, 
             color: '#e0e6f1', 
             fontSize: 16, 
             fontFamily: 'Merriweather Sans',
-            margin: dynamicAxisLabelMargin, // Use new dynamic margin
+            margin: dynamicAxisLabelMargin, 
           },
-          nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Font size 15
+          nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' }, 
           splitLine: { show: false },
-          scale: true,
+          scale: true, // Y-axis always auto-scales
+          min: undefined, 
+          max: undefined, 
         };
         
+        const xAxisConfig: any = {
+            type: 'value',
+            name: isBoilingPointPlot ? `Pressure (${displayUnit})` : 'Temperature (°C)',
+            nameLocation: 'middle',
+            nameGap: 30,
+            axisLabel: {
+                color: '#e0e6f1', // Corrected from #e6e6e6 to #e0e6f1 for consistency
+                fontFamily: 'Merriweather Sans',
+                fontSize: 16,
+                formatter: isBoilingPointPlot 
+                    // Dynamic precision for pressure labels
+                    // Ensure precision is at least 1 (changed from 0 to 1 for val >= 10)
+                    ? (val: number) => formatNumberToPrecision(val, val < 0.1 ? 3 : (val < 1 ? 2 : (val < 10 ? 1 : 1))) 
+                    : (val: number) => (val - 273.15).toFixed(0) // Temp Kelvin to Celsius for display
+            },
+            nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
+            splitLine: { show: false },
+            // Apply calculated range and interval for Boiling Point X-axis
+            scale: isBoilingPointPlot ? false : (finalPlotTminKelvin !== undefined ? false : true),
+            min: isBoilingPointPlot ? finalPlotPressureMin : finalPlotTminKelvin,
+            max: isBoilingPointPlot ? finalPlotPressureMax : finalPlotTmaxKelvin,
+            interval: isBoilingPointPlot ? pressureAxisInterval : xAxisKelvinInterval,
+        };
 
 
         setEchartsOptions({
-          backgroundColor: 'transparent', // Changed background color
+          backgroundColor: 'transparent', 
           title: {
-            text: `${propDef.displayName}: ${titleCompoundNames || 'Selected Compounds'}`,
+            text: isBoilingPointPlot 
+                ? `Boiling Point (Temperature vs. Pressure): ${titleCompoundNames || 'Selected Compounds'}` 
+                : `${propDef.displayName}: ${titleCompoundNames || 'Selected Compounds'}`,
             left: 'center',
             textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
           },
@@ -734,10 +945,18 @@ export default function CompoundPropertiesPage() {
                       return valStr.length > 10 ? valStr.substring(0,7) + '...' : valStr;
                   }
 
-                  if (axisDim === 'x') {
-                    return formatNumberToPrecision(valueAsNumber - 273.15, 3) + ' °C';
-                  } else if (axisDim === 'y') {
-                    return formatNumberToPrecision(valueAsNumber, 3) + (yAxisUnit ? ' ' + yAxisUnit : '');
+                  if (isBoilingPointPlot) {
+                    if (axisDim === 'x') { // Pressure
+                      return formatNumberToPrecision(valueAsNumber, 3) + (displayUnit ? ' ' + displayUnit : '');
+                    } else if (axisDim === 'y') { // Temperature
+                      return formatNumberToPrecision(valueAsNumber, 3) + ' °C';
+                    }
+                  } else {
+                    if (axisDim === 'x') { // Temperature Kelvin
+                      return formatNumberToPrecision(valueAsNumber - 273.15, 3) + ' °C';
+                    } else if (axisDim === 'y') { // Property Value
+                      return formatNumberToPrecision(valueAsNumber, 3) + (yAxisUnit ? ' ' + yAxisUnit : '');
+                    }
                   }
                   return formatNumberToPrecision(valueAsNumber, 3); // Fallback
                 },
@@ -750,12 +969,25 @@ export default function CompoundPropertiesPage() {
             textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
             formatter: (params: any) => {
                 if (!Array.isArray(params) || params.length === 0) return '';
-                const tempInCelsius = params[0].axisValue - 273.15;
-                let tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
-                params.forEach((param: any) => {
-                    const seriesFullname = param.seriesName;
-                    tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b><br/>`;
-                });
+                
+                let tooltipHtml = '';
+                if (isBoilingPointPlot) {
+                    const pressureVal = params[0].axisValue; // Pressure from X-axis
+                    tooltipHtml = `Pressure: <b>${formatNumberToPrecision(pressureVal, 3)} ${displayUnit}</b><br/>`;
+                    params.forEach((param: any) => {
+                        const seriesFullname = param.seriesName;
+                        // param.value is [Pressure_DisplayUnit, TempC]
+                        tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 3)} °C</b><br/>`;
+                    });
+                } else {
+                    const tempInCelsius = params[0].axisValue - 273.15; // TempK from X-axis
+                    tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
+                    params.forEach((param: any) => {
+                        const seriesFullname = param.seriesName;
+                        // param.value is [TempK, Value]
+                        tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b><br/>`;
+                    });
+                }
                 return tooltipHtml;
             }
           },
@@ -784,28 +1016,10 @@ export default function CompoundPropertiesPage() {
                 }
             }
           },
-          grid: { left: '5%', right: '5%', bottom: '12%', top: '10%', containLabel: true }, // Adjusted left to 17%
-          xAxis: {
-            type: 'value',
-            name: 'Temperature (°C)', 
-            nameLocation: 'middle',
-            nameGap: 30,
-            axisLabel: { 
-                color: '#e0e6f1', 
-                fontFamily: 'Merriweather Sans', 
-                fontSize: 16, 
-                formatter: (val: number) => (val - 273.15).toFixed(0) 
-            },
-            nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
-            axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
-            splitLine: { show: false },
-            scale: false, 
-            min: finalPlotTminKelvin, 
-            max: finalPlotTmaxKelvin, 
-            interval: celsiusStep, 
-          },
+          grid: { left: '5%', right: '5%', bottom: '12%', top: '10%', containLabel: true }, 
+          xAxis: xAxisConfig,
           yAxis: yAxisConfig,
-          series: finalSeriesToPlot, 
+          series: finalSeriesToPlot as any, // Use type assertion here
           toolbox: {
             show: true, 
             orient: 'horizontal', 
@@ -916,7 +1130,9 @@ export default function CompoundPropertiesPage() {
             },
             nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
             splitLine: { show: false },
-            scale: true,
+            scale: true, // Reverted: Ensure auto-scaling
+            min: undefined, // Reverted: Let ECharts determine min
+            max: undefined, // Reverted: Let ECharts determine max
         };
 
         setEchartsOptions({
@@ -958,7 +1174,7 @@ export default function CompoundPropertiesPage() {
                     color: '#e0e6f1',
                     fontFamily: 'Merriweather Sans' // Added font family for bar labels
                 }
-            }],
+            }] as any, // Use type assertion here for consistency
             toolbox: { 
               show: true, 
               orient: 'horizontal', 
@@ -978,6 +1194,8 @@ export default function CompoundPropertiesPage() {
   const handleFetchAndPlot = useCallback(async () => {
     setLoading(true);
     setOverallError(null);
+    setManualTempInput(''); // Clear manual input
+    setManualTempPointsData([]); // Clear manual points
     console.log("handleFetchAndPlot: Starting fetch and plot process.");
     const fetchedCompoundStates = await Promise.all(compounds.map(async (compound) => {
         if (!compound.name.trim()) {
@@ -1063,11 +1281,11 @@ export default function CompoundPropertiesPage() {
         }
         setAvailablePropertiesForSelection(commonProps);
         if (commonProps.length > 0) {
-            const currentSelectionStillValid = commonProps.find(p => p.jsonKey === selectedPropertyKey);
+            const currentSelectionStillValid = commonProps.find(p => p.displayName === selectedPropertyKey); // Changed to find by displayName
             if (!currentSelectionStillValid) {
                 const newPropDef = commonProps[0];
-                setSelectedPropertyKey(newPropDef.jsonKey);
-                setSelectedUnit(newPropDef.availableUnits?.[0]?.unit || newPropDef.targetUnitName || '');
+                setSelectedPropertyKey(newPropDef.displayName); // Changed to set displayName
+                setSelectedUnit(newPropDef.availableUnits?.[0]?.unit || newPropDef?.targetUnitName || '');
             }
         } else {
             setSelectedPropertyKey(''); setSelectedUnit(''); 
@@ -1109,13 +1327,12 @@ export default function CompoundPropertiesPage() {
     setLoading(false);
   }, [compounds, selectedPropertyKey, selectedUnit, fetchCompoundPropertiesLocal, plotMode, selectedConstantKey, selectedConstantUnit]);
 
-  // add back CSV export functionality
   const handleExportCSV = useCallback(() => {
-    if (!echartsOptions || !echartsOptions.series || (echartsOptions.series as EChartsSeriesOption[]).length === 0) {
+    if (!echartsOptions || !echartsOptions.series || (echartsOptions.series as AppLineSeriesOption[]).length === 0) { // Use AppLineSeriesOption here
       console.warn("No data to export.");
       return;
     }
-    const seriesForCSV = echartsOptions.series as EChartsSeriesOption[];
+    const seriesForCSV = echartsOptions.series as AppLineSeriesOption[]; // Use AppLineSeriesOption here
     if (!seriesForCSV.some(s => s.data && (s.data as any[]).length > 0)) {
         console.warn("No data points in series to export.");
         return;
@@ -1125,24 +1342,52 @@ export default function CompoundPropertiesPage() {
     let csvContent = '\uFEFF'; // UTF-8 BOM
 
     if (plotMode === 'tempDependent') {
-        const currentPropDef = propertiesToPlotConfig.find(p => p.jsonKey === selectedPropertyKey);
+        const currentPropDef = propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey); // Changed to find by displayName
         const propDisplayName = currentPropDef ? currentPropDef.displayName : 'Property';
-        filename = `${propDisplayName.replace(/\s+/g, '_')}_vs_Temperature.csv`;
-        const unitSuffix = yAxisUnitRef.current ? ` (${yAxisUnitRef.current})` : '';
-        const headers = ['Temperature (°C)'];
-        seriesForCSV.forEach(s => headers.push(`${s.name} ${propDisplayName}${unitSuffix}`));
+        const isBoilingPointPlotCSV = currentPropDef?.displayName === "Boiling Point";
+        
+        // yAxisUnitRef.current stores pressure unit for Boiling Point, otherwise the Y-axis unit
+
+        const xAxisUnitForCSV = yAxisUnitRef.current || ''; 
+        const xAxisLabelForCSV = isBoilingPointPlotCSV ? `Pressure (${xAxisUnitForCSV})` : 'Temperature (°C)';
+        
+        filename = isBoilingPointPlotCSV 
+            ? `Boiling_Point_Temperature_vs_Pressure.csv`
+            : `${propDisplayName.replace(/\s+/g, '_')}_vs_Temperature.csv`;
+
+        const headers = [xAxisLabelForCSV];
+        
+        seriesForCSV.forEach(s => {
+            const seriesYAxisLabel = isBoilingPointPlotCSV ? `Temperature (°C)` : `${propDisplayName}${xAxisUnitForCSV && !isBoilingPointPlotCSV ? ` (${xAxisUnitForCSV})` : ''}`;
+            headers.push(`${s.name} ${seriesYAxisLabel}`);
+        });
         csvContent += headers.join(',') + '\r\n';
-        const allKelvinTemps = new Set<number>();
-        seriesForCSV.forEach(s => { if (s.data) { (s.data as [number, number][]).forEach(p => allKelvinTemps.add(p[0])); } });
-        const sortedKelvinTemps = Array.from(allKelvinTemps).sort((a, b) => a - b);
-        sortedKelvinTemps.forEach(tk => {
-            const tc = tk - 273.15;
-            const row = [formatNumberToPrecision(tc, 3)];
+
+        const allXValues = new Set<number>();
+        seriesForCSV.forEach(s => { 
+            if (s.data) { 
+                (s.data as [number, number][]).forEach(p => allXValues.add(p[0])); 
+            } 
+        });
+        const sortedXValues = Array.from(allXValues).sort((a, b) => a - b);
+
+        sortedXValues.forEach(xVal => {
+            let currentXFormatted = '';
+            if (isBoilingPointPlotCSV) { // xVal is Pressure
+                currentXFormatted = formatNumberToPrecision(xVal, 3);
+            } else { // xVal is Temp Kelvin
+                currentXFormatted = formatNumberToPrecision(xVal - 273.15, 3);
+            }
+            const row = [currentXFormatted];
+
             seriesForCSV.forEach(s => {
                 let valueFound = '';
                 if (s.data) {
-                    const point = (s.data as [number, number][]).find(p => Math.abs(p[0] - tk) < 1e-9);
-                    if (point) valueFound = formatNumberToPrecision(point[1], 4);
+                    const point = (s.data as [number, number][]).find(p => Math.abs(p[0] - xVal) < 1e-9);
+                    if (point) {
+                         // point[1] is TempC for Boiling Point, or Property Value otherwise
+                        valueFound = formatNumberToPrecision(point[1], isBoilingPointPlotCSV ? 3 : 4);
+                    }
                 }
                 row.push(valueFound);
             });
@@ -1251,14 +1496,19 @@ export default function CompoundPropertiesPage() {
     if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading) {
       handleFetchAndPlot();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, compounds[0]?.name, compounds[0]?.data]);
 
   useEffect(() => {
     if (plotMode === 'constants' || plotMode === 'tempDependent') {
       if (compounds.some(c => c.name.trim() !== '')) {
+        // Clear manual temp data when plot mode changes or initial fetch for mode
+        setManualTempInput('');
+        setManualTempPointsData([]);
         handleFetchAndPlot();
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plotMode]); 
 
 
@@ -1271,7 +1521,7 @@ export default function CompoundPropertiesPage() {
     let keyIsValidForCurrentAvailableList = false;
     if (currentKey) {
       if (plotMode === 'tempDependent') {
-        keyIsValidForCurrentAvailableList = !!availablePropertiesForSelection.find(p => p.jsonKey === currentKey);
+        keyIsValidForCurrentAvailableList = !!availablePropertiesForSelection.find(p => p.displayName === currentKey);
       } else { 
         keyIsValidForCurrentAvailableList = !!availableConstantsForSelection.find(c => c.jsonKey === currentKey);
       }
@@ -1280,18 +1530,18 @@ export default function CompoundPropertiesPage() {
     if (compounds.some(c => c.data)) {
         if (currentKey && keyIsValidForCurrentAvailableList) {
            
-            processAndPlotProperties(compounds, currentKey, currentUnit);
+            processAndPlotProperties(compounds, currentKey, currentUnit, manualTempPointsData);
         } else if (!currentKey) { 
-            processAndPlotProperties(compounds, null, currentUnit);
+            processAndPlotProperties(compounds, null, currentUnit, manualTempPointsData);
         }
        } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
     }
-  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError]); 
+  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData]); 
 
   const canExportCSV = echartsOptions && 
                        echartsOptions.series && 
-                       (echartsOptions.series as EChartsSeriesOption[]).length > 0 &&
-                       (echartsOptions.series as EChartsSeriesOption[]).some(s => s.data && (s.data as any[]).length > 0);
+                       (echartsOptions.series as AppLineSeriesOption[]).length > 0 && // Use AppLineSeriesOption here
+                       (echartsOptions.series as AppLineSeriesOption[]).some(s => s.data && (s.data as any[]).length > 0); // Use AppLineSeriesOption here
 
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
@@ -1300,8 +1550,221 @@ export default function CompoundPropertiesPage() {
     }
   };
 
-  const propertySelectKey = availablePropertiesForSelection.map(p => p.jsonKey).join(',') || 'no-props';
+  const propertySelectKey = availablePropertiesForSelection.map(p => p.displayName).join(',') || 'no-props'; // Changed to use displayName
   const constantSelectKey = availableConstantsForSelection.map(c => c.jsonKey).join(',') || 'no-const-props';
+
+  // Function to calculate property at a manual temperature
+  const handleCalculateManualPoint = () => { // Renamed function
+    if (plotMode !== 'tempDependent' || !selectedPropertyKey) {
+      setManualTempPointsData([]);
+      return;
+    }
+    
+    const propDef = propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey);
+    if (!propDef) {
+      setManualTempPointsData([]);
+      return;
+    }
+    const isBoilingPointSelected = propDef.displayName === "Boiling Point";
+    const inputValue = parseFloat(manualTempInput);
+
+    if (isNaN(inputValue)) {
+      setManualTempPointsData(compounds.filter(c => c.data).map(c => ({
+        compoundName: c.data!.name,
+        seriesName: c.data!.name,
+        tempCelsius: NaN, // Invalid input
+        tempKelvin: NaN,
+        value: null,
+        unit: isBoilingPointSelected ? selectedUnit : selectedUnit, // selectedUnit is pressure unit for BP
+        isValid: false,
+        message: "Invalid input."
+      })));
+      return;
+    }
+
+    const unitDefToUse = propDef.availableUnits?.find(u => u.unit === selectedUnit) ||
+                         propDef.availableUnits?.[0] ||
+                         { unit: propDef.targetUnitName, conversionFactorFromBase: 1 };
+    const currentDisplayUnit = unitDefToUse.unit; // For BP, this is the selected pressure unit
+
+    const newPointsData = compounds.filter(c => c.data).map(compoundState => {
+      const currentCompoundData = compoundState.data!;
+      const propData = currentCompoundData.properties[propDef.jsonKey]; // For BP, jsonKey is "Vapour pressure"
+      
+      let point: ManualTempPoint = {
+        compoundName: currentCompoundData.name,
+        seriesName: currentCompoundData.name,
+        tempCelsius: inputValue, // Stores input pressure for BP, input temp C for others
+        tempKelvin: isBoilingPointSelected ? NaN : inputValue + 273.15, // Temp K for calculation (non-BP)
+        value: null, // Stores calculated temp C for BP, calculated prop value for others
+        unit: currentDisplayUnit, // Stores input pressure unit for BP, prop value unit for others
+        isValid: false,
+      };
+
+      if (!propData) {
+        point.message = `Property data not found for ${currentCompoundData.name}.`;
+        return point;
+      }
+
+      const rawCoeffs = propDef.coeffs.map(cKey => ({ key: cKey, value: parseCoefficient(propData[cKey]) }));
+      const passedCoeffs = rawCoeffs.map(c => c.value);
+      const mw_kg_kmol_series: number | null = currentCompoundData.molarWeight ?? null;
+      
+      if (isBoilingPointSelected) {
+        if (passedCoeffs.length >= 5 && passedCoeffs.every(c => c !== null)) {
+          const [coeffA, coeffB, coeffC, coeffD, coeffE] = passedCoeffs as [number, number, number, number, number | undefined];
+          
+          // Convert input pressure (inputValue, in currentDisplayUnit) to Pascals
+          const pressUnitDef = propDef.availableUnits?.find(u => u.unit === currentDisplayUnit);
+          let pressureInPa = inputValue; // Assume inputValue is already in Pa if no conversion found
+          if (pressUnitDef && typeof pressUnitDef.conversionFactorFromBase === 'number' && pressUnitDef.conversionFactorFromBase !== 0) {
+            // conversionFactorFromBase converts Pa TO currentDisplayUnit. So, divide to go other way.
+            pressureInPa = inputValue / pressUnitDef.conversionFactorFromBase;
+          } else if (pressUnitDef && currentDisplayUnit === "Pa") {
+            pressureInPa = inputValue;
+          } else {
+            point.message = `Pressure unit conversion error for ${currentDisplayUnit}.`;
+            return point;
+          }
+
+          if (pressureInPa <= 0) {
+            point.message = "Pressure must be positive."; return point;
+          }
+          
+          let initialTempGuessBp = 373.15;
+          if (coeffA && coeffB && pressureInPa > 0) {
+              const lnPVal = Math.log(pressureInPa);
+              if (coeffA - lnPVal !== 0) {
+                  const T_antoine_approx_bp = coeffB / (coeffA - lnPVal);
+                  if (T_antoine_approx_bp > 0 && T_antoine_approx_bp < 1000) {
+                      initialTempGuessBp = T_antoine_approx_bp;
+                  }
+              }
+          }
+
+          const calculatedTempKelvin = calculateBoilingPointEq101(pressureInPa, coeffA, coeffB, coeffC, coeffD, coeffE, initialTempGuessBp);
+          if (calculatedTempKelvin !== null && isFinite(calculatedTempKelvin) && calculatedTempKelvin > 0) {
+            point.value = calculatedTempKelvin - 273.15; // Store calculated Temp in Celsius
+            point.isValid = true;
+            // point.unit remains the input pressure unit. The output is implicitly °C.
+          } else {
+            point.message = "Boiling temperature calculation failed or out of range.";
+          }
+        } else {
+          point.message = "Insufficient coefficients for boiling point calculation.";
+        }
+      } else { // Other temperature-dependent properties
+        const tempKelvinForCalc = inputValue + 273.15;
+        const Tmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
+        const Tmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
+
+        if (Tmin === null || Tmax === null || tempKelvinForCalc < Tmin - 1e-6 || tempKelvinForCalc > Tmax + 1e-6) {
+          point.message = `Temp out of range (${formatNumberToPrecision(Tmin ? Tmin - 273.15 : NaN,1)} to ${formatNumberToPrecision(Tmax ? Tmax - 273.15 : NaN,1)} °C).`;
+          return point;
+        }
+        let Tc_K_series: number | null = null; // For equations requiring Tc
+        if (propDef.requiresTc) Tc_K_series = currentCompoundData.criticalTemp ?? null;
+
+        if (propDef.requiresTc && Tc_K_series === null) {
+          point.message = `Critical Temp required but not found.`; return point;
+        }
+        // ... (rest of the switch case for other properties, as it was)
+        let rawValue: number | null = null;
+        switch (propDef.equationType) {
+          case 'eq101': // This case should not be hit if isBoilingPointSelected is false and propDef.eqType is eq101
+            if (passedCoeffs.length >= 5) rawValue = calculateEq101(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4] ?? undefined);
+            break;
+          case 'eq105':
+            if (passedCoeffs.length >= 4 && Tc_K_series !== null && mw_kg_kmol_series !== null) {
+                 rawValue = calculateEq105(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, Tc_K_series, passedCoeffs[3]!, mw_kg_kmol_series);
+            } else if (passedCoeffs.length >=3 && Tc_K_series === null && parseCoefficient(propData.C) !== null && mw_kg_kmol_series !== null) {
+                 const tcFromCoeffC = parseCoefficient(propData.C)!; 
+                 rawValue = calculateEq105(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, tcFromCoeffC, passedCoeffs[2]!, mw_kg_kmol_series);
+            }
+            break;
+          case 'eq105_molar':
+            if (passedCoeffs.length >= 4 && Tc_K_series !== null) { 
+                const coeffA = passedCoeffs[0]!
+                const coeffB = passedCoeffs[1]!
+                const coeffD_for_eq105_molar = passedCoeffs[3];
+                if (coeffD_for_eq105_molar !== null && coeffD_for_eq105_molar !== undefined) {
+                     rawValue = calculateEq105_molar(tempKelvinForCalc, coeffA, coeffB, Tc_K_series, coeffD_for_eq105_molar);
+                }
+            }
+            break;
+          case 'polynomial':
+            rawValue = calculatePolynomial(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1] ?? undefined, passedCoeffs[2] ?? undefined, passedCoeffs[3] ?? undefined, passedCoeffs[4] ?? undefined); 
+            break;
+          case 'eq16_complex': 
+            if (passedCoeffs.length >= 5) rawValue = calculateEq16Complex(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
+            break;
+          case 'eq106':
+            if (passedCoeffs.length >= 5 && Tc_K_series !== null) rawValue = calculateEq106(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!, Tc_K_series);
+            break;
+          case 'eq102_cv':
+            if (passedCoeffs.length >= 4) rawValue = calculateEq102_conductivity_viscosity(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
+            break;
+          case 'eq104_virial':
+            if (passedCoeffs.length >= 5) rawValue = calculateEq104_virial(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
+            break;
+          case 'eq121':
+            if (passedCoeffs.length >= 4) rawValue = calculateEq121(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
+            break;
+          case 'eq13':
+            if (passedCoeffs.length >= 3) rawValue = calculateEq13(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!);
+            break;
+        }
+
+        if (rawValue !== null && isFinite(rawValue)) {
+          let valueInBaseUnit = rawValue;
+          if (propDef.conversionFactor && propDef.conversionFactor !== 1) {
+            valueInBaseUnit *= propDef.conversionFactor;
+          }
+          let finalDisplayValue = valueInBaseUnit;
+          const cFactorBase = unitDefToUse.conversionFactorFromBase;
+          if (typeof cFactorBase === 'number') {
+            if (cFactorBase !== 1) finalDisplayValue *= cFactorBase;
+          } else if (typeof cFactorBase === 'object' && cFactorBase !== null) {
+            if (mw_kg_kmol_series === null && (cFactorBase.operation === 'divide_by_mw' || cFactorBase.operation === 'multiply_by_mw')) {
+              point.message = `Molar mass required for unit conversion to ${currentDisplayUnit}, but not available.`; return point;
+            }
+            if (mw_kg_kmol_series !== null) {
+              if (cFactorBase.operation === 'divide_by_mw') {
+                if (mw_kg_kmol_series === 0) { point.message = `Molar mass is zero, cannot divide for unit ${currentDisplayUnit}.`; return point; }
+                finalDisplayValue /= mw_kg_kmol_series;
+              } else if (cFactorBase.operation === 'multiply_by_mw') {
+                finalDisplayValue *= mw_kg_kmol_series;
+              }
+            }
+            if (typeof cFactorBase.factor === 'number' && cFactorBase.factor !== 1) {
+              finalDisplayValue *= cFactorBase.factor;
+            }
+          }
+          point.value = finalDisplayValue; // Store calculated property value
+          point.isValid = true;
+        } else {
+          point.message = "Calculation failed or resulted in non-finite number.";
+        }
+      }
+      return point;
+    });
+    setManualTempPointsData(newPointsData);
+  };
+
+  // Effect to clear manual points if selected property changes
+  useEffect(() => {
+    setManualTempInput('');
+    setManualTempPointsData([]);
+  }, [selectedPropertyKey, selectedUnit]);
+
+  const handleManualTempInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (manualTempInput.trim() && !isNaN(parseFloat(manualTempInput))) {
+        handleCalculateManualPoint(); // Call renamed function
+      }
+    }
+  };
 
 
   return (
@@ -1369,8 +1832,8 @@ export default function CompoundPropertiesPage() {
                           key={propertySelectKey}
                           value={selectedPropertyKey}
                           onValueChange={(value) => {
-                              setSelectedPropertyKey(value);
-                              const newPropDef = availablePropertiesForSelection.find(p => p.jsonKey === value);
+                              setSelectedPropertyKey(value); // value is now displayName
+                              const newPropDef = availablePropertiesForSelection.find(p => p.displayName === value); // Find by displayName
                               const newUnit = newPropDef?.availableUnits?.[0]?.unit || newPropDef?.targetUnitName || '';
                               setSelectedUnit(newUnit);
                           }}
@@ -1381,7 +1844,7 @@ export default function CompoundPropertiesPage() {
                           </SelectTrigger>
                           <SelectContent>
                             {availablePropertiesForSelection.length > 0 ? availablePropertiesForSelection.map(prop => (
-                              <SelectItem key={prop.jsonKey} value={prop.jsonKey}>
+                              <SelectItem key={prop.displayName} value={prop.displayName}> {/* Changed key and value to prop.displayName */}
                                 {renderPropertyName(prop.displayName, prop.symbol)}
                               </SelectItem>
                             )) : <SelectItem value="no-props" disabled>No common properties</SelectItem>}
@@ -1390,7 +1853,7 @@ export default function CompoundPropertiesPage() {
                       </div>
                       
                       {(() => {
-                        const currentPropDef = propertiesToPlotConfig.find(p => p.jsonKey === selectedPropertyKey);
+                        const currentPropDef = propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey); // Changed to find by displayName
                         const unitsForCurrentProp = currentPropDef?.availableUnits;
                         if (unitsForCurrentProp && unitsForCurrentProp.length > 1) {
                           return (
@@ -1485,6 +1948,64 @@ export default function CompoundPropertiesPage() {
                 {overallError && ! loading && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{overallError}</AlertDescription></Alert>}
               </CardContent>
             </Card>
+
+            {plotMode === 'tempDependent' && compounds.some(c => c.data) && selectedPropertyKey && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    {propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
+                      ? "Get Boiling Temp at Specific Pressure"
+                      : "Get Value at Specific Temperature"}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      value={manualTempInput}
+                      onChange={(e) => {
+                        setManualTempInput(e.target.value);
+                        if (e.target.value === '') {
+                          setManualTempPointsData([]); // Clear points if input is cleared
+                        }
+                      }}
+                      onKeyDown={handleManualTempInputKeyDown}
+                      placeholder={
+                        propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
+                          ? "Enter Pressure"
+                          : "Enter Temp"
+                      }
+                      className="flex-grow"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      {propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
+                        ? selectedUnit // This is the selected pressure unit
+                        : "°C"}
+                    </span>
+                    <Button 
+                      onClick={handleCalculateManualPoint} // Call renamed function
+                      disabled={!manualTempInput.trim() || isNaN(parseFloat(manualTempInput))}
+                    >
+                      Calculate
+                    </Button>
+                  </div>
+                  {manualTempPointsData.length > 0 && (
+                    <div className="space-y-1 text-sm mt-2">
+                      {manualTempPointsData.map((point, idx) => (
+                        <div key={idx} className={`pl-2 ${point.isValid ? '' : 'text-red-500'}`}>
+                          <strong>{point.compoundName}:</strong>{' '}
+                          {point.isValid && point.value !== null
+                            ? (propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
+                                ? `${formatNumberToPrecision(point.value, 2)} °C (at ${formatNumberToPrecision(point.tempCelsius, 3)} ${point.unit})` // value is Temp C, tempCelsius is Pressure, unit is Pressure unit
+                                : `${formatNumberToPrecision(point.value, 3)} ${point.unit} (at ${formatNumberToPrecision(point.tempCelsius, 2)} °C)`) // value is Prop Val, unit is Prop unit, tempCelsius is Temp C
+                            : (point.message || "N/A")}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           <div className="lg:col-span-2 space-y-6">
