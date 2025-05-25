@@ -88,7 +88,7 @@ export default function Home() {
           <CardHeader>
             <CardTitle className="text-2xl font-bold">Hi, I'm Victor</CardTitle>
             <CardDescription className="text-2xl font-bold">
-              Chemical Engineering Optimization & Predictive Modeling Specialist
+              Chemical Engineering Optimization & Predictive Modeling Enthusiast
             </CardDescription>
           </CardHeader>
 
