@@ -237,7 +237,7 @@ export default function KineticsPage() {
              params.forEach((param: any) => {
                  // Manually format the plain seriesName to HTML for the tooltip
                  const formattedName = param.seriesName.replace(/(\d+)/g, '<sub>$1</sub>');
-                 tooltipText += `${param.marker}${formattedName}: ${param.value[1].toPrecision(4)}<br/>`;
+                 tooltipText += `${param.marker}${formattedName}: ${param.value[1].toPrecision(3)}<br/>`;
              });
              return tooltipText;
           },
