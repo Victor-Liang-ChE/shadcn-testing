@@ -174,6 +174,11 @@ export default function McCabeThielePage() {
   const [comp2Name, setComp2Name] = useState('water');
   const [temperatureC, setTemperatureC] = useState<number | null>(60);
   const [pressureBar, setPressureBar] = useState<number | null>(1); // Default, but will be overridden by useTemperature=true
+  
+  // New string states for input fields
+  const [temperatureInput, setTemperatureInput] = useState<string>(temperatureC !== null ? String(temperatureC) : '');
+  const [pressureInput, setPressureInput] = useState<string>(pressureBar !== null ? String(pressureBar) : '');
+
   const [useTemperature, setUseTemperature] = useState(true);
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeMcCabe>('uniquac');
 
@@ -877,7 +882,7 @@ export default function McCabeThielePage() {
     const dispComp1Cap = capitalizeFirst(displayedComp1);
     const dispComp2Cap = capitalizeFirst(displayedComp2);
     const titleCondition = displayedUseTemp ? 
-        (displayedTemp !== null ? `${displayedTemp.toFixed(0)} °C` : 'N/A Temp') : 
+        (displayedTemp !== null ? `${displayedTemp.toFixed(1)} °C` : 'N/A Temp') : 
         (displayedPressure !== null ? `${displayedPressure.toFixed(2)} bar` : 'N/A Pressure');
     const titleText = displayedComp1 && displayedComp2 ?
         `McCabe-Thiele: ${dispComp1Cap}/${dispComp2Cap} at ${titleCondition}` : // Removed fluid package
@@ -993,6 +998,21 @@ export default function McCabeThielePage() {
   }, [equilibriumData, generateEChartsOptions]);
 
   const handleUpdateGraphClick = () => {
+    // Ensure numeric states are up-to-date before calculating,
+    // though onChange should keep them in sync.
+    // This explicit parse could be a fallback if needed, but generally not required with the new onChange.
+    const tempNum = parseFloat(temperatureInput);
+    if (useTemperature) {
+      if (temperatureInput.trim() === '' || isNaN(tempNum)) setTemperatureC(null);
+      else setTemperatureC(tempNum);
+    }
+    
+    const pressNum = parseFloat(pressureInput);
+    if (!useTemperature) {
+      if (pressureInput.trim() === '' || isNaN(pressNum)) setPressureBar(null);
+      else setPressureBar(pressNum);
+    }
+
     calculateEquilibriumCurve();
   };
 
@@ -1039,7 +1059,8 @@ export default function McCabeThielePage() {
       } else if (inputTarget === 'comp2' && showComp2Suggestions && comp2Suggestions.length > 0) {
         setShowComp2Suggestions(false);
       }
-      handleUpdateGraphClick(); // Trigger graph update on Enter key
+      // Trigger graph update on Enter key, which now internally syncs numeric states
+      handleUpdateGraphClick();
     } else if (event.key === 'Escape') {
         if (inputTarget === 'comp1') setShowComp1Suggestions(false);
         if (inputTarget === 'comp2') setShowComp2Suggestions(false);
@@ -1115,37 +1136,43 @@ export default function McCabeThielePage() {
                     {useTemperature ? (
                         <Input
                            id="temperature" type="text"
-                           value={temperatureC === null ? '' : String(temperatureC)}
+                           value={temperatureInput}
                            onChange={(e) => {
                               const valStr = e.target.value;
-                              if (valStr === '') { setTemperatureC(null); }
-                              else {
+                              setTemperatureInput(valStr); // Update display string
+
+                              if (valStr.trim() === '') {
+                                  setTemperatureC(null);
+                              } else if (valStr === '-') {
+                                  setTemperatureC(null);
+                              } else {
                                   const num = parseFloat(valStr);
-                                  if (!isNaN(num)) { setTemperatureC(num); }
-                                  else if (valStr === '-' || (valStr.endsWith('.') && !valStr.substring(0, valStr.length -1).includes('.'))) { /* Allow partial input */ }
-                                  else { setTemperatureC(null); }
+                                  setTemperatureC(isNaN(num) ? null : num);
                               }
                            }}
-                           onKeyDown={handleKeyDown} // Attach Enter key handler
-                           placeholder="Enter value" // Updated placeholder
+                           onKeyDown={handleKeyDown} 
+                           placeholder="Enter value" 
                            required={useTemperature} disabled={!useTemperature} className="flex-1"
                         />
                     ) : (
                         <Input
                            id="pressure" type="text"
-                           value={pressureBar === null ? '' : String(pressureBar)}
+                           value={pressureInput}
                            onChange={(e) => {
                               const valStr = e.target.value;
-                              if (valStr === '') { setPressureBar(null); }
-                              else {
+                              setPressureInput(valStr); // Update display string
+
+                              if (valStr.trim() === '') {
+                                  setPressureBar(null);
+                              } else if (valStr === '-') {
+                                  setPressureBar(null);
+                              } else {
                                   const num = parseFloat(valStr);
-                                  if (!isNaN(num)) { setPressureBar(num); }
-                                  else if (valStr === '-' || (valStr.endsWith('.') && !valStr.substring(0, valStr.length -1).includes('.'))) { /* Allow partial input */ }
-                                  else { setPressureBar(null); }
+                                  setPressureBar(isNaN(num) ? null : num);
                               }
                            }}
-                           onKeyDown={handleKeyDown} // Attach Enter key handler
-                           placeholder="Enter value" // Updated placeholder
+                           onKeyDown={handleKeyDown} 
+                           placeholder="Enter value" 
                            required={!useTemperature} disabled={useTemperature} className="flex-1"
                         />
                     )}
@@ -1296,7 +1323,7 @@ export default function McCabeThielePage() {
             <Card>
               <CardContent className="py-2">
                 <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
-                   {loading && ( <div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Loading & Calculating XY Data...</div><div className="text-sm text-gray-300">Using {fluidPackage.toUpperCase()} model.</div></div></div> )}
+                   {loading && ( <div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Loading & Calculating XY Data...</div><div className="text-sm text-gray-300">Using { fluidPackage.toUpperCase()} model.</div></div></div> )}
                    {!loading && !equilibriumData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-white">Please provide inputs and update graph.</div> )}
                    {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div> )}
                   {!loading && equilibriumData && Object.keys(echartsOptions).length > 0 && (
