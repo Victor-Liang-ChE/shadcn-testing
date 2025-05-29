@@ -105,7 +105,7 @@ export default function AzeotropeFinderPage() {
   const [comp2Name, setComp2Name] = useState('Water');   // Default to water
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeAzeotrope>('uniquac'); // Default to uniquac
   const [azeotropeScanType, setAzeotropeScanType] = useState<AzeotropeScanType>('vs_P_find_T'); // Default to Scan Pressure
-  const scanSteps = 50; // Always use 50 scan points, no UI to change this
+  // const scanSteps = 50; // Always use 50 scan points, no UI to change this // REMOVED
 
   // Data & Control States
   const [azeotropeScanData, setAzeotropeScanData] = useState<{ scanVal: number, x_az: number, dependentVal: number }[]>([]);
@@ -457,18 +457,21 @@ export default function AzeotropeFinderPage() {
 
         const scanResultsArray: { scanVal: number, x_az: number, dependentVal: number }[] = [];
         
-        let currentScanStartValue: number, currentScanEndValue: number;
+        let currentScanStartValue: number, currentScanEndValue: number, stepValue: number;
         if (azeotropeScanType === 'vs_P_find_T') {
-            currentScanStartValue = 0.01; // bar (changed from 1 kPa)
-            currentScanEndValue = 20; // bar (changed from 2000 kPa)
+            currentScanStartValue = 0.1; // bar
+            currentScanEndValue = 20; // bar
+            stepValue = 0.1; // bar increment
         } else { // vs_T_find_P
             currentScanStartValue = 230; // K
             currentScanEndValue = 550; // K
+            stepValue = 1; // K increment
         }
-        const stepValue = (currentScanEndValue - currentScanStartValue) / (scanSteps > 1 ? scanSteps - 1 : 1);
+        // const stepValue = (currentScanEndValue - currentScanStartValue) / (scanSteps > 1 ? scanSteps - 1 : 1); // REMOVED
 
-        for (let i = 0; i < scanSteps; i++) {
-            const currentScanVal = currentScanStartValue + i * stepValue;
+        for (let currentScanVal = currentScanStartValue; currentScanVal <= currentScanEndValue + (stepValue * 0.5); currentScanVal += stepValue) {
+            // The `+ (stepValue * 0.5)` is to handle potential floating point inaccuracies for the loop's end condition
+            // const currentScanVal = currentScanStartValue + i * stepValue; // REPLACED by loop variable
             let x_az_found: number | null = null;
             let dependent_val_found: number | null = null;
 
@@ -608,7 +611,16 @@ export default function AzeotropeFinderPage() {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'cross' },
+        axisPointer: {
+          type: 'cross',
+          label: {
+            backgroundColor: '#1e293b', // Match main tooltip background
+            color: '#e5e7eb',           // Match main tooltip text color
+            fontFamily: 'Merriweather Sans',
+            borderColor: '#3b82f6',     // Match main tooltip border color
+            borderWidth: 1,
+          }
+        },
         backgroundColor: '#1e293b',
         borderColor: '#3b82f6',
         textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
@@ -641,8 +653,7 @@ export default function AzeotropeFinderPage() {
         nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
         axisLine: { lineStyle: { color: '#4b5563', width: 2.5 } }, // Added width
         splitLine: { show: false }, // Removed grid lines
-        scale: true, 
-      },
+        scale: true      },
       yAxis: [
         {
           show: true, 
@@ -669,8 +680,8 @@ export default function AzeotropeFinderPage() {
         }
       ],
       series: [
-        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#22c55e', width: 2.5 }, itemStyle: { color: '#22c55e' }, symbolSize: 6, symbol: 'circle' }, // Changed color to green
-        { name: dependentParamName, type: 'line', yAxisIndex: 1, data: dependent_val_data, smooth: true, lineStyle: { color: '#f59e0b', width: 2.5 }, itemStyle: { color: '#f59e0b' }, symbolSize: 6, symbol: 'triangle' }
+        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#22c55e', width: 2.5 }, itemStyle: { color: '#22c55e' }, symbolSize: 6, symbol: 'none' }, // Changed color to green, added symbol: 'none'
+        { name: dependentParamName, type: 'line', yAxisIndex: 1, data: dependent_val_data, smooth: true, lineStyle: { color: '#f59e0b', width: 2.5 }, itemStyle: { color: '#f59e0b' }, symbolSize: 6, symbol: 'none' } // Added symbol: 'none'
       ],
       // dataZoom removed
       toolbox: {
