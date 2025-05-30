@@ -892,10 +892,21 @@ export default function CompoundPropertiesPage() {
                 color: '#e0e6f1', // Corrected from #e6e6e6 to #e0e6f1 for consistency
                 fontFamily: 'Merriweather Sans',
                 fontSize: 16,
-                formatter: isBoilingPointPlot 
-                    // Dynamic precision for pressure labels
-                    // Ensure precision is at least 1 (changed from 0 to 1 for val >= 10)
-                    ? (val: number) => formatNumberToPrecision(val, val < 0.1 ? 3 : (val < 1 ? 2 : (val < 10 ? 1 : 1))) 
+                formatter: isBoilingPointPlot
+                    ? (val: number) => {
+                        // pressureAxisInterval should be defined here if isBoilingPointPlot is true
+                        // and the axis is being configured.
+                        if (typeof pressureAxisInterval === 'number') {
+                            let dp = 0; // Default decimal places for intervals >= 1
+                            if (pressureAxisInterval < 0.1) { // For intervals like 0.01, 0.05
+                                dp = 2;
+                            } else if (pressureAxisInterval < 1) { // For intervals like 0.1, 0.2, 0.5
+                                dp = 1;
+                            }
+                            return val.toFixed(dp);
+                        }
+                        return val.toString(); // Fallback
+                      }
                     : (val: number) => (val - 273.15).toFixed(0) // Temp Kelvin to Celsius for display
             },
             nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
