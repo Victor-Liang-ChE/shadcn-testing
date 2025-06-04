@@ -60,7 +60,10 @@ const R_GAS_CONSTANT = 8.314; // J/(mol*K) or L*kPa/(mol*K) depending on units
 export default function ReactorDesignPage() {
   const [reactorType, setReactorType] = useState<ReactorType>('PFR');
   const [reactionPhase, setReactionPhase] = useState<ReactionPhase>('Liquid');
-  const [reactionString, setReactionString] = useState<string>('A + B -> C'); // Example: 2 H2 + O2 -> 2 H2O
+  const [reactionString, setReactionString] = useState<string>('A + B -> C');
+  const [reactions, setReactions] = useState<Array<{id: string, reactants: string, products: string}>>([
+    { id: '1', reactants: 'A + B', products: 'C' }
+  ]); // Example: 2 H2 + O2 -> 2 H2O
   
   const [components, setComponents] = useState<Component[]>([
     { id: 'comp1', name: 'A', initialFlowRate: '10', reactionOrder: '1' },
@@ -87,6 +90,32 @@ export default function ReactorDesignPage() {
   const [calculationError, setCalculationError] = useState<string | null>(null);
 
   // Component Management
+  const addReaction = () => {
+    const newId = (reactions.length + 1).toString();
+    setReactions([...reactions, { id: newId, reactants: '', products: '' }]);
+  };
+
+  const removeReaction = (id: string) => {
+    if (reactions.length > 1) {
+      setReactions(reactions.filter(reaction => reaction.id !== id));
+    }
+  };
+
+  const updateReaction = (id: string, field: 'reactants' | 'products', value: string) => {
+    setReactions(reactions.map(reaction => 
+      reaction.id === id ? { ...reaction, [field]: value } : reaction
+    ));
+    // Update the main reaction string based on the first reaction
+    if (id === reactions[0]?.id || reactions.length === 1) {
+      const updatedReaction = reactions.find(r => r.id === id);
+      if (updatedReaction) {
+        const newReactants = field === 'reactants' ? value : updatedReaction.reactants;
+        const newProducts = field === 'products' ? value : updatedReaction.products;
+        setReactionString(`${newReactants} -> ${newProducts}`);
+      }
+    }
+  };
+
   const addComponent = () => {
     setComponents([...components, { id: `comp${Date.now()}`, name: '', initialFlowRate: '', reactionOrder: '' }]);
   };
@@ -472,16 +501,17 @@ export default function ReactorDesignPage() {
           {/* Main Body */}
           <rect x="20" y="30" width="180" height="40" rx="15" ry="15" className={`${reactorFill} ${reactorStroke}`} strokeWidth="1"/>
           {/* Inlet */}
-          <path d="M0 50 L20 50" {...commonArrowProps} />
-          <polygon points="15,45 20,50 15,55" {...commonArrowProps} />
-          <text x="5" y="40" fontSize="10" fill="currentColor">Feed</text>
+          {/* Feed inlet */}
+          <path d="M25 50 L45 50" {...commonArrowProps} />
+          <polygon points="40,45 45,50 40,55" {...commonArrowProps} />
+          <text x="10" y="40" fontSize="10" textAnchor="middle" fill="currentColor">Feed</text>
           {/* Outlet */}
           {/* Shaft of the arrow */}
           <path d="M200 50 L215 50" {...commonArrowProps} />
           {/* Arrowhead, tip at x=220, base at x=215. No transform needed. */}
           <polygon points="215,45 220,50 215,55" {...commonArrowProps} />
           {/* Text label for Product (position can remain as is or be adjusted as preferred) */}
-          <text x="190" y="40" fontSize="10" textAnchor="end" fill="currentColor">Product</text>
+          <text x="207" y="40" fontSize="10" textAnchor="middle" fill="currentColor">Product</text>
         </svg>
       );
     } else { // CSTR
@@ -595,32 +625,50 @@ export default function ReactorDesignPage() {
 
             {/* Reaction Stoichiometry */}
             <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  Reaction Stoichiometry
+                  <Button variant="outline" size="sm" onClick={addReaction}>
+                    <PlusCircle className="mr-2 h-4 w-4" />Add Reaction
+                  </Button>
+                </CardTitle>
+              </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-5 gap-2 items-center">
-                  <div className="col-span-2">
-                    <Input
-                      placeholder="A + B"
-                      value={reactionString.split('->')[0]?.trim() || ''}
-                      onChange={(e) => {
-                        const products = reactionString.split('->')[1]?.trim() || '';
-                        setReactionString(`${e.target.value} -> ${products}`);
-                      }}
-                    />
+                {reactions.map((reaction, index) => (
+                  <div key={reaction.id}>
+                    <div className="grid grid-cols-12 gap-2 items-center">
+                      <div className="col-span-4">
+                        <Input
+                          placeholder="A + B"
+                          value={reaction.reactants}
+                          onChange={(e) => updateReaction(reaction.id, 'reactants', e.target.value)}
+                        />
+                      </div>
+                      <div className="col-span-2 text-center">
+                        <span className="text-lg">→</span>
+                      </div>
+                      <div className="col-span-4">
+                        <Input
+                          placeholder="C"
+                          value={reaction.products}
+                          onChange={(e) => updateReaction(reaction.id, 'products', e.target.value)}
+                        />
+                      </div>
+                      <div className="col-span-1"></div>
+                      <div className="col-span-1 flex justify-start">
+                        {index > 0 && (
+                          <button
+                            onClick={() => removeReaction(reaction.id)}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {index < reactions.length - 1 && <hr className="my-4" />}
                   </div>
-                  <div className="col-span-1 text-center">
-                    <span className="text-lg">→</span>
-                  </div>
-                  <div className="col-span-2">
-                    <Input
-                      placeholder="C"
-                      value={reactionString.split('->')[1]?.trim() || ''}
-                      onChange={(e) => {
-                        const reactants = reactionString.split('->')[0]?.trim() || '';
-                        setReactionString(`${reactants} -> ${e.target.value}`);
-                      }}
-                    />
-                  </div>
-                </div>
+                ))}
               </CardContent>
             </Card>
 
