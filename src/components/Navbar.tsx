@@ -52,6 +52,9 @@ function Navbar() {
       case "/toolbox/residue-curve-map":
         return "Residue Curve Map";
 
+      case "/toolbox/reactor-design":
+        return "Reactor Design Simulator";
+
       case "/misc":
           return "Miscellaneous Projects";
   
