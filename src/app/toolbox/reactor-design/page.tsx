@@ -74,8 +74,8 @@ export default function ReactorDesignPage() {
   const [kinetics, setKinetics] = useState<Kinetics>({
     rateConstantInputMode: 'directK',
     kValue: '0.1', // Units depend on reaction order and concentration units
-    AValue: '',
-    EaValue: '', // e.g., J/mol
+    AValue: '1e6',
+    EaValue: '50000', // e.g., J/mol
     reactionTempK: '300', // Kelvin
   });
 
@@ -88,6 +88,13 @@ export default function ReactorDesignPage() {
   const [calculationResults, setCalculationResults] = useState<CalculationResults | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [calculationError, setCalculationError] = useState<string | null>(null);
+
+  // Handle Enter key press to trigger calculation
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handleCalculate();
+    }
+  };
 
   // Component Management
   const addReaction = () => {
@@ -202,20 +209,15 @@ export default function ReactorDesignPage() {
         });
 
 
-      // Calculate k at T
+      // Calculate k at T using Arrhenius equation
       let kAtT: number | undefined;
       const T_K = parseFloat(kinetics.reactionTempK);
       if (isNaN(T_K) || T_K <= 0) throw new Error("Reaction temperature must be a positive number.");
 
-      if (kinetics.rateConstantInputMode === 'directK') {
-        kAtT = parseFloat(kinetics.kValue);
-        if (isNaN(kAtT)) throw new Error("Invalid direct k value.");
-      } else { // arrhenius
-        const A = parseFloat(kinetics.AValue);
-        const Ea = parseFloat(kinetics.EaValue);
-        if (isNaN(A) || isNaN(Ea)) throw new Error("Invalid A or Ea value for Arrhenius equation.");
-        kAtT = A * Math.exp(-Ea / (R_GAS_CONSTANT * T_K));
-      }
+      const A = parseFloat(kinetics.AValue);
+      const Ea = parseFloat(kinetics.EaValue);
+      if (isNaN(A) || isNaN(Ea)) throw new Error("Invalid A or Ea value for Arrhenius equation.");
+      kAtT = A * Math.exp(-Ea / (R_GAS_CONSTANT * T_K));
       if (kAtT <=0) throw new Error("Rate constant (k) must be positive.");
 
 
@@ -480,12 +482,10 @@ export default function ReactorDesignPage() {
     }
   }, [parsedReaction, reactorType, reactorVolume, kinetics, components, reactionPhase, totalPressure, volumetricFlowRate, calculationError]);
 
-  // Effect to auto-calculate when parsed reaction is ready
-  useEffect(() => {
-    if (parsedReaction && parsedReaction.rateConstantAtT) {
-      handleCalculate();
-    }
-  }, [parsedReaction, handleCalculate]);
+  // Remove automatic calculation - calculations will only run when button is pressed
+  // useEffect(() => {
+  //   calculateReactorPerformance();
+  // }, [reactorType, reactionPhase, reactorVolume, volumetricFlowRate, totalPressure, kinetics, components, reactionString]);
 
 
   // Reactor SVG Visualization
@@ -544,82 +544,157 @@ export default function ReactorDesignPage() {
   return (
     <TooltipProvider>
       <div className="container mx-auto p-4 space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Inputs */}
-          <div className="lg:col-span-1 space-y-6">
-            {/* System Configuration */}
+        <div className="grid grid-cols-2 gap-6">
+          {/* Left Panel - Input Controls (1/2 of width) */}
+          <div className="space-y-6">
+            {/* System Configuration & Kinetics */}
             <Card>
-              <CardContent className="space-y-4">
-                <div className="space-y-4">
-                  <div className="w-full">
-                    <Select value={reactorType} onValueChange={(value) => setReactorType(value as ReactorType)}>
-                      <SelectTrigger id="reactorType" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="PFR">Plug Flow Reactor (PFR)</SelectItem>
-                        <SelectItem value="CSTR">Continuous Stirred Tank Reactor (CSTR)</SelectItem>
-                      </SelectContent>
-                    </Select>
+              <CardContent className="space-y-4 relative">
+                {/* Continuous vertical divider */}
+                <div className="absolute left-1/2 top-0 h-full w-px bg-border transform -translate-x-1/2"></div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2 pr-4">
+                    <Label htmlFor="reactorType" className="text-sm whitespace-nowrap">Reactor Type:</Label>
+                    <div className="flex-1 min-w-0">
+                      <Select value={reactorType} onValueChange={(value) => setReactorType(value as ReactorType)}>
+                        <SelectTrigger id="reactorType" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="PFR">PFR</SelectItem>
+                          <SelectItem value="CSTR">CSTR</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
-                  <div className="w-full">
-                    <Select value={reactionPhase} onValueChange={(value) => setReactionPhase(value as ReactionPhase)}>
-                      <SelectTrigger id="reactionPhase" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Liquid">Liquid</SelectItem>
-                        <SelectItem value="Gas">Gas</SelectItem>
-                      </SelectContent>
-                    </Select>
+                  <div className="flex items-center gap-2 pl-4">
+                    <Label htmlFor="reactionPhase" className="text-sm whitespace-nowrap">Phase:</Label>
+                    <div className="flex-1 min-w-0">
+                      <Select value={reactionPhase} onValueChange={(value) => setReactionPhase(value as ReactionPhase)}>
+                        <SelectTrigger id="reactionPhase" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Liquid">Liquid</SelectItem>
+                          <SelectItem value="Gas">Gas</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 items-center">
-                  <Label htmlFor="reactorVolume">Reactor Volume:</Label>
-                  <div className="flex items-center gap-1">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2 pr-4">
+                    <Label htmlFor="reactorVolume" className="text-sm whitespace-nowrap">Reactor Volume:</Label>
+                    <div className="flex items-center gap-1 flex-1 min-w-0">
+                      <Input
+                        id="reactorVolume"
+                        type="number"
+                        value={reactorVolume}
+                        onChange={(e) => setReactorVolume(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="100"
+                      />
+                      <span className="text-xs text-muted-foreground">L</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 pl-4">
+                    {reactionPhase === 'Gas' && (
+                      <>
+                        <Label htmlFor="totalPressure" className="text-sm whitespace-nowrap">Total Pressure:</Label>
+                        <div className="flex items-center gap-1 flex-1 min-w-0">
+                          <Input
+                            id="totalPressure"
+                            type="number"
+                            value={totalPressure}
+                            onChange={(e) => setTotalPressure(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="101.325"
+                          />
+                          <span className="text-xs text-muted-foreground">kPa</span>
+                        </div>
+                      </>
+                    )}
+                    {reactionPhase === 'Liquid' && (
+                      <>
+                        <Label htmlFor="volumetricFlowRate" className="text-sm whitespace-nowrap">Vol Flow Rate:</Label>
+                        <div className="flex items-center gap-1 flex-1 min-w-0">
+                          <Input
+                            id="volumetricFlowRate"
+                            type="number"
+                            value={volumetricFlowRate}
+                            onChange={(e) => setVolumetricFlowRate(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            placeholder="1.0"
+                          />
+                          <span className="text-xs text-muted-foreground">L/s</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2 pr-4">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Label htmlFor="preExponentialFactor" className="text-sm whitespace-nowrap cursor-help">A:</Label>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Pre-exponential factor</p>
+                      </TooltipContent>
+                    </Tooltip>
                     <Input
-                      id="reactorVolume"
+                      id="preExponentialFactor"
                       type="number"
-                      value={reactorVolume}
-                      onChange={(e) => setReactorVolume(e.target.value)}
-                      placeholder="100"
+                      value={kinetics.AValue}
+                      onChange={(e) => handleKineticsChange('AValue', e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="1e6"
+                      className="flex-1 min-w-0"
                     />
-                    <span className="text-xs text-muted-foreground">L</span>
+                  </div>
+                  <div className="flex items-center gap-2 pl-4">
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Label htmlFor="activationEnergy" className="text-sm whitespace-nowrap cursor-help">Ea:</Label>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Activation energy</p>
+                      </TooltipContent>
+                    </Tooltip>
+                    <div className="flex items-center gap-1 flex-1 min-w-0">
+                      <Input
+                        id="activationEnergy"
+                        type="number"
+                        value={kinetics.EaValue}
+                        onChange={(e) => handleKineticsChange('EaValue', e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="50000"
+                      />
+                      <span className="text-xs text-muted-foreground">J/mol</span>
+                    </div>
                   </div>
                 </div>
 
-                {reactionPhase === 'Gas' && (
-                  <div className="grid grid-cols-2 gap-4 items-center">
-                    <Label htmlFor="totalPressure">Total Pressure:</Label>
-                    <div className="flex items-center gap-1">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="flex items-center gap-2 pr-4">
+                    <Label htmlFor="reactionTemp" className="text-sm whitespace-nowrap">Temperature:</Label>
+                    <div className="flex items-center gap-1 flex-1 min-w-0">
                       <Input
-                        id="totalPressure"
+                        id="reactionTemp"
                         type="number"
-                        value={totalPressure}
-                        onChange={(e) => setTotalPressure(e.target.value)}
-                        placeholder="101.325"
+                        value={kinetics.reactionTempK}
+                        onChange={(e) => handleKineticsChange('reactionTempK', e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="300"
                       />
-                      <span className="text-xs text-muted-foreground">kPa</span>
+                      <span className="text-xs text-muted-foreground">K</span>
                     </div>
                   </div>
-                )}
-
-                {reactionPhase === 'Liquid' && (
-                  <div className="grid grid-cols-2 gap-4 items-center">
-                    <Label htmlFor="volumetricFlowRate">Volumetric Flow Rate:</Label>
-                    <div className="flex items-center gap-1">
-                      <Input
-                        id="volumetricFlowRate"
-                        type="number"
-                        value={volumetricFlowRate}
-                        onChange={(e) => setVolumetricFlowRate(e.target.value)}
-                        placeholder="1.0"
-                      />
-                      <span className="text-xs text-muted-foreground">L/s</span>
-                    </div>
-                  </div>
-                )}
+                  <div className="pl-4"></div>
+                </div>
               </CardContent>
             </Card>
 
@@ -681,11 +756,11 @@ export default function ReactorDesignPage() {
                 </div>
                 <div className="grid grid-cols-12 gap-2 items-center text-xs font-medium text-muted-foreground border-b pb-1">
                   <div className="col-span-3">Name</div>
-                  <div className="col-span-4">Initial Flow</div>
+                  <div className="col-span-4">Initial Flow Rate</div>
                   <div className="col-span-3">Reaction Order</div>
                   <div className="col-span-2"></div>
                 </div>
-                {components.map((comp) => (
+                {components.map((comp, index) => (
                   <div key={comp.id} className="grid grid-cols-12 gap-2 items-center border-b pb-2">
                     <div className="col-span-3">
                       <Input
@@ -701,6 +776,7 @@ export default function ReactorDesignPage() {
                           placeholder="10.0"
                           value={comp.initialFlowRate}
                           onChange={(e) => handleComponentChange(comp.id, 'initialFlowRate', e.target.value)}
+                          onKeyDown={handleKeyDown}
                         />
                         <span className="text-xs text-muted-foreground whitespace-nowrap">mol/s</span>
                       </div>
@@ -712,6 +788,7 @@ export default function ReactorDesignPage() {
                           placeholder="1.0"
                           value={comp.reactionOrder}
                           onChange={(e) => handleComponentChange(comp.id, 'reactionOrder', e.target.value)}
+                          onKeyDown={handleKeyDown}
                         />
                       </div>
                     </div>
@@ -730,78 +807,10 @@ export default function ReactorDesignPage() {
                 ))}
               </CardContent>
             </Card>
-
-            {/* Kinetics */}
-            <Card>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4 items-center">
-                  <Label htmlFor="reactionTemp">Temperature:</Label>
-                  <div className="flex items-center gap-1">
-                    <Input
-                      id="reactionTemp"
-                      type="number"
-                      value={kinetics.reactionTempK}
-                      onChange={(e) => handleKineticsChange('reactionTempK', e.target.value)}
-                      placeholder="300"
-                    />
-                    <span className="text-xs text-muted-foreground">K</span>
-                  </div>
-                </div>
-
-                <Tabs value={kinetics.rateConstantInputMode} onValueChange={(v: string) => handleKineticsChange('rateConstantInputMode', v as RateConstantInputMode)}>
-                  <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="directK">Direct k</TabsTrigger>
-                    <TabsTrigger value="arrhenius">Arrhenius Eq.</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="directK" className="pt-4">
-                    <div className="grid grid-cols-2 gap-4 items-center">
-                      <Label htmlFor="kValue">Rate Constant:</Label>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          id="kValue"
-                          type="number"
-                          value={kinetics.kValue}
-                          onChange={(e) => handleKineticsChange('kValue', e.target.value)}
-                          placeholder="0.1"
-                        />
-                      </div>
-                    </div>
-                  </TabsContent>
-                  <TabsContent value="arrhenius" className="pt-4 space-y-4">
-                    <div className="grid grid-cols-2 gap-4 items-center">
-                      <Label htmlFor="AValue">Pre-exponential Factor</Label>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          id="AValue"
-                          type="number"
-                          value={kinetics.AValue}
-                          onChange={(e) => handleKineticsChange('AValue', e.target.value)}
-                          placeholder="1e6"
-                        />
-                        <span className="text-xs text-muted-foreground">A</span>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4 items-center">
-                      <Label htmlFor="EaValue">Activation Energy</Label>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          id="EaValue"
-                          type="number"
-                          value={kinetics.EaValue}
-                          onChange={(e) => handleKineticsChange('EaValue', e.target.value)}
-                          placeholder="50000"
-                        />
-                        <span className="text-xs text-muted-foreground">J/mol</span>
-                      </div>
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
           </div>
 
-          {/* Right Column: Visualization and Results */}
-          <div className="lg:col-span-2 space-y-6">
+          {/* Right Panel - Visualization and Results (1/2 of width) */}
+          <div className="space-y-6">
             {/* Reactor Visualization */}
             <Card>
               <CardContent>
