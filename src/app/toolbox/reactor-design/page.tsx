@@ -1027,21 +1027,24 @@ export default function ReactorDesignPage() {
                               }
                               
                               if (calculationResults.conversion.value > 0) {
-                                // TRUE SELECTIVITY = moles of desired product formed / moles of limiting reactant consumed
+                                // UNIVERSAL SELECTIVITY = (F_product,out - F_product,in) / (F_limitingReactant,in - F_limitingReactant,out)
+                                // This definition works for both intermediates and final products
                                 const limitingReactantName = calculationResults.conversion.reactantName;
-                                const limitingReactantInitialFlow = components.find(c => c.name === limitingReactantName)?.initialFlowRate;
-                                const limitingReactantInitial = parseFloat(limitingReactantInitialFlow || '0');
                                 
-                                if (limitingReactantInitial > 0) {
-                                  const limitingReactantConsumed = limitingReactantInitial * calculationResults.conversion.value;
-                                  const productInitialFlow = parseFloat(comp.initialFlowRate || '0');
-                                  const productFormed = outletFlow - productInitialFlow;
-                                  
-                                  if (limitingReactantConsumed > 0 && productFormed >= 0) {
-                                    // True selectivity: moles of product formed / moles of limiting reactant consumed
-                                    const selectivity = (productFormed / limitingReactantConsumed) * 100;
-                                    selectivityValue = Math.min(100, Math.max(0, selectivity)).toPrecision(3);
-                                  }
+                                // Get limiting reactant flows
+                                const limitingReactantInitial = parseFloat(components.find(c => c.name === limitingReactantName)?.initialFlowRate || '0');
+                                const limitingReactantFinal = calculationResults.outletFlowRates?.[limitingReactantName] || 0;
+                                const limitingReactantConsumed = limitingReactantInitial - limitingReactantFinal;
+                                
+                                // Get product flows
+                                const productInitial = parseFloat(comp.initialFlowRate || '0');
+                                const productFinal = outletFlow;
+                                const netProductProduced = productFinal - productInitial;
+                                
+                                if (limitingReactantConsumed > 0 && netProductProduced >= 0) {
+                                  // Universal selectivity: Net moles of desired product produced / Moles of limiting reactant consumed
+                                  const selectivity = (netProductProduced / limitingReactantConsumed) * 100;
+                                  selectivityValue = Math.max(0, selectivity).toPrecision(3);
                                 }
                               }
                             } else {
