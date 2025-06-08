@@ -1027,7 +1027,7 @@ export default function ReactorDesignPage() {
                               }
                               
                               if (calculationResults.conversion.value > 0) {
-                                // Selectivity = moles of product formed / moles of limiting reactant consumed
+                                // TRUE SELECTIVITY = moles of desired product formed / moles of limiting reactant consumed
                                 const limitingReactantName = calculationResults.conversion.reactantName;
                                 const limitingReactantInitialFlow = components.find(c => c.name === limitingReactantName)?.initialFlowRate;
                                 const limitingReactantInitial = parseFloat(limitingReactantInitialFlow || '0');
@@ -1038,31 +1038,9 @@ export default function ReactorDesignPage() {
                                   const productFormed = outletFlow - productInitialFlow;
                                   
                                   if (limitingReactantConsumed > 0 && productFormed >= 0) {
-                                    if (productInfo) {
-                                      // Get stoichiometric coefficients to calculate theoretical selectivity
-                                      const productStoich = productInfo.stoichiometricCoefficient || 1;
-                                      
-                                      // Find limiting reactant info across all reactions
-                                      let limitingReactantInfo = null;
-                                      for (const reaction of parsedParallelReactions.reactions) {
-                                        limitingReactantInfo = reaction.reactants.find(r => r.name === limitingReactantName);
-                                        if (limitingReactantInfo) break;
-                                      }
-                                      
-                                      const limitingReactantStoich = limitingReactantInfo?.stoichiometricCoefficient || 1;
-                                      
-                                      // Theoretical moles of product = (productStoich/limitingReactantStoich) * moles of limiting reactant consumed
-                                      const theoreticalProductFormed = (productStoich / limitingReactantStoich) * limitingReactantConsumed;
-                                      
-                                      if (theoreticalProductFormed > 0) {
-                                        const selectivity = (productFormed / theoreticalProductFormed) * 100;
-                                        selectivityValue = Math.min(100, Math.max(0, selectivity)).toPrecision(3);
-                                      }
-                                    } else {
-                                      // Simple selectivity calculation if not found in parallel reactions
-                                      const selectivity = (productFormed / limitingReactantConsumed) * 100;
-                                      selectivityValue = Math.min(100, Math.max(0, selectivity)).toPrecision(3);
-                                    }
+                                    // True selectivity: moles of product formed / moles of limiting reactant consumed
+                                    const selectivity = (productFormed / limitingReactantConsumed) * 100;
+                                    selectivityValue = Math.min(100, Math.max(0, selectivity)).toPrecision(3);
                                   }
                                 }
                               }
