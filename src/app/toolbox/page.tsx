@@ -3,6 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import CSTRVisualization from "@/components/CSTRVisualization";
 
 // Define the paths for the thumbnails
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
@@ -12,6 +13,7 @@ const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
 const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png";
 const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png"; // Added new thumbnail path
 const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.png"; // Placeholder for new thumbnail
+const reactorDesignThumbnailPath = "/thumbnails/reactor-design-thumbnail.png";
 
 export default function Page() {
   const allSimulations = [
@@ -21,6 +23,13 @@ export default function Page() {
       description: "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
       thumbnailPath: mccabeThumbnailPath,
       isUpdated: true, // Added UPDATED badge
+    },
+    {
+      name: "Reactor Design",
+      path: "/toolbox/reactor-design",
+      description: "Design and analyze chemical reactors. Calculate conversions and outlet flow rates for CSTR and PFR configurations.",
+      thumbnailPath: reactorDesignThumbnailPath,
+      isNew: true, // Added NEW badge
     },
     {
       name: "Azeotrope Finder",
@@ -88,12 +97,16 @@ export default function Page() {
                   <CardHeader>
                     <div className="relative mx-auto mb-4">
                       <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
-                        <Image
-                          src={simulation.thumbnailPath}
-                          alt={`${simulation.name} Thumbnail`}
-                          layout="fill"
-                          objectFit="contain"
-                        />
+                        {simulation.name === "Reactor Design" ? (
+                          <CSTRVisualization className="w-full h-full" showLabel={true} />
+                        ) : (
+                          <Image
+                            src={simulation.thumbnailPath}
+                            alt={`${simulation.name} Thumbnail`}
+                            layout="fill"
+                            objectFit="contain"
+                          />
+                        )}
                       </div>
                     </div>
                     <CardTitle>{simulation.name}</CardTitle>

@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import CSTRVisualization from "@/components/CSTRVisualization";
 
 // Replace external URLs with local paths from public folder
 const githubLogoPath = "/logos/github.svg";
@@ -30,6 +31,7 @@ const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png";
 const labIllustrationPath = "/images/lab-illustration.png";
 const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png";
 const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.png"; // Added for Residue Curve Map
+const reactorDesignThumbnailPath = "/thumbnails/reactor-design-thumbnail.png";
 
 export default function Home() {
   const homeFeaturedSimulations = [
@@ -40,6 +42,14 @@ export default function Home() {
         "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
       thumbnailPath: mccabeThumbnailPath,
       isUpdated: true,
+    },
+    {
+      name: "Reactor Design",
+      path: "/toolbox/reactor-design",
+      description:
+        "Design and analyze chemical reactors. Calculate conversions and outlet flow rates for CSTR and PFR configurations.",
+      thumbnailPath: reactorDesignThumbnailPath,
+      isNew: true,
     },
     {
       name: "Azeotrope Finder",
@@ -289,12 +299,16 @@ export default function Home() {
                 <CardHeader>
                   <div className="relative mx-auto mb-4">
                     <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
-                      <Image
-                        src={simulation.thumbnailPath}
-                        alt={`${simulation.name} Thumbnail`}
-                        layout="fill"
-                        objectFit="contain"
-                      />
+                      {simulation.name === "Reactor Design" ? (
+                        <CSTRVisualization className="w-full h-full" showLabel={true} />
+                      ) : (
+                        <Image
+                          src={simulation.thumbnailPath}
+                          alt={`${simulation.name} Thumbnail`}
+                          layout="fill"
+                          objectFit="contain"
+                        />
+                      )}
                     </div>
                   </div>
                   <CardTitle>{simulation.name}</CardTitle>
