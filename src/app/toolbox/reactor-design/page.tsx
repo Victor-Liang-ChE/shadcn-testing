@@ -30,7 +30,8 @@ import {
   solvePFR,
   solveCSTRParallel,
   solvePFRParallel,
-  calculateOutletFlowRatesParallel
+  calculateOutletFlowRatesParallel,
+  findLimitingReactant
 } from '@/lib/reactor-solver';
 
 // Helper types
@@ -48,6 +49,9 @@ export default function ReactorDesignPage() {
     { id: '2', reactants: 'A', products: 'D', AValue: '5e5', EaValue: '45000', AValueBackward: '1e3', EaValueBackward: '55000', isEquilibrium: false }
   ]); // Parallel reactions: A+B->C and A->D
   
+  // State for components (auto-generated but with editable reaction orders)
+  const [components, setComponents] = useState<Component[]>([]);
+  
   const [kinetics, setKinetics] = useState<Kinetics>({
     rateConstantInputMode: 'directK',
     kValue: '0.1', // Units depend on reaction order and concentration units
@@ -61,6 +65,7 @@ export default function ReactorDesignPage() {
   const [volumetricFlowRate, setVolumetricFlowRate] = useState<string>('1'); // v0 (for liquid phase, L/s)
   const [maxVolumeSlider, setMaxVolumeSlider] = useState<string>('1000'); // User-defined max for volume slider
   const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('350'); // User-defined max for temperature slider
+  const [maxFlowRateSlider, setMaxFlowRateSlider] = useState<string>('10'); // User-defined max for flow rate slider
 
   const [calculationResults, setCalculationResults] = useState<CalculationResults | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -75,6 +80,10 @@ export default function ReactorDesignPage() {
 
   // Component Management
   const addReaction = () => {
+    // Cap at 6 reactions maximum
+    if (reactions.length >= 6) {
+      return;
+    }
     const newId = (reactions.length + 1).toString();
     setReactions([...reactions, { id: newId, reactants: '', products: '', AValue: '1e6', EaValue: '50000', AValueBackward: '1e4', EaValueBackward: '60000', isEquilibrium: false }]);
   };
@@ -113,15 +122,29 @@ export default function ReactorDesignPage() {
   };
 
   const handleComponentChange = (id: string, field: keyof Component, value: string | boolean | { [reactionId: string]: string }) => {
-    // Components are now auto-generated from reactions, so this function is no longer needed
+    if (field === 'reactionOrders') {
+      // Update the reaction orders for a specific component
+      setComponents(prevComponents => 
+        prevComponents.map(comp => 
+          comp.id === id ? { ...comp, reactionOrders: value as { [reactionId: string]: string } } : comp
+        )
+      );
+    } else if (field === 'initialFlowRate') {
+      // Update the initial flow rate for a specific component
+      setComponents(prevComponents => 
+        prevComponents.map(comp => 
+          comp.id === id ? { ...comp, initialFlowRate: value as string } : comp
+        )
+      );
+    }
   };
 
   const handleKineticsChange = (field: keyof Kinetics, value: string) => {
     setKinetics(prev => ({ ...prev, [field]: value }));
   };
 
-  // Auto-detect components from reactions using useMemo to prevent infinite loops
-  const components = useMemo(() => {
+  // Auto-detect components from reactions and update state
+  useEffect(() => {
     const allDetectedNames = new Set<string>();
     const reactantNames = new Set<string>();
     const productNames = new Set<string>();
@@ -143,18 +166,51 @@ export default function ReactorDesignPage() {
     });
     
     const detectedNames = Array.from(allDetectedNames);
-    return detectedNames.map(name => {
+    const newComponents = detectedNames.map(name => {
+      // Find existing component to preserve user input
+      const existingComponent = components.find(comp => comp.name === name);
+      
       // Set initial flow rate: 1 if reactant in any reaction, 0 if only product
       const initialFlowRate = reactantNames.has(name) ? '1' : '0';
+      
+      // Initialize reaction orders for each reaction
+      const reactionOrders: { [reactionId: string]: string } = {};
+      reactions.forEach(reaction => {
+        const isReactantInReaction = reaction.reactants && reaction.reactants.toLowerCase().includes(name.toLowerCase());
+        const isProductInReaction = reaction.products && reaction.products.toLowerCase().includes(name.toLowerCase());
+        
+        if (reaction.isEquilibrium) {
+          // For equilibrium reactions, add both forward and backward keys
+          const forwardKey = `${reaction.id}-fwd`;
+          const backwardKey = `${reaction.id}-rev`;
+          
+          if (isReactantInReaction) {
+            reactionOrders[forwardKey] = existingComponent?.reactionOrders?.[forwardKey] || '1';
+          }
+          if (isProductInReaction) {
+            reactionOrders[backwardKey] = existingComponent?.reactionOrders?.[backwardKey] || '1';
+          }
+        } else {
+          // For forward-only reactions
+          if (isReactantInReaction) {
+            reactionOrders[reaction.id] = existingComponent?.reactionOrders?.[reaction.id] || '1';
+          }
+        }
+      });
       
       return {
         id: `comp-${name}`,
         name,
-        initialFlowRate,
-        reactionOrders: {}
+        initialFlowRate: existingComponent?.initialFlowRate || initialFlowRate,
+        reactionOrders
       };
     });
-  }, [reactions]);
+    
+    // Only update if components actually changed to prevent loops
+    if (JSON.stringify(newComponents) !== JSON.stringify(components)) {
+      setComponents(newComponents);
+    }
+  }, [reactions]); // Only depend on reactions, not components to avoid loops
 
   // Memoize parsed parallel reactions to prevent unnecessary recalculations
   const parsedParallelReactions = useMemo(() => {
@@ -224,20 +280,18 @@ export default function ReactorDesignPage() {
       return;
     }
 
-    // Find all reactants across all reactions to determine key reactant
-    const allReactants = parsedParallelReactions.reactions.flatMap(r => r.reactants);
-    if (allReactants.length === 0) {
-      setCalculationError("No reactants identified in any reaction.");
+    // Find the limiting reactant based on stoichiometry and initial flow rates
+    const limitingReactantInfo = findLimitingReactant(parsedParallelReactions, components);
+    if (!limitingReactantInfo) {
+      setCalculationError("No valid reactants found to determine limiting reactant.");
       setIsLoading(false);
       return;
     }
-
-    // For simplicity, assume the first reactant in the first reaction is the key reactant
-    const keyReactant = allReactants[0];
-    const keyReactantName = keyReactant.name;
-    const F_key0 = parseFloat(keyReactant.initialFlowRate);
+    
+    const keyReactantName = limitingReactantInfo.name;
+    const F_key0 = limitingReactantInfo.initialFlow;
     if (isNaN(F_key0) || F_key0 <= 0) {
-        setCalculationError(`Initial flow rate for key reactant ${keyReactantName} must be positive.`);
+        setCalculationError(`Initial flow rate for limiting reactant ${keyReactantName} must be positive.`);
         setIsLoading(false);
         return;
     }
@@ -355,7 +409,7 @@ export default function ReactorDesignPage() {
       }, 300); // Debounce for smooth slider interaction
       return () => clearTimeout(timer);
     }
-  }, [reactorVolume, kinetics.reactionTempK, handleCalculate]);
+  }, [reactorVolume, kinetics.reactionTempK, volumetricFlowRate, handleCalculate]);
 
   // Force recalculation when A or Ea changes (for manual button press)
   // This is now handled automatically by the parseReactionData useCallback dependencies
@@ -439,14 +493,12 @@ export default function ReactorDesignPage() {
               <CardContent className="space-y-6 pt-6">
                 {/* Reactor Volume Slider */}
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1">
-                      <Label htmlFor="reactorVolumeSlider" className="text-sm font-medium">Reactor Volume:</Label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <Label htmlFor="reactorVolumeSlider" className="text-sm font-medium whitespace-nowrap">Reactor Volume:</Label>
                       <span className="text-sm font-medium">{reactorVolume}</span>
                       <span className="text-xs text-muted-foreground">L</span>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-3">
                     <Slider
                       id="reactorVolumeSlider"
                       min={1}
@@ -472,14 +524,12 @@ export default function ReactorDesignPage() {
 
                 {/* Temperature Slider */}
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1">
-                      <Label htmlFor="temperatureSlider" className="text-sm font-medium">Temperature:</Label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <Label htmlFor="temperatureSlider" className="text-sm font-medium whitespace-nowrap">Temperature:</Label>
                       <span className="text-sm font-medium">{kinetics.reactionTempK}</span>
                       <span className="text-xs text-muted-foreground">K</span>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-3">
                     <Slider
                       id="temperatureSlider"
                       min={250}
@@ -522,18 +572,32 @@ export default function ReactorDesignPage() {
                     </div>
                   )}
                   {reactionPhase === 'Liquid' && (
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="volumetricFlowRate" className="text-sm whitespace-nowrap">Vol Flow Rate:</Label>
-                      <div className="flex items-center gap-1 flex-1 min-w-0">
-                        <Input
-                          id="volumetricFlowRate"
-                          type="number"
-                          value={volumetricFlowRate}
-                          onChange={(e) => setVolumetricFlowRate(e.target.value)}
-                          onKeyDown={handleKeyDown}
-                          placeholder="1.0"
-                        />
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1 min-w-0">
+                        <Label htmlFor="volumetricFlowRateSlider" className="text-sm font-medium whitespace-nowrap">Vol Flow Rate:</Label>
+                        <span className="text-sm font-medium">{volumetricFlowRate}</span>
                         <span className="text-xs text-muted-foreground">L/s</span>
+                      </div>
+                      <Slider
+                        id="volumetricFlowRateSlider"
+                        min={0.1}
+                        max={parseFloat(maxFlowRateSlider)}
+                        step={0.1}
+                        value={[parseFloat(volumetricFlowRate)]}
+                        onValueChange={(value) => setVolumetricFlowRate(value[0].toString())}
+                        className="flex-1"
+                      />
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="maxFlowRateInput" className="text-xs text-muted-foreground">Max:</Label>
+                        <Input
+                          id="maxFlowRateInput"
+                          type="number"
+                          value={maxFlowRateSlider}
+                          onChange={(e) => setMaxFlowRateSlider(e.target.value)}
+                          className="w-20 h-8 text-xs"
+                          min="0.1"
+                          step="0.1"
+                        />
                       </div>
                     </div>
                   )}
@@ -546,7 +610,12 @@ export default function ReactorDesignPage() {
               <CardHeader>
                 <CardTitle className="flex items-center justify-between">
                   Reaction Stoichiometry
-                  <Button variant="outline" size="sm" onClick={addReaction}>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={addReaction}
+                    disabled={reactions.length >= 6}
+                  >
                     <PlusCircle className="mr-2 h-4 w-4" />Add Reaction
                   </Button>
                 </CardTitle>
@@ -685,31 +754,31 @@ export default function ReactorDesignPage() {
                   <div className={`grid gap-2 items-center text-xs font-medium text-muted-foreground`} style={{gridTemplateColumns: `1fr 1fr repeat(${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}, 1fr)`}}>
                     <div></div>
                     <div></div>
-                    <div className="text-center" style={{gridColumn: `span ${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}`}}>
-                      <Label className="text-sm font-medium text-center">Reaction Order</Label>
+                    <div className="text-center flex justify-center" style={{gridColumn: `span ${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}`}}>
+                      <Label className="text-sm font-medium">Reaction Order</Label>
                     </div>
                   </div>
                 </div>
                 <div className={`grid gap-2 items-center text-xs font-medium text-muted-foreground border-b pb-1`} style={{gridTemplateColumns: `1fr 1fr repeat(${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}, 1fr)`}}>
-                  <div className="text-center">
-                    <Label className="text-sm font-medium text-center">Name</Label>
+                  <div className="text-center flex justify-center">
+                    <Label className="text-sm font-medium">Name</Label>
                   </div>
-                  <div className="text-center">
-                    <Label className="text-sm font-medium text-center">Initial Flow Rate (mol/s)</Label>
+                  <div className="text-center flex justify-center">
+                    <Label className="text-sm font-medium">Initial Flow Rate (mol/s)</Label>
                   </div>
                   {reactions.map((reaction, index) => (
                     reaction.isEquilibrium ? (
                       <React.Fragment key={reaction.id}>
-                        <div className="text-center">
-                          <Label className="text-xs font-medium text-center">Rxn {index + 1} Fwd</Label>
+                        <div className="text-center flex justify-center">
+                          <Label className="text-xs font-medium">Rxn {index + 1} Fwd</Label>
                         </div>
-                        <div className="text-center">
-                          <Label className="text-xs font-medium text-center">Rxn {index + 1} Rev</Label>
+                        <div className="text-center flex justify-center">
+                          <Label className="text-xs font-medium">Rxn {index + 1} Rev</Label>
                         </div>
                       </React.Fragment>
                     ) : (
-                      <div key={reaction.id} className="text-center">
-                        <Label className="text-xs font-medium text-center">Rxn {index + 1}</Label>
+                      <div key={reaction.id} className="text-center flex justify-center">
+                        <Label className="text-xs font-medium">Rxn {index + 1}</Label>
                       </div>
                     )
                   ))}
@@ -717,43 +786,102 @@ export default function ReactorDesignPage() {
                 {components.map((comp, index) => {
                   return (
                     <div key={comp.id} className={`grid gap-2 items-center`} style={{gridTemplateColumns: `1fr 1fr repeat(${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}, 1fr)`}}>
-                      <div>
-                        <div className="text-sm font-medium p-2 text-left">
+                      <div className="flex justify-center">
+                        <div className="text-sm font-medium p-2">
                           {comp.name}
                         </div>
                       </div>
-                      <div>
+                      <div className="flex justify-center">
                         <Input
                           type="number"
                           value={comp.initialFlowRate}
                           onChange={(e) => handleComponentChange(comp.id, 'initialFlowRate', e.target.value)}
                           onKeyDown={handleKeyDown}
                           placeholder="1.0"
+                          className="w-full text-center"
                         />
                       </div>
                       {reactions.map((reaction, reactionIndex) => {
-                        // Simplified: just show that the reaction order is assumed to be 1
-                        // for all components participating in the reaction
                         const isReactantInReaction = reaction.reactants && reaction.reactants.toLowerCase().includes(comp.name.toLowerCase());
                         const isProductInReaction = reaction.products && reaction.products.toLowerCase().includes(comp.name.toLowerCase());
                         
                         if (reaction.isEquilibrium) {
+                          const forwardKey = `${reaction.id}-fwd`;
+                          const backwardKey = `${reaction.id}-rev`;
+                          
                           return (
                             <React.Fragment key={reaction.id}>
-                              {/* Forward reaction order - simplified to "1" */}
-                              <div className="flex items-center justify-center text-sm">
-                                {isReactantInReaction ? "1" : "-"}
+                              {/* Forward reaction order */}
+                              <div className="flex items-center justify-center">
+                                {isReactantInReaction ? (
+                                  <Input
+                                    type="number"
+                                    value={comp.reactionOrders?.[forwardKey] || '1'}
+                                    onChange={(e) => {
+                                      const newReactionOrders = { ...comp.reactionOrders, [forwardKey]: e.target.value };
+                                      handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
+                                    }}
+                                    className="w-16 h-8 text-center text-xs"
+                                    step="0.1"
+                                    min="0"
+                                  />
+                                ) : (
+                                  <Input
+                                    type="text"
+                                    value="-"
+                                    disabled
+                                    className="w-16 h-8 text-center text-xs bg-muted text-muted-foreground cursor-not-allowed"
+                                  />
+                                )}
                               </div>
-                              {/* Reverse reaction order - simplified to "1" */}
-                              <div className="flex items-center justify-center text-sm">
-                                {isProductInReaction ? "1" : "-"}
+                              {/* Reverse reaction order */}
+                              <div className="flex items-center justify-center">
+                                {isProductInReaction ? (
+                                  <Input
+                                    type="number"
+                                    value={comp.reactionOrders?.[backwardKey] || '1'}
+                                    onChange={(e) => {
+                                      const newReactionOrders = { ...comp.reactionOrders, [backwardKey]: e.target.value };
+                                      handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
+                                    }}
+                                    className="w-16 h-8 text-center text-xs"
+                                    step="0.1"
+                                    min="0"
+                                  />
+                                ) : (
+                                  <Input
+                                    type="text"
+                                    value="-"
+                                    disabled
+                                    className="w-16 h-8 text-center text-xs bg-muted text-muted-foreground cursor-not-allowed"
+                                  />
+                                )}
                               </div>
                             </React.Fragment>
                           );
                         } else {
                           return (
-                            <div key={reaction.id} className="flex items-center justify-center text-sm">
-                              {isReactantInReaction ? "1" : "-"}
+                            <div key={reaction.id} className="flex items-center justify-center">
+                              {isReactantInReaction ? (
+                                <Input
+                                  type="number"
+                                  value={comp.reactionOrders?.[reaction.id] || '1'}
+                                  onChange={(e) => {
+                                    const newReactionOrders = { ...comp.reactionOrders, [reaction.id]: e.target.value };
+                                    handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
+                                  }}
+                                  className="w-16 h-8 text-center text-xs"
+                                  step="0.1"
+                                  min="0"
+                                />
+                              ) : (
+                                <Input
+                                  type="text"
+                                  value="-"
+                                  disabled
+                                  className="w-16 h-8 text-center text-xs bg-muted text-muted-foreground cursor-not-allowed"
+                                />
+                              )}
                             </div>
                           );
                         }
@@ -796,7 +924,16 @@ export default function ReactorDesignPage() {
             {calculationResults && (
               <Card>
                 <CardHeader>
-                  <CardTitle>Conversion and Outlet Flow Rates</CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle>Conversion and Outlet Flow Rates</CardTitle>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1">
+                        <div className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/50 border-l-4 border-yellow-500 rounded-sm text-[10px] font-medium text-gray-700 dark:text-gray-300">
+                          Limiting Reactant
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto">
@@ -940,8 +1077,10 @@ export default function ReactorDesignPage() {
                             calculationResults.conversion.reactantName === comp.name;
                           
                           return (
-                            <tr key={comp.id} className={`hover:bg-muted/25 ${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}>
-                              <td className="border border-border px-3 py-2 font-medium text-center">{comp.name}</td>
+                            <tr key={comp.id} className={`hover:bg-muted/25 ${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/50 border-l-4 border-yellow-500' : ''}`}>
+                              <td className="border border-border px-3 py-2 font-medium text-center">
+                                {comp.name}
+                              </td>
                               <td className="border border-border px-3 py-2 text-center">
                                 {conversionValue}
                               </td>

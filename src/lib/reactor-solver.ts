@@ -301,6 +301,39 @@ export const calculateOutletFlowRatesParallel = (
   return outletFlowRates;
 };
 
+// Function to determine the limiting reactant for the primary reaction
+// For parallel reactions, we consider the first reaction as the primary one
+export const findLimitingReactant = (
+  parsedParallelReactions: ParsedParallelReactions,
+  components: Component[]
+): { name: string; initialFlow: number } | null => {
+  if (parsedParallelReactions.reactions.length === 0) return null;
+  
+  // Use the first reaction to determine limiting reactant
+  const primaryReaction = parsedParallelReactions.reactions[0];
+  
+  if (primaryReaction.reactants.length === 0) return null;
+  
+  // Find the reactant with the smallest (initial flow / stoichiometric coefficient) ratio
+  let limitingReactant: { name: string; initialFlow: number } | null = null;
+  let minRatio = Infinity;
+  
+  primaryReaction.reactants.forEach(reactant => {
+    const component = components.find(c => c.name === reactant.name);
+    const initialFlow = parseFloat(component?.initialFlowRate || '0');
+    
+    if (initialFlow > 0 && reactant.stoichiometricCoefficient > 0) {
+      const ratio = initialFlow / reactant.stoichiometricCoefficient;
+      if (ratio < minRatio) {
+        minRatio = ratio;
+        limitingReactant = { name: reactant.name, initialFlow };
+      }
+    }
+  });
+  
+  return limitingReactant;
+};
+
 // Keep original functions for backward compatibility
 export const solveCSTR = (
   rateLaw: (concentrations: { [name: string]: number }) => number,
