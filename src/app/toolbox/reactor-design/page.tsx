@@ -494,9 +494,9 @@ export default function ReactorDesignPage() {
                 {/* Reactor Volume Slider */}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1 min-w-0">
+                    <div className="flex items-center gap-1">
                       <Label htmlFor="reactorVolumeSlider" className="text-sm font-medium whitespace-nowrap">Reactor Volume:</Label>
-                      <span className="text-sm font-medium">{reactorVolume}</span>
+                      <span className="text-sm font-medium w-12 text-right">{reactorVolume}</span>
                       <span className="text-xs text-muted-foreground">L</span>
                     </div>
                     <Slider
@@ -525,16 +525,16 @@ export default function ReactorDesignPage() {
                 {/* Temperature Slider */}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1 min-w-0">
+                    <div className="flex items-center gap-1">
                       <Label htmlFor="temperatureSlider" className="text-sm font-medium whitespace-nowrap">Temperature:</Label>
-                      <span className="text-sm font-medium">{kinetics.reactionTempK}</span>
+                      <span className="text-sm font-medium w-12 text-right">{kinetics.reactionTempK}</span>
                       <span className="text-xs text-muted-foreground">K</span>
                     </div>
                     <Slider
                       id="temperatureSlider"
                       min={250}
                       max={parseFloat(maxTemperatureSlider)}
-                      step={5}
+                      step={1}
                       value={[parseFloat(kinetics.reactionTempK)]}
                       onValueChange={(value) => handleKineticsChange('reactionTempK', value[0].toString())}
                       className="flex-1"
@@ -573,9 +573,9 @@ export default function ReactorDesignPage() {
                   )}
                   {reactionPhase === 'Liquid' && (
                     <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1 min-w-0">
+                      <div className="flex items-center gap-1">
                         <Label htmlFor="volumetricFlowRateSlider" className="text-sm font-medium whitespace-nowrap">Vol Flow Rate:</Label>
-                        <span className="text-sm font-medium">{volumetricFlowRate}</span>
+                        <span className="text-sm font-medium w-12 text-right">{volumetricFlowRate}</span>
                         <span className="text-xs text-muted-foreground">L/s</span>
                       </div>
                       <Slider
