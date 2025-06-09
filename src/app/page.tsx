@@ -9,6 +9,12 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import CSTRVisualization from "@/components/CSTRVisualization";
 
 // Replace external URLs with local paths from public folder
@@ -24,6 +30,8 @@ const css3LogoPath = "/logos/css.svg";
 const typescriptLogoPath = "/logos/typescript.svg";
 const dockerLogoPath = "/logos/docker.svg";
 const supabaseLogoPath = "/logos/supabase.svg"; // Added Supabase logo path
+const tailwindLogoPath = "/logos/tailwind.svg";
+const shadcnLogoPath = "/logos/shadcn.svg";
 const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png";
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
@@ -92,7 +100,8 @@ export default function Home() {
   ];
 
   return (
-    <div className="container mx-auto">
+    <TooltipProvider>
+      <div className="container mx-auto">
       <div className="bio-container pt-8">
         <Card className="w-full bg-card text-card-foreground px-8">
           <CardHeader>
@@ -107,71 +116,160 @@ export default function Home() {
               <div className="bio-paragraph flex items-center flex-wrap gap-2">
                 <span>Languages and Frameworks:</span>
                 <span className="lang-icons flex flex-wrap gap-3 items-center">
-                  <Image
-                    src={pythonLogoPath}
-                    alt="Python Logo"
-                    width={25}
-                    height={25}
-                    title="Python"
-                  />
-                  <Image
-                    src={reactLogoPath}
-                    alt="React Logo"
-                    width={25}
-                    height={25}
-                    title="React"
-                  />
-                  {/* Added Next.js Logo here */}
-                  <Image
-                    src={nextjsLogoPath}
-                    alt="Next.js Logo"
-                    width={25} // Adjust if Next.js logo is better with different dimensions
-                    height={25}
-                    title="Next.js"
-                  />
-                  <Image
-                    src={javascriptLogoPath}
-                    alt="JavaScript Logo"
-                    width={25}
-                    height={25}
-                    title="JavaScript"
-                  />
-                  <Image
-                    src={typescriptLogoPath}
-                    alt="TypeScript Logo"
-                    width={25}
-                    height={25}
-                    title="TypeScript"
-                  />
-                  <Image
-                    src={html5LogoPath}
-                    alt="HTML5 Logo"
-                    width={30}
-                    height={30}
-                    title="HTML5"
-                  />
-                  <Image
-                    src={css3LogoPath}
-                    alt="CSS3 Logo"
-                    width={35} // Note: original width/height was 35 for CSS3
-                    height={35}
-                    title="CSS3"
-                  />
-                  <Image
-                    src={dockerLogoPath}
-                    alt="Docker Logo"
-                    width={25}
-                    height={25}
-                    title="Docker"
-                  />
-                  {/* Added Supabase Logo here */}
-                  <Image
-                    src={supabaseLogoPath}
-                    alt="Supabase Logo"
-                    width={25} 
-                    height={25}
-                    title="Supabase"
-                  />
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={pythonLogoPath}
+                        alt="Python Logo"
+                        width={25}
+                        height={25}
+                        title="Python"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Python</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={reactLogoPath}
+                        alt="React Logo"
+                        width={25}
+                        height={25}
+                        title="React"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>React</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={nextjsLogoPath}
+                        alt="Next.js Logo"
+                        width={25}
+                        height={25}
+                        title="Next.js"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Next.js</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={javascriptLogoPath}
+                        alt="JavaScript Logo"
+                        width={25}
+                        height={25}
+                        title="JavaScript"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>JavaScript</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={typescriptLogoPath}
+                        alt="TypeScript Logo"
+                        width={25}
+                        height={25}
+                        title="TypeScript"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>TypeScript</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={html5LogoPath}
+                        alt="HTML5 Logo"
+                        width={30}
+                        height={30}
+                        title="HTML5"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>HTML5</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={css3LogoPath}
+                        alt="CSS3 Logo"
+                        width={35}
+                        height={35}
+                        title="CSS3"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>CSS3</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={dockerLogoPath}
+                        alt="Docker Logo"
+                        width={25}
+                        height={25}
+                        title="Docker"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Docker</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={supabaseLogoPath}
+                        alt="Supabase Logo"
+                        width={25} 
+                        height={25}
+                        title="Supabase"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Supabase</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={tailwindLogoPath}
+                        alt="Tailwind CSS Logo"
+                        width={25}
+                        height={25}
+                        title="Tailwind CSS"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Tailwind CSS</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={shadcnLogoPath}
+                        alt="shadcn/ui Logo"
+                        width={25}
+                        height={25}
+                        title="shadcn/ui"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>shadcn/ui</p>
+                    </TooltipContent>
+                  </Tooltip>
                 </span>
               </div>
 
@@ -321,6 +419,7 @@ export default function Home() {
           ))}
         </div>
       </div>
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }
