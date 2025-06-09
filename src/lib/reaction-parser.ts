@@ -128,24 +128,32 @@ export const parseStoichiometry = (
       let orderNumBackward: number | undefined = undefined;
 
       if (role === 'reactant') {
-        const orderKeyForward = firstReactionDetails?.id ? `${firstReactionDetails.id}-fwd` : undefined;
-        const orderStr = (orderKeyForward && feedComponent.reactionOrders?.[orderKeyForward] !== undefined)
-          ? feedComponent.reactionOrders[orderKeyForward]
-          : (firstReactionDetails?.id && feedComponent.reactionOrders?.[firstReactionDetails.id] !== undefined)
-            ? feedComponent.reactionOrders[firstReactionDetails.id] // Fallback to just reactionId for non-equilibrium or older format
-            : '1'; // Default to 1
+        // Determine forward reaction order from component reactionOrders
+        let orderStr = '1';
+        const possibleKeys = [firstReactionDetails?.id, `${firstReactionDetails?.id}-fwd`];
+        for (const key of possibleKeys) {
+          if (key && feedComponent.reactionOrders?.[key] !== undefined) {
+            orderStr = feedComponent.reactionOrders[key] as string;
+            break;
+          }
+        }
         orderNum = parseFloat(orderStr);
         if (isNaN(orderNum) || orderNum < 0) {
-            throw new Error(`Invalid forward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
+          throw new Error(`Invalid forward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
         }
       } else if (role === 'product' && firstReactionDetails?.isEquilibrium) {
-        const orderKeyBackward = firstReactionDetails?.id ? `${firstReactionDetails.id}-rev` : undefined;
-        const orderStr = (orderKeyBackward && feedComponent.reactionOrders?.[orderKeyBackward] !== undefined)
-          ? feedComponent.reactionOrders[orderKeyBackward]
-          : '1'; // Default to 1 for reverse if not specified
+        // Determine backward reaction order from component reactionOrders
+        let orderStr = '1';
+        const possibleKeys = [`${firstReactionDetails?.id}-rev`];
+        for (const key of possibleKeys) {
+          if (key && feedComponent.reactionOrders?.[key] !== undefined) {
+            orderStr = feedComponent.reactionOrders[key] as string;
+            break;
+          }
+        }
         orderNumBackward = parseFloat(orderStr);
         if (isNaN(orderNumBackward) || orderNumBackward < 0) {
-            throw new Error(`Invalid backward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
+          throw new Error(`Invalid backward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
         }
       }
 
@@ -280,7 +288,10 @@ export const parseParallelReactions = (
   for (let i = 0; i < reactions.length; i++) {
     const reactionData = reactions[i];
     
+    console.log(`[DEBUG PARSER] Processing reaction ${i + 1}:`, reactionData);
+    
     if (!reactionData.reactants || !reactionData.products) {
+      console.log(`[DEBUG PARSER] Reaction ${i + 1} is missing reactants or products`);
       if (forCalculation) {
         return {
           reactions: [],
@@ -303,6 +314,12 @@ export const parseParallelReactions = (
       reactionData,
       forCalculation
     );
+
+    console.log(`[DEBUG PARSER] Parsing reaction ${i + 1}: "${rxnString}" with reactionData.id="${reactionData.id}"`);
+    if (parsedReaction) {
+      console.log(`[DEBUG PARSER] Reaction ${i + 1} parsed successfully. Reactants:`, parsedReaction.reactants.map(r => `${r.name}(order=${r.reactionOrderNum})`));
+      console.log(`[DEBUG PARSER] Reaction ${i + 1} parsed successfully. Products:`, parsedReaction.products.map(p => `${p.name}(order=${p.reactionOrderNumBackward})`));
+    }
 
     if (error && forCalculation) {
       return {
@@ -375,32 +392,45 @@ export const parseSingleReaction = (
       const feedComponent = components.find(c => c.name.trim().toLowerCase() === name.trim().toLowerCase());
       if (!feedComponent) {
         // Skip components not in feed list instead of throwing error
+        console.log(`[DEBUG PARSER] Component ${name} not found in feed list for reaction ${reactionData.id}. Available components:`, components.map(c => c.name));
         return null;
       }
+      
+      console.log(`[DEBUG PARSER] Found component ${name} for reaction ${reactionData.id} as ${role}`);
       
       let orderNum: number | undefined = undefined;
       let orderNumBackward: number | undefined = undefined;
 
       if (role === 'reactant') {
-        const orderKeyForward = reactionData?.id ? `${reactionData.id}-fwd` : undefined;
-        const orderStr = (orderKeyForward && feedComponent.reactionOrders?.[orderKeyForward] !== undefined)
-          ? feedComponent.reactionOrders[orderKeyForward]
-          : (reactionData?.id && feedComponent.reactionOrders?.[reactionData.id] !== undefined)
-            ? feedComponent.reactionOrders[reactionData.id] // Fallback to just reactionId for non-equilibrium or older format
-            : '1'; // Default to 1
+        // Determine forward reaction order from component reactionOrders
+        let orderStr = '1';
+        const possibleKeys = [reactionData.id, `${reactionData.id}-fwd`];
+        for (const key of possibleKeys) {
+          if (key && feedComponent.reactionOrders?.[key] !== undefined) {
+            orderStr = feedComponent.reactionOrders[key] as string;
+            break;
+          }
+        }
         orderNum = parseFloat(orderStr);
         if (isNaN(orderNum) || orderNum < 0) {
-            throw new Error(`Invalid forward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
+          throw new Error(`Invalid forward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
         }
+        console.log(`[DEBUG PARSER] Forward order for ${name} in reaction ${reactionData.id}: ${orderNum} (from key with orderStr='${orderStr}')`);
       } else if (role === 'product' && reactionData?.isEquilibrium) {
-        const orderKeyBackward = reactionData?.id ? `${reactionData.id}-rev` : undefined;
-        const orderStr = (orderKeyBackward && feedComponent.reactionOrders?.[orderKeyBackward] !== undefined)
-          ? feedComponent.reactionOrders[orderKeyBackward]
-          : '1'; // Default to 1 for reverse if not specified
+        // Determine backward reaction order from component reactionOrders
+        let orderStr = '1';
+        const possibleKeys = [`${reactionData.id}-rev`];
+        for (const key of possibleKeys) {
+          if (key && feedComponent.reactionOrders?.[key] !== undefined) {
+            orderStr = feedComponent.reactionOrders[key] as string;
+            break;
+          }
+        }
         orderNumBackward = parseFloat(orderStr);
         if (isNaN(orderNumBackward) || orderNumBackward < 0) {
-            throw new Error(`Invalid backward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
+          throw new Error(`Invalid backward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
         }
+        console.log(`[DEBUG PARSER] Backward order for ${name} in reaction ${reactionData.id}: ${orderNumBackward} (from orderStr='${orderStr}')`);
       }
 
       return {
