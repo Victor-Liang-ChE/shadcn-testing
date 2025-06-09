@@ -57,51 +57,36 @@ export const calculateCombinedRate = (
     const { reactants, products, rateConstantAtT, rateConstantBackwardAtT, isEquilibriumReaction } = reaction;
 
     if (rateConstantAtT === undefined) {
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Skipped due to undefined forward rate constant.`);
       return; // Skip if no forward rate constant
     }
 
     // Calculate forward rate
     let forwardRate = rateConstantAtT;
-    console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Initial forwardRate (k_fwd) = ${forwardRate.toExponential(3)}`);
     reactants.forEach(reactant => {
       const conc = concentrations[reactant.name] || 0;
       const order = reactant.reactionOrderNum !== undefined ? reactant.reactionOrderNum : 1;
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Reactant ${reactant.name}: Conc=${conc.toFixed(4)}, Order_fwd=${order}, forwardRate_before_mult=${forwardRate.toExponential(3)}`);
       forwardRate *= Math.pow(Math.max(0, conc), order);
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Reactant ${reactant.name}: forwardRate_after_mult=${forwardRate.toExponential(3)}`);
     });
-    console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Final calculated forwardRate = ${forwardRate.toExponential(3)}`);
 
     // Calculate backward rate (if equilibrium)
     let backwardRate = 0;
     if (isEquilibriumReaction && rateConstantBackwardAtT !== undefined && rateConstantBackwardAtT >= 0) {
       backwardRate = rateConstantBackwardAtT; // Initialize with k_bwd
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} (Equilibrium): Initial backwardRate (k_bwd) = ${backwardRate.toExponential(3)}`);
       products.forEach(product => {
         const conc = concentrations[product.name] || 0;
         const order = product.reactionOrderNumBackward !== undefined ? product.reactionOrderNumBackward : 1;
-        // Ensure product.reactionOrderNumBackward is logged if it exists
-        const orderSource = product.reactionOrderNumBackward !== undefined ? `explicit (${product.reactionOrderNumBackward})` : `default (1)`;
-        console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Product ${product.name} (for backward rate): Conc=${conc.toFixed(4)}, Order_bwd=${order} (source: ${orderSource}), k_bwd_term_before_mult=${backwardRate.toExponential(3)}`);
         if (conc === 0 && order > 0) { // if concentration is zero, this term will make backwardRate zero unless order is 0
              backwardRate = 0; // Optimization: if any product conc is 0 and its order > 0, that term is 0, so overall product of terms is 0.
-             console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Product ${product.name}: Conc is 0 and order > 0, setting backwardRate to 0.`);
         } else {
             backwardRate *= Math.pow(Math.max(0, conc), order);
         }
-        console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Product ${product.name}: backwardRate_after_product_term=${backwardRate.toExponential(3)}`);
       });
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} (Equilibrium): Final calculated backwardRate = ${backwardRate.toExponential(3)}`);
     } else if (isEquilibriumReaction) {
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} (Equilibrium): Backward rate not calculated. k_bwd=${rateConstantBackwardAtT}, isEquilibriumReaction=${isEquilibriumReaction}`);
     } else {
-      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Not an equilibrium reaction. Backward rate is 0.`);
     }
 
     // Net rate for this reaction
     const netReactionRate = forwardRate - backwardRate;
-    console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: NetReactionRate (forward - backward) = ${netReactionRate.toExponential(3)} (Forward: ${forwardRate.toExponential(3)}, Backward: ${backwardRate.toExponential(3)})`);
 
     // Contribution to this component's rate based on stoichiometry
     let stoichCoeff = 0;
@@ -346,8 +331,6 @@ export const calculateOutletFlowRatesParallel = (
           minAvailableExtentForThisReaction = 0; // If no limiting reactant found or negative, extent is 0
         }
 
-        console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1}: minAvailableExtent (thermodynamic max) = ${minAvailableExtentForThisReaction}`);
-
         // Apply kinetic adjustment factor
         const k_secondary = reaction.rateConstantAtT; // Forward rate constant of this secondary reaction
         let kineticAdjustmentFactor = 0.5; // Default fallback
@@ -384,13 +367,10 @@ export const calculateOutletFlowRatesParallel = (
 
               if (C_reactant_in_step > 1e-9) { // Avoid issues with zero concentration
                 effective_k_for_adjustment = k_secondary * Math.pow(C_reactant_in_step, order_n - 1);
-                console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1} (${mainReactantOfSecondary.name}): order_n=${order_n}, C_in_step=${C_reactant_in_step.toFixed(4)}, k_orig=${k_secondary.toExponential(3)}, effective_k=${effective_k_for_adjustment.toExponential(3)}`);
               } else if (order_n > 1) { // If C_in is zero and order > 1, rate is effectively zero
                 effective_k_for_adjustment = 0;
-                console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1} (${mainReactantOfSecondary.name}): order_n=${order_n}, C_in_step=${C_reactant_in_step.toFixed(4)}, effective_k set to 0`);
               } else { // order_n = 1 or (order_n < 1 and C_in_step is zero - potentially problematic)
                 // Default to k_secondary if C_in_step is zero and order < 1 to avoid Math.pow errors, or if order is 1.
-                console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1} (${mainReactantOfSecondary.name}): order_n=${order_n}, C_in_step=${C_reactant_in_step.toFixed(4)}, using k_orig=${k_secondary.toExponential(3)} as effective_k`);
               }
             }
           }
@@ -403,11 +383,9 @@ export const calculateOutletFlowRatesParallel = (
              kineticAdjustmentFactor = 1 - Math.exp(-dimensionlessGroup);
           }
           kineticAdjustmentFactor = Math.max(0, Math.min(kineticAdjustmentFactor, 1)); // Clamp between 0 and 1
-          console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1}: k_secondary=${k_secondary.toExponential(3)}, tau=${tau.toFixed(2)}, effective_k_adj=${effective_k_for_adjustment.toExponential(3)}, dimGroup=${dimensionlessGroup.toFixed(3)}, kineticFactor=${kineticAdjustmentFactor.toFixed(3)}`);
         } else {
             // Fallback if k_secondary is not available or other params are invalid
             kineticAdjustmentFactor = 0.0; 
-            console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1}: Fallback kineticFactor = 0.0 (k_secondary issue or invalid params)`);
         }
         
         currentReactionExtent = Math.max(0, minAvailableExtentForThisReaction * kineticAdjustmentFactor);
