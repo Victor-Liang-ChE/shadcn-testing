@@ -443,8 +443,8 @@ export const parseSingleReaction = (
     }
 
     // Use A and Ea from the specific reaction data
-    const A = parseFloat(reactionData?.AValue || kinetics.AValue);
-    const Ea = parseFloat(reactionData?.EaValue || kinetics.EaValue);
+    const A = parseFloat(reactionData.AValue);
+    const Ea = parseFloat(reactionData.EaValue);
     
     if (isNaN(A) || isNaN(Ea) || A <= 0 || Ea < 0) {
       return {

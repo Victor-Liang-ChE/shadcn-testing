@@ -249,6 +249,8 @@ export default function ReactorDesignPage() {
       return;
     }
 
+
+
     // Check if any reaction has invalid kinetics
     const invalidReaction = parsedParallelReactions.reactions.find(r => r.rateConstantAtT === undefined);
     if (invalidReaction) {
@@ -379,7 +381,10 @@ export default function ReactorDesignPage() {
             parsedParallelReactions,
             keyReactantName,
             F_key0,
-            conversion
+            conversion,
+            V, // Pass reactorVolume
+            v0_calc, // Pass calculated total volumetric flow rate
+            reactorType // Pass reactorType
         );
         
         setCalculationResults({
@@ -948,125 +953,70 @@ export default function ReactorDesignPage() {
                       </thead>
                       <tbody>
                         {components.map((comp) => {
+                          // Determine if component is a reactant or product in any reaction
+                          const isReactantInAnyReaction = reactions.some(r =>
+                            (r.reactants || '').split(/[+\s]+/).map(s => s.trim()).includes(comp.name)
+                          );
+                          const isProductInAnyReaction = reactions.some(r => // Corrected variable name
+                            (r.products || '').split(/[+\s]+/).map(s => s.trim()).includes(comp.name)
+                          );
+
                           // Calculate conversion for this component
-                          let conversionValue = '';
-                          if (calculationResults.conversion && parsedParallelReactions) {
-                            // Check if this component is a reactant across ALL reactions
-                            const isReactantInAnyReaction = reactions.some(reaction => {
-                              const reactantsString = reaction.reactants || '';
-                              return reactantsString.toLowerCase().includes(comp.name.toLowerCase());
-                            });
-                            
-                            console.log(`${comp.name} isReactantInAnyReaction:`, isReactantInAnyReaction);
-                            
-                            if (isReactantInAnyReaction) {
-                              // This component is a reactant, calculate conversion
-                              if (comp.name === calculationResults.conversion.reactantName) {
-                                conversionValue = (calculationResults.conversion.value * 100).toPrecision(3);
-                              } else if (calculationResults.conversion.value > 0) {
-                                // Calculate conversion for non-limiting reactants by looking across all reactions
-                                const limitingReactantName = calculationResults.conversion.reactantName;
-                                const limitingConversion = calculationResults.conversion.value;
-                                
-                                // Find this component in any of the parallel reactions
-                                let thisReactantInfo = null;
-                                let limitingReactantInfo = null;
-                                
-                                for (const reaction of parsedParallelReactions.reactions) {
-                                  if (!thisReactantInfo) {
-                                    thisReactantInfo = reaction.reactants.find(r => r.name === comp.name);
-                                  }
-                                  if (!limitingReactantInfo) {
-                                    limitingReactantInfo = reaction.reactants.find(r => r.name === limitingReactantName);
-                                  }
-                                }
-                                
-                                if (thisReactantInfo && limitingReactantInfo) {
-                                  const stoichRatio = thisReactantInfo.stoichiometricCoefficient / limitingReactantInfo.stoichiometricCoefficient;
-                                  const thisReactantConversion = limitingConversion * stoichRatio;
-                                  
-                                  const initialFlow = parseFloat(comp.initialFlowRate || '0');
-                                  const limitingInitialFlow = parseFloat(components.find(c => c.name === limitingReactantName)?.initialFlowRate || '0');
-                                  const maxPossibleConversion = limitingInitialFlow > 0 ? (stoichRatio * limitingInitialFlow) / initialFlow : 0;
-                                  
-                                  const actualConversion = Math.min(thisReactantConversion, maxPossibleConversion);
-                                  conversionValue = Math.max(0, actualConversion * 100).toPrecision(3);
-                                } else {
-                                  // Simple calculation if not found in parallel reactions
-                                  conversionValue = (limitingConversion * 100).toPrecision(3);
-                                }
-                              }
+                          let conversionValue: string | number = '-';
+                          if (isReactantInAnyReaction && calculationResults?.outletFlowRates) {
+                            const F_R_in = parseFloat(comp.initialFlowRate || '0');
+                            const F_R_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
+
+                            if (F_R_in > 1e-9) { // Use a small tolerance
+                              const X_R = (F_R_in - F_R_out) / F_R_in;
+                              conversionValue = parseFloat((Math.max(0, Math.min(1, X_R)) * 100).toPrecision(3));
+                            }
+                          }
+
+                          // Calculate selectivity for this component
+                          let selectivityValue: string | number = '-';
+                          if (isProductInAnyReaction && calculationResults?.conversion && calculationResults?.outletFlowRates) {
+                            const F_P_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
+                            const F_P_in = parseFloat(comp.initialFlowRate || '0');
+                            // Net moles formed, ensure non-negative if P is also a reactant elsewhere and gets consumed below its initial feed
+                            const moles_P_formed = Math.max(0, F_P_out - F_P_in);
+
+                            const keyReactantName = calculationResults.conversion.reactantName;
+                            const F_key_in_comp = components.find(c => c.name === keyReactantName);
+                            const F_key_in = parseFloat(F_key_in_comp?.initialFlowRate || '0');
+                            const X_key = calculationResults.conversion.value; // Fractional conversion (0 to 1)
+                            const moles_key_reacted = F_key_in * X_key;
+
+                            if (moles_key_reacted > 1e-9) { // Use a small tolerance
+                              const rawSelectivity = moles_P_formed / moles_key_reacted;
+                              // Ensure selectivity is not negative if moles_P_formed is 0 and moles_key_reacted is positive.
+                              const finalSelectivityPercent = Math.max(0, rawSelectivity * 100);
+                              selectivityValue = parseFloat(finalSelectivityPercent.toPrecision(3));
                             } else {
-                              // This component is not a reactant in any reaction, show "-"
-                              conversionValue = '-';
+                              // If no key reactant reacted
+                              selectivityValue = (moles_P_formed > 1e-9) ? '-' : parseFloat((0).toPrecision(3)); // '-' if P formed without key reactant, else 0.00
                             }
                           }
                           
-                          // Get outlet flow rate with 3 sig figs
-                          const outletFlow = calculationResults.outletFlowRates?.[comp.name];
-                          const outletFlowDisplay = outletFlow !== undefined ? outletFlow.toPrecision(3) : '-';
-                          
-                          // Calculate selectivity for products
-                          let selectivityValue = '';
-                          if (calculationResults.conversion && parsedParallelReactions && outletFlow !== undefined) {
-                            // Check if this component is a product across ALL reactions
-                            const isProductInAnyReaction = reactions.some(reaction => {
-                              const productsString = reaction.products || '';
-                              return productsString.toLowerCase().includes(comp.name.toLowerCase());
-                            });
-                            
-                            console.log(`${comp.name} isProductInAnyReaction:`, isProductInAnyReaction);
-                            
-                            if (isProductInAnyReaction) {
-                              // This component is a product, calculate selectivity
-                              // Find this component in any of the parallel reactions
-                              let productInfo = null;
-                              for (const reaction of parsedParallelReactions.reactions) {
-                                productInfo = reaction.products.find(p => p.name === comp.name);
-                                if (productInfo) break;
-                              }
-                              
-                              if (calculationResults.conversion.value > 0) {
-                                // UNIVERSAL SELECTIVITY = (F_product,out - F_product,in) / (F_limitingReactant,in - F_limitingReactant,out)
-                                // This definition works for both intermediates and final products
-                                const limitingReactantName = calculationResults.conversion.reactantName;
-                                
-                                // Get limiting reactant flows
-                                const limitingReactantInitial = parseFloat(components.find(c => c.name === limitingReactantName)?.initialFlowRate || '0');
-                                const limitingReactantFinal = calculationResults.outletFlowRates?.[limitingReactantName] || 0;
-                                const limitingReactantConsumed = limitingReactantInitial - limitingReactantFinal;
-                                
-                                // Get product flows
-                                const productInitial = parseFloat(comp.initialFlowRate || '0');
-                                const productFinal = outletFlow;
-                                const netProductProduced = productFinal - productInitial;
-                                
-                                if (limitingReactantConsumed > 0 && netProductProduced >= 0) {
-                                  // Universal selectivity: Net moles of desired product produced / Moles of limiting reactant consumed
-                                  const selectivity = (netProductProduced / limitingReactantConsumed) * 100;
-                                  selectivityValue = Math.max(0, selectivity).toPrecision(3);
-                                }
-                              }
-                            } else {
-                              // This component is not a product in any reaction, show "-"
-                              selectivityValue = '-';
-                            }
-                          }
-                          
-                          // Check if this component is the limiting reactant (simplified check)
-                          const isLimitingReactant = calculationResults.conversion && 
-                            calculationResults.conversion.reactantName === comp.name;
-                          
+                          const isLimitingReactant = comp.name === calculationResults?.conversion?.reactantName;
+
                           return (
-                            <tr key={comp.id} className={`hover:bg-muted/25 ${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/50 border-l-4 border-yellow-500' : ''}`}>
-                              <td className="border border-border px-3 py-2 font-medium text-center">
+                            <tr 
+                              key={comp.id} 
+                              className={`${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}
+                            >
+                              <td className={`border border-border px-3 py-2 text-center ${isLimitingReactant ? 'font-bold' : ''}`}>
                                 {comp.name}
                               </td>
                               <td className="border border-border px-3 py-2 text-center">
                                 {conversionValue}
                               </td>
-                              <td className="border border-border px-3 py-2 text-center">{selectivityValue}</td>
-                              <td className="border border-border px-3 py-2 text-center">{outletFlowDisplay}</td>
+                              <td className="border border-border px-3 py-2 text-center">
+                                {selectivityValue}
+                              </td>
+                              <td className="border border-border px-3 py-2 text-center">
+                                {calculationResults?.outletFlowRates?.[comp.name]?.toPrecision(3) ?? '-'}
+                              </td>
                             </tr>
                           );
                         })}

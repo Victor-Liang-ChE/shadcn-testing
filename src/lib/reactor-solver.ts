@@ -270,34 +270,128 @@ export const calculateOutletFlowRatesParallel = (
   components: Component[],
   parsedParallelReactions: ParsedParallelReactions,
   keyReactantName: string,
-  F_key0: number,
-  conversion: number
+  F_key0: number, // Initial molar flow rate of key reactant
+  conversion: number, // Overall conversion of key reactant from solver
+  reactorVolume: number,
+  volumetricFlowRate: number, // Total volumetric flow rate (v0)
+  reactorType: 'CSTR' | 'PFR'
 ): { [componentName: string]: number } => {
+  console.log(`[DEBUG calculateOutletFlowRatesParallel] Start. KeyR: ${keyReactantName}, X: ${conversion}, V: ${reactorVolume}, v0: ${volumetricFlowRate}, Type: ${reactorType}`);
   const outletFlowRates: { [componentName: string]: number } = {};
+  const numReactions = parsedParallelReactions.reactions.length;
+  const reactionExtents: number[] = new Array(numReactions).fill(0);
 
-  components.forEach(c => {
-    const F_i0 = parseFloat(c.initialFlowRate) || 0;
-    let totalChange = 0;
+  // Pass 1: Calculate all reaction extents sequentially
+  parsedParallelReactions.reactions.forEach((reaction, reactionIndex) => {
+    let currentReactionExtent = 0;
+    const keyInThisReaction = reaction.allInvolved.find(comp => comp.name === keyReactantName);
 
-    // Sum changes from all parallel reactions
-    parsedParallelReactions.reactions.forEach(reaction => {
-      const compInReaction = reaction.allInvolved.find(comp => comp.name === c.name);
-      const keyInReaction = reaction.allInvolved.find(comp => comp.name === keyReactantName);
-
-      if (compInReaction && keyInReaction && keyInReaction.role === 'reactant') {
-        const nu_i = compInReaction.role === 'reactant' 
-          ? -compInReaction.stoichiometricCoefficient 
-          : compInReaction.stoichiometricCoefficient;
-        const nu_key_abs = keyInReaction.stoichiometricCoefficient;
-        
-        // Assume equal conversion across all reactions for simplification
-        totalChange += (nu_i / nu_key_abs) * F_key0 * conversion;
+    if (keyInThisReaction && keyInThisReaction.role === 'reactant') {
+      // This reaction involves the key reactant.
+      // Note: If keyReactant is in multiple reactions, 'conversion' is overall.
+      // This calculation assumes this reaction takes a proportional share or is the main one.
+      const nu_key_abs = keyInThisReaction.stoichiometricCoefficient;
+      if (nu_key_abs > 0) {
+        currentReactionExtent = (F_key0 * conversion) / nu_key_abs;
+      } else {
+        currentReactionExtent = 0; // Should not happen for a reactant
       }
-    });
+      console.log(`[DEBUG Extent Pass] Primary reaction ${reactionIndex + 1} (key reactant ${keyReactantName} involved), nu_key: ${nu_key_abs}, extent: ${currentReactionExtent}`);
+    } else {
+      // Secondary reaction (does not involve the keyReactantName directly)
+      // Calculate extent based on available reactants from prior reactions and its own kinetics.
+      console.log(`[DEBUG Extent Pass] Secondary reaction ${reactionIndex + 1} (key reactant ${keyReactantName} NOT involved)`);
+      let minAvailableExtentForThisReaction = Infinity;
 
-    outletFlowRates[c.name] = Math.max(0, F_i0 + totalChange);
+      if (reaction.reactants.length === 0) {
+        currentReactionExtent = 0; // No reactants, extent is 0
+        console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1} has no reactants. Extent = 0.`);
+      } else {
+        reaction.reactants.forEach(reactant => {
+          const reactantCompInfo = components.find(comp => comp.name === reactant.name);
+          let availableFlowOfReactant = parseFloat(reactantCompInfo?.initialFlowRate || '0');
+
+          // Add production of this reactant from all previous reactions
+          for (let prevReactionIdx = 0; prevReactionIdx < reactionIndex; prevReactionIdx++) {
+            const prevReaction = parsedParallelReactions.reactions[prevReactionIdx];
+            const reactantAsProductInPrev = prevReaction.allInvolved.find(
+              p => p.name === reactant.name && p.role === 'product'
+            );
+            if (reactantAsProductInPrev) {
+              const productionFromPrevReaction = reactantAsProductInPrev.stoichiometricCoefficient * reactionExtents[prevReactionIdx];
+              availableFlowOfReactant += productionFromPrevReaction;
+              console.log(`[DEBUG Extent Pass] Reactant ${reactant.name} for reaction ${reactionIndex + 1}: +${productionFromPrevReaction} from reaction ${prevReactionIdx + 1} (extent ${reactionExtents[prevReactionIdx]})`);
+            }
+          }
+          
+          availableFlowOfReactant = Math.max(0, availableFlowOfReactant); // Ensure non-negative
+
+          if (reactant.stoichiometricCoefficient > 0) {
+            const maxExtentFromThisReactant = availableFlowOfReactant / reactant.stoichiometricCoefficient;
+            minAvailableExtentForThisReaction = Math.min(minAvailableExtentForThisReaction, maxExtentFromThisReactant);
+            console.log(`[DEBUG Extent Pass] Reactant ${reactant.name} for reaction ${reactionIndex + 1}: initial=${reactantCompInfo?.initialFlowRate || '0'}, total available=${availableFlowOfReactant}, stoichCoeff=${reactant.stoichiometricCoefficient}, max_extent_contrib=${maxExtentFromThisReactant}`);
+          } else {
+            // Stoichiometric coefficient is zero or negative, this reactant cannot limit extent.
+             console.log(`[DEBUG Extent Pass] Reactant ${reactant.name} for reaction ${reactionIndex + 1} has non-positive stoich coeff ${reactant.stoichiometricCoefficient}.`);
+          }
+        });
+
+        if (minAvailableExtentForThisReaction === Infinity || minAvailableExtentForThisReaction < 0) {
+             minAvailableExtentForThisReaction = 0; // If no limiting reactant found or negative, extent is 0
+        }
+        
+        console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1}: minAvailableExtent (thermodynamic max) = ${minAvailableExtentForThisReaction}`);
+
+        // Apply kinetic adjustment factor
+        const k_secondary = reaction.rateConstantAtT; // Forward rate constant of this secondary reaction
+        let kineticAdjustmentFactor = 0.5; // Default fallback
+
+        if (k_secondary !== undefined && k_secondary >= 0 && volumetricFlowRate > 0 && reactorVolume >= 0) {
+          const tau = reactorVolume / volumetricFlowRate;
+          
+          if (!isFinite(tau) && tau > 0 && k_secondary > 0) { // Effectively infinite time (e.g. v0 -> 0, V > 0)
+            kineticAdjustmentFactor = 1.0;
+          } else if (tau === 0 || k_secondary === 0) { // No time to react or no rate constant
+            kineticAdjustmentFactor = 0.0;
+          } else if (isFinite(tau)) {
+             if (reactorType === 'CSTR') {
+                kineticAdjustmentFactor = (k_secondary * tau) / (1 + k_secondary * tau);
+             } else if (reactorType === 'PFR') {
+                kineticAdjustmentFactor = 1 - Math.exp(-k_secondary * tau);
+             }
+          } else {
+             kineticAdjustmentFactor = 0.0; // Should not happen if v0 > 0, V >= 0
+          }
+          kineticAdjustmentFactor = Math.max(0, Math.min(kineticAdjustmentFactor, 1)); // Clamp to [0,1]
+          console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1}: k_secondary=${k_secondary}, tau=${tau.toFixed(3)}, kineticFactor=${kineticAdjustmentFactor.toFixed(3)}`);
+        } else {
+            console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1}: Using fallback kineticFactor=0.5 (k_secondary=${k_secondary}, v0=${volumetricFlowRate}, V=${reactorVolume})`);
+        }
+        
+        currentReactionExtent = Math.max(0, minAvailableExtentForThisReaction * kineticAdjustmentFactor);
+      }
+    }
+    reactionExtents[reactionIndex] = currentReactionExtent;
+    console.log(`[DEBUG Extent Pass] Reaction ${reactionIndex + 1} final extent: ${currentReactionExtent}`);
   });
 
+  // Pass 2: Calculate outlet flow rates using the calculated extents
+  components.forEach(c => {
+    let F_i_outlet = parseFloat(c.initialFlowRate) || 0;
+    parsedParallelReactions.reactions.forEach((reaction, reactionIndex) => {
+      const compInReaction = reaction.allInvolved.find(comp => comp.name === c.name);
+      if (compInReaction) {
+        const nu_i_signed = compInReaction.role === 'reactant' 
+          ? -compInReaction.stoichiometricCoefficient 
+          : compInReaction.stoichiometricCoefficient;
+        F_i_outlet += nu_i_signed * reactionExtents[reactionIndex];
+      }
+    });
+    outletFlowRates[c.name] = Math.max(0, F_i_outlet); // Ensure non-negative flow rate
+    console.log(`[DEBUG OutletCalc] Component ${c.name}: initial_flow=${c.initialFlowRate || '0'}, final_outlet_flow=${outletFlowRates[c.name].toFixed(4)}`);
+  });
+
+  console.log("[DEBUG calculateOutletFlowRatesParallel] Finished.", outletFlowRates);
   return outletFlowRates;
 };
 
