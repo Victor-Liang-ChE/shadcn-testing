@@ -46,8 +46,8 @@ export default function ReactorDesignPage() {
   const [reactionString, setReactionString] = useState<string>('A + B -> C');
   const [reactions, setReactions] = useState<ReactionData[]>([
     { id: '1', reactants: 'A + B', products: 'C', AValue: '1e6', EaValue: '50000', AValueBackward: '1e4', EaValueBackward: '60000', isEquilibrium: false },
-    { id: '2', reactants: 'A', products: 'D', AValue: '5e5', EaValue: '45000', AValueBackward: '1e3', EaValueBackward: '55000', isEquilibrium: false }
-  ]); // Parallel reactions: A+B->C and A->D
+    { id: '2', reactants: 'C', products: 'D', AValue: '5e5', EaValue: '45000', AValueBackward: '1e3', EaValueBackward: '55000', isEquilibrium: false }
+  ]); // Parallel reactions: A+B->C and C->D
   
   // State for components (auto-generated but with editable reaction orders)
   const [components, setComponents] = useState<Component[]>([]);
@@ -171,7 +171,8 @@ export default function ReactorDesignPage() {
       const existingComponent = components.find(comp => comp.name === name);
       
       // Set initial flow rate: 1 if reactant in any reaction, 0 if only product
-      const initialFlowRate = reactantNames.has(name) ? '1' : '0';
+      // Special case: C should start with 0 flow rate (intermediate product)
+      const initialFlowRate = name === 'C' ? '0' : (reactantNames.has(name) ? '1' : '0');
       
       // Initialize reaction orders for each reaction
       const reactionOrders: { [reactionId: string]: string } = {};
@@ -933,7 +934,7 @@ export default function ReactorDesignPage() {
                     <CardTitle>Conversion and Outlet Flow Rates</CardTitle>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <div className="flex items-center gap-1">
-                        <div className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/50 border-l-4 border-yellow-500 rounded-sm text-[10px] font-medium text-gray-700 dark:text-gray-300">
+                        <div className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/50 rounded-sm text-[10px] font-medium text-gray-700 dark:text-gray-300">
                           Limiting Reactant
                         </div>
                       </div>
