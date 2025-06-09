@@ -45,7 +45,7 @@ export const calculateCombinedRate = (
   parsedParallelReactions: ParsedParallelReactions
 ): number => {
   let totalRate = 0;
-  parsedParallelReactions.reactions.forEach((reaction, index) => {
+  parsedParallelReactions.reactions.forEach((reaction, reactionIndex) => { // Added reactionIndex here
     // Find the component in this reaction
     const componentInReaction = reaction.allInvolved.find(comp => comp.name === componentName);
 
@@ -57,30 +57,51 @@ export const calculateCombinedRate = (
     const { reactants, products, rateConstantAtT, rateConstantBackwardAtT, isEquilibriumReaction } = reaction;
 
     if (rateConstantAtT === undefined) {
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Skipped due to undefined forward rate constant.`);
       return; // Skip if no forward rate constant
     }
 
     // Calculate forward rate
     let forwardRate = rateConstantAtT;
+    console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Initial forwardRate (k_fwd) = ${forwardRate.toExponential(3)}`);
     reactants.forEach(reactant => {
       const conc = concentrations[reactant.name] || 0;
       const order = reactant.reactionOrderNum !== undefined ? reactant.reactionOrderNum : 1;
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Reactant ${reactant.name}: Conc=${conc.toFixed(4)}, Order_fwd=${order}, forwardRate_before_mult=${forwardRate.toExponential(3)}`);
       forwardRate *= Math.pow(Math.max(0, conc), order);
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Reactant ${reactant.name}: forwardRate_after_mult=${forwardRate.toExponential(3)}`);
     });
+    console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Final calculated forwardRate = ${forwardRate.toExponential(3)}`);
 
     // Calculate backward rate (if equilibrium)
     let backwardRate = 0;
     if (isEquilibriumReaction && rateConstantBackwardAtT !== undefined && rateConstantBackwardAtT >= 0) {
-      backwardRate = rateConstantBackwardAtT;
+      backwardRate = rateConstantBackwardAtT; // Initialize with k_bwd
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} (Equilibrium): Initial backwardRate (k_bwd) = ${backwardRate.toExponential(3)}`);
       products.forEach(product => {
         const conc = concentrations[product.name] || 0;
         const order = product.reactionOrderNumBackward !== undefined ? product.reactionOrderNumBackward : 1;
-        backwardRate *= Math.pow(Math.max(0, conc), order);
+        // Ensure product.reactionOrderNumBackward is logged if it exists
+        const orderSource = product.reactionOrderNumBackward !== undefined ? `explicit (${product.reactionOrderNumBackward})` : `default (1)`;
+        console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Product ${product.name} (for backward rate): Conc=${conc.toFixed(4)}, Order_bwd=${order} (source: ${orderSource}), k_bwd_term_before_mult=${backwardRate.toExponential(3)}`);
+        if (conc === 0 && order > 0) { // if concentration is zero, this term will make backwardRate zero unless order is 0
+             backwardRate = 0; // Optimization: if any product conc is 0 and its order > 0, that term is 0, so overall product of terms is 0.
+             console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Product ${product.name}: Conc is 0 and order > 0, setting backwardRate to 0.`);
+        } else {
+            backwardRate *= Math.pow(Math.max(0, conc), order);
+        }
+        console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} - Product ${product.name}: backwardRate_after_product_term=${backwardRate.toExponential(3)}`);
       });
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} (Equilibrium): Final calculated backwardRate = ${backwardRate.toExponential(3)}`);
+    } else if (isEquilibriumReaction) {
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex} (Equilibrium): Backward rate not calculated. k_bwd=${rateConstantBackwardAtT}, isEquilibriumReaction=${isEquilibriumReaction}`);
+    } else {
+      console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: Not an equilibrium reaction. Backward rate is 0.`);
     }
 
     // Net rate for this reaction
     const netReactionRate = forwardRate - backwardRate;
+    console.log(`[DEBUG Solver RateCalc] Reaction Index ${reactionIndex}: NetReactionRate (forward - backward) = ${netReactionRate.toExponential(3)} (Forward: ${forwardRate.toExponential(3)}, Backward: ${backwardRate.toExponential(3)})`);
 
     // Contribution to this component's rate based on stoichiometry
     let stoichCoeff = 0;

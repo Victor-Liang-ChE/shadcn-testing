@@ -403,31 +403,56 @@ export const parseSingleReaction = (
 
       if (role === 'reactant') {
         // Determine forward reaction order from component reactionOrders
-        let orderStr = '1';
+        let orderStr = '1'; // Default order
         const possibleKeys = [reactionData.id, `${reactionData.id}-fwd`];
+        
+        console.log(`[DEBUG PARSER] Forward order lookup for reactant ${name} in reaction ${reactionData.id}. Component's reactionOrders:`, JSON.parse(JSON.stringify(feedComponent.reactionOrders || {})));
+        let forwardOrderFound = false;
         for (const key of possibleKeys) {
           if (key && feedComponent.reactionOrders?.[key] !== undefined) {
             orderStr = feedComponent.reactionOrders[key] as string;
+            console.log(`[DEBUG PARSER] Found forward order for ${name} using key '${key}': '${orderStr}'.`);
+            forwardOrderFound = true;
             break;
+          } else {
+            // console.log(`[DEBUG PARSER] Forward order key '${key}' not found or value is undefined for ${name} in reaction ${reactionData.id}.`); // Can be verbose
           }
         }
+        if (!forwardOrderFound) {
+            console.log(`[DEBUG PARSER] No specific forward order found for ${name} in reaction ${reactionData.id} using keys [${possibleKeys.join(', ')}]. Defaulting to orderStr: '${orderStr}'.`);
+        }
+
         orderNum = parseFloat(orderStr);
         if (isNaN(orderNum) || orderNum < 0) {
+          console.error(`[DEBUG PARSER] Error parsing forward order for ${name}: orderStr='${orderStr}', parsed to NaN or negative.`);
           throw new Error(`Invalid forward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
         }
-        console.log(`[DEBUG PARSER] Forward order for ${name} in reaction ${reactionData.id}: ${orderNum} (from key with orderStr='${orderStr}')`);
+        console.log(`[DEBUG PARSER] Forward order for ${name} in reaction ${reactionData.id}: ${orderNum} (from orderStr='${orderStr}')`);
       } else if (role === 'product' && reactionData?.isEquilibrium) {
         // Determine backward reaction order from component reactionOrders
-        let orderStr = '1';
-        const possibleKeys = [`${reactionData.id}-rev`];
+        let orderStr = '1'; // Default order
+        const reactionSpecificIdRev = `${reactionData.id}-rev`;
+        const possibleKeys = [reactionSpecificIdRev]; 
+
+        console.log(`[DEBUG PARSER] Backward order lookup for product ${name} in reaction ${reactionData.id}. Component's reactionOrders:`, JSON.parse(JSON.stringify(feedComponent.reactionOrders || {})));
+        
+        let backwardOrderFound = false;
         for (const key of possibleKeys) {
           if (key && feedComponent.reactionOrders?.[key] !== undefined) {
             orderStr = feedComponent.reactionOrders[key] as string;
+            console.log(`[DEBUG PARSER] Found backward order for ${name} using key '${key}': '${orderStr}'.`);
+            backwardOrderFound = true;
             break;
           }
         }
+        
+        if (!backwardOrderFound) {
+            console.log(`[DEBUG PARSER] No specific backward order found for ${name} in reaction ${reactionData.id} using key '${reactionSpecificIdRev}'. Defaulting to orderStr: '${orderStr}'.`);
+        }
+
         orderNumBackward = parseFloat(orderStr);
         if (isNaN(orderNumBackward) || orderNumBackward < 0) {
+          console.error(`[DEBUG PARSER] Error parsing backward order for ${name}: orderStr='${orderStr}', parsed to NaN or negative.`);
           throw new Error(`Invalid backward reaction order for ${name} ('${orderStr}'). Must be a non-negative number.`);
         }
         console.log(`[DEBUG PARSER] Backward order for ${name} in reaction ${reactionData.id}: ${orderNumBackward} (from orderStr='${orderStr}')`);
