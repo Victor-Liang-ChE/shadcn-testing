@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,29 +8,54 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Slider } from "@/components/ui/slider";
-import { AlertCircle, PlusCircle, RefreshCw, Trash2 } from 'lucide-react';
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { AlertCircle, PlusCircle, RefreshCw, Trash2, BarChart3 } from 'lucide-react';
+
+
+// Import ECharts components
+import ReactECharts from 'echarts-for-react';
+import * as echarts from 'echarts/core';
+import type { EChartsOption, SeriesOption } from 'echarts';
+import { LineChart, ScatterChart } from 'echarts/charts';
+import {
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  ToolboxComponent
+} from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+
+// Register necessary ECharts components
+echarts.use([
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  ToolboxComponent,
+  LineChart,
+  ScatterChart,
+  CanvasRenderer
+]);
 
 // Import from lib files
-import { 
-  Component, 
-  Kinetics, 
-  ParsedComponent, 
-  ParsedParallelReactions,
+import {
+  Component,
+  Kinetics,
   ReactionData,
-  calculateRateConstant,
   parseCompoundsFromReaction,
   parseParallelReactions
 } from '@/lib/reaction-parser';
-import { 
-  CalculationResults, 
-  solveCSTR, 
-  solvePFR,
+import {
+  CalculationResults,
   solveCSTRParallel,
-  solvePFRParallel,
-  calculateOutletFlowRatesParallel,
+  solvePFR_ODE_System, // Use the new ODE system solver
+  PFR_ODE_ProfilePoint, // Use the new profile point type
   findLimitingReactant
 } from '@/lib/reactor-solver';
 
@@ -39,6 +64,27 @@ type ReactorType = 'PFR' | 'CSTR';
 type ReactionPhase = 'Liquid' | 'Gas';
 
 const R_GAS_CONSTANT = 8.314; // J/(mol*K) or L*kPa/(mol*K) depending on units
+
+// Interface for a single point on the graph
+interface DataPoint {
+  volume: number;
+  conversion: number;
+  selectivity?: number;
+  flowRates: { [key: string]: number };
+}
+
+interface ExtendedCalculationResults extends CalculationResults {
+  dataPoints: DataPoint[];
+}
+
+// Add helper function for 3 significant figures formatting
+const formatToSigFigs = (num: number, sigFigs: number = 3): string => {
+  if (num === 0) return '0.00';
+  if (isNaN(num) || !isFinite(num)) return '-';
+  const magnitude = Math.floor(Math.log10(Math.abs(num)));
+  const factor = Math.pow(10, sigFigs - 1 - magnitude);
+  return (Math.round(num * factor) / factor).toString();
+};
 
 export default function ReactorDesignPage() {
   const [reactorType, setReactorType] = useState<ReactorType>('CSTR');
@@ -66,10 +112,17 @@ export default function ReactorDesignPage() {
   const [maxVolumeSlider, setMaxVolumeSlider] = useState<string>('1000'); // User-defined max for volume slider
   const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('350'); // User-defined max for temperature slider
   const [maxFlowRateSlider, setMaxFlowRateSlider] = useState<string>('10'); // User-defined max for flow rate slider
+  const [maxPressureSlider, setMaxPressureSlider] = useState<string>('10'); // User-defined max for pressure slider
 
   const [calculationResults, setCalculationResults] = useState<CalculationResults | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [calculationError, setCalculationError] = useState<string | null>(null);
+
+  // Graph-related state
+  const [showGraph, setShowGraph] = useState(false);
+  const [graphType, setGraphType] = useState<'conversion' | 'selectivity' | 'flowrates'>('conversion');
+  const [graphOptions, setGraphOptions] = useState<EChartsOption>({});
+  const echartsRef = useRef<ReactECharts | null>(null);
 
   // Handle Enter key press to trigger calculation
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -233,172 +286,91 @@ export default function ReactorDesignPage() {
     }
   }, [reactions, reactionString]);
 
-  // Main Calculation Logic - Updated for parallel reactions
+  // Main Calculation Logic - Updated for new solvers
   const handleCalculate = useCallback(async () => {
     setIsLoading(true);
     setCalculationResults(null);
-    setCalculationError(null); // Clear previous errors
+    setCalculationError(null);
 
-    // Check if parallel reactions were parsed successfully
-    if (!parsedParallelReactions || parsedParallelReactions.reactions.length === 0) {
-      if (!parsedParallelReactions?.error) { 
-         setCalculationError("No valid reactions found. Please check reaction stoichiometry and kinetics.");
-      } else {
-         setCalculationError(parsedParallelReactions.error);
-      }
+    if (parsedParallelReactions.error || parsedParallelReactions.reactions.length === 0) {
+      setCalculationError(parsedParallelReactions.error || "No valid reactions to process.");
       setIsLoading(false);
       return;
     }
-
-
-
-    // Check if any reaction has invalid kinetics
-    const invalidReaction = parsedParallelReactions.reactions.find(r => r.rateConstantAtT === undefined);
-    if (invalidReaction) {
-      if (!calculationError) {
-         setCalculationError("Some reactions have invalid kinetics. Please check A/Ea values and temperature.");
-      }
-      setIsLoading(false);
-      return;
-    }
-
-    // Check backward kinetics for equilibrium reactions
-    const invalidEquilibriumReaction = parsedParallelReactions.reactions.find(r => 
-      r.isEquilibriumReaction && r.rateConstantBackwardAtT === undefined
-    );
-    if (invalidEquilibriumReaction) {
-      if (!calculationError) {
-        setCalculationError("Some equilibrium reactions have invalid backward kinetics. Please check A_backward and Ea_backward values.");
-      }
-      setIsLoading(false);
-      return;
-    }
-
+    
+    // Common parameters
     const V = parseFloat(reactorVolume);
     const T_K = parseFloat(kinetics.reactionTempK);
+    const v0_input_Ls = parseFloat(volumetricFlowRate);
+    const initialFlowRates = components.reduce((acc, comp) => {
+      acc[comp.name] = parseFloat(comp.initialFlowRate) || 0;
+      return acc;
+    }, {} as { [key: string]: number });
 
-    if (isNaN(V) || V <= 0) {
-      setCalculationError("Reactor volume must be a positive number.");
-      setIsLoading(false);
-      return;
-    }
-
-    // Find the limiting reactant based on stoichiometry and initial flow rates
-    const limitingReactantInfo = findLimitingReactant(parsedParallelReactions, components);
-    if (!limitingReactantInfo) {
-      setCalculationError("No valid reactants found to determine limiting reactant.");
-      setIsLoading(false);
-      return;
-    }
-    
-    const keyReactantName = limitingReactantInfo.name;
-    const F_key0 = limitingReactantInfo.initialFlow;
-    if (isNaN(F_key0) || F_key0 <= 0) {
-        setCalculationError(`Initial flow rate for limiting reactant ${keyReactantName} must be positive.`);
+    let v0_calc: number;
+    if (reactionPhase === 'Liquid') {
+      if (isNaN(v0_input_Ls) || v0_input_Ls <= 0) {
+        setCalculationError("Liquid phase requires a positive volumetric flow rate.");
         setIsLoading(false);
         return;
-    }
-
-    // Initial concentrations and total volumetric flow rate
-    let C_key0: number; // Concentration of key reactant at inlet
-    let v0_calc: number; // Total volumetric flow rate at inlet (L/s or m3/s)
-
-    const totalPressureInBar = parseFloat(totalPressure); // For gas phase, input is in bar
-    const v0_input_Ls = parseFloat(volumetricFlowRate); // For liquid phase if provided
-
-    // Calculate initial concentrations based on phase
-    const initialConcentrations: { [name: string]: number } = {};
-    const F_total0 = components.reduce((sum, c) => sum + (parseFloat(c.initialFlowRate) || 0), 0);
-
-    if (reactionPhase === 'Liquid') {
-        if (!isNaN(v0_input_Ls) && v0_input_Ls > 0) {
-            v0_calc = v0_input_Ls;
-        } else {
-            setCalculationError("For liquid phase, please provide total volumetric flow rate (v0).");
-            setIsLoading(false); return;
-        }
-        components.forEach(c => {
-            const Fi0 = parseFloat(c.initialFlowRate) || 0;
-            initialConcentrations[c.name] = Fi0 / v0_calc;
-        });
-        C_key0 = initialConcentrations[keyReactantName];
-
+      }
+      v0_calc = v0_input_Ls;
     } else { // Gas Phase
-        const P_total_kPa = totalPressureInBar * 100; // Convert bar to kPa
-
-        if (isNaN(P_total_kPa) || P_total_kPa <= 0) {
-            setCalculationError("For gas phase, total pressure must be a positive number.");
-            setIsLoading(false); return;
-        }
-        // Ideal Gas Law: C_i = P_i / (R*T) = (y_i * P_total) / (R*T)
-        // y_i = F_i0 / F_total0
-        // R in L*kPa/(mol*K) is 8.314
-        components.forEach(c => {
-            const Fi0 = parseFloat(c.initialFlowRate) || 0;
-            const yi0 = F_total0 > 0 ? Fi0 / F_total0 : 0;
-            initialConcentrations[c.name] = (yi0 * P_total_kPa) / (R_GAS_CONSTANT * T_K);
-        });
-        C_key0 = initialConcentrations[keyReactantName];
-        // v0 for gas phase: F_total0 * R * T_K / P_total_kPa
-        v0_calc = (F_total0 * R_GAS_CONSTANT * T_K) / P_total_kPa; 
-    }
-    
-    if (C_key0 <= 0 && F_key0 > 0) { // Check if key reactant concentration is valid
-        setCalculationError(`Initial concentration of key reactant ${keyReactantName} is zero or negative. Check feed conditions.`);
-        setIsLoading(false); return;
+      const P_total_kPa = parseFloat(totalPressure) * 100;
+      if (isNaN(P_total_kPa) || P_total_kPa <= 0) {
+        setCalculationError("Gas phase requires a positive total pressure.");
+        setIsLoading(false);
+        return;
+      }
+      const F_total0 = Object.values(initialFlowRates).reduce((sum, f) => sum + f, 0);
+      if (T_K <= 0) {
+        setCalculationError("Gas phase requires a positive absolute temperature.");
+        setIsLoading(false);
+        return;
+      }
+      const R_GAS_CONSTANT = 8.314;
+      v0_calc = (F_total0 * R_GAS_CONSTANT * T_K) / P_total_kPa;
     }
 
     try {
-        let conversion = 0;
+      let finalFlowRates: { [key: string]: number };
 
-        if (reactorType === 'CSTR') {
-            // Use the parallel CSTR solver
-            conversion = solveCSTRParallel(
-                parsedParallelReactions,
-                F_key0,
-                C_key0,
-                V,
-                initialConcentrations,
-                keyReactantName,
-                parsedParallelReactions.allInvolvedComponents
-            );
-
-        } else { // PFR
-            // Use the parallel PFR solver
-            conversion = solvePFRParallel(
-                parsedParallelReactions,
-                F_key0,
-                C_key0,
-                V,
-                initialConcentrations,
-                keyReactantName,
-                parsedParallelReactions.allInvolvedComponents
-            );
-        }
-
-        // Calculate outlet flow rates for all components using parallel reactions
-        const outletFlowRates = calculateOutletFlowRatesParallel(
-            components,
-            parsedParallelReactions,
-            keyReactantName,
-            F_key0,
-            conversion,
-            V, // Pass reactorVolume
-            v0_calc, // Pass calculated total volumetric flow rate
-            reactorType // Pass reactorType
+      if (reactorType === 'PFR') {
+        const pfrProfile = solvePFR_ODE_System(
+          parsedParallelReactions, V, initialFlowRates, v0_calc, components.map(c => c.name)
         );
-        
-        setCalculationResults({
-            conversion: { reactantName: keyReactantName, value: conversion },
-            outletFlowRates,
-        });
+        finalFlowRates = pfrProfile.length > 0 ? pfrProfile[pfrProfile.length - 1].flowRates : initialFlowRates;
+      } else { // CSTR
+        finalFlowRates = solveCSTRParallel(
+            parsedParallelReactions, V, initialFlowRates, v0_calc
+        );
+      }
+      
+      const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
+      let conversion: { reactantName: string; value: number } | undefined;
+      if (limitingReactant) {
+        const F_A0 = limitingReactant.initialFlow;
+        const F_A = finalFlowRates[limitingReactant.name];
+        const X = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
+        conversion = { reactantName: limitingReactant.name, value: Math.max(0, Math.min(X, 1)) };
+      }
+
+      setCalculationResults({ conversion, outletFlowRates: finalFlowRates });
 
     } catch (e: any) {
-        setCalculationError(`Calculation Error: ${e.message}`);
+      setCalculationError(`Calculation Error: ${e.message}`);
     } finally {
-        setIsLoading(false);
+      setIsLoading(false);
     }
-  }, [parsedParallelReactions, reactorType, reactorVolume, kinetics.reactionTempK, components, reactionPhase, totalPressure, volumetricFlowRate, reactions]);
+  }, [parsedParallelReactions, reactorType, reactorVolume, kinetics.reactionTempK, components, reactionPhase, totalPressure, volumetricFlowRate]);
+
+  // Add helper function for 3 significant figures formatting
+  const formatToSigFigs = (num: number, sigFigs: number = 3): string => {
+    if (num === 0) return '0.00';
+    const magnitude = Math.floor(Math.log10(Math.abs(num)));
+    const factor = Math.pow(10, sigFigs - 1 - magnitude);
+    return (Math.round(num * factor) / factor).toString();
+  };
 
   // Auto-calculate when key dependencies change
   useEffect(() => {
@@ -417,12 +389,288 @@ export default function ReactorDesignPage() {
     }
   }, [reactorVolume, kinetics.reactionTempK, volumetricFlowRate, handleCalculate]);
 
-  // Force recalculation when A or Ea changes (for manual button press)
-  // This is now handled automatically by the parseReactionData useCallback dependencies
+  // Graph generation function
+  // Graph generation function
+  const generateGraphData = useCallback(() => {
+    if (!parsedParallelReactions || parsedParallelReactions.error || parsedParallelReactions.reactions.length === 0) {
+      setGraphOptions({});
+      return;
+    }
 
+    const maxVol = parseFloat(maxVolumeSlider);
+    const T_K = parseFloat(kinetics.reactionTempK);
+    const v0_input_Ls = parseFloat(volumetricFlowRate);
+    const initialFlowRates = components.reduce((acc, comp) => {
+        acc[comp.name] = parseFloat(comp.initialFlowRate) || 0;
+        return acc;
+    }, {} as { [key: string]: number });
+    
+    let v0_calc: number;
+    if (reactionPhase === 'Liquid') {
+        if (isNaN(v0_input_Ls) || v0_input_Ls <= 0) return;
+        v0_calc = v0_input_Ls;
+    } else {
+        const P_total_kPa = parseFloat(totalPressure) * 100;
+        if (isNaN(P_total_kPa) || P_total_kPa <= 0) return;
+        const F_total0 = Object.values(initialFlowRates).reduce((sum, f) => sum + f, 0);
+        if (T_K <= 0) return;
+        const R_GAS_CONSTANT = 8.314;
+        v0_calc = (F_total0 * R_GAS_CONSTANT * T_K) / P_total_kPa;
+    }
+
+    let profile: PFR_ODE_ProfilePoint[];
+    if (reactorType === 'PFR') {
+        profile = solvePFR_ODE_System(parsedParallelReactions, maxVol, initialFlowRates, v0_calc, components.map(c => c.name));
+    } else { // CSTR
+        profile = [];
+        const steps = 100;
+        for (let i = 1; i <= steps; i++) {
+            const vol = (i / steps) * maxVol;
+            const flowRates = solveCSTRParallel(parsedParallelReactions, vol, initialFlowRates, v0_calc);
+            profile.push({ volume: vol, flowRates });
+        }
+    }
+
+    const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
+    if (!limitingReactant) return;
+    const F_A0 = limitingReactant.initialFlow;
+    
+    const dataPoints: DataPoint[] = profile.map(point => {
+        const { volume, flowRates } = point;
+        const F_A = flowRates[limitingReactant!.name];
+        const conversion = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
+        
+        const F_C_net = (flowRates['C'] || 0) - (initialFlowRates['C'] || 0);
+        const F_D_net = (flowRates['D'] || 0) - (initialFlowRates['D'] || 0);
+        const totalProductsFormed = F_C_net + F_D_net;
+
+        let selectivity: number;
+        if (totalProductsFormed < (F_A0 * 1e-7)) {
+            selectivity = 1.0; 
+        } else {
+            selectivity = F_C_net / totalProductsFormed;
+        }
+
+        return { volume, conversion, selectivity, flowRates };
+    });
+
+    // Charting logic
+    let chartOptions: EChartsOption = {
+        backgroundColor: 'transparent',
+        animation: false,
+        title: { text: 'Reactor Volume vs Conversion', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
+        grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
+        xAxis: { 
+          type: 'value', 
+          name: 'Reactor Volume (L)', 
+          nameLocation: 'middle', 
+          nameGap: 30, 
+          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: 'white' } }, 
+          axisTick: { lineStyle: { color: 'white' } },
+          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          splitLine: { show: false }
+        },
+        yAxis: { 
+          type: 'value', 
+          name: 'Percentage (%)', 
+          nameLocation: 'middle', 
+          nameGap: 40, 
+          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: 'white' } }, 
+          axisTick: { lineStyle: { color: 'white' } },
+          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          splitLine: { show: false }
+        },
+        legend: { 
+          orient: 'horizontal',
+          bottom: '5%', 
+          left: 'center',
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          data: ['Conversion', 'Selectivity']
+        },
+        tooltip: { 
+          trigger: 'axis', 
+          backgroundColor: '#08306b', 
+          borderColor: '#55aaff', 
+          borderWidth: 1,
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          formatter: function(params: any) {
+            if (!Array.isArray(params)) return '';
+            const volume = params[0]?.axisValue || 0;
+            let tooltipContent = `<div style="color: white;">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            
+            params.forEach((param: any) => {
+              if (param.seriesName === 'Conversion' || param.seriesName === 'Selectivity') {
+                const value = formatToSigFigs(param.value[1]);
+                const color = param.color;
+                tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}%</span><br/>`;
+              }
+            });
+            
+            tooltipContent += '</div>';
+            return tooltipContent;
+          }
+        },
+        series: []
+    };
+
+    if (graphType === 'conversion') {
+        // Find the data point closest to the current reactor volume
+        const currentVolume = parseFloat(reactorVolume);
+        const closestPoint = dataPoints.reduce((closest, point) => 
+            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+        );
+
+        chartOptions.title = { text: 'Reactor Volume vs Conversion', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.legend = { 
+          orient: 'horizontal',
+          bottom: '5%', 
+          left: 'center',
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          data: ['Conversion']
+        };
+
+        chartOptions.series = [
+            { 
+              name: 'Conversion', 
+              type: 'line', 
+              showSymbol: false, 
+              data: dataPoints.map(p => [p.volume, p.conversion * 100]), 
+              lineStyle: { color: '#FF6347', width: 2 },
+              emphasis: { lineStyle: { width: 3 } },
+              markPoint: {
+                data: [{
+                  name: 'Current Volume',
+                  coord: [closestPoint.volume, closestPoint.conversion * 100],
+                  symbol: 'circle',
+                  symbolSize: 8,
+                  itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                  label: { show: false }
+                }]
+              }
+            }
+        ];
+    } else if (graphType === 'selectivity') {
+        // Find the data point closest to the current reactor volume
+        const currentVolume = parseFloat(reactorVolume);
+        const closestPoint = dataPoints.reduce((closest, point) => 
+            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+        );
+
+        chartOptions.title = { text: 'Reactor Volume vs Selectivity', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.legend = { 
+          orient: 'horizontal',
+          bottom: '5%', 
+          left: 'center',
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          data: ['Selectivity']
+        };
+
+        chartOptions.series = [
+            { 
+              name: 'Selectivity', 
+              type: 'line', 
+              showSymbol: false, 
+              data: dataPoints.map(p => [p.volume, (p.selectivity ?? 0) * 100]), 
+              lineStyle: { color: '#00BFFF', width: 2 },
+              emphasis: { lineStyle: { width: 3 } },
+              markPoint: {
+                data: [{
+                  name: 'Current Volume',
+                  coord: [closestPoint.volume, (closestPoint.selectivity ?? 0) * 100],
+                  symbol: 'circle',
+                  symbolSize: 8,
+                  itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                  label: { show: false }
+                }]
+              }
+            }
+        ];
+    } else { // 'flowrates'
+        chartOptions.title = { text: 'Outlet Flow Rates vs Reactor Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.yAxis = { 
+          type: 'value', 
+          name: 'Flow Rate (mol/s)', 
+          nameLocation: 'middle', 
+          nameGap: 50, 
+          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: 'white' } }, 
+          axisTick: { lineStyle: { color: 'white' } },
+          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          splitLine: { show: false }
+        };
+        chartOptions.legend = {
+          orient: 'horizontal',
+          bottom: '5%', 
+          left: 'center',
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          data: components.map(c => c.name)
+        };
+        chartOptions.tooltip = { 
+          trigger: 'axis', 
+          backgroundColor: '#08306b', 
+          borderColor: '#55aaff', 
+          borderWidth: 1,
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          formatter: function(params: any) {
+            if (!Array.isArray(params)) return '';
+            const volume = params[0]?.axisValue || 0;
+            let tooltipContent = `<div style="color: white;">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            
+            params.forEach((param: any) => {
+              const value = formatToSigFigs(param.value[1]);
+              const color = param.color;
+              tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value} mol/s</span><br/>`;
+            });
+            
+            tooltipContent += '</div>';
+            return tooltipContent;
+          }
+        };
+        const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
+        
+        // Find the data point closest to the current reactor volume for flow rates chart
+        const currentVolume = parseFloat(reactorVolume);
+        const closestPoint = dataPoints.reduce((closest, point) => 
+            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+        );
+        
+        chartOptions.series = components.map((comp, i) => ({
+            name: comp.name,
+            type: 'line',
+            showSymbol: false,
+            data: dataPoints.map(p => [p.volume, p.flowRates[comp.name]]),
+            lineStyle: { color: colors[i % colors.length], width: 2 },
+            emphasis: { lineStyle: { width: 3 } },
+            markPoint: {
+              data: [{
+                name: 'Current Volume',
+                coord: [closestPoint.volume, closestPoint.flowRates[comp.name]],
+                symbol: 'circle',
+                symbolSize: 8,
+                itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                label: { show: false }
+              }]
+            }
+        }));
+    }
+
+    setGraphOptions(chartOptions);
+
+  }, [parsedParallelReactions, reactorType, reactorVolume, maxVolumeSlider, kinetics.reactionTempK, volumetricFlowRate, components, reactionPhase, totalPressure, graphType]);
+
+
+  // Update graph when calculation results change
+  useEffect(() => {
+    if (showGraph && calculationResults) {
+      generateGraphData();
+    }
+  }, [showGraph, calculationResults, generateGraphData]);
 
   // Reactor SVG Visualization
   const renderReactorSVG = () => {
+    // ... SVG code is unchanged ...
     if (reactorType === 'PFR') {
       return (
         <div className="w-full h-64 bg-card rounded flex items-center justify-center">
@@ -486,17 +734,38 @@ export default function ReactorDesignPage() {
   };
 
 
-
-
   return (
+    // ... The entire JSX return block is unchanged ...
     <TooltipProvider>
       <div className="container mx-auto p-4 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6"> {/* Changed md:grid-cols-2 to md:grid-cols-5 */}
           {/* Left Column: Inputs */}
-          <div className="space-y-6">
-            {/* Reactor Volume/Flow Rate */}
+          <div className="space-y-6 md:col-span-2"> {/* Added md:col-span-2 */}
+            {/* Reactor Type and Phase Selection */}
             <Card>
-              <CardContent className="space-y-6 pt-6">
+              <CardContent className="space-y-6 pt-3">
+                {/* Phase Selection */}
+                <div className="flex justify-center">
+                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                    <Button
+                      variant={reactionPhase === 'Liquid' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setReactionPhase('Liquid')}
+                      className="h-8 px-3"
+                    >
+                      Liquid
+                    </Button>
+                    <Button
+                      variant={reactionPhase === 'Gas' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setReactionPhase('Gas')}
+                      className="h-8 px-3"
+                    >
+                      Gas
+                    </Button>
+                  </div>
+                </div>
+                
                 {/* Reactor Volume Slider */}
                 <div className="space-y-3">
                   <div className="flex items-center gap-3">
@@ -562,18 +831,31 @@ export default function ReactorDesignPage() {
                 {/* Volumetric Flow Rate / Pressure */}
                 <div className="space-y-3">
                   {reactionPhase === 'Gas' && (
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="totalPressure" className="text-sm whitespace-nowrap">Total Pressure:</Label>
-                      <div className="flex items-center gap-1 flex-1 min-w-0">
-                        <Input
-                          id="totalPressure"
-                          type="number"
-                          value={totalPressure}
-                          onChange={(e) => setTotalPressure(e.target.value)}
-                          onKeyDown={handleKeyDown}
-                          placeholder="1"
-                        />
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="pressureSlider" className="text-sm font-medium whitespace-nowrap">Total Pressure:</Label>
+                        <span className="text-sm font-medium w-12 text-right">{totalPressure}</span>
                         <span className="text-xs text-muted-foreground">bar</span>
+                      </div>
+                      <Slider
+                        id="pressureSlider"
+                        min={0.1}
+                        max={parseFloat(maxPressureSlider)}
+                        step={0.1}
+                        value={[parseFloat(totalPressure)]}
+                        onValueChange={(value) => setTotalPressure(value[0].toString())}
+                        className="flex-1"
+                      />
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="maxPressureInput" className="text-xs text-muted-foreground">Max:</Label>
+                        <Input
+                          id="maxPressureInput"
+                          type="number"
+                          value={maxPressureSlider}
+                          onChange={(e) => setMaxPressureSlider(e.target.value)}
+                          className="w-20 h-8 text-xs"
+                          min="0.1"
+                        />
                       </div>
                     </div>
                   )}
@@ -642,12 +924,24 @@ export default function ReactorDesignPage() {
                       </div>
                       <div className="col-span-2 text-center flex items-center justify-center">
                         <div className="flex flex-col items-center gap-2">
-                          <Tabs value={reaction.isEquilibrium ? "equilibrium" : "forward"} onValueChange={(value) => updateReaction(reaction.id, 'isEquilibrium', value === "equilibrium")}>
-                            <TabsList className="grid grid-cols-2 h-8">
-                              <TabsTrigger value="forward" className="px-3">→</TabsTrigger>
-                              <TabsTrigger value="equilibrium" className="px-3">⇌</TabsTrigger>
-                            </TabsList>
-                          </Tabs>
+                          <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                            <Button
+                              variant={!reaction.isEquilibrium ? 'default' : 'ghost'}
+                              size="sm"
+                              onClick={() => updateReaction(reaction.id, 'isEquilibrium', false)}
+                              className="h-8 px-3"
+                            >
+                              →
+                            </Button>
+                            <Button
+                              variant={reaction.isEquilibrium ? 'default' : 'ghost'}
+                              size="sm"
+                              onClick={() => updateReaction(reaction.id, 'isEquilibrium', true)}
+                              className="h-8 px-3"
+                            >
+                              ⇌
+                            </Button>
+                          </div>
                         </div>
                       </div>
                       <div className="col-span-3">
@@ -753,7 +1047,6 @@ export default function ReactorDesignPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="font-bold">Components</CardTitle>
-                {/* Remove the Plus button - components are auto-detected from reaction stoichiometry */}
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="mb-2">
@@ -900,29 +1193,35 @@ export default function ReactorDesignPage() {
           </div>
 
           {/* Right Column: Visualization and Results */}
-          <div className="space-y-6">
-            {/* Reactor Visualization and Type Selection */}
-            <Card>
+          <div className="space-y-6 md:col-span-3"> {/* Added md:col-span-3 */}
+            {!showGraph ? (
+              <>
+                {/* Reactor Visualization and Type Selection */}
+                <Card>
               <CardContent className="p-0">
                 <div className="flex justify-center pt-6">
-                  <Tabs value={reactorType} onValueChange={(value) => setReactorType(value as 'PFR' | 'CSTR')}>
-                    <TabsList className="grid grid-cols-2 h-8">
-                      <TabsTrigger value="CSTR" className="px-3">CSTR</TabsTrigger>
-                      <TabsTrigger value="PFR" className="px-3">PFR</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
+                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                    <Button
+                      variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setReactorType('CSTR')}
+                      className="h-8 px-3"
+                    >
+                      CSTR
+                    </Button>
+                    <Button
+                      variant={reactorType === 'PFR' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setReactorType('PFR')}
+                      className="h-8 px-3"
+                    >
+                      PFR
+                    </Button>
+                  </div>
                 </div>
                 <div className="p-6 pb-2">
                   {renderReactorSVG()}
                 </div>
-                {/* <div className="px-6 pb-1">
-                  <Button 
-                    onClick={handleCalculate} 
-                    disabled={isLoading}
-                    className="w-full bg-secondary text-secondary-foreground hover:bg-secondary/80"
-                  >
-                    {isLoading ? 'Calculating...' : ''}
-                  </div> */}
               </CardContent>
             </Card>
 
@@ -954,48 +1253,42 @@ export default function ReactorDesignPage() {
                       </thead>
                       <tbody>
                         {components.map((comp) => {
-                          // Determine if component is a reactant or product in any reaction
                           const isReactantInAnyReaction = reactions.some(r =>
-                            (r.reactants || '').split(/[+\s]+/).map(s => s.trim()).includes(comp.name)
+                            (r.reactants || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
                           );
-                          const isProductInAnyReaction = reactions.some(r => // Corrected variable name
-                            (r.products || '').split(/[+\s]+/).map(s => s.trim()).includes(comp.name)
+                          const isProductInAnyReaction = reactions.some(r =>
+                            (r.products || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
                           );
 
-                          // Calculate conversion for this component
                           let conversionValue: string | number = '-';
                           if (isReactantInAnyReaction && calculationResults?.outletFlowRates) {
                             const F_R_in = parseFloat(comp.initialFlowRate || '0');
                             const F_R_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
-
-                            if (F_R_in > 1e-9) { // Use a small tolerance
+                            if (F_R_in > 1e-9) {
                               const X_R = (F_R_in - F_R_out) / F_R_in;
-                              conversionValue = parseFloat((Math.max(0, Math.min(1, X_R)) * 100).toPrecision(3));
+                              conversionValue = formatToSigFigs(Math.max(0, Math.min(1, X_R)) * 100);
+                            } else {
+                              conversionValue = F_R_out > 1e-9 ? '0.00' : '-'; // If starts at 0 and ends > 0, conversion is effectively 0
                             }
                           }
 
-                          // Calculate selectivity for this component
                           let selectivityValue: string | number = '-';
                           if (isProductInAnyReaction && calculationResults?.conversion && calculationResults?.outletFlowRates) {
                             const F_P_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
                             const F_P_in = parseFloat(comp.initialFlowRate || '0');
-                            // Net moles formed, ensure non-negative if P is also a reactant elsewhere and gets consumed below its initial feed
                             const moles_P_formed = Math.max(0, F_P_out - F_P_in);
 
                             const keyReactantName = calculationResults.conversion.reactantName;
                             const F_key_in_comp = components.find(c => c.name === keyReactantName);
                             const F_key_in = parseFloat(F_key_in_comp?.initialFlowRate || '0');
-                            const X_key = calculationResults.conversion.value; // Fractional conversion (0 to 1)
+                            const X_key = calculationResults.conversion.value;
                             const moles_key_reacted = F_key_in * X_key;
 
-                            if (moles_key_reacted > 1e-9) { // Use a small tolerance
+                            if (moles_key_reacted > 1e-9) {
                               const rawSelectivity = moles_P_formed / moles_key_reacted;
-                              // Ensure selectivity is not negative if moles_P_formed is 0 and moles_key_reacted is positive.
-                              const finalSelectivityPercent = Math.max(0, rawSelectivity * 100);
-                              selectivityValue = parseFloat(finalSelectivityPercent.toPrecision(3));
+                              selectivityValue = formatToSigFigs(Math.max(0, rawSelectivity) * 100);
                             } else {
-                              // If no key reactant reacted
-                              selectivityValue = (moles_P_formed > 1e-9) ? '-' : parseFloat((0).toPrecision(3)); // '-' if P formed without key reactant, else 0.00
+                              selectivityValue = (moles_P_formed > 1e-9) ? '-' : '0.00';
                             }
                           }
                           
@@ -1016,7 +1309,7 @@ export default function ReactorDesignPage() {
                                 {selectivityValue}
                               </td>
                               <td className="border border-border px-3 py-2 text-center">
-                                {calculationResults?.outletFlowRates?.[comp.name]?.toPrecision(3) ?? '-'}
+                                {calculationResults?.outletFlowRates?.[comp.name] !== undefined ? formatToSigFigs(calculationResults.outletFlowRates[comp.name]) : '-'}
                               </td>
                             </tr>
                           );
@@ -1026,6 +1319,86 @@ export default function ReactorDesignPage() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+              </>
+            ) : (
+              /* Graph Display - Replaces visualization and results */
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1"></div>
+                    
+                    {/* PFR/CSTR Switch in Center */}
+                    <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                      <Button
+                        variant={reactorType === 'PFR' ? 'default' : 'ghost'}
+                        size="sm"
+                        onClick={() => setReactorType('PFR')}
+                        className="h-8 px-3"
+                      >
+                        PFR
+                      </Button>
+                      <Button
+                        variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
+                        size="sm"
+                        onClick={() => setReactorType('CSTR')}
+                        className="h-8 px-3"
+                      >
+                        CSTR
+                      </Button>
+                    </div>
+                    
+                    {/* Graph Type Selector on Right */}
+                    <div className="flex-1 flex justify-end">
+                      <Select value={graphType} onValueChange={(value: 'conversion' | 'selectivity' | 'flowrates') => setGraphType(value)}>
+                        <SelectTrigger className="w-64">
+                          <SelectValue placeholder="Select graph type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="conversion">Reactor Volume vs Conversion</SelectItem>
+                          <SelectItem value="selectivity">Reactor Volume vs Selectivity</SelectItem>
+                          <SelectItem value="flowrates">Reactor Volume vs Flow Rates</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
+                    {Object.keys(graphOptions).length > 0 && graphOptions.series && (graphOptions.series as any[]).length > 0 ? (
+                      <ReactECharts 
+                        ref={echartsRef} 
+                        echarts={echarts} 
+                        option={graphOptions} 
+                        style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
+                        notMerge={true} 
+                        lazyUpdate={false} 
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-white">
+                        <div className="text-center">
+                          <div className="mb-2">Generating analysis data...</div>
+                          <div className="text-sm text-gray-300">This may take a moment</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Graph Visualization Button */}
+            {calculationResults && (
+              <div className="flex justify-center">
+                <Button 
+                  onClick={() => setShowGraph(!showGraph)}
+                  variant="outline"
+                  className="flex items-center gap-2"
+                >
+                  <BarChart3 className="h-4 w-4" />
+                  {showGraph ? 'Hide Analysis Graph' : 'Show Analysis Graph'}
+                </Button>
+              </div>
             )}
 
             {/* Error Display */}

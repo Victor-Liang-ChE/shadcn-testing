@@ -1,4 +1,6 @@
-// Import types from reaction-parser (TODO: fix import issue)
+// reactor-solver.ts
+
+// --- TYPE DEFINITIONS (Unchanged) ---
 interface Component {
   id: string;
   name: string;
@@ -8,14 +10,12 @@ interface Component {
   stoichiometricCoefficient?: number;
   reactionOrders?: { [reactionId: string]: string };
 }
-
 interface ParsedComponent extends Component {
   stoichiometricCoefficient: number;
   role: 'reactant' | 'product' | 'inert';
   reactionOrderNum?: number;
   reactionOrderNumBackward?: number;
 }
-
 interface ParsedReaction {
   reactants: ParsedComponent[];
   products: ParsedComponent[];
@@ -24,415 +24,370 @@ interface ParsedReaction {
   rateConstantBackwardAtT?: number;
   isEquilibriumReaction?: boolean;
 }
-
 interface ParsedParallelReactions {
   reactions: ParsedReaction[];
   allInvolvedComponents: ParsedComponent[];
   error?: string;
 }
-
 export interface CalculationResults {
-  conversion?: { reactantName: string; value: number }; // X for a key reactant
+  conversion?: { reactantName: string; value: number };
   outletFlowRates?: { [componentName: string]: number };
   error?: string;
-  // Add selectivity, concentrations etc. later
+}
+export interface PFR_ODE_ProfilePoint {
+  volume: number;
+  flowRates: { [componentName: string]: number };
 }
 
-// Calculate combined rate for a specific component across all parallel reactions
+// --- RATE CALCULATION (Unchanged) ---
 export const calculateCombinedRate = (
   componentName: string,
   concentrations: { [name: string]: number },
   parsedParallelReactions: ParsedParallelReactions
 ): number => {
   let totalRate = 0;
-  parsedParallelReactions.reactions.forEach((reaction, reactionIndex) => { // Added reactionIndex here
-    // Find the component in this reaction
+  const MIN_CONC = 1e-12; // Numerical floor to prevent issues near zero
+
+  parsedParallelReactions.reactions.forEach((reaction) => {
     const componentInReaction = reaction.allInvolved.find(comp => comp.name === componentName);
+    if (!componentInReaction) return;
 
-    if (!componentInReaction) {
-      return; // Component not involved in this reaction
-    }
-
-    // Calculate rate for this specific reaction
     const { reactants, products, rateConstantAtT, rateConstantBackwardAtT, isEquilibriumReaction } = reaction;
+    if (rateConstantAtT === undefined) return;
 
-    if (rateConstantAtT === undefined) {
-      return; // Skip if no forward rate constant
-    }
-
-    // Calculate forward rate
     let forwardRate = rateConstantAtT;
     reactants.forEach(reactant => {
-      const conc = concentrations[reactant.name] || 0;
-      const order = reactant.reactionOrderNum !== undefined ? reactant.reactionOrderNum : 1;
-      forwardRate *= Math.pow(Math.max(0, conc), order);
+      const conc = Math.max(MIN_CONC, concentrations[reactant.name] || 0);
+      forwardRate *= Math.pow(conc, reactant.reactionOrderNum ?? 1);
     });
 
-    // Calculate backward rate (if equilibrium)
     let backwardRate = 0;
     if (isEquilibriumReaction && rateConstantBackwardAtT !== undefined && rateConstantBackwardAtT >= 0) {
-      backwardRate = rateConstantBackwardAtT; // Initialize with k_bwd
-      products.forEach(product => {
-        const conc = concentrations[product.name] || 0;
-        const order = product.reactionOrderNumBackward !== undefined ? product.reactionOrderNumBackward : 1;
-        if (conc === 0 && order > 0) { // if concentration is zero, this term will make backwardRate zero unless order is 0
-             backwardRate = 0; // Optimization: if any product conc is 0 and its order > 0, that term is 0, so overall product of terms is 0.
-        } else {
-            backwardRate *= Math.pow(Math.max(0, conc), order);
-        }
-      });
-    } else if (isEquilibriumReaction) {
-    } else {
+      backwardRate = rateConstantBackwardAtT;
+      for (const product of products) {
+        const conc = Math.max(MIN_CONC, concentrations[product.name] || 0);
+        backwardRate *= Math.pow(conc, product.reactionOrderNumBackward ?? 1);
+      }
     }
 
-    // Net rate for this reaction
     const netReactionRate = forwardRate - backwardRate;
-
-    // Contribution to this component's rate based on stoichiometry
     let stoichCoeff = 0;
-    if (componentInReaction.role === 'reactant') {
-      stoichCoeff = -componentInReaction.stoichiometricCoefficient; // Negative for consumption
-    } else if (componentInReaction.role === 'product') {
-      stoichCoeff = componentInReaction.stoichiometricCoefficient; // Positive for production
-    }
-
+    if (componentInReaction.role === 'reactant') stoichCoeff = -componentInReaction.stoichiometricCoefficient;
+    else if (componentInReaction.role === 'product') stoichCoeff = componentInReaction.stoichiometricCoefficient;
     totalRate += stoichCoeff * netReactionRate;
   });
-
   return totalRate;
 };
 
-// CSTR solver for parallel reactions: V = F_A0 * X / (-r_A_total)
-export const solveCSTRParallel = (
-  parsedParallelReactions: ParsedParallelReactions,
-  F_A0: number, // Flow rate of key reactant
-  C_A0: number, // Initial concentration of key reactant
-  V: number,
-  initialConcentrations: { [name: string]: number }, // Initial concentrations of ALL components
-  keyReactantName: string,
-  allInvolvedComponents: ParsedComponent[]
-): number => {
-  let X_guess = 0.5; // Initial guess for conversion
-  const maxIter = 100;
-  let iter = 0;
-  const tol = 1e-6;
+/**
+ * Solves a linear system of equations Ax = b using Gaussian elimination with partial pivoting.
+ */
+function solveLinearSystem(A: number[][], b: number[]): number[] | null {
+    const n = A.length;
+    const b_copy = [...b];
 
-  const C_key0 = initialConcentrations[keyReactantName];
-
-  // Find the key reactant's total stoichiometric coefficient across all reactions
-  let totalKeyReactantStoich = 0;
-  parsedParallelReactions.reactions.forEach(reaction => {
-    const keyInReaction = reaction.allInvolved.find(comp => comp.name === keyReactantName);
-    if (keyInReaction && keyInReaction.role === 'reactant') {
-      totalKeyReactantStoich += keyInReaction.stoichiometricCoefficient;
-    }
-  });
-
-  if (totalKeyReactantStoich === 0) {
-    return 0; // Key reactant not involved in any reaction
-  }
-
-  while (iter < maxIter) {
-    const currentConcentrations: { [name: string]: number } = {};
-
-    // Calculate concentrations at exit based on current conversion guess
-    allInvolvedComponents.forEach(comp => {
-      const C_i0 = initialConcentrations[comp.name];
-      let currentConc: number;
-
-      if (comp.name === keyReactantName) {
-        currentConc = C_key0 * (1 - X_guess);
-      } else {
-        // For parallel reactions, need to sum contributions from all reactions
-        let totalChange = 0;
-
-        parsedParallelReactions.reactions.forEach(reaction => {
-          const compInReaction = reaction.allInvolved.find(c => c.name === comp.name);
-          const keyInReaction = reaction.allInvolved.find(c => c.name === keyReactantName);
-
-          if (compInReaction && keyInReaction && keyInReaction.role === 'reactant') {
-            const nu_i_signed = compInReaction.role === 'reactant'
-              ? -compInReaction.stoichiometricCoefficient
-              : compInReaction.stoichiometricCoefficient;
-            const nu_key_abs = keyInReaction.stoichiometricCoefficient;
-
-            // Assume equal conversion across all reactions for simplification
-            totalChange += (nu_i_signed / nu_key_abs) * C_key0 * X_guess;
-          }
-        });
-
-        currentConc = C_i0 + totalChange;
-      }
-      currentConcentrations[comp.name] = Math.max(0, currentConc);
-    });
-
-    // Calculate combined rate for the key reactant
-    const r_A_total = calculateCombinedRate(keyReactantName, currentConcentrations, parsedParallelReactions);
-
-    if (r_A_total >= 0) break; // Rate should be negative for consumption
-
-    const X_calc = (-r_A_total * V) / F_A0;
-
-    if (Math.abs(X_calc - X_guess) < tol) {
-      X_guess = X_calc;
-      break;
-    }
-    X_guess = (X_calc + X_guess) / 2;
-    iter++;
-  }
-
-  return Math.max(0, Math.min(X_guess, 1.0));
-};
-
-// PFR solver for parallel reactions: dX/dV = -r_A_total / F_A0
-export const solvePFRParallel = (
-  parsedParallelReactions: ParsedParallelReactions,
-  F_A0: number, // Flow rate of key reactant
-  C_A0: number, // Initial concentration of key reactant
-  V: number,
-  initialConcentrations: { [name: string]: number }, // Initial concentrations of ALL components
-  keyReactantName: string,
-  allInvolvedComponents: ParsedComponent[]
-): number => {
-  const steps = 100;
-  const dV = V / steps;
-  let X_current = 0;
-
-  const C_key0 = initialConcentrations[keyReactantName];
-
-  // Find the key reactant's total stoichiometric coefficient across all reactions
-  let totalKeyReactantStoich = 0;
-  parsedParallelReactions.reactions.forEach(reaction => {
-    const keyInReaction = reaction.allInvolved.find(comp => comp.name === keyReactantName);
-    if (keyInReaction && keyInReaction.role === 'reactant') {
-      totalKeyReactantStoich += keyInReaction.stoichiometricCoefficient;
-    }
-  });
-
-  if (totalKeyReactantStoich === 0) {
-    return 0; // Key reactant not involved in any reaction
-  }
-
-  for (let i = 0; i < steps; i++) {
-    const currentConcentrations: { [name: string]: number } = {};
-
-    allInvolvedComponents.forEach(comp => {
-      const C_i0 = initialConcentrations[comp.name];
-      let currentConc: number;
-
-      if (comp.name === keyReactantName) {
-        currentConc = C_key0 * (1 - X_current);
-      } else {
-        // For parallel reactions, need to sum contributions from all reactions
-        let totalChange = 0;
-
-        parsedParallelReactions.reactions.forEach(reaction => {
-          const compInReaction = reaction.allInvolved.find(c => c.name === comp.name);
-          const keyInReaction = reaction.allInvolved.find(c => c.name === keyReactantName);
-
-          if (compInReaction && keyInReaction && keyInReaction.role === 'reactant') {
-            const nu_i_signed = compInReaction.role === 'reactant'
-              ? -compInReaction.stoichiometricCoefficient
-              : compInReaction.stoichiometricCoefficient;
-            const nu_key_abs = keyInReaction.stoichiometricCoefficient;
-
-            // Assume equal conversion across all reactions for simplification
-            totalChange += (nu_i_signed / nu_key_abs) * C_key0 * X_current;
-          }
-        });
-
-        currentConc = C_i0 + totalChange;
-      }
-      currentConcentrations[comp.name] = Math.max(0, currentConc);
-    });
-
-    // Calculate combined rate for the key reactant
-    const r_A_total = calculateCombinedRate(keyReactantName, currentConcentrations, parsedParallelReactions);
-
-    if (r_A_total >= 0) break; // Rate should be negative for consumption
-
-    const dX = (-r_A_total / F_A0) * dV;
-    X_current += dX;
-
-    if (X_current >= 1.0) {
-      X_current = 1.0;
-      break;
-    }
-  }
-
-  return Math.max(0, Math.min(X_current, 1.0));
-};
-
-// Calculate outlet flow rates for parallel reactions
-export const calculateOutletFlowRatesParallel = (
-  components: Component[],
-  parsedParallelReactions: ParsedParallelReactions,
-  keyReactantName: string,
-  F_key0: number, // Initial molar flow rate of key reactant
-  conversion: number, // Overall conversion of key reactant from solver
-  reactorVolume: number,
-  volumetricFlowRate: number, // Total volumetric flow rate (v0)
-  reactorType: 'CSTR' | 'PFR'
-): { [componentName: string]: number } => {
-  const outletFlowRates: { [componentName: string]: number } = {};
-  const numReactions = parsedParallelReactions.reactions.length;
-  const reactionExtents: number[] = new Array(numReactions).fill(0);
-
-  // Pass 1: Calculate all reaction extents sequentially
-  parsedParallelReactions.reactions.forEach((reaction, reactionIndex) => {
-    let currentReactionExtent = 0;
-    const keyInThisReaction = reaction.allInvolved.find(comp => comp.name === keyReactantName);
-
-    if (keyInThisReaction && keyInThisReaction.role === 'reactant') {
-      // This reaction involves the key reactant.
-      // Note: If keyReactant is in multiple reactions, 'conversion' is overall.
-      // This calculation assumes this reaction takes a proportional share or is the main one.
-      const nu_key_abs = keyInThisReaction.stoichiometricCoefficient;
-      if (nu_key_abs > 0) {
-        currentReactionExtent = (F_key0 * conversion) / nu_key_abs;
-      } else {
-        currentReactionExtent = 0; // Should not happen for a reactant
-      }
-    } else {
-      // Secondary reaction (does not involve the keyReactantName directly)
-      // Calculate extent based on available reactants from prior reactions and its own kinetics.
-      let minAvailableExtentForThisReaction = Infinity;
-
-      if (reaction.reactants.length === 0) {
-        currentReactionExtent = 0; // No reactants, extent is 0
-      } else {
-        reaction.reactants.forEach(reactant => {
-          const reactantCompInfo = components.find(comp => comp.name === reactant.name);
-          let availableFlowOfReactant = parseFloat(reactantCompInfo?.initialFlowRate || '0');
-
-          // Add production of this reactant from all previous reactions
-          for (let prevReactionIdx = 0; prevReactionIdx < reactionIndex; prevReactionIdx++) {
-            const prevReaction = parsedParallelReactions.reactions[prevReactionIdx];
-            const reactantAsProductInPrev = prevReaction.allInvolved.find(
-              p => p.name === reactant.name && p.role === 'product'
-            );
-            if (reactantAsProductInPrev) {
-              const productionFromPrevReaction = reactantAsProductInPrev.stoichiometricCoefficient * reactionExtents[prevReactionIdx];
-              availableFlowOfReactant += productionFromPrevReaction;
+    for (let i = 0; i < n; i++) {
+        let maxRow = i;
+        for (let k = i + 1; k < n; k++) {
+            if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) {
+                maxRow = k;
             }
-          }
-
-          availableFlowOfReactant = Math.max(0, availableFlowOfReactant); // Ensure non-negative
-
-          if (reactant.stoichiometricCoefficient > 0) {
-            const maxExtentFromThisReactant = availableFlowOfReactant / reactant.stoichiometricCoefficient;
-            minAvailableExtentForThisReaction = Math.min(minAvailableExtentForThisReaction, maxExtentFromThisReactant);
-          } else {
-            // Stoichiometric coefficient is zero or negative, this reactant cannot limit extent.
-          }
-        });
-
-        if (minAvailableExtentForThisReaction === Infinity || minAvailableExtentForThisReaction < 0) {
-          minAvailableExtentForThisReaction = 0; // If no limiting reactant found or negative, extent is 0
         }
-
-        // Apply kinetic adjustment factor
-        const k_secondary = reaction.rateConstantAtT; // Forward rate constant of this secondary reaction
-        let kineticAdjustmentFactor = 0.5; // Default fallback
-
-        if (k_secondary !== undefined && k_secondary >= 0 && volumetricFlowRate > 0 && reactorVolume >= 0) {
-          const tau = reactorVolume / volumetricFlowRate;
-          let effective_k_for_adjustment = k_secondary;
-
-          // If the secondary reaction has reactants
-          if (reaction.reactants.length > 0) {
-            // Consider the first reactant of the secondary reaction for order adjustment
-            // This is a simplification, especially if the secondary reaction has multiple reactants.
-            const mainReactantOfSecondary = reaction.reactants[0];
-            const order_n = mainReactantOfSecondary.reactionOrderNum !== undefined ? mainReactantOfSecondary.reactionOrderNum : 1;
-
-            if (order_n !== 1) {
-              // Estimate the concentration of this mainReactantOfSecondary at the "inlet" of this reaction step
-              const reactantCompInfoGlobal = components.find(comp => comp.name === mainReactantOfSecondary.name);
-              let F_reactant_in_step = parseFloat(reactantCompInfoGlobal?.initialFlowRate || '0');
-
-              // Sum changes from all previously calculated extents in this pass
-              for (let prevReactionIdx = 0; prevReactionIdx < reactionIndex; prevReactionIdx++) {
-                const prevReaction = parsedParallelReactions.reactions[prevReactionIdx];
-                const compInPrevReaction = prevReaction.allInvolved.find(comp => comp.name === mainReactantOfSecondary.name);
-                if (compInPrevReaction) {
-                  const nu_signed = compInPrevReaction.role === 'reactant' 
-                    ? -compInPrevReaction.stoichiometricCoefficient 
-                    : compInPrevReaction.stoichiometricCoefficient;
-                  F_reactant_in_step += nu_signed * reactionExtents[prevReactionIdx]; // Use finalized extents from this pass
-                }
-              }
-              F_reactant_in_step = Math.max(0, F_reactant_in_step);
-              const C_reactant_in_step = F_reactant_in_step / volumetricFlowRate;
-
-              if (C_reactant_in_step > 1e-9) { // Avoid issues with zero concentration
-                effective_k_for_adjustment = k_secondary * Math.pow(C_reactant_in_step, order_n - 1);
-              } else if (order_n > 1) { // If C_in is zero and order > 1, rate is effectively zero
-                effective_k_for_adjustment = 0;
-              } else { // order_n = 1 or (order_n < 1 and C_in_step is zero - potentially problematic)
-                // Default to k_secondary if C_in_step is zero and order < 1 to avoid Math.pow errors, or if order is 1.
-              }
-            }
-          }
-
-          const dimensionlessGroup = effective_k_for_adjustment * tau;
-          // Simplified CSTR-like model for adjustment factor
-          kineticAdjustmentFactor = dimensionlessGroup / (1 + dimensionlessGroup); 
-          if (reactorType === 'PFR') {
-             // Simplified PFR-like model for adjustment factor (for 1st order effective kinetics)
-             kineticAdjustmentFactor = 1 - Math.exp(-dimensionlessGroup);
-          }
-          kineticAdjustmentFactor = Math.max(0, Math.min(kineticAdjustmentFactor, 1)); // Clamp between 0 and 1
-        } else {
-            // Fallback if k_secondary is not available or other params are invalid
-            kineticAdjustmentFactor = 0.0; 
-        }
+        [A[i], A[maxRow]] = [A[maxRow], A[i]];
+        [b_copy[i], b_copy[maxRow]] = [b_copy[maxRow], b_copy[i]];
         
-        currentReactionExtent = Math.max(0, minAvailableExtentForThisReaction * kineticAdjustmentFactor);
-      }
+        if (Math.abs(A[i][i]) < 1e-12) return null; // Singular matrix
+
+        for (let k = i + 1; k < n; k++) {
+            const factor = A[k][i] / A[i][i];
+            for (let j = i; j < n; j++) {
+                A[k][j] -= factor * A[i][j];
+            }
+            b_copy[k] -= factor * b_copy[i];
+        }
     }
-    reactionExtents[reactionIndex] = currentReactionExtent;
-  });
 
-  // Pass 2: Calculate outlet flow rates using the calculated extents
-  components.forEach(c => {
-    let F_i_outlet = parseFloat(c.initialFlowRate) || 0;
-    parsedParallelReactions.reactions.forEach((reaction, reactionIndex) => {
-      const compInReaction = reaction.allInvolved.find(comp => comp.name === c.name);
-      if (compInReaction) {
-        const nu_i_signed = compInReaction.role === 'reactant'
-          ? -compInReaction.stoichiometricCoefficient
-          : compInReaction.stoichiometricCoefficient;
-        F_i_outlet += nu_i_signed * reactionExtents[reactionIndex];
-      }
+    const x = new Array(n).fill(0);
+    for (let i = n - 1; i >= 0; i--) {
+        let sum = 0;
+        for (let j = i + 1; j < n; j++) {
+            sum += A[i][j] * x[j];
+        }
+        x[i] = (b_copy[i] - sum) / A[i][i];
+    }
+    return x;
+}
+
+/**
+ * Approximates the Jacobian of the ODE system dy/dt = f(t, y) using finite differences.
+ */
+function calculateNumericalJacobian(
+    derivatives: (t: number, y: number[]) => number[],
+    t: number,
+    y: number[]
+): number[][] {
+    const n = y.length;
+    const J: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
+    const fx = derivatives(t, y);
+    const h_eps = 1e-8;
+
+    for (let j = 0; j < n; j++) {
+        const y_h = [...y];
+        const original_yj = y[j];
+        let h = h_eps * (Math.abs(original_yj) + 1);
+        y_h[j] = original_yj + h;
+        h = y_h[j] - original_yj;
+        
+        const fx_h = derivatives(t, y_h);
+        for (let i = 0; i < n; i++) {
+            J[i][j] = (fx_h[i] - fx[i]) / h;
+        }
+    }
+    return J;
+}
+
+
+/**
+ * Solves a system of stiff ODEs using a variable-step BDF method with a Newton-Raphson solver.
+ */
+function solveODE_BDF(
+  derivatives: (t: number, y: number[]) => number[],
+  y0: number[],
+  tSpan: [number, number],
+  componentNames: string[],
+  stoppingCondition?: (t: number, y: number[], dy: number[]) => boolean
+): { t: number[], y: number[][] } {
+  const [t0, tf] = tSpan;
+  let t = t0;
+  let y = [...y0];
+  const t_out = [t0];
+  const y_out = [y0];
+
+  const min_h = 1e-10;
+  let h = 1e-6; 
+
+  const newton_tol = 1e-8;
+  const newton_max_iter = 8;
+  const n = y0.length;
+  
+  while (t < tf) {
+    if (t + h > tf) h = tf - t;
+    if (h < min_h) break;
+
+    let y_next = [...y];
+    let converged = false;
+
+    for (let iter = 0; iter < newton_max_iter; iter++) {
+        const f_next = derivatives(t + h, y_next);
+        const G = y_next.map((val, i) => val - y[i] - h * f_next[i]);
+        
+        const normG = Math.sqrt(G.reduce((sum, val) => sum + val*val, 0) / n);
+        if (normG < newton_tol) {
+            converged = true;
+            break;
+        }
+
+        const J_f = calculateNumericalJacobian(derivatives, t + h, y_next);
+        const J_G = Array.from({length: n}, (_, i) => 
+            Array.from({length: n}, (_, j) => (i === j ? 1 : 0) - h * J_f[i][j])
+        );
+
+        const neg_G = G.map(val => -val);
+        const delta_y = solveLinearSystem(J_G, neg_G);
+
+        if (!delta_y) { break; } 
+        
+        y_next = y_next.map((val, i) => val + delta_y[i]);
+    }
+    
+    if (converged) {
+        y = y_next.map(v => Math.max(0,v));
+        t += h;
+        t_out.push(t);
+        y_out.push(y);
+
+        if (stoppingCondition) {
+            const dy = derivatives(t, y);
+            if (stoppingCondition(t, y, dy)) {
+                break; 
+            }
+        }
+        h = Math.min(h * 1.75, tf - t);
+    } else {
+        h *= 0.25; // Step failed, reduce step size sharply
+    }
+  }
+
+  // Transpose results for plotting
+  const y_transposed: number[][] = Array.from({ length: n }, () => []);
+  for (let i = 0; i < t_out.length; i++) {
+    for (let j = 0; j < n; j++) {
+      y_transposed[j][i] = y_out[i][j];
+    }
+  }
+
+  return { t: t_out, y: y_transposed };
+}
+
+// --- PFR SOLVER WRAPPER ---
+export const solvePFR_ODE_System = (
+  parsedParallelReactions: ParsedParallelReactions,
+  V_total: number,
+  initialFlowRates: { [componentName: string]: number },
+  volumetricFlowRate: number,
+  componentNames: string[]
+): PFR_ODE_ProfilePoint[] => {
+  if (V_total <= 0) return [{ volume: 0, flowRates: initialFlowRates }];
+
+  const y0 = componentNames.map(name => initialFlowRates[name] || 0);
+  const V_span: [number, number] = [0, V_total];
+
+  const derivatives = (V: number, F: number[]): number[] => {
+    const currentFlowRates: { [key: string]: number } = {};
+    componentNames.forEach((name, i) => { 
+        currentFlowRates[name] = Math.max(0, F[i]); 
     });
-    outletFlowRates[c.name] = Math.max(0, F_i_outlet); // Ensure non-negative flow rate
-  });
 
-  return outletFlowRates;
+    const concentrations: { [key: string]: number } = {};
+    componentNames.forEach(name => { 
+        concentrations[name] = currentFlowRates[name] / volumetricFlowRate; 
+    });
+    
+    return componentNames.map(name => 
+        calculateCombinedRate(name, concentrations, parsedParallelReactions)
+    );
+  };
+
+  const rawSolution = solveODE_BDF(derivatives, y0, V_span, componentNames);
+
+  // Interpolation logic to create a smooth plot
+  const plotPoints = 200;
+  const smoothProfile: PFR_ODE_ProfilePoint[] = [];
+  let rawSolutionIndex = 0;
+
+  for (let i = 0; i <= plotPoints; i++) {
+    const targetVolume = (i / plotPoints) * V_total;
+    while (rawSolutionIndex < rawSolution.t.length - 2 && rawSolution.t[rawSolutionIndex + 1] < targetVolume) {
+      rawSolutionIndex++;
+    }
+
+    const V1 = rawSolution.t[rawSolutionIndex];
+    const V2 = rawSolution.t[rawSolutionIndex + 1];
+    
+    const interpolatedFlowRates: { [key: string]: number } = {};
+
+    // More robust handling of single-point solutions.
+    if (V2 === undefined) {
+        componentNames.forEach((name, compIndex) => {
+            interpolatedFlowRates[name] = rawSolution.y[compIndex][0];
+        });
+    } else {
+        componentNames.forEach((name, compIndex) => {
+            const F1 = rawSolution.y[compIndex][rawSolutionIndex];
+            const F2 = rawSolution.y[compIndex][rawSolutionIndex + 1];
+            let F_interp = F1;
+            if (V2 - V1 > 1e-12) {
+                const fraction = (targetVolume - V1) / (V2 - V1);
+                F_interp = F1 + fraction * (F2 - F1);
+            }
+            interpolatedFlowRates[name] = Math.max(0, F_interp);
+        });
+    }
+    smoothProfile.push({ volume: targetVolume, flowRates: interpolatedFlowRates });
+  }
+
+  return smoothProfile;
 };
 
-// Function to determine the limiting reactant for the primary reaction
-// For parallel reactions, we consider the first reaction as the primary one
+
+// --- CSTR SOLVER (Unchanged from last step) ---
+export const solveCSTRParallel = (
+    parsedParallelReactions: ParsedParallelReactions,
+    V: number,
+    initialFlowRates: { [componentName: string]: number },
+    volumetricFlowRate: number
+): { [componentName: string]: number } => {
+    if (V <= 0 || volumetricFlowRate <= 0) {
+        return { ...initialFlowRates };
+    }
+
+    const componentNames = Object.keys(initialFlowRates);
+    const tau = V / volumetricFlowRate; 
+
+    const inletConcentrations: { [key: string]: number } = {};
+    componentNames.forEach(name => {
+        inletConcentrations[name] = initialFlowRates[name] / volumetricFlowRate;
+    });
+
+    const derivatives = (t: number, C_vector: number[]): number[] => {
+        const currentConcentrations: { [key: string]: number } = {};
+        componentNames.forEach((name, i) => {
+            currentConcentrations[name] = Math.max(0, C_vector[i]);
+        });
+
+        const dCdt = componentNames.map((name, i) => {
+            const rate_i = calculateCombinedRate(name, currentConcentrations, parsedParallelReactions);
+            const C_in_i = inletConcentrations[name] || 0;
+            const C_i = currentConcentrations[name];
+            return (C_in_i - C_i) / tau + rate_i;
+        });
+        return dCdt;
+    };
+
+    const C0_vector = componentNames.map(name => inletConcentrations[name]);
+
+    const integrationTime = Math.max(tau * 200, 10);
+    const t_span: [number, number] = [0, integrationTime];
+
+    const steadyStateTolerance = 1e-7;
+    const stoppingCondition = (t: number, y: number[], dy: number[]): boolean => {
+        if (t < Math.min(tau, 2.0)) {
+            return false;
+        }
+        const norm_dy_sq = dy.reduce((sum, val) => sum + val * val, 0);
+        const rms = Math.sqrt(norm_dy_sq / dy.length);
+        return rms < steadyStateTolerance;
+    };
+
+    const solution = solveODE_BDF(
+        derivatives, 
+        C0_vector, 
+        t_span, 
+        componentNames, 
+        stoppingCondition
+    );
+
+    const steadyStateConcentrations: { [key: string]: number } = {};
+    componentNames.forEach((name, i) => {
+        const concentrationProfile = solution.y[i];
+        const finalConcentration = concentrationProfile?.[concentrationProfile.length - 1] ?? 0;
+        steadyStateConcentrations[name] = finalConcentration;
+    });
+
+    const outletFlowRates: { [key: string]: number } = {};
+    componentNames.forEach(name => {
+        outletFlowRates[name] = Math.max(0, steadyStateConcentrations[name] * volumetricFlowRate);
+    });
+
+    return outletFlowRates;
+};
+
+
+// --- LIMITING REACTANT (Unchanged) ---
 export const findLimitingReactant = (
   parsedParallelReactions: ParsedParallelReactions,
   components: Component[]
 ): { name: string; initialFlow: number } | null => {
   if (parsedParallelReactions.reactions.length === 0) return null;
-
-  // Use the first reaction to determine limiting reactant
   const primaryReaction = parsedParallelReactions.reactions[0];
-
   if (primaryReaction.reactants.length === 0) return null;
 
-  // Find the reactant with the smallest (initial flow / stoichiometric coefficient) ratio
   let limitingReactant: { name: string; initialFlow: number } | null = null;
   let minRatio = Infinity;
 
   primaryReaction.reactants.forEach(reactant => {
     const component = components.find(c => c.name === reactant.name);
     const initialFlow = parseFloat(component?.initialFlowRate || '0');
-
     if (initialFlow > 0 && reactant.stoichiometricCoefficient > 0) {
       const ratio = initialFlow / reactant.stoichiometricCoefficient;
       if (ratio < minRatio) {
@@ -441,115 +396,11 @@ export const findLimitingReactant = (
       }
     }
   });
-
+  
+  if (!limitingReactant && primaryReaction.reactants.length > 0) {
+    const firstReactant = primaryReaction.reactants[0];
+    const component = components.find(c => c.name === firstReactant.name);
+    return { name: firstReactant.name, initialFlow: parseFloat(component?.initialFlowRate || '0') };
+  }
   return limitingReactant;
-};
-
-// Keep original functions for backward compatibility
-export const solveCSTR = (
-  rateLaw: (concentrations: { [name: string]: number }) => number,
-  F_A0: number,
-  C_A0: number,
-  V: number,
-  initialConcentrations: { [name: string]: number },
-  keyReactant: ParsedComponent,
-  allInvolvedComponents: ParsedComponent[]
-): number => {
-  // This is kept for backward compatibility, but should be replaced with parallel version
-  let X_guess = 0.5;
-  const maxIter = 100;
-  let iter = 0;
-  const tol = 1e-6;
-
-  const C_key0 = initialConcentrations[keyReactant.name];
-  const nu_key_abs = keyReactant.stoichiometricCoefficient;
-
-  while (iter < maxIter) {
-    const currentConcentrations: { [name: string]: number } = {};
-
-    allInvolvedComponents.forEach(comp => {
-      const C_i0 = initialConcentrations[comp.name];
-      let currentConc: number;
-
-      if (comp.name === keyReactant.name) {
-        currentConc = C_key0 * (1 - X_guess);
-      } else if (comp.role === 'reactant') {
-        const nu_i_signed = -comp.stoichiometricCoefficient;
-        currentConc = C_i0 + (nu_i_signed / nu_key_abs) * C_key0 * X_guess;
-      } else if (comp.role === 'product') {
-        const nu_i_signed = comp.stoichiometricCoefficient;
-        currentConc = C_i0 + (nu_i_signed / nu_key_abs) * C_key0 * X_guess;
-      } else {
-        currentConc = C_i0 !== undefined ? C_i0 : 0;
-      }
-      currentConcentrations[comp.name] = Math.max(0, currentConc);
-    });
-
-    const r_A = rateLaw(currentConcentrations);
-    if (r_A <= 0) break;
-
-    const X_calc = (r_A * V) / F_A0;
-
-    if (Math.abs(X_calc - X_guess) < tol) {
-      X_guess = X_calc;
-      break;
-    }
-    X_guess = (X_calc + X_guess) / 2;
-    iter++;
-  }
-
-  return Math.max(0, Math.min(X_guess, 1.0));
-};
-
-export const solvePFR = (
-  rateLaw: (concentrations: { [name: string]: number }) => number,
-  F_A0: number,
-  C_A0: number,
-  V: number,
-  initialConcentrations: { [name: string]: number },
-  keyReactant: ParsedComponent,
-  allInvolvedComponents: ParsedComponent[]
-): number => {
-  // This is kept for backward compatibility, but should be replaced with parallel version
-  const steps = 100;
-  const dV = V / steps;
-  let X_current = 0;
-
-  const C_key0 = initialConcentrations[keyReactant.name];
-  const nu_key_abs = keyReactant.stoichiometricCoefficient;
-
-  for (let i = 0; i < steps; i++) {
-    const currentConcentrations: { [name: string]: number } = {};
-
-    allInvolvedComponents.forEach(comp => {
-      const C_i0 = initialConcentrations[comp.name];
-      let currentConc: number;
-
-      if (comp.name === keyReactant.name) {
-        currentConc = C_key0 * (1 - X_current);
-      } else if (comp.role === 'reactant') {
-        const nu_i_signed = -comp.stoichiometricCoefficient;
-        currentConc = C_i0 + (nu_i_signed / nu_key_abs) * C_key0 * X_current;
-      } else if (comp.role === 'product') {
-        const nu_i_signed = comp.stoichiometricCoefficient;
-        currentConc = C_i0 + (nu_i_signed / nu_key_abs) * C_key0 * X_current;
-      } else {
-        currentConc = C_i0 !== undefined ? C_i0 : 0;
-      }
-      currentConcentrations[comp.name] = Math.max(0, currentConc);
-    });
-
-    const r_A = rateLaw(currentConcentrations);
-    if (r_A <= 0) break;
-
-    const dX = (r_A / F_A0) * dV;
-    X_current += dX;
-
-    if (X_current >= 1.0) {
-      X_current = 1.0;
-      break;
-    }
-  }
-
-  return Math.max(0, Math.min(X_current, 1.0));
 };
