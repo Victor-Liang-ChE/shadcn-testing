@@ -71,6 +71,7 @@ interface DataPoint {
   conversion: number;
   selectivity?: number;
   flowRates: { [key: string]: number };
+  compositions: { [key: string]: number };
 }
 
 interface ExtendedCalculationResults extends CalculationResults {
@@ -120,7 +121,7 @@ export default function ReactorDesignPage() {
 
   // Graph-related state
   const [showGraph, setShowGraph] = useState(false);
-  const [graphType, setGraphType] = useState<'conversion' | 'selectivity' | 'flowrates'>('conversion');
+  const [graphType, setGraphType] = useState<'conversion' | 'selectivity' | 'flowrates' | 'composition'>('conversion');
   const [graphOptions, setGraphOptions] = useState<EChartsOption>({});
   const echartsRef = useRef<ReactECharts | null>(null);
 
@@ -451,14 +452,27 @@ export default function ReactorDesignPage() {
             selectivity = F_C_net / totalProductsFormed;
         }
 
-        return { volume, conversion, selectivity, flowRates };
+        // Calculate compositions (mol%)
+        const totalFlow = Object.values(flowRates).reduce((sum, flow) => sum + flow, 0);
+        const compositions: { [key: string]: number } = {};
+        if (totalFlow > 1e-9) {
+            Object.keys(flowRates).forEach(componentName => {
+                compositions[componentName] = (flowRates[componentName] / totalFlow) * 100;
+            });
+        } else {
+            Object.keys(flowRates).forEach(componentName => {
+                compositions[componentName] = 0;
+            });
+        }
+
+        return { volume, conversion, selectivity, flowRates, compositions };
     });
 
     // Charting logic
     let chartOptions: EChartsOption = {
         backgroundColor: 'transparent',
         animation: false,
-        title: { text: 'Reactor Volume vs Conversion', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
+        title: { text: 'Conversion vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
         xAxis: { 
           type: 'value', 
@@ -522,7 +536,7 @@ export default function ReactorDesignPage() {
             Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
         );
 
-        chartOptions.title = { text: 'Reactor Volume vs Conversion', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Conversion vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.legend = { 
           orient: 'horizontal',
           bottom: '5%', 
@@ -558,7 +572,7 @@ export default function ReactorDesignPage() {
             Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
         );
 
-        chartOptions.title = { text: 'Reactor Volume vs Selectivity', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.legend = { 
           orient: 'horizontal',
           bottom: '5%', 
@@ -587,8 +601,8 @@ export default function ReactorDesignPage() {
               }
             }
         ];
-    } else { // 'flowrates'
-        chartOptions.title = { text: 'Outlet Flow Rates vs Reactor Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+    } else if (graphType === 'flowrates') {
+        chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
           type: 'value', 
           name: 'Flow Rate (mol/s)', 
@@ -647,6 +661,73 @@ export default function ReactorDesignPage() {
               data: [{
                 name: 'Current Volume',
                 coord: [closestPoint.volume, closestPoint.flowRates[comp.name]],
+                symbol: 'circle',
+                symbolSize: 8,
+                itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                label: { show: false }
+              }]
+            }
+        }));
+    } else { // 'composition'
+        chartOptions.title = { text: 'Composition vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.yAxis = { 
+          type: 'value', 
+          name: 'Composition (mol%)', 
+          nameLocation: 'middle', 
+          nameGap: 50, 
+          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: 'white' } }, 
+          axisTick: { lineStyle: { color: 'white' } },
+          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          splitLine: { show: false }
+        };
+        chartOptions.legend = {
+          orient: 'horizontal',
+          bottom: '5%', 
+          left: 'center',
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          data: components.map(c => c.name)
+        };
+        chartOptions.tooltip = { 
+          trigger: 'axis', 
+          backgroundColor: '#08306b', 
+          borderColor: '#55aaff', 
+          borderWidth: 1,
+          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          formatter: function(params: any) {
+            if (!Array.isArray(params)) return '';
+            const volume = params[0]?.axisValue || 0;
+            let tooltipContent = `<div style="color: white;">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            
+            params.forEach((param: any) => {
+              const value = formatToSigFigs(param.value[1]);
+              const color = param.color;
+              tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}%</span><br/>`;
+            });
+            
+            tooltipContent += '</div>';
+            return tooltipContent;
+          }
+        };
+        const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
+        
+        // Find the data point closest to the current reactor volume for composition chart
+        const currentVolume = parseFloat(reactorVolume);
+        const closestPoint = dataPoints.reduce((closest, point) => 
+            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+        );
+        
+        chartOptions.series = components.map((comp, i) => ({
+            name: comp.name,
+            type: 'line',
+            showSymbol: false,
+            data: dataPoints.map(p => [p.volume, p.compositions[comp.name]]),
+            lineStyle: { color: colors[i % colors.length], width: 2 },
+            emphasis: { lineStyle: { width: 3 } },
+            markPoint: {
+              data: [{
+                name: 'Current Volume',
+                coord: [closestPoint.volume, closestPoint.compositions[comp.name]],
                 symbol: 'circle',
                 symbolSize: 8,
                 itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
@@ -1230,7 +1311,7 @@ export default function ReactorDesignPage() {
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle>Conversion and Outlet Flow Rates</CardTitle>
+                    <CardTitle>Results</CardTitle>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <div className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/50 rounded-sm text-[10px] font-medium text-gray-700 dark:text-gray-300">
@@ -1249,6 +1330,7 @@ export default function ReactorDesignPage() {
                           <th className="border border-border px-3 py-2 text-center font-medium">Conversion (%)</th>
                           <th className="border border-border px-3 py-2 text-center font-medium">Selectivity (%)</th>
                           <th className="border border-border px-3 py-2 text-center font-medium">Outlet Flow Rate (mol/s)</th>
+                          <th className="border border-border px-3 py-2 text-center font-medium">Composition (mol%)</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1294,6 +1376,17 @@ export default function ReactorDesignPage() {
                           
                           const isLimitingReactant = comp.name === calculationResults?.conversion?.reactantName;
 
+                          // Calculate composition (mol%)
+                          let compositionValue: string = '-';
+                          if (calculationResults?.outletFlowRates) {
+                            const totalOutletFlow = Object.values(calculationResults.outletFlowRates).reduce((sum, flow) => sum + flow, 0);
+                            const compOutletFlow = calculationResults.outletFlowRates[comp.name] ?? 0;
+                            if (totalOutletFlow > 1e-9) {
+                              const molPercent = (compOutletFlow / totalOutletFlow) * 100;
+                              compositionValue = formatToSigFigs(molPercent);
+                            }
+                          }
+
                           return (
                             <tr 
                               key={comp.id} 
@@ -1310,6 +1403,9 @@ export default function ReactorDesignPage() {
                               </td>
                               <td className="border border-border px-3 py-2 text-center">
                                 {calculationResults?.outletFlowRates?.[comp.name] !== undefined ? formatToSigFigs(calculationResults.outletFlowRates[comp.name]) : '-'}
+                              </td>
+                              <td className="border border-border px-3 py-2 text-center">
+                                {compositionValue}
                               </td>
                             </tr>
                           );
@@ -1350,14 +1446,15 @@ export default function ReactorDesignPage() {
                     
                     {/* Graph Type Selector on Right */}
                     <div className="flex-1 flex justify-end">
-                      <Select value={graphType} onValueChange={(value: 'conversion' | 'selectivity' | 'flowrates') => setGraphType(value)}>
-                        <SelectTrigger className="w-64">
+                      <Select value={graphType} onValueChange={(value: 'conversion' | 'selectivity' | 'flowrates' | 'composition') => setGraphType(value)}>
+                        <SelectTrigger className="w-56">
                           <SelectValue placeholder="Select graph type" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="conversion">Reactor Volume vs Conversion</SelectItem>
-                          <SelectItem value="selectivity">Reactor Volume vs Selectivity</SelectItem>
-                          <SelectItem value="flowrates">Reactor Volume vs Flow Rates</SelectItem>
+                          <SelectItem value="conversion">Conversion vs Volume</SelectItem>
+                          <SelectItem value="selectivity">Selectivity vs Volume</SelectItem>
+                          <SelectItem value="flowrates">Flow Rates vs Volume</SelectItem>
+                          <SelectItem value="composition">Composition vs Volume</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
