@@ -536,7 +536,7 @@ export default function ReactorDesignPage() {
             Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
         );
 
-        chartOptions.title = { text: 'Conversion vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Conversion vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.legend = { 
           orient: 'horizontal',
           bottom: '5%', 
@@ -551,6 +551,7 @@ export default function ReactorDesignPage() {
               type: 'line', 
               showSymbol: false, 
               data: dataPoints.map(p => [p.volume, p.conversion * 100]), 
+              color: '#FF6347', // Add this for legend and tooltip colors
               lineStyle: { color: '#FF6347', width: 2 },
               emphasis: { lineStyle: { width: 3 } },
               markPoint: {
@@ -572,7 +573,7 @@ export default function ReactorDesignPage() {
             Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
         );
 
-        chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.legend = { 
           orient: 'horizontal',
           bottom: '5%', 
@@ -587,6 +588,7 @@ export default function ReactorDesignPage() {
               type: 'line', 
               showSymbol: false, 
               data: dataPoints.map(p => [p.volume, (p.selectivity ?? 0) * 100]), 
+              color: '#00BFFF', // Add this for legend and tooltip colors
               lineStyle: { color: '#00BFFF', width: 2 },
               emphasis: { lineStyle: { width: 3 } },
               markPoint: {
@@ -602,7 +604,7 @@ export default function ReactorDesignPage() {
             }
         ];
     } else if (graphType === 'flowrates') {
-        chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
           type: 'value', 
           name: 'Flow Rate (mol/s)', 
@@ -655,6 +657,7 @@ export default function ReactorDesignPage() {
             type: 'line',
             showSymbol: false,
             data: dataPoints.map(p => [p.volume, p.flowRates[comp.name]]),
+            color: colors[i % colors.length], // Add this for legend and tooltip colors
             lineStyle: { color: colors[i % colors.length], width: 2 },
             emphasis: { lineStyle: { width: 3 } },
             markPoint: {
@@ -669,7 +672,7 @@ export default function ReactorDesignPage() {
             }
         }));
     } else { // 'composition'
-        chartOptions.title = { text: 'Composition vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Composition vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
           type: 'value', 
           name: 'Composition (mol%)', 
@@ -722,6 +725,7 @@ export default function ReactorDesignPage() {
             type: 'line',
             showSymbol: false,
             data: dataPoints.map(p => [p.volume, p.compositions[comp.name]]),
+            color: colors[i % colors.length], // Add this for legend and tooltip colors
             lineStyle: { color: colors[i % colors.length], width: 2 },
             emphasis: { lineStyle: { width: 3 } },
             markPoint: {
@@ -1420,32 +1424,32 @@ export default function ReactorDesignPage() {
             ) : (
               /* Graph Display - Replaces visualization and results */
               <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1"></div>
-                    
-                    {/* PFR/CSTR Switch in Center */}
-                    <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-                      <Button
-                        variant={reactorType === 'PFR' ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => setReactorType('PFR')}
-                        className="h-8 px-3"
-                      >
-                        PFR
-                      </Button>
-                      <Button
-                        variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => setReactorType('CSTR')}
-                        className="h-8 px-3"
-                      >
-                        CSTR
-                      </Button>
+                <CardContent>
+                  <div className="relative w-full aspect-square rounded-md" style={{ backgroundColor: '#08306b' }}>
+                    {/* PFR/CSTR Switch on top-left corner of graph */}
+                    <div className="absolute top-4 left-4 z-10">
+                      <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                        <Button
+                          variant={reactorType === 'PFR' ? 'default' : 'ghost'}
+                          size="sm"
+                          onClick={() => setReactorType('PFR')}
+                          className="h-8 px-3"
+                        >
+                          PFR
+                        </Button>
+                        <Button
+                          variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
+                          size="sm"
+                          onClick={() => setReactorType('CSTR')}
+                          className="h-8 px-3"
+                        >
+                          CSTR
+                        </Button>
+                      </div>
                     </div>
                     
-                    {/* Graph Type Selector on Right */}
-                    <div className="flex-1 flex justify-end">
+                    {/* Graph Type Selector on top-right corner of graph */}
+                    <div className="absolute top-4 right-4 z-10">
                       <Select value={graphType} onValueChange={(value: 'conversion' | 'selectivity' | 'flowrates' | 'composition') => setGraphType(value)}>
                         <SelectTrigger className="w-56">
                           <SelectValue placeholder="Select graph type" />
@@ -1458,10 +1462,6 @@ export default function ReactorDesignPage() {
                         </SelectContent>
                       </Select>
                     </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
                     {Object.keys(graphOptions).length > 0 && graphOptions.series && (graphOptions.series as any[]).length > 0 ? (
                       <ReactECharts 
                         ref={echartsRef} 
