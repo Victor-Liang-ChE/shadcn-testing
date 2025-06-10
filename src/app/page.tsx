@@ -105,7 +105,9 @@ export default function Home() {
       <div className="bio-container pt-8">
         <Card className="w-full bg-card text-card-foreground px-8">
           <CardHeader>
-            <CardTitle className="text-2xl font-bold">Hi, I'm Victor</CardTitle>
+            <CardTitle className="text-2xl font-bold">
+              Hi, I'm <span className="text-blue-400 text-2xl">Victor</span>
+            </CardTitle>
             <CardDescription className="text-2xl font-bold">
               Chemical Engineering Optimization & Predictive Modeling Enthusiast
             </CardDescription>
