@@ -1,0 +1,573 @@
+'use client';
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import ReactECharts from 'echarts-for-react';
+import * as echarts from 'echarts/core';
+import type { EChartsOption, SeriesOption } from 'echarts';
+import { LineChart, ScatterChart } from 'echarts/charts';
+import {
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  ToolboxComponent
+} from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
+
+echarts.use([
+  TitleComponent,
+  TooltipComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  MarkPointComponent,
+  ToolboxComponent,
+  LineChart,
+  ScatterChart,
+  CanvasRenderer
+]);
+
+import { Card, CardContent } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input"; // Added for BET C_s input
+
+// Function to format numbers to avoid long decimals - moved outside component
+const formatNumberToPrecision = (num: any, precision: number = 3): string => {
+  if (typeof num === 'number') {
+    if (num === 0) return '0';
+    const fixed = num.toPrecision(precision);
+    // Remove trailing zeros after decimal point, but keep integer part if it ends in zero
+    if (fixed.includes('.')) {
+      return parseFloat(fixed).toString(); 
+    }
+    return fixed;
+  }
+  return String(num); // Return as string if not a number
+};
+
+export default function LangmuirIsothermPage() {
+  // Isotherm Type State
+  type IsothermType = 'langmuir' | 'freundlich' | 'bet' | 'temkin';
+  const [selectedIsotherm, setSelectedIsotherm] = useState<IsothermType>('langmuir');
+
+  // Input States
+  // Langmuir
+  const [langmuirK, setLangmuirK] = useState<number>(0.5);
+  const [qMax, setQMax] = useState<number>(10);
+
+  // Freundlich
+  const [freundlichKf, setFreundlichKf] = useState<number>(2);
+  const [freundlichNf, setFreundlichNf] = useState<number>(2);
+
+  // BET
+  const [betQm, setBetQm] = useState<number>(10); // Monolayer capacity
+  const [betCb, setBetCb] = useState<number>(50); // BET constant
+  const [betCs, setBetCs] = useState<number>(10); // Saturation concentration (input)
+  const [betCsInput, setBetCsInput] = useState<string>(String(10));
+
+
+  // Temkin
+  const [temkinAt, setTemkinAt] = useState<number>(1); // Temkin equilibrium binding constant
+  const [temkinBt, setTemkinBt] = useState<number>(2); // Temkin constant related to heat of adsorption
+
+  // Data & Control States
+  const [isothermData, setIsothermData] = useState<{ c: number[], q: number[] } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // State for ECharts options
+  const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
+  const echartsRef = useRef<ReactECharts | null>(null);
+
+  // Function to calculate Isotherm
+  const calculateIsotherm = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    try {
+      const cValues: number[] = [];
+      const qValues: number[] = [];
+      let maxConcentration = 5; // Default max concentration for plotting
+      const concentrationPoints = 100; // Fixed number of points
+
+      if (selectedIsotherm === 'bet') {
+        // For BET, plot up to Cs if Cs is lower than default maxConcentration
+        // and ensure C does not exceed Cs.
+        maxConcentration = betCs * 0.999; // Plot very close to Cs but not exactly Cs to avoid division by zero
+      }
+
+      for (let i = 0; i <= concentrationPoints; i++) {
+        let c = (i / concentrationPoints) * maxConcentration;
+        if (c === 0 && (selectedIsotherm === 'freundlich' || selectedIsotherm === 'temkin')) {
+            c = 1e-12; // Use a very small value instead of zero for better precision
+        }
+        if (selectedIsotherm === 'bet' && c >= betCs) {
+            c = betCs * 0.999; // Cap C at just below Cs for BET
+        }
+
+
+        let q: number;
+        switch (selectedIsotherm) {
+          case 'langmuir':
+            q = (qMax * langmuirK * c) / (1 + langmuirK * c);
+            break;
+          case 'freundlich':
+            q = freundlichKf * Math.pow(c, 1 / freundlichNf);
+            break;
+          case 'bet':
+            // Validate parameters
+            if (betCs <= 0 || betCb <= 0 || betQm <= 0) {
+              q = 0;
+              break;
+            }
+            
+            if (c >= betCs) {
+              q = Number.POSITIVE_INFINITY; // Represents saturation
+            } else {
+              const relativeConc = c / betCs;
+              const numerator = betQm * betCb * c;
+              const denominator = (betCs - c) * (1 + (betCb - 1) * relativeConc);
+              q = numerator / denominator;
+              
+              // Handle near-saturation asymptote
+              if (!isFinite(q) || q < 0) {
+                q = betQm * 100; // Fallback to high value
+              }
+            }
+            break;
+          case 'temkin':
+            // q = B_temkin * ln(A_temkin * C)
+            const temkinArg = temkinAt * c;
+            if (temkinArg <= 0) {
+                q = 0; // Handle logarithm domain issues
+            } else {
+                q = temkinBt * Math.log(temkinArg);
+                q = Math.max(0, q); // Ensure q never negative
+            }
+            break;
+          default:
+            q = 0;
+        }
+        
+        // Ensure q is never negative for all models
+        q = Math.max(0, q);
+        cValues.push(c);
+        qValues.push(q);
+      }
+      setIsothermData({ c: cValues, q: qValues });
+      setLoading(false);
+    } catch (err: any) {
+      setError(`Calculation error: ${err.message}`);
+      setLoading(false);
+    }
+  }, [
+    selectedIsotherm,
+    langmuirK, qMax,
+    freundlichKf, freundlichNf,
+    betQm, betCb, betCs,
+    temkinAt, temkinBt
+  ]);
+
+  // useEffect for initial graph load and when parameters change
+  useEffect(() => {
+    calculateIsotherm();
+  }, [calculateIsotherm]);
+
+  // useEffect to update ECharts options when isothermData changes
+  useEffect(() => {
+    if (isothermData) {
+      // Calculate yAxisMax based on actual data range
+      const yAxisMax = Math.max(...isothermData.q) * 1.2;
+
+      // Set chart title based on selected isotherm
+      let chartTitle = 'Adsorption Isotherm';
+      switch (selectedIsotherm) {
+        case 'langmuir':
+          chartTitle = 'Langmuir Adsorption Isotherm';
+          break;
+        case 'freundlich':
+          chartTitle = 'Freundlich Adsorption Isotherm';
+          break;
+        case 'bet':
+          chartTitle = 'BET Adsorption Isotherm';
+          break;
+        case 'temkin':
+          chartTitle = 'Temkin Adsorption Isotherm';
+          break;
+      }
+
+
+      const newOptions: EChartsOption = {
+        backgroundColor: 'transparent',
+        title: {
+          text: chartTitle,
+          left: 'center',
+          textStyle: {
+            color: 'white',
+            fontSize: 18,
+            fontFamily: 'Merriweather Sans'
+          }
+        },
+        grid: {
+          left: '5%',
+          right: '5%',
+          bottom: '5%',
+          top: '5%',
+          containLabel: true
+        },
+        xAxis: {
+          type: 'value',
+          min: 0,
+          max: selectedIsotherm === 'bet' ? betCs : Math.max(...isothermData.c),
+          name: 'Concentration (C)',
+          nameLocation: 'middle',
+          nameGap: 30,
+          nameTextStyle: {
+            color: 'white',
+            fontSize: 15,
+            fontFamily: 'Merriweather Sans'
+          },
+          axisLine: {
+            lineStyle: { color: 'white' }
+          },
+          axisTick: {
+            lineStyle: { color: 'white' },
+            length: 5,
+            inside: false
+          },
+          axisLabel: {
+            color: 'white',
+            fontSize: 16,
+            fontFamily: 'Merriweather Sans',
+            formatter: (value: any) => formatNumberToPrecision(value, 3)
+          },
+          splitLine: { show: false }
+        },
+        yAxis: {
+          type: 'value',
+          min: 0,
+          max: yAxisMax,
+          name: 'Amount Adsorbed (q)',
+          nameLocation: 'middle',
+          nameGap: 60,
+          nameTextStyle: {
+            color: 'white',
+            fontSize: 15,
+            fontFamily: 'Merriweather Sans'
+          },
+          axisLine: {
+            lineStyle: { color: 'white' }
+          },
+          axisTick: {
+            lineStyle: { color: 'white' },
+            length: 5,
+            inside: false
+          },
+          axisLabel: {
+            color: 'white',
+            fontSize: 16,
+            fontFamily: 'Merriweather Sans',
+            formatter: (value: any) => formatNumberToPrecision(value, 3)
+          },
+          splitLine: { show: false }
+        },
+        tooltip: {
+          show: true,
+          trigger: 'axis',
+          backgroundColor: '#08306b',
+          borderColor: '#55aaff',
+          borderWidth: 1,
+          textStyle: {
+            color: 'white',
+            fontSize: 12,
+            fontFamily: 'Merriweather Sans'
+          },
+          formatter: function (params: any) {
+            if (Array.isArray(params) && params.length > 0) {
+              const point = params[0];
+              return `C: ${formatNumberToPrecision(point.axisValue, 3)}<br/>q: ${formatNumberToPrecision(point.value[1], 3)}`;
+            }
+            return '';
+          }
+        },
+        series: [
+          {
+            name: selectedIsotherm.charAt(0).toUpperCase() + selectedIsotherm.slice(1) + ' Isotherm',
+            type: 'line',
+            smooth: true,
+            data: isothermData.c.map((val, index) => [val, isothermData.q[index]]),
+            showSymbol: false,
+            color: 'yellow',
+            lineStyle: { width: 2.5 },
+            animation: false
+          }
+        ],
+        toolbox: {
+          show: true,
+          orient: 'vertical',
+          right: 0,
+          top: 'bottom',
+          feature: {
+            saveAsImage: {
+              show: true,
+              title: 'Save as Image',
+              name: 'langmuir-isotherm',
+              backgroundColor: '#08306b',
+              pixelRatio: 2
+            }
+          },
+          iconStyle: {
+            borderColor: '#fff'
+          }
+        }
+      };
+      setEchartsOptions(newOptions);
+    }
+  }, [isothermData, selectedIsotherm, langmuirK, qMax, freundlichKf, freundlichNf, betQm, betCb, betCs, temkinAt, temkinBt]);
+
+  return (
+    <TooltipProvider>
+      <div className="container mx-auto p-4 md:p-8 px-8 md:px-32">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Controls Column */}
+          <div className="lg:col-span-1 space-y-6">
+            {/* Combined Slider Card with Isotherm Selector */}
+            <Card>
+              <CardContent className="space-y-8 pt-6 pb-6">
+                {/* Isotherm Type Selector */}
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="isothermType" className="text-sm font-medium whitespace-nowrap">Isotherm Model:</Label>
+                  <Select
+                    value={selectedIsotherm}
+                    onValueChange={(value) => setSelectedIsotherm(value as IsothermType)}
+                  >
+                    <SelectTrigger id="isothermType" className="flex-1">
+                      <SelectValue placeholder="Select isotherm model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="langmuir">Langmuir</SelectItem>
+                      <SelectItem value="freundlich">Freundlich</SelectItem>
+                      <SelectItem value="bet">BET</SelectItem>
+                      <SelectItem value="temkin">Temkin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {selectedIsotherm === 'langmuir' && (
+                  <>
+                    {/* Langmuir K Slider */}
+                    <div className="space-y-3">
+                      <Label htmlFor="langmuirK">
+                        Langmuir Constant (K): {langmuirK.toFixed(3)}
+                      </Label>
+                      <Slider
+                        id="langmuirK"
+                        min={0.01}
+                        max={5}
+                        step={0.01}
+                        value={[langmuirK]}
+                        onValueChange={(value) => setLangmuirK(value[0])}
+                        style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}
+                      />
+                    </div>
+                    {/* qMax Slider */}
+                    <div className="space-y-3">
+                      <Label htmlFor="qMax">
+                        <span>Max Adsorption Capacity (q<sub style={{fontSize: '0.75em', lineHeight: '1'}}>max</sub>): {qMax.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="qMax"
+                        min={1}
+                        max={50}
+                        step={0.5}
+                        value={[qMax]}
+                        onValueChange={(value) => setQMax(value[0])}
+                        style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {selectedIsotherm === 'freundlich' && (
+                  <>
+                    <div className="space-y-3">
+                      <Label htmlFor="freundlichKf">
+                        <span>Freundlich Constant (K<sub style={{fontSize: '0.75em', lineHeight: '1'}}>f</sub>): {freundlichKf.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="freundlichKf"
+                        min={0.1}
+                        max={10}
+                        step={0.1}
+                        value={[freundlichKf]}
+                        onValueChange={(value) => setFreundlichKf(value[0])}
+                        style={{ '--primary': 'hsl(38 92% 50%)' } as React.CSSProperties}
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <Label htmlFor="freundlichNf">
+                        <span>Freundlich Heterogeneity (n<sub style={{fontSize: '0.75em', lineHeight: '1'}}>f</sub>): {freundlichNf.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="freundlichNf"
+                        min={0.5}
+                        max={5}
+                        step={0.1}
+                        value={[freundlichNf]}
+                        onValueChange={(value) => setFreundlichNf(value[0])}
+                        style={{ '--primary': 'hsl(0 84% 60%)' } as React.CSSProperties}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {selectedIsotherm === 'bet' && (
+                  <>
+                    <div className="space-y-3">
+                      <Label htmlFor="betQm">
+                        <span>BET Monolayer Capacity (q<sub style={{fontSize: '0.75em', lineHeight: '1'}}>m</sub>): {betQm.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="betQm"
+                        min={1}
+                        max={50}
+                        step={0.5}
+                        value={[betQm]}
+                        onValueChange={(value) => setBetQm(value[0])}
+                        style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <Label htmlFor="betCb">
+                        <span>BET Constant (C<sub style={{fontSize: '0.75em', lineHeight: '1'}}>b</sub>): {betCb.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="betCb"
+                        min={1}
+                        max={300} // BET C_b can be large
+                        step={1}
+                        value={[betCb]}
+                        onValueChange={(value) => setBetCb(value[0])}
+                        style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <Label htmlFor="betCs">
+                        <span>BET Saturation Concentration (C<sub style={{fontSize: '0.75em', lineHeight: '1'}}>s</sub>): {betCs.toFixed(2)}</span>
+                      </Label>
+                      <Input
+                        id="betCs"
+                        type="number"
+                        value={betCsInput}
+                        onChange={(e) => {
+                            setBetCsInput(e.target.value);
+                            const numVal = parseFloat(e.target.value);
+                            if (!isNaN(numVal) && numVal > 0) {
+                                setBetCs(numVal);
+                            }
+                        }}
+                        onBlur={() => { // Ensure state is updated if input is valid, or reset if not
+                            const numVal = parseFloat(betCsInput);
+                            if (!isNaN(numVal) && numVal > 0) {
+                                setBetCs(numVal);
+                            } else { // Reset to current valid betCs if input is bad
+                                setBetCsInput(String(betCs));
+                            }
+                        }}
+                        placeholder="e.g., 10"
+                        min="0.01" // C_s must be positive
+                        step="0.1"
+                        className="mt-1"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {selectedIsotherm === 'temkin' && (
+                  <>
+                    <div className="space-y-3">
+                      <Label htmlFor="temkinAt">
+                        <span>Temkin Constant (A<sub style={{fontSize: '0.75em', lineHeight: '1'}}>T</sub>): {temkinAt.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="temkinAt"
+                        min={0.1}
+                        max={10}
+                        step={0.1}
+                        value={[temkinAt]}
+                        onValueChange={(value) => setTemkinAt(value[0])}
+                        style={{ '--primary': 'hsl(38 92% 50%)' } as React.CSSProperties}
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <Label htmlFor="temkinBt">
+                        <span>Temkin Constant (B<sub style={{fontSize: '0.75em', lineHeight: '1'}}>T</sub>): {temkinBt.toFixed(2)}</span>
+                      </Label>
+                      <Slider
+                        id="temkinBt"
+                        min={0.1}
+                        max={10}
+                        step={0.1}
+                        value={[temkinBt]}
+                        onValueChange={(value) => setTemkinBt(value[0])}
+                        style={{ '--primary': 'hsl(0 84% 60%)' } as React.CSSProperties}
+                      />
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+            {error && (
+              <Card className="bg-red-100 border-red-500">
+                <CardContent>
+                  <p className="text-red-600">{error}</p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          {/* Column 2: Plot */}
+          <div className="lg:col-span-2 space-y-6">
+            <Card>
+              <CardContent className="py-2">
+                <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
+                  {loading && (
+                    <div className="absolute inset-0 flex items-center justify-center text-white">
+                      <div className="text-center">
+                        <div className="mb-2">Loading & Calculating Isotherm Data...</div>
+                      </div>
+                    </div>
+                  )}
+                  {!loading && !isothermData && !error && (
+                    <div className="absolute inset-0 flex items-center justify-center text-white">
+                      Please provide inputs and update graph.
+                    </div>
+                  )}
+                  {error && !loading && (
+                    <div className="absolute inset-0 flex items-center justify-center text-red-400">
+                      Error: {error}
+                    </div>
+                  )}
+                  {!loading && isothermData && Object.keys(echartsOptions).length > 0 && (
+                    <ReactECharts
+                      ref={echartsRef}
+                      echarts={echarts}
+                      option={echartsOptions}
+                      style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }}
+                      notMerge={false}
+                      lazyUpdate={false}
+                    />
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </TooltipProvider>
+  );
+}

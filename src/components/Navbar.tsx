@@ -55,6 +55,9 @@ function Navbar() {
       case "/toolbox/reactor-design":
         return "Reactor Design Simulator";
 
+      case "/toolbox/isotherms":
+        return "Isotherm Simulator";
+
       case "/misc":
           return "Miscellaneous Projects";
   
