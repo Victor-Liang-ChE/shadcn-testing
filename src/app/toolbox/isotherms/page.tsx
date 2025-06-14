@@ -34,6 +34,7 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input"; // Added for BET C_s input
 
 // Function to format numbers to avoid long decimals - moved outside component
@@ -58,7 +59,7 @@ export default function LangmuirIsothermPage() {
   // Input States
   // Langmuir
   const [langmuirK, setLangmuirK] = useState<number>(0.5);
-  const [qMax, setQMax] = useState<number>(10);
+  const [independentVar, setIndependentVar] = useState<'pressure' | 'concentration'>('pressure');
 
   // Freundlich
   const [freundlichKf, setFreundlichKf] = useState<number>(2);
@@ -113,7 +114,9 @@ export default function LangmuirIsothermPage() {
         let q: number;
         switch (selectedIsotherm) {
           case 'langmuir':
-            q = (qMax * langmuirK * c) / (1 + langmuirK * c);
+            // θ_A = (K_eq * P_A) / (1 + K_eq * P_A)
+            // Using c as the independent variable (P or C depending on user choice)
+            q = (langmuirK * c) / (1 + langmuirK * c);
             break;
           case 'freundlich':
             q = freundlichKf * Math.pow(c, 1 / freundlichNf);
@@ -166,7 +169,7 @@ export default function LangmuirIsothermPage() {
     }
   }, [
     selectedIsotherm,
-    langmuirK, qMax,
+    langmuirK, independentVar,
     freundlichKf, freundlichNf,
     betQm, betCb, betCs,
     temkinAt, temkinBt
@@ -206,6 +209,7 @@ export default function LangmuirIsothermPage() {
         title: {
           text: chartTitle,
           left: 'center',
+          top: '20px',
           textStyle: {
             color: 'white',
             fontSize: 18,
@@ -223,7 +227,7 @@ export default function LangmuirIsothermPage() {
           type: 'value',
           min: 0,
           max: selectedIsotherm === 'bet' ? betCs : Math.max(...isothermData.c),
-          name: 'Concentration (C)',
+          name: independentVar === 'pressure' ? 'Pressure, P (bar)' : 'Concentration, C (mol/L)',
           nameLocation: 'middle',
           nameGap: 30,
           nameTextStyle: {
@@ -251,7 +255,9 @@ export default function LangmuirIsothermPage() {
           type: 'value',
           min: 0,
           max: yAxisMax,
-          name: 'Amount Adsorbed (q)',
+          name: selectedIsotherm === 'langmuir' 
+            ? 'Surface Coverage (θ)'
+            : 'Amount Adsorbed (q)',
           nameLocation: 'middle',
           nameGap: 60,
           nameTextStyle: {
@@ -289,7 +295,9 @@ export default function LangmuirIsothermPage() {
           formatter: function (params: any) {
             if (Array.isArray(params) && params.length > 0) {
               const point = params[0];
-              return `C: ${formatNumberToPrecision(point.axisValue, 3)}<br/>q: ${formatNumberToPrecision(point.value[1], 3)}`;
+              const xLabel = independentVar === 'pressure' ? 'P' : 'C';
+              const yLabel = selectedIsotherm === 'langmuir' ? 'θ' : 'q';
+              return `${xLabel}: ${formatNumberToPrecision(point.axisValue, 3)}<br/>${yLabel}: ${formatNumberToPrecision(point.value[1], 3)}`;
             }
             return '';
           }
@@ -327,7 +335,7 @@ export default function LangmuirIsothermPage() {
       };
       setEchartsOptions(newOptions);
     }
-  }, [isothermData, selectedIsotherm, langmuirK, qMax, freundlichKf, freundlichNf, betQm, betCb, betCs, temkinAt, temkinBt]);
+  }, [isothermData, selectedIsotherm, langmuirK, independentVar, freundlichKf, freundlichNf, betQm, betCb, betCs, temkinAt, temkinBt]);
 
   return (
     <TooltipProvider>
@@ -351,7 +359,6 @@ export default function LangmuirIsothermPage() {
                     <SelectContent>
                       <SelectItem value="langmuir">Langmuir</SelectItem>
                       <SelectItem value="freundlich">Freundlich</SelectItem>
-                      <SelectItem value="bet">BET</SelectItem>
                       <SelectItem value="temkin">Temkin</SelectItem>
                     </SelectContent>
                   </Select>
@@ -362,7 +369,7 @@ export default function LangmuirIsothermPage() {
                     {/* Langmuir K Slider */}
                     <div className="space-y-3">
                       <Label htmlFor="langmuirK">
-                        Langmuir Constant (K): {langmuirK.toFixed(3)}
+                        Equilibrium Constant (K): {langmuirK.toFixed(3)}
                       </Label>
                       <Slider
                         id="langmuirK"
@@ -374,21 +381,7 @@ export default function LangmuirIsothermPage() {
                         style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}
                       />
                     </div>
-                    {/* qMax Slider */}
-                    <div className="space-y-3">
-                      <Label htmlFor="qMax">
-                        <span>Max Adsorption Capacity (q<sub style={{fontSize: '0.75em', lineHeight: '1'}}>max</sub>): {qMax.toFixed(2)}</span>
-                      </Label>
-                      <Slider
-                        id="qMax"
-                        min={1}
-                        max={50}
-                        step={0.5}
-                        value={[qMax]}
-                        onValueChange={(value) => setQMax(value[0])}
-                        style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}
-                      />
-                    </div>
+
                   </>
                 )}
 
@@ -535,6 +528,27 @@ export default function LangmuirIsothermPage() {
             <Card>
               <CardContent className="py-2">
                 <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
+                  {/* Concentration/Pressure Switch - Top Right */}
+                  <div className="absolute top-4 right-4 z-10">
+                    <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                      <Button
+                        variant={independentVar === 'concentration' ? 'default' : 'ghost'}
+                        size="sm"
+                        onClick={() => setIndependentVar('concentration')}
+                        className="h-8 px-3"
+                      >
+                        Concentration
+                      </Button>
+                      <Button
+                        variant={independentVar === 'pressure' ? 'default' : 'ghost'}
+                        size="sm"
+                        onClick={() => setIndependentVar('pressure')}
+                        className="h-8 px-3"
+                      >
+                        Pressure
+                      </Button>
+                    </div>
+                  </div>
                   {loading && (
                     <div className="absolute inset-0 flex items-center justify-center text-white">
                       <div className="text-center">
