@@ -135,10 +135,6 @@ function Navbar() {
         <Link href="/toolbox" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Toolbox
         </Link>
-        {/* Add LearnChemE Link */}
-        <Link href="/LearnChemE" className={`text-xl font-semibold ${linkHoverStyle}`}>
-          LearnChemE 2.0
-        </Link>
         {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
         <Link href="/misc" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Misc
@@ -159,10 +155,6 @@ function Navbar() {
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
            <Link href="/toolbox" className={`block text-xl font-semibold ${linkHoverStyle}`}>
              Toolbox
-           </Link>
-           {/* Add LearnChemE Link */}
-           <Link href="/LearnChemE" className={`block text-xl font-semibold ${linkHoverStyle}`}>
-             LearnChemE 2.0
            </Link>
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
            <Link href="/misc" className={`block text-xl font-semibold ${linkHoverStyle}`}>
