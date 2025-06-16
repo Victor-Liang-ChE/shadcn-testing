@@ -163,14 +163,19 @@ function solveODE_BDF(
   const t_out = [t0];
   const y_out = [y0];
 
-  const min_h = 1e-10;
-  let h = 1e-6; 
+  const min_h = 1e-12;
+  let h = Math.min(1e-4, tf / 1000); // Smaller initial step size for smoother curves
 
-  const newton_tol = 1e-8;
-  const newton_max_iter = 8;
+  const newton_tol = 1e-10; // Tighter tolerance
+  const newton_max_iter = 10; // More iterations
   const n = y0.length;
   
-  while (t < tf) {
+  // Maximum number of output points to prevent excessive memory usage
+  const max_output_points = 2000;
+  let output_interval = (tf - t0) / max_output_points;
+  let next_output_time = t0 + output_interval;
+  
+  while (t < tf && t_out.length < max_output_points) {
     if (t + h > tf) h = tf - t;
     if (h < min_h) break;
 
@@ -201,10 +206,15 @@ function solveODE_BDF(
     }
     
     if (converged) {
-        y = y_next.map(v => Math.max(0,v));
+        y = y_next.map(v => Math.max(0, v));
         t += h;
-        t_out.push(t);
-        y_out.push(y);
+        
+        // Only store output at specified intervals to keep smooth curves
+        if (t >= next_output_time || t >= tf) {
+          t_out.push(t);
+          y_out.push([...y]);
+          next_output_time += output_interval;
+        }
 
         if (stoppingCondition) {
             const dy = derivatives(t, y);
@@ -212,10 +222,18 @@ function solveODE_BDF(
                 break; 
             }
         }
-        h = Math.min(h * 1.75, tf - t);
+        
+        // Adaptive step size control for smoothness
+        h = Math.min(h * 1.5, tf - t, output_interval / 2);
     } else {
-        h *= 0.25; // Step failed, reduce step size sharply
+        h *= 0.5; // Step failed, reduce step size
     }
+  }
+  
+  // Ensure we have the final point
+  if (t_out[t_out.length - 1] < tf) {
+    t_out.push(tf);
+    y_out.push([...y]);
   }
 
   // Transpose results for plotting
@@ -260,39 +278,55 @@ export const solvePFR_ODE_System = (
 
   const rawSolution = solveODE_BDF(derivatives, y0, V_span, componentNames);
 
-  // Interpolation logic to create a smooth plot
-  const plotPoints = 200;
+  // Improved interpolation logic to create smoother plots
+  const plotPoints = 500; // Increased from 200 for smoother curves
   const smoothProfile: PFR_ODE_ProfilePoint[] = [];
-  let rawSolutionIndex = 0;
 
-  for (let i = 0; i <= plotPoints; i++) {
+  // Add the initial point
+  smoothProfile.push({ volume: 0, flowRates: initialFlowRates });
+
+  for (let i = 1; i <= plotPoints; i++) {
     const targetVolume = (i / plotPoints) * V_total;
-    while (rawSolutionIndex < rawSolution.t.length - 2 && rawSolution.t[rawSolutionIndex + 1] < targetVolume) {
-      rawSolutionIndex++;
+    
+    // Find the appropriate indices for interpolation
+    let leftIndex = 0;
+    let rightIndex = 1;
+    
+    for (let j = 0; j < rawSolution.t.length - 1; j++) {
+      if (rawSolution.t[j] <= targetVolume && rawSolution.t[j + 1] >= targetVolume) {
+        leftIndex = j;
+        rightIndex = j + 1;
+        break;
+      }
+    }
+    
+    // Handle edge cases
+    if (rightIndex >= rawSolution.t.length) {
+      rightIndex = rawSolution.t.length - 1;
+      leftIndex = Math.max(0, rightIndex - 1);
     }
 
-    const V1 = rawSolution.t[rawSolutionIndex];
-    const V2 = rawSolution.t[rawSolutionIndex + 1];
+    const V1 = rawSolution.t[leftIndex];
+    const V2 = rawSolution.t[rightIndex];
     
     const interpolatedFlowRates: { [key: string]: number } = {};
 
-    // More robust handling of single-point solutions.
-    if (V2 === undefined) {
-        componentNames.forEach((name, compIndex) => {
-            interpolatedFlowRates[name] = rawSolution.y[compIndex][0];
-        });
+    if (Math.abs(V2 - V1) < 1e-12 || leftIndex === rightIndex) {
+      // No interpolation needed - use the exact value
+      componentNames.forEach((name, compIndex) => {
+        interpolatedFlowRates[name] = Math.max(0, rawSolution.y[compIndex][leftIndex]);
+      });
     } else {
-        componentNames.forEach((name, compIndex) => {
-            const F1 = rawSolution.y[compIndex][rawSolutionIndex];
-            const F2 = rawSolution.y[compIndex][rawSolutionIndex + 1];
-            let F_interp = F1;
-            if (V2 - V1 > 1e-12) {
-                const fraction = (targetVolume - V1) / (V2 - V1);
-                F_interp = F1 + fraction * (F2 - F1);
-            }
-            interpolatedFlowRates[name] = Math.max(0, F_interp);
-        });
+      // Linear interpolation
+      const fraction = (targetVolume - V1) / (V2 - V1);
+      componentNames.forEach((name, compIndex) => {
+        const F1 = rawSolution.y[compIndex][leftIndex];
+        const F2 = rawSolution.y[compIndex][rightIndex];
+        const F_interp = F1 + fraction * (F2 - F1);
+        interpolatedFlowRates[name] = Math.max(0, F_interp);
+      });
     }
+    
     smoothProfile.push({ volume: targetVolume, flowRates: interpolatedFlowRates });
   }
 

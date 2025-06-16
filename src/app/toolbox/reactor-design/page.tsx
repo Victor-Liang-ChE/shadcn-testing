@@ -7,15 +7,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
-import { AlertCircle, PlusCircle, RefreshCw, Trash2, BarChart3 } from 'lucide-react';
+import { AlertCircle, PlusCircle, Trash2, BarChart3 } from 'lucide-react';
 
 
 // Import ECharts components
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
-import type { EChartsOption, SeriesOption } from 'echarts';
+import type { EChartsOption } from 'echarts';
 import { LineChart, ScatterChart } from 'echarts/charts';
 import {
   TitleComponent,
