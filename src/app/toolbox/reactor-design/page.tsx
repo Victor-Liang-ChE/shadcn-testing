@@ -77,15 +77,6 @@ interface ExtendedCalculationResults extends CalculationResults {
   dataPoints: DataPoint[];
 }
 
-// Add helper function for 3 significant figures formatting
-const formatToSigFigs = (num: number, sigFigs: number = 3): string => {
-  if (num === 0) return '0.00';
-  if (isNaN(num) || !isFinite(num)) return '-';
-  const magnitude = Math.floor(Math.log10(Math.abs(num)));
-  const factor = Math.pow(10, sigFigs - 1 - magnitude);
-  return (Math.round(num * factor) / factor).toString();
-};
-
 export default function ReactorDesignPage() {
   const [reactorType, setReactorType] = useState<ReactorType>('CSTR');
   const [reactionPhase, setReactionPhase] = useState<ReactionPhase>('Liquid');
@@ -112,7 +103,7 @@ export default function ReactorDesignPage() {
   const [maxVolumeSlider, setMaxVolumeSlider] = useState<string>('1000'); // User-defined max for volume slider
   const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('350'); // User-defined max for temperature slider
   const [maxFlowRateSlider, setMaxFlowRateSlider] = useState<string>('10'); // User-defined max for flow rate slider
-  const [maxPressureSlider, setMaxPressureSlider] = useState<string>('10'); // User-defined max for pressure slider
+  const [maxPressureSlider, setMaxPressureSlider] = useState<string>('50'); // User-defined max for pressure slider
 
   const [calculationResults, setCalculationResults] = useState<CalculationResults | null>(null);
   const [isLoading, setIsLoading] = useState(false);
