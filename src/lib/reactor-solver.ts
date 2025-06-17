@@ -279,7 +279,7 @@ export const solvePFR_ODE_System = (
   const rawSolution = solveODE_BDF(derivatives, y0, V_span, componentNames);
 
   // Improved interpolation logic to create smoother plots
-  const plotPoints = 500; // Increased from 200 for smoother curves
+  const plotPoints = 250; // Reduced from 500 for better performance while maintaining smoothness
   const smoothProfile: PFR_ODE_ProfilePoint[] = [];
 
   // Add the initial point

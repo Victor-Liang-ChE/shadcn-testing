@@ -379,15 +379,12 @@ export default function ReactorDesignPage() {
     }
   }, [handleCalculate, parsedParallelReactions]);
 
-  // Debounced calculation for slider changes
+  // Immediate calculation for slider changes
   useEffect(() => {
     if (parsedParallelReactions && parsedParallelReactions.reactions.length > 0 && !parsedParallelReactions.error) {
-      const timer = setTimeout(() => {
-        handleCalculate();
-      }, 300); // Debounce for smooth slider interaction
-      return () => clearTimeout(timer);
+      handleCalculate();
     }
-  }, [reactorVolume, kinetics.reactionTempK, volumetricFlowRate, handleCalculate]);
+  }, [reactorVolume, kinetics.reactionTempK, volumetricFlowRate, totalPressure]);
 
   // Graph generation function
   // Graph generation function
@@ -423,7 +420,7 @@ export default function ReactorDesignPage() {
         profile = solvePFR_ODE_System(parsedParallelReactions, maxVol, initialFlowRates, v0_calc, components.map(c => c.name));
     } else { // CSTR
         profile = [];
-        const steps = 100;
+        const steps = 50; // Reduced from 100 for better performance
         for (let i = 1; i <= steps; i++) {
             const vol = (i / steps) * maxVol;
             const flowRates = solveCSTRParallel(parsedParallelReactions, vol, initialFlowRates, v0_calc);
@@ -471,6 +468,7 @@ export default function ReactorDesignPage() {
     let chartOptions: EChartsOption = {
         backgroundColor: 'transparent',
         animation: false,
+        animationDuration: 0,
         title: { text: 'Conversion vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
         xAxis: { 
@@ -745,12 +743,12 @@ export default function ReactorDesignPage() {
   }, [parsedParallelReactions, reactorType, reactorVolume, maxVolumeSlider, kinetics.reactionTempK, volumetricFlowRate, components, reactionPhase, totalPressure, graphType]);
 
 
-  // Update graph when calculation results change
+  // Update graph when calculation results change - immediate updates
   useEffect(() => {
     if (showGraph && calculationResults) {
       generateGraphData();
     }
-  }, [showGraph, calculationResults, generateGraphData]);
+  }, [showGraph, calculationResults, graphType, reactorType, maxVolumeSlider]);
 
   // Reactor SVG Visualization
   const renderReactorSVG = () => {
@@ -1467,8 +1465,12 @@ export default function ReactorDesignPage() {
                         echarts={echarts} 
                         option={graphOptions} 
                         style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
-                        notMerge={true} 
-                        lazyUpdate={false} 
+                        notMerge={false} 
+                        lazyUpdate={true}
+                        shouldSetOption={(prevProps: any, props: any) => {
+                          // Only update if the options actually changed
+                          return JSON.stringify(prevProps.option) !== JSON.stringify(props.option);
+                        }}
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-white">
