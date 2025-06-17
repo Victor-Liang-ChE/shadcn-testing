@@ -437,16 +437,23 @@ export default function ReactorDesignPage() {
         const F_A = flowRates[limitingReactant!.name];
         const conversion = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
         
-        const F_C_net = (flowRates['C'] || 0) - (initialFlowRates['C'] || 0);
-        const F_D_net = (flowRates['D'] || 0) - (initialFlowRates['D'] || 0);
-        const totalProductsFormed = F_C_net + F_D_net;
+        // --- This is the new block for Overall Selectivity ---
+        // Note: This calculation is for the Overall Selectivity of component 'C'.
+        
+        // 1. Calculate the net moles of the desired product ('C') formed up to this point.
+        const moles_product_formed = (flowRates['C'] || 0) - (initialFlowRates['C'] || 0);
+
+        // 2. Calculate the moles of the limiting reactant consumed up to this point.
+        const moles_reactant_consumed = F_A0 - flowRates[limitingReactant!.name];
 
         let selectivity: number;
-        if (totalProductsFormed < (F_A0 * 1e-7)) {
-            selectivity = 1.0; 
+        // 3. Calculate selectivity, avoiding division by zero at the reactor inlet.
+        if (moles_reactant_consumed < 1e-9) {
+          selectivity = 0; // At the very beginning, selectivity can be considered zero.
         } else {
-            selectivity = F_C_net / totalProductsFormed;
+          selectivity = moles_product_formed / moles_reactant_consumed;
         }
+        // --- End of new block ---
 
         // Calculate compositions (mol%)
         const totalFlow = Object.values(flowRates).reduce((sum, flow) => sum + flow, 0);
@@ -584,7 +591,7 @@ export default function ReactorDesignPage() {
               name: 'Selectivity', 
               type: 'line', 
               showSymbol: false, 
-              data: dataPoints.map(p => [p.volume, (p.selectivity ?? 0) * 100]), 
+              data: dataPoints.filter(p => p.volume > 0).map(p => [p.volume, (p.selectivity ?? 0) * 100]), 
               color: '#00BFFF', // Add this for legend and tooltip colors
               lineStyle: { color: '#00BFFF', width: 2 },
               emphasis: { lineStyle: { width: 3 } },
@@ -1465,12 +1472,8 @@ export default function ReactorDesignPage() {
                         echarts={echarts} 
                         option={graphOptions} 
                         style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
-                        notMerge={false} 
-                        lazyUpdate={true}
-                        shouldSetOption={(prevProps: any, props: any) => {
-                          // Only update if the options actually changed
-                          return JSON.stringify(prevProps.option) !== JSON.stringify(props.option);
-                        }}
+                        notMerge={true} 
+                        lazyUpdate={false}
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center text-white">
