@@ -1,7 +1,7 @@
 // reactor-solver.ts
 
 // --- TYPE DEFINITIONS (Unchanged) ---
-interface Component {
+export interface Component {
   id: string;
   name: string;
   initialFlowRate: string;
@@ -24,7 +24,7 @@ interface ParsedReaction {
   rateConstantBackwardAtT?: number;
   isEquilibriumReaction?: boolean;
 }
-interface ParsedParallelReactions {
+export interface ParsedParallelReactions {
   reactions: ParsedReaction[];
   allInvolvedComponents: ParsedComponent[];
   error?: string;
@@ -74,7 +74,15 @@ export const calculateCombinedRate = (
     let stoichCoeff = 0;
     if (componentInReaction.role === 'reactant') stoichCoeff = -componentInReaction.stoichiometricCoefficient;
     else if (componentInReaction.role === 'product') stoichCoeff = componentInReaction.stoichiometricCoefficient;
-    totalRate += stoichCoeff * netReactionRate;
+    
+    // The calculated `netReactionRate` is the rate of consumption based on the rate law (e.g., -r_A).
+    // For parallel reactions, we must normalize each reaction's rate by its key reactant's stoichiometry
+    // to get the true "extent of reaction" before applying it to other components.
+    const keyReactant = reaction.reactants[0];
+    if (!keyReactant) return; // Should not happen in valid reactions
+    
+    // Apply the normalized rate to the current component using its stoichiometric coefficient
+    totalRate += stoichCoeff * (netReactionRate / Math.abs(keyReactant.stoichiometricCoefficient));
   });
   return totalRate;
 };

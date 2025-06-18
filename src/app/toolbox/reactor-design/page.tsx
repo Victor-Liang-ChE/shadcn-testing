@@ -57,6 +57,10 @@ import {
   PFR_ODE_ProfilePoint, // Use the new profile point type
   findLimitingReactant
 } from '@/lib/reactor-solver';
+import {
+  solveRecycleSystem,
+  RecycleCalculationResult
+} from '@/lib/recycle-solver';
 
 // Helper types
 type ReactorType = 'PFR' | 'CSTR';
@@ -80,6 +84,7 @@ interface ExtendedCalculationResults extends CalculationResults {
 export default function ReactorDesignPage() {
   const [reactorType, setReactorType] = useState<ReactorType>('CSTR');
   const [reactionPhase, setReactionPhase] = useState<ReactionPhase>('Liquid');
+  const [operationMode, setOperationMode] = useState<'SinglePass' | 'Recycle'>('SinglePass');
   const [reactionString, setReactionString] = useState<string>('A + B -> C');
   const [reactions, setReactions] = useState<ReactionData[]>([
     { id: '1', reactants: 'A + B', products: 'C', AValue: '1e6', EaValue: '50000', AValueBackward: '1e4', EaValueBackward: '60000', isEquilibrium: false },
@@ -94,20 +99,25 @@ export default function ReactorDesignPage() {
     kValue: '0.1', // Units depend on reaction order and concentration units
     AValue: '1e6',
     EaValue: '50000', // e.g., J/mol
-    reactionTempK: '300', // Kelvin
+    reactionTempK: '350', // Kelvin
   });
 
   const [reactorVolume, setReactorVolume] = useState<string>('100'); // e.g., Liters
   const [totalPressure, setTotalPressure] = useState<string>('1'); // e.g., bar (for gas phase)
   const [volumetricFlowRate, setVolumetricFlowRate] = useState<string>('1'); // v0 (for liquid phase, L/s)
   const [maxVolumeSlider, setMaxVolumeSlider] = useState<string>('1000'); // User-defined max for volume slider
-  const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('350'); // User-defined max for temperature slider
+  const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('500'); // User-defined max for temperature slider
   const [maxFlowRateSlider, setMaxFlowRateSlider] = useState<string>('10'); // User-defined max for flow rate slider
   const [maxPressureSlider, setMaxPressureSlider] = useState<string>('50'); // User-defined max for pressure slider
+  const [recycleFraction, setRecycleFraction] = useState<string>('50'); // Recycle fraction percentage (0-100%)
 
   const [calculationResults, setCalculationResults] = useState<CalculationResults | null>(null);
+  const [recycleResults, setRecycleResults] = useState<RecycleCalculationResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [calculationError, setCalculationError] = useState<string | null>(null);
+
+  // Debounce timer reference
+  const debounceTimer = useRef<NodeJS.Timeout | null>(null);
 
   // Graph-related state
   const [showGraph, setShowGraph] = useState(false);
@@ -277,10 +287,11 @@ export default function ReactorDesignPage() {
     }
   }, [reactions, reactionString]);
 
-  // Main Calculation Logic - Updated for new solvers
+  // Main Calculation Logic - Updated for single pass and recycle modes
   const handleCalculate = useCallback(async () => {
     setIsLoading(true);
     setCalculationResults(null);
+    setRecycleResults(null);
     setCalculationError(null);
 
     if (parsedParallelReactions.error || parsedParallelReactions.reactions.length === 0) {
@@ -324,36 +335,59 @@ export default function ReactorDesignPage() {
     }
 
     try {
-      let finalFlowRates: { [key: string]: number };
-
-      if (reactorType === 'PFR') {
-        const pfrProfile = solvePFR_ODE_System(
-          parsedParallelReactions, V, initialFlowRates, v0_calc, components.map(c => c.name)
+      if (operationMode === 'Recycle') {
+        // Solve recycle system
+        const recycleResult = await solveRecycleSystem(
+          parsedParallelReactions,
+          V,
+          initialFlowRates,
+          v0_input_Ls,
+          components,
+          reactorType,
+          reactionPhase,
+          kinetics,
+          parseFloat(recycleFraction),
+          totalPressure
         );
-        finalFlowRates = pfrProfile.length > 0 ? pfrProfile[pfrProfile.length - 1].flowRates : initialFlowRates;
-      } else { // CSTR
-        finalFlowRates = solveCSTRParallel(
-            parsedParallelReactions, V, initialFlowRates, v0_calc
-        );
-      }
-      
-      const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
-      let conversion: { reactantName: string; value: number } | undefined;
-      if (limitingReactant) {
-        const F_A0 = limitingReactant.initialFlow;
-        const F_A = finalFlowRates[limitingReactant.name];
-        const X = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
-        conversion = { reactantName: limitingReactant.name, value: Math.max(0, Math.min(X, 1)) };
-      }
+        
+        if (recycleResult.calculationError || recycleResult.error) {
+          setCalculationError(recycleResult.calculationError || recycleResult.error || "Recycle calculation failed.");
+        } else {
+          setRecycleResults(recycleResult);
+        }
+      } else {
+        // Single pass operation
+        let finalFlowRates: { [key: string]: number };
 
-      setCalculationResults({ conversion, outletFlowRates: finalFlowRates });
+        if (reactorType === 'PFR') {
+          const pfrProfile = solvePFR_ODE_System(
+            parsedParallelReactions, V, initialFlowRates, v0_calc, components.map(c => c.name)
+          );
+          finalFlowRates = pfrProfile.length > 0 ? pfrProfile[pfrProfile.length - 1].flowRates : initialFlowRates;
+        } else { // CSTR
+          finalFlowRates = solveCSTRParallel(
+              parsedParallelReactions, V, initialFlowRates, v0_calc
+          );
+        }
+        
+        const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
+        let conversion: { reactantName: string; value: number } | undefined;
+        if (limitingReactant) {
+          const F_A0 = limitingReactant.initialFlow;
+          const F_A = finalFlowRates[limitingReactant.name];
+          const X = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
+          conversion = { reactantName: limitingReactant.name, value: Math.max(0, Math.min(X, 1)) };
+        }
+
+        setCalculationResults({ conversion, outletFlowRates: finalFlowRates });
+      }
 
     } catch (e: any) {
       setCalculationError(`Calculation Error: ${e.message}`);
     } finally {
       setIsLoading(false);
     }
-  }, [parsedParallelReactions, reactorType, reactorVolume, kinetics.reactionTempK, components, reactionPhase, totalPressure, volumetricFlowRate]);
+  }, [parsedParallelReactions, reactorType, reactorVolume, kinetics.reactionTempK, components, reactionPhase, totalPressure, volumetricFlowRate, operationMode, recycleFraction]);
 
   // Add helper function for 3 significant figures formatting
   const formatToSigFigs = (num: number, sigFigs: number = 3): string => {
@@ -363,22 +397,31 @@ export default function ReactorDesignPage() {
     return (Math.round(num * factor) / factor).toString();
   };
 
-  // Auto-calculate when key dependencies change
-  useEffect(() => {
-    if (parsedParallelReactions && parsedParallelReactions.reactions.length > 0 && !parsedParallelReactions.error) {
-      handleCalculate();
+  // Debounced calculation trigger
+  const triggerDebouncedCalculation = useCallback(() => {
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
     }
-  }, [handleCalculate, parsedParallelReactions]);
-
-  // Immediate calculation for slider changes
-  useEffect(() => {
-    if (parsedParallelReactions && parsedParallelReactions.reactions.length > 0 && !parsedParallelReactions.error) {
+    debounceTimer.current = setTimeout(() => {
       handleCalculate();
-    }
-  }, [reactorVolume, kinetics.reactionTempK, volumetricFlowRate, totalPressure]);
+    }, 1); // 1ms debounce delay
+  }, [handleCalculate]);
 
-  // Graph generation function
-  // Graph generation function
+  // Effect to run calculation when primary inputs change (debounced)
+  useEffect(() => {
+    triggerDebouncedCalculation();
+  }, [
+    reactorVolume, 
+    kinetics.reactionTempK, 
+    volumetricFlowRate, 
+    totalPressure,
+    recycleFraction,
+    triggerDebouncedCalculation
+  ]);
+
+
+  // --- Graphing Logic ---
+  // Generate graph data when results are available
   const generateGraphData = useCallback(() => {
     if (!parsedParallelReactions || parsedParallelReactions.error || parsedParallelReactions.reactions.length === 0) {
       setGraphOptions({});
@@ -743,10 +786,10 @@ export default function ReactorDesignPage() {
 
   // Update graph when calculation results change - immediate updates
   useEffect(() => {
-    if (showGraph && calculationResults) {
+    if (showGraph && calculationResults && operationMode === 'SinglePass') {
       generateGraphData();
     }
-  }, [showGraph, calculationResults, graphType, reactorType, maxVolumeSlider]);
+  }, [showGraph, calculationResults, graphType, reactorType, maxVolumeSlider, operationMode]);
 
   // Reactor SVG Visualization
   const renderReactorSVG = () => {
@@ -823,9 +866,9 @@ export default function ReactorDesignPage() {
           <div className="space-y-6 md:col-span-2"> {/* Added md:col-span-2 */}
             {/* Reactor Type and Phase Selection */}
             <Card>
-              <CardContent className="space-y-6 pt-3">
-                {/* Phase Selection */}
-                <div className="flex justify-center">
+              <CardContent className="space-y-6 pt-3 relative">
+                {/* Phase Selection - Top Left */}
+                <div className="absolute top-3 left-3">
                   <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
                     <Button
                       variant={reactionPhase === 'Liquid' ? 'default' : 'ghost'}
@@ -845,6 +888,34 @@ export default function ReactorDesignPage() {
                     </Button>
                   </div>
                 </div>
+                
+                {/* Operation Mode Selection - Top Right */}
+                <div className="absolute top-3 right-3">
+                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                    <Button
+                      variant={operationMode === 'SinglePass' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => setOperationMode('SinglePass')}
+                      className="h-8 px-3"
+                    >
+                      Single Pass
+                    </Button>
+                    <Button
+                      variant={operationMode === 'Recycle' ? 'default' : 'ghost'}
+                      size="sm"
+                      onClick={() => {
+                        setOperationMode('Recycle');
+                        setShowGraph(false); // Turn off graph mode when switching to recycle
+                      }}
+                      className="h-8 px-3"
+                    >
+                      Recycle
+                    </Button>
+                  </div>
+                </div>
+                
+                {/* Add top margin to account for absolute positioned buttons */}
+                <div className="mt-12"></div>
                 
                 {/* Reactor Volume Slider */}
                 <div className="space-y-3">
@@ -970,6 +1041,31 @@ export default function ReactorDesignPage() {
                     </div>
                   )}
                 </div>
+
+                {/* Recycle Fraction Slider - Only for Recycle Mode */}
+                {operationMode === 'Recycle' && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1">
+                        <Label htmlFor="recycleFractionSlider" className="text-sm font-medium whitespace-nowrap">Recycle Fraction:</Label>
+                        <span className="text-sm font-medium w-12 text-right">{recycleFraction}</span>
+                        <span className="text-xs text-muted-foreground">%</span>
+                      </div>
+                      <Slider
+                        id="recycleFractionSlider"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={[parseFloat(recycleFraction)]}
+                        onValueChange={(value) => setRecycleFraction(value[0].toString())}
+                        className="flex-1"
+                      />
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-muted-foreground w-20">0-100%</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -1306,11 +1402,11 @@ export default function ReactorDesignPage() {
             </Card>
 
             {/* Results Display */}
-            {calculationResults && (
+            {(calculationResults || recycleResults) && (
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
-                    <CardTitle>Results</CardTitle>
+                    <CardTitle>Results {operationMode === 'Recycle' ? '- Recycle System' : '- Single Pass'}</CardTitle>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <div className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/50 rounded-sm text-[10px] font-medium text-gray-700 dark:text-gray-300">
@@ -1322,95 +1418,429 @@ export default function ReactorDesignPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto">
-                    <table className="w-full border-collapse border border-border">
-                      <thead>
-                        <tr className="bg-muted/50">
-                          <th className="border border-border px-3 py-2 text-center font-medium">Comp.</th>
-                          <th className="border border-border px-3 py-2 text-center font-medium">Conversion (%)</th>
-                          <th className="border border-border px-3 py-2 text-center font-medium">Selectivity (%)</th>
-                          <th className="border border-border px-3 py-2 text-center font-medium">Outlet Flow Rate (mol/s)</th>
-                          <th className="border border-border px-3 py-2 text-center font-medium">Composition (mol%)</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {components.map((comp) => {
-                          const isReactantInAnyReaction = reactions.some(r =>
-                            (r.reactants || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
-                          );
-                          const isProductInAnyReaction = reactions.some(r =>
-                            (r.products || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
-                          );
+                    {operationMode === 'SinglePass' && calculationResults ? (
+                      // Single Pass Results Table
+                      <table className="w-full border-collapse border border-border">
+                        <thead>
+                          <tr className="bg-muted/50">
+                            <th className="border border-border px-3 py-2 text-center font-medium">Comp.</th>
+                            <th className="border border-border px-3 py-2 text-center font-medium">Conversion (%)</th>
+                            <th className="border border-border px-3 py-2 text-center font-medium">Selectivity (%)</th>
+                            <th className="border border-border px-3 py-2 text-center font-medium">Outlet Flow Rate (mol/s)</th>
+                            <th className="border border-border px-3 py-2 text-center font-medium">Composition (mol%)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {components.map((comp) => {
+                            const isReactantInAnyReaction = reactions.some(r =>
+                              (r.reactants || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
+                            );
+                            const isProductInAnyReaction = reactions.some(r =>
+                              (r.products || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
+                            );
 
-                          let conversionValue: string | number = '-';
-                          if (isReactantInAnyReaction && calculationResults?.outletFlowRates) {
-                            const F_R_in = parseFloat(comp.initialFlowRate || '0');
-                            const F_R_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
-                            if (F_R_in > 1e-9) {
-                              const X_R = (F_R_in - F_R_out) / F_R_in;
-                              conversionValue = formatToSigFigs(Math.max(0, Math.min(1, X_R)) * 100);
-                            } else {
-                              conversionValue = F_R_out > 1e-9 ? '0.00' : '-'; // If starts at 0 and ends > 0, conversion is effectively 0
+                            let conversionValue: string | number = '-';
+                            if (isReactantInAnyReaction && calculationResults?.outletFlowRates) {
+                              const F_R_in = parseFloat(comp.initialFlowRate || '0');
+                              const F_R_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
+                              if (F_R_in > 1e-9) {
+                                const X_R = (F_R_in - F_R_out) / F_R_in;
+                                conversionValue = formatToSigFigs(Math.max(0, Math.min(1, X_R)) * 100);
+                              } else {
+                                conversionValue = F_R_out > 1e-9 ? '0.00' : '-';
+                              }
                             }
-                          }
 
-                          let selectivityValue: string | number = '-';
-                          if (isProductInAnyReaction && calculationResults?.conversion && calculationResults?.outletFlowRates) {
-                            const F_P_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
-                            const F_P_in = parseFloat(comp.initialFlowRate || '0');
-                            const moles_P_formed = Math.max(0, F_P_out - F_P_in);
+                            let selectivityValue: string | number = '-';
+                            if (isProductInAnyReaction && calculationResults?.conversion && calculationResults?.outletFlowRates) {
+                              const F_P_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
+                              const F_P_in = parseFloat(comp.initialFlowRate || '0');
+                              const moles_P_formed = Math.max(0, F_P_out - F_P_in);
 
-                            const keyReactantName = calculationResults.conversion.reactantName;
-                            const F_key_in_comp = components.find(c => c.name === keyReactantName);
-                            const F_key_in = parseFloat(F_key_in_comp?.initialFlowRate || '0');
-                            const X_key = calculationResults.conversion.value;
-                            const moles_key_reacted = F_key_in * X_key;
+                              const keyReactantName = calculationResults.conversion.reactantName;
+                              const F_key_in_comp = components.find(c => c.name === keyReactantName);
+                              const F_key_in = parseFloat(F_key_in_comp?.initialFlowRate || '0');
+                              const X_key = calculationResults.conversion.value;
+                              const moles_key_reacted = F_key_in * X_key;
 
-                            if (moles_key_reacted > 1e-9) {
-                              const rawSelectivity = moles_P_formed / moles_key_reacted;
-                              selectivityValue = formatToSigFigs(Math.max(0, rawSelectivity) * 100);
-                            } else {
-                              selectivityValue = (moles_P_formed > 1e-9) ? '-' : '0.00';
+                              if (moles_key_reacted > 1e-9) {
+                                const rawSelectivity = moles_P_formed / moles_key_reacted;
+                                selectivityValue = formatToSigFigs(Math.max(0, rawSelectivity) * 100);
+                              } else {
+                                selectivityValue = (moles_P_formed > 1e-9) ? '-' : '0.00';
+                              }
                             }
-                          }
-                          
-                          const isLimitingReactant = comp.name === calculationResults?.conversion?.reactantName;
+                            
+                            const isLimitingReactant = comp.name === calculationResults?.conversion?.reactantName;
 
-                          // Calculate composition (mol%)
-                          let compositionValue: string = '-';
-                          if (calculationResults?.outletFlowRates) {
-                            const totalOutletFlow = Object.values(calculationResults.outletFlowRates).reduce((sum, flow) => sum + flow, 0);
-                            const compOutletFlow = calculationResults.outletFlowRates[comp.name] ?? 0;
-                            if (totalOutletFlow > 1e-9) {
-                              const molPercent = (compOutletFlow / totalOutletFlow) * 100;
-                              compositionValue = formatToSigFigs(molPercent);
+                            // Calculate composition (mol%)
+                            let compositionValue: string = '-';
+                            if (calculationResults?.outletFlowRates) {
+                              const totalOutletFlow = Object.values(calculationResults.outletFlowRates).reduce((sum, flow) => sum + flow, 0);
+                              const compOutletFlow = calculationResults.outletFlowRates[comp.name] ?? 0;
+                              if (totalOutletFlow > 1e-9) {
+                                const molPercent = (compOutletFlow / totalOutletFlow) * 100;
+                                compositionValue = formatToSigFigs(molPercent);
+                              }
                             }
-                          }
 
-                          return (
-                            <tr 
-                              key={comp.id} 
-                              className={`${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}
-                            >
-                              <td className={`border border-border px-3 py-2 text-center ${isLimitingReactant ? 'font-bold' : ''}`}>
-                                {comp.name}
-                              </td>
-                              <td className="border border-border px-3 py-2 text-center">
-                                {conversionValue}
-                              </td>
-                              <td className="border border-border px-3 py-2 text-center">
-                                {selectivityValue}
-                              </td>
-                              <td className="border border-border px-3 py-2 text-center">
-                                {calculationResults?.outletFlowRates?.[comp.name] !== undefined ? formatToSigFigs(calculationResults.outletFlowRates[comp.name]) : '-'}
-                              </td>
-                              <td className="border border-border px-3 py-2 text-center">
-                                {compositionValue}
-                              </td>
+                            return (
+                              <tr 
+                                key={comp.id} 
+                                className={`${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}
+                              >
+                                <td className={`border border-border px-3 py-2 text-center ${isLimitingReactant ? 'font-bold' : ''}`}>
+                                  {comp.name}
+                                </td>
+                                <td className="border border-border px-3 py-2 text-center">
+                                  {conversionValue}
+                                </td>
+                                <td className="border border-border px-3 py-2 text-center">
+                                  {selectivityValue}
+                                </td>
+                                <td className="border border-border px-3 py-2 text-center">
+                                  {calculationResults?.outletFlowRates?.[comp.name] !== undefined ? formatToSigFigs(calculationResults.outletFlowRates[comp.name]) : '-'}
+                                </td>
+                                <td className="border border-border px-3 py-2 text-center">
+                                  {compositionValue}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    ) : operationMode === 'Recycle' && recycleResults ? (
+                      // Recycle Results Table
+                      <div className="space-y-4">
+                        {/* Summary Information */}
+                        <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
+                          <div className="text-center">
+                            <div className="text-sm font-medium text-muted-foreground">Overall Conv.</div>
+                            <div className="text-lg font-bold">
+                              {recycleResults.overallConversion ? `${formatToSigFigs(recycleResults.overallConversion.value * 100)}%` : '-'}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {recycleResults.overallConversion?.reactantName || ''}
+                            </div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-sm font-medium text-muted-foreground">Single Pass Conversion</div>
+                            <div className="text-lg font-bold">
+                              {recycleResults.singlePassConversion ? `${formatToSigFigs(recycleResults.singlePassConversion.value * 100)}%` : '-'}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {recycleResults.singlePassConversion?.reactantName || ''} (Reactor Only)
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Convergence Issues Warning */}
+                        {!recycleResults.converged && (
+                          <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                            <h4 className="font-semibold text-red-800 dark:text-red-200 mb-2">⚠️ System Not Converged</h4>
+                            <div className="space-y-2 text-sm text-red-700 dark:text-red-300">
+                              {recycleResults.singlePassConversion && recycleResults.singlePassConversion.value < 0.05 && (
+                                <div className="p-2 bg-blue-100 dark:bg-blue-900/50 rounded">
+                                  <div className="font-medium text-blue-800 dark:text-blue-200">Low Single Pass Conversion Detected!</div>
+                                  <div className="text-blue-700 dark:text-blue-300 text-sm">
+                                    Single pass conversion is only {formatToSigFigs(recycleResults.singlePassConversion.value * 100)}%. 
+                                    Try:
+                                    <br />• Increasing reactor volume from {reactorVolume}L to {Math.ceil(parseFloat(reactorVolume) * 5)}L+
+                                    <br />• Increasing temperature from {kinetics.reactionTempK}K to {Math.ceil(parseFloat(kinetics.reactionTempK) + 50)}K+
+                                  </div>
+                                </div>
+                              )}
+                              <div className="mt-2">
+                                <div className="font-medium">General Solutions:</div>
+                                <div className="ml-4">- Increase reactor volume to allow more reaction</div>
+                                <div className="ml-4">- Increase temperature to increase reaction rate</div>
+                                <div className="ml-4">- Check that reaction kinetics parameters are reasonable</div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Detailed Results Table */}
+                        <table className="w-full border-collapse border border-border">
+                          <thead>
+                            <tr className="bg-muted/50">
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Component</th>
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Overall Conv (%)</th>
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Sel (%)</th>
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Outlet (mol/s)</th>
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Outlet Comp (%)</th>
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Rec (mol/s)</th>
+                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Rec Comp (%)</th>
                             </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                          </thead>
+                          <tbody>
+                            {components.map((comp) => {
+                              const isReactantInAnyReaction = reactions.some(r =>
+                                (r.reactants || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
+                              );
+                              const isProductInAnyReaction = reactions.some(r =>
+                                (r.products || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
+                             
+                              );
+
+                              // Overall conversion (fresh feed to product stream)
+                              let conversionValue: string = '-';
+                              if (isReactantInAnyReaction) {
+                                const F_fresh = parseFloat(comp.initialFlowRate || '0');
+                                const F_product = recycleResults.productStream[comp.name] || 0;
+                                if (F_fresh > 1e-9) {
+                                  const X_overall = (F_fresh - F_product) / F_fresh;
+                                  conversionValue = formatToSigFigs(Math.max(0, Math.min(1, X_overall)) * 100);
+                                } else {
+                                  conversionValue = F_product > 1e-9 ? '0.00' : '-';
+                                }
+                              }
+
+                              // Overall selectivity (product formed / reactant consumed from fresh feed)
+                              let selectivityValue: string = '-';
+                              if (isProductInAnyReaction && recycleResults.overallConversion) {
+                                const F_product_out = recycleResults.productStream[comp.name] || 0;
+                                const F_product_in = parseFloat(comp.initialFlowRate || '0'); // Fresh feed of this product
+                                const moles_product_formed = Math.max(0, F_product_out - F_product_in);
+
+                                const keyReactantName = recycleResults.overallConversion.reactantName;
+                                const F_key_fresh_comp = components.find(c => c.name === keyReactantName);
+                                const F_key_fresh = parseFloat(F_key_fresh_comp?.initialFlowRate || '0');
+                                const X_key_overall = recycleResults.overallConversion.value;
+                                const moles_key_consumed = F_key_fresh * X_key_overall;
+
+                                if (moles_key_consumed > 1e-9) {
+                                  const overallSelectivity = moles_product_formed / moles_key_consumed;
+                                  selectivityValue = formatToSigFigs(Math.max(0, overallSelectivity) * 100);
+                                } else {
+                                  selectivityValue = (moles_product_formed > 1e-9) ? '-' : '0.00';
+                                }
+                              }
+
+                              const isLimitingReactant = comp.name === recycleResults.overallConversion?.reactantName;
+
+                              // Calculate outlet composition (mol%)
+                              let outletCompositionValue: string = '-';
+                              const totalOutletFlow = Object.values(recycleResults.reactorOutletStreamFinal).reduce((sum, flow) => sum + flow, 0);
+                              const compOutletFlow = recycleResults.reactorOutletStreamFinal[comp.name] || 0;
+                              if (totalOutletFlow > 1e-9) {
+                                const molPercent = (compOutletFlow / totalOutletFlow) * 100;
+                                outletCompositionValue = formatToSigFigs(molPercent);
+                              }
+
+                              // Calculate recycle composition (mol%)
+                              let recycleCompositionValue: string = '-';
+                              const totalRecycleFlow = Object.values(recycleResults.recycleStreamFinal).reduce((sum, flow) => sum + flow, 0);
+                              const compRecycleFlow = recycleResults.recycleStreamFinal[comp.name] || 0;
+                              if (totalRecycleFlow > 1e-9) {
+                                const molPercent = (compRecycleFlow / totalRecycleFlow) * 100;
+                                recycleCompositionValue = formatToSigFigs(molPercent);
+                              }
+
+                              return (
+                                <tr 
+                                  key={comp.id} 
+                                  className={`${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}
+                                >
+                                  <td className={`border border-border px-2 py-2 text-center text-xs ${isLimitingReactant ? 'font-bold' : ''}`}>
+                                    {comp.name}
+                                  </td>
+                                  <td className="border border-border px-2 py-2 text-center text-xs">
+                                    {conversionValue}
+                                  </td>
+                                  <td className="border border-border px-2 py-2 text-center text-xs">
+                                    {selectivityValue}
+                                  </td>
+                                  <td className="border border-border px-2 py-2 text-center text-xs">
+                                    {formatToSigFigs(recycleResults.reactorOutletStreamFinal[comp.name] || 0)}
+                                  </td>
+                                  <td className="border border-border px-2 py-2 text-center text-xs">
+                                    {outletCompositionValue}
+                                  </td>
+                                  <td className="border border-border px-2 py-2 text-center text-xs">
+                                    {formatToSigFigs(recycleResults.recycleStreamFinal[comp.name] || 0)}
+                                  </td>
+                                  <td className="border border-border px-2 py-2 text-center text-xs">
+                                    {recycleCompositionValue}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+
+                        {/* System Performance Analysis - Moved below the table */}
+                        <div className="p-4 bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-800 rounded-lg">
+                          <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">System Performance Analysis</h4>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                            <div>
+                              <div className="text-muted-foreground">Reactor Inlet Total Flow</div>
+                              <div className="font-medium">
+                                {formatToSigFigs(Object.values(recycleResults.reactorInletStreamFinal).reduce((sum, flow) => sum + flow, 0))} mol/s
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-muted-foreground">Reactor Outlet Total Flow</div>
+                              <div className="font-medium">
+                                {formatToSigFigs(Object.values(recycleResults.reactorOutletStreamFinal).reduce((sum, flow) => sum + flow, 0))} mol/s
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-muted-foreground">Recycle Ratio</div>
+                              <div className="font-medium">
+                                {(() => {
+                                  const totalRecycle = Object.values(recycleResults.recycleStreamFinal).reduce((sum, flow) => sum + flow, 0);
+                                  const totalFresh = components.reduce((sum, comp) => sum + (parseFloat(comp.initialFlowRate) || 0), 0);
+                                  return totalFresh > 1e-9 ? formatToSigFigs(totalRecycle / totalFresh) : '-';
+                                })()}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-muted-foreground">Material Balance</div>
+                              <div className="font-medium">
+                                {(() => {
+                                  const totalIn = components.reduce((sum, comp) => sum + (parseFloat(comp.initialFlowRate) || 0), 0);
+                                  const totalOut = Object.values(recycleResults.productStream).reduce((sum, flow) => sum + flow, 0);
+                                  const balance = totalIn > 1e-9 ? (totalOut / totalIn) * 100 : 0;
+                                  return `${formatToSigFigs(balance)}%`;
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Advanced Debugging - Collapsible */}
+                        <details className="p-4 bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-800 rounded-lg">
+                          <summary className="font-semibold text-gray-800 dark:text-gray-200 cursor-pointer mb-2">
+                            Advanced Debugging ({recycleResults.iterations} iterations, {recycleResults.converged ? 'Converged' : 'Not Converged'})
+                          </summary>
+                          
+                          {/* Stream Flow Information */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                            <div>
+                              <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">Fresh Feed Stream</h4>
+                              <div className="space-y-1 text-xs">
+                                {components.map(comp => (
+                                  <div key={comp.id} className="flex justify-between">
+                                    <span>{comp.name}:</span>
+                                    <span>{formatToSigFigs(parseFloat(comp.initialFlowRate) || 0)} mol/s</span>
+                                  </div>
+                                ))}
+                                <div className="border-t pt-1 font-medium">
+                                  <div className="flex justify-between">
+                                    <span>Total:</span>
+                                    <span>{formatToSigFigs(components.reduce((sum, comp) => sum + (parseFloat(comp.initialFlowRate) || 0), 0))} mol/s</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div>
+                              <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">Product Stream</h4>
+                              <div className="space-y-1 text-xs">
+                                {components.map(comp => (
+                                  <div key={comp.id} className="flex justify-between">
+                                    <span>{comp.name}:</span>
+                                    <span>{formatToSigFigs(recycleResults.productStream[comp.name] || 0)} mol/s</span>
+                                  </div>
+                                ))}
+                                <div className="border-t pt-1 font-medium">
+                                  <div className="flex justify-between">
+                                    <span>Total:</span>
+                                    <span>{formatToSigFigs(Object.values(recycleResults.productStream).reduce((sum, flow) => sum + flow, 0))} mol/s</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div>
+                              <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">Recycle Stream</h4>
+                              <div className="space-y-1 text-xs">
+                                {components.map(comp => (
+                                  <div key={comp.id} className="flex justify-between">
+                                    <span>{comp.name}:</span>
+                                    <span>{formatToSigFigs(recycleResults.recycleStreamFinal[comp.name] || 0)} mol/s</span>
+                                  </div>
+                                ))}
+                                <div className="border-t pt-1 font-medium">
+                                  <div className="flex justify-between">
+                                    <span>Total:</span>
+                                    <span>{formatToSigFigs(Object.values(recycleResults.recycleStreamFinal).reduce((sum, flow) => sum + flow, 0))} mol/s</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Convergence Issues Details */}
+                          {!recycleResults.converged && recycleResults.debugInfo?.convergenceIssues && recycleResults.debugInfo.convergenceIssues.length > 0 && (
+                            <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                              <h4 className="font-semibold text-red-800 dark:text-red-200 mb-2">Detailed Convergence Issues</h4>
+                              <div className="space-y-1 text-sm text-red-700 dark:text-red-300">
+                                <div>• Final error: {recycleResults.debugInfo?.finalError?.toExponential(3) || 'N/A'} (tolerance: {recycleResults.debugInfo?.tolerance?.toExponential(3) || 'N/A'})</div>
+                                {recycleResults.debugInfo.convergenceIssues.slice(0, 5).map((issue, index) => (
+                                  <div key={index} className="ml-4">• {issue}</div>
+                                ))}
+                                {recycleResults.debugInfo.convergenceIssues.length > 5 && (
+                                  <div className="ml-4 text-xs">... and {recycleResults.debugInfo.convergenceIssues.length - 5} more issues</div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Iteration History */}
+                          {recycleResults.debugInfo?.iterationHistory && recycleResults.debugInfo.iterationHistory.length > 0 && (
+                            <div className="overflow-x-auto">
+                              <h5 className="font-medium text-gray-800 dark:text-gray-200 mb-2">Iteration History (last 10 iterations)</h5>
+                              <table className="w-full text-xs border-collapse border border-gray-300">
+                                <thead>
+                                  <tr className="bg-gray-100 dark:bg-gray-800">
+                                    <th className="border border-gray-300 px-2 py-1">Iter</th>
+                                    <th className="border border-gray-300 px-2 py-1">Error</th>
+                                    <th className="border border-gray-300 px-2 py-1">Recycle Total</th>
+                                    <th className="border border-gray-300 px-2 py-1">Reactor Out Total</th>
+                                    {components.slice(0, 3).map(comp => (
+                                      <th key={comp.id} className="border border-gray-300 px-2 py-1">Rec {comp.name}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {recycleResults.debugInfo.iterationHistory.slice(-10).map((hist, index) => {
+                                    const recycleTotal = Object.values(hist.recycleStream).reduce((sum, f) => sum + f, 0);
+                                    const reactorOutTotal = Object.values(hist.reactorOutlet).reduce((sum, f) => sum + f, 0);
+                                    
+                                    return (
+                                      <tr key={index} className={hist.recycleStreamError < recycleResults.debugInfo!.tolerance ? 'bg-green-50 dark:bg-green-900/20' : ''}>
+                                        <td className="border border-gray-300 px-2 py-1 text-center">{hist.iteration}</td>
+                                        <td className="border border-gray-300 px-2 py-1 text-center">
+                                          {hist.recycleStreamError.toExponential(2)}
+                                        </td>
+                                        <td className="border border-gray-300 px-2 py-1 text-center">
+                                          {formatToSigFigs(recycleTotal)}
+                                        </td>
+                                        <td className="border border-gray-300 px-2 py-1 text-center">
+                                          {formatToSigFigs(reactorOutTotal)}
+                                        </td>
+                                        {components.slice(0, 3).map(comp => (
+                                          <td key={comp.id} className="border border-gray-300 px-2 py-1 text-center">
+                                            {formatToSigFigs(hist.recycleStream[comp.name] || 0)}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                              {recycleResults.debugInfo.iterationHistory.length > 10 && (
+                                <div className="text-xs text-gray-500 mt-2">
+                                  Showing last 10 iterations of {recycleResults.debugInfo.iterationHistory.length} total
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </details>
+                      </div>
+                    ) : null}
                   </div>
                 </CardContent>
               </Card>
@@ -1480,7 +1910,7 @@ export default function ReactorDesignPage() {
             )}
 
             {/* Graph Visualization Button */}
-            {calculationResults && (
+            {(calculationResults || recycleResults) && operationMode === 'SinglePass' && (
               <div className="flex justify-center">
                 <Button 
                   onClick={() => setShowGraph(!showGraph)}
