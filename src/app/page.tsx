@@ -48,40 +48,35 @@ export default function Home() {
       path: "/toolbox/mccabe-thiele",
       description:
         "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
-      thumbnailPath: mccabeThumbnailPath,
-      isUpdated: true,
+      thumbnailPath: mccabeThumbnailPath
     },
     {
       name: "Reactor Design",
       path: "/toolbox/reactor-design",
       description:
         "Design and analyze chemical reactors. Calculate conversions and outlet flow rates for CSTR and PFR configurations.",
-      thumbnailPath: reactorDesignThumbnailPath,
-      isNew: true,
+      thumbnailPath: reactorDesignThumbnailPath
     },
     {
       name: "Azeotrope Finder",
       path: "/toolbox/azeotrope-finder",
       description:
         "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
-      thumbnailPath: azeotropeThumbnailPath,
-      isNew: true,
+      thumbnailPath: azeotropeThumbnailPath
     },
     {
       name: "Compound Properties",
       path: "/toolbox/compound-properties",
       description:
-        "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.", // Updated description
-      thumbnailPath: compoundPropertiesThumbnailPath,
-      isNew: true,
+        "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
+      thumbnailPath: compoundPropertiesThumbnailPath
     },
     {
       name: "Residue Curve Map",
       path: "/toolbox/residue-curve-map",
       description:
-        "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.", // Updated description
-      thumbnailPath: residueCurveMapThumbnailPath,
-      isNew: true,
+        "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
+      thumbnailPath: residueCurveMapThumbnailPath
     },
     {
       name: "Reaction Kinetics",
@@ -386,16 +381,7 @@ export default function Home() {
           {homeFeaturedSimulations.map((simulation) => (
             <Link href={simulation.path} key={simulation.name}>
               <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col relative overflow-hidden">
-                {simulation.isUpdated && (
-                  <div className="absolute top-3 right-[-32px] transform rotate-45 bg-yellow-400 text-black text-xs font-semibold py-2 px-8 shadow-lg z-10">
-                    UPDATED
-                  </div>
-                )}
-                {simulation.isNew && (
-                  <div className="absolute top-3 right-[-28px] transform rotate-45 bg-orange-500 text-white text-xs font-semibold py-2 px-10 shadow-lg z-10">
-                    NEW
-                  </div>
-                )}
+
                 <CardHeader>
                   <div className="relative mx-auto mb-4">
                     <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
