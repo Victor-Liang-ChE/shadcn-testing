@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 
 // Description text for the page - Added newline character \n
-const pageDescription = "Just a collection of various side projects, tools, and experiments I've worked on.\nDon't take them too seriously!";
+const pageDescription = "Just a collection of various side projects, tools, and experiments I've worked on.";
 
 export default function Page() {
 const projects = [
