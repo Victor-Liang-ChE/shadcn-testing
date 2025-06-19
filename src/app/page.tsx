@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useTheme } from "next-themes";
+import { useEffect, useState } from "react";
 import {
   Card,
   CardContent,
@@ -52,11 +53,42 @@ const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.pn
 const residueCurveMapThumbnailLightPath = "/thumbnails/residue-curve-map-thumbnail-light.png";
 const reactorDesignThumbnailPath = "/thumbnails/reactor-design-thumbnail.png";
 const reactorDesignThumbnailLightPath = "/thumbnails/reactor-design-thumbnail-light.png";
+const isothermsThumbnailPath = "/thumbnails/isotherms-thumbnail.png";
+const isothermsThumbnailLightPath = "/thumbnails/isotherms-thumbnail-light.png";
 
 export default function Home() {
   const { resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const homeFeaturedSimulations = [
+    {
+      name: "Reactor Design",
+      path: "/toolbox/reactor-design",
+      description:
+        "Design and analyze chemical reactors. Calculate conversions and outlet flow rates for CSTR and PFR configurations.",
+      thumbnailPath: reactorDesignThumbnailPath,
+      thumbnailLightPath: reactorDesignThumbnailLightPath
+    },
+    {
+      name: "Reaction Kinetics",
+      path: "/toolbox/kinetics",
+      description:
+        "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
+      thumbnailPath: kineticsThumbnailPath,
+      thumbnailLightPath: kineticsThumbnailLightPath,
+    },
+    {
+      name: "Isotherms",
+      path: "/toolbox/isotherms",
+      description:
+        "Explore and visualize adsorption isotherms including Langmuir, Freundlich, and Temkin models for surface chemistry analysis.",
+      thumbnailPath: isothermsThumbnailPath,
+      thumbnailLightPath: isothermsThumbnailLightPath
+    },
     {
       name: "McCabe-Thiele",
       path: "/toolbox/mccabe-thiele",
@@ -66,12 +98,28 @@ export default function Home() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "Reactor Design",
-      path: "/toolbox/reactor-design",
+      name: "PID Tuning",
+      path: "/toolbox/pid-tuning",
       description:
-        "Design and analyze chemical reactors. Calculate conversions and outlet flow rates for CSTR and PFR configurations.",
-      thumbnailPath: reactorDesignThumbnailPath,
-      thumbnailLightPath: reactorDesignThumbnailLightPath
+        "Interactive PID controller tuning simulation. Adjust parameters and observe system response in real-time.",
+      thumbnailPath: pidThumbnailPath,
+      thumbnailLightPath: pidThumbnailLightPath,
+    },
+    {
+      name: "Process Dynamics",
+      path: "/toolbox/process-dynamics",
+      description:
+        "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
+      thumbnailPath: dynamicsThumbnailPath,
+      thumbnailLightPath: dynamicsThumbnailLightPath,
+    },
+    {
+      name: "Residue Curve Map",
+      path: "/toolbox/residue-curve-map",
+      description:
+        "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
+      thumbnailPath: residueCurveMapThumbnailPath,
+      thumbnailLightPath: residueCurveMapThumbnailLightPath
     },
     {
       name: "Azeotrope Finder",
@@ -88,39 +136,7 @@ export default function Home() {
         "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
       thumbnailPath: compoundPropertiesThumbnailPath,
       thumbnailLightPath: compoundPropertiesThumbnailLightPath
-    },
-    {
-      name: "Residue Curve Map",
-      path: "/toolbox/residue-curve-map",
-      description:
-        "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
-      thumbnailPath: residueCurveMapThumbnailPath,
-      thumbnailLightPath: residueCurveMapThumbnailLightPath
-    },
-    {
-      name: "Reaction Kinetics",
-      path: "/toolbox/kinetics",
-      description:
-        "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
-      thumbnailPath: kineticsThumbnailPath,
-      thumbnailLightPath: kineticsThumbnailLightPath,
-    },
-    {
-      name: "Process Dynamics",
-      path: "/toolbox/process-dynamics",
-      description:
-        "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
-      thumbnailPath: dynamicsThumbnailPath,
-      thumbnailLightPath: dynamicsThumbnailLightPath,
-    },
-    {
-      name: "PID Tuning",
-      path: "/toolbox/pid-tuning",
-      description:
-        "Interactive PID controller tuning simulation. Adjust parameters and observe system response in real-time.",
-      thumbnailPath: pidThumbnailPath,
-      thumbnailLightPath: pidThumbnailLightPath,
-    },
+    }
   ];
 
   return (
@@ -372,7 +388,7 @@ export default function Home() {
                     alt="GitHub Logo"
                     width={30}
                     height={30}
-                    className={resolvedTheme === 'dark' ? 'invert' : ''}
+                    className={mounted && resolvedTheme === 'dark' ? 'invert' : ''}
                   />
                   <span className="sr-only">GitHub</span>
                 </a>
@@ -418,7 +434,7 @@ export default function Home() {
                         <CSTRVisualization className="w-full h-full" showLabel={true} />
                       ) : (
                         <Image
-                          src={resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
+                          src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
                           alt={`${simulation.name} Thumbnail`}
                           layout="fill"
                           objectFit={simulation.name === "Residue Curve Map" ? "cover" : "contain"}
