@@ -921,7 +921,7 @@ export default function McCabeThielePage() {
             data: series.map(s => s.name).filter(name => name !== 'Key Points' && name !== 'Stages') as string[],
 
             textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-            itemWidth: 12, itemHeight: 12, icon: 'rect',
+            itemWidth: 25, itemHeight: 2,
         },        tooltip: {
             show: true,
             trigger: 'axis',
@@ -929,7 +929,7 @@ export default function McCabeThielePage() {
             borderColor: isDark ? '#55aaff' : '#333333', // Theme-aware border
             borderWidth: 1,
             textStyle: { 
-                color: 'white', // White text for tooltip
+                color: textColor, // Theme-aware text color
                 fontSize: 12,
                 fontFamily: 'Merriweather Sans'
             },
@@ -973,12 +973,12 @@ export default function McCabeThielePage() {
                         // Key Points series has custom tooltip already, skip detailed formatting here or customize if needed
                         if (seriesName === 'Key Points') {
                             if (param.data && param.data.name) {
-                                tooltipHtml += `${param.marker} ${param.data.name}: (${formatNumberToPrecision(param.value[0], 3)}, ${formatNumberToPrecision(param.value[1], 3)})<br/>`;
+                                tooltipHtml += `<span style="color: ${param.color};">${param.data.name}: (${formatNumberToPrecision(param.value[0], 3)}, ${formatNumberToPrecision(param.value[1], 3)})</span><br/>`;
                             }
                         } else if (seriesName && param.value && Array.isArray(param.value) && param.value.length >= 2) {
                             // For other line series, show series name and y-value
                             // The x-value is common (axisValue), y-value is param.value[1]
-                            tooltipHtml += `${param.marker} ${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}<br/>`;
+                            tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
                         }
                     });
                 }
@@ -1307,7 +1307,7 @@ export default function McCabeThielePage() {
                    <Label htmlFor="q" className="flex items-center">Feed Quality (q): {q.toFixed(2)}
                        <ShadTooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-5 w-5 rounded-full"><span className="text-xs">ⓘ</span></Button></TooltipTrigger><TooltipContent><p>{getFeedQualityState()}</p></TooltipContent></ShadTooltip>
                    </Label>
-                   <Slider id="q" min={-1} max={2} step={0.05} value={[q]} onValueChange={(value) => setQ(value[0])} style={{ '--primary': 'hsl(0 0% 98%)' } as React.CSSProperties}/>
+                   <Slider id="q" min={-1} max={2} step={0.05} value={[q]} onValueChange={(value) => setQ(value[0])} style={{ '--primary': 'hsl(60 100% 50%)' } as React.CSSProperties}/>
                  </div>
                  {/* r Slider */}
                  <div className="space-y-3">

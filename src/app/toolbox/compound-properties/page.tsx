@@ -994,7 +994,7 @@ export default function CompoundPropertiesPage() {
                     params.forEach((param: any) => {
                         const seriesFullname = param.seriesName;
                         // param.value is [Pressure_DisplayUnit, TempC]
-                        tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 3)} °C</b><br/>`;
+                        tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 3)} °C</b></span><br/>`;
                     });
                 } else {
                     const tempInCelsius = params[0].axisValue - 273.15; // TempK from X-axis
@@ -1002,7 +1002,7 @@ export default function CompoundPropertiesPage() {
                     params.forEach((param: any) => {
                         const seriesFullname = param.seriesName;
                         // param.value is [TempK, Value]
-                        tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b><br/>`;
+                        tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b></span><br/>`;
                     });
                 }
                 return tooltipHtml;
@@ -1014,6 +1014,8 @@ export default function CompoundPropertiesPage() {
             textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 11 },
             inactiveColor: '#4b5563',
             type: 'scroll',
+            itemWidth: 25,
+            itemHeight: 2,
             formatter: (name) => {
                 const series = seriesData.find(s => s.name === name) as any;
                 if (series && series._internal_legend_equation) {

@@ -546,7 +546,9 @@ export default function ReactorDesignPage() {
           bottom: '5%', 
           left: 'center',
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: ['Conversion', 'Selectivity']
+          data: ['Conversion', 'Selectivity'],
+          itemWidth: 25,
+          itemHeight: 2
         },
         tooltip: { 
           trigger: 'axis', 
@@ -554,6 +556,24 @@ export default function ReactorDesignPage() {
           borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333', 
           borderWidth: 1,
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+          axisPointer: {
+            type: 'cross',
+            label: {
+              show: true,
+              backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+              color: textColor,
+              borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+              borderWidth: 1,
+              fontFamily: 'Merriweather Sans',
+              formatter: function (params: any) {
+                if (params.axisDimension === 'x') {
+                  return `Volume: ${params.value.toFixed(2)} L`;
+                } else {
+                  return `${params.value.toFixed(1)}%`;
+                }
+              }
+            }
+          },
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
@@ -563,7 +583,7 @@ export default function ReactorDesignPage() {
               if (param.seriesName === 'Conversion' || param.seriesName === 'Selectivity') {
                 const value = formatToSigFigs(param.value[1]);
                 const color = param.color;
-                tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}%</span><br/>`;
+                tooltipContent += `<span style="color: ${color};">${param.seriesName}: ${value}%</span><br/>`;
               }
             });
             
@@ -829,9 +849,9 @@ export default function ReactorDesignPage() {
     } else {
       return (
         <div className="w-full h-64 bg-card rounded flex items-center justify-center">
-          <svg viewBox="0 0 400 200" className="w-full h-full">
-            {/* CSTR Tank - much larger rectangular shape */}
-            <rect x="120" y="40" width="160" height="120" fill="lightblue" stroke="currentColor" strokeWidth="2" rx="15"/>
+          <svg viewBox="0 0 400 240" className="w-full h-full">
+            {/* CSTR Tank - even larger rectangular shape matching CSTRVisualization.tsx */}
+            <rect x="80" y="20" width="240" height="180" fill="lightblue" stroke="currentColor" strokeWidth="4" rx="25"/>
             
             {/* Feed Arrow - longer tail */}
             <defs>
@@ -839,24 +859,26 @@ export default function ReactorDesignPage() {
                 <polygon points="0 0, 7 2.5, 0 5" fill="currentColor"/>
               </marker>
             </defs>
-            <line x1="60" y1="100" x2="115" y2="100" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
-            <text x="87" y="85" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Feed</text>
+            <line x1="20" y1="105" x2="75" y2="105" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
+            <text x="47" y="90" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Feed</text>
             
             {/* Product Arrow - longer tail */}
-            <line x1="285" y1="100" x2="340" y2="100" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
-            <text x="312" y="85" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Product</text>
+            <line x1="325" y1="105" x2="380" y2="105" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
+            <text x="352" y="90" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Product</text>
             
             {/* Stirrer shaft */}
-            <line x1="200" y1="20" x2="200" y2="140" stroke="currentColor" strokeWidth="4"/>
+            <line x1="200" y1="0" x2="200" y2="155" stroke="currentColor" strokeWidth="8"/>
             
-            {/* Stirrer blades with spinning animation - larger */}
-            <g className="animate-spin" style={{transformOrigin: '200px 100px'}}>
-              <line x1="160" y1="100" x2="240" y2="100" stroke="currentColor" strokeWidth="5"/>
-              <line x1="200" y1="70" x2="200" y2="130" stroke="currentColor" strokeWidth="5"/>
+            {/* Stirrer blades with spinning animation - matching CSTRVisualization.tsx */}
+            <g className="animate-spin" style={{transformOrigin: '200px 155px'}}>
+              {/* A horizontal blade centered at (200, 155) */}
+              <line x1="160" y1="155" x2="240" y2="155" stroke="currentColor" strokeWidth="8"/>
+              {/* A vertical blade of the same length, also centered at (200, 155) */}
+              <line x1="200" y1="115" x2="200" y2="195" stroke="currentColor" strokeWidth="8"/>
             </g>
             
             {/* CSTR Label */}
-            <text x="200" y="180" fontSize="20" fill="currentColor" className="text-foreground" textAnchor="middle" fontWeight="bold">CSTR</text>
+            <text x="200" y="230" fontSize="28" fill="currentColor" className="text-foreground" textAnchor="middle" fontWeight="bold">CSTR</text>
           </svg>
         </div>
       );
@@ -1298,11 +1320,12 @@ export default function ReactorDesignPage() {
                                 {isReactantInReaction ? (
                                   <Input
                                     type="number"
-                                    value={comp.reactionOrders?.[forwardKey] || '1'}
+                                    value={comp.reactionOrders?.[forwardKey] || ''}
                                     onChange={(e) => {
                                       const newReactionOrders = { ...comp.reactionOrders, [forwardKey]: e.target.value };
                                       handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
                                     }}
+                                    placeholder="0"
                                     className="w-16 h-8 text-center text-xs"
                                     step="0.1"
                                     min="0"
@@ -1321,11 +1344,12 @@ export default function ReactorDesignPage() {
                                 {isProductInReaction ? (
                                   <Input
                                     type="number"
-                                    value={comp.reactionOrders?.[backwardKey] || '1'}
+                                    value={comp.reactionOrders?.[backwardKey] || ''}
                                     onChange={(e) => {
                                       const newReactionOrders = { ...comp.reactionOrders, [backwardKey]: e.target.value };
                                       handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
                                     }}
+                                    placeholder="0"
                                     className="w-16 h-8 text-center text-xs"
                                     step="0.1"
                                     min="0"
@@ -1347,11 +1371,12 @@ export default function ReactorDesignPage() {
                               {isReactantInReaction ? (
                                 <Input
                                   type="number"
-                                  value={comp.reactionOrders?.[reaction.id] || '1'}
+                                  value={comp.reactionOrders?.[reaction.id] || ''}
                                   onChange={(e) => {
                                     const newReactionOrders = { ...comp.reactionOrders, [reaction.id]: e.target.value };
                                     handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
                                   }}
+                                  placeholder="0"
                                   className="w-16 h-8 text-center text-xs"
                                   step="0.1"
                                   min="0"

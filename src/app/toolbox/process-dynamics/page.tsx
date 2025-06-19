@@ -14,6 +14,7 @@ echarts.use([TitleComponent, TooltipComponent, GridComponent, LegendComponent, T
 
 // Shadcn UI imports
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
@@ -57,6 +58,10 @@ export default function ProcessControlPage() {
     const [params, setParams] = useState<ProcessParams>({ K: 1, M: 1, tau: 1, zeta: 1 });
     const [lockYAxis, setLockYAxis] = useState<boolean>(false);
     const [yAxisRange, setYAxisRange] = useState<[number, number]>([0, 1.1]); // Initialize with a default range
+    const [maxKSlider, setMaxKSlider] = useState<string>('10'); // Max for K slider
+    const [maxMSlider, setMaxMSlider] = useState<string>('10'); // Max for M slider
+    const [maxTauSlider, setMaxTauSlider] = useState<string>('10'); // Max for Tau slider
+    const [maxZetaSlider, setMaxZetaSlider] = useState<string>('2'); // Max for Zeta slider
     const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null);
     const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
     const [isLoading, setIsLoading] = useState<boolean>(true); // Added loading state
@@ -70,8 +75,9 @@ export default function ProcessControlPage() {
         const zeta = rawZeta ?? 1; // Default zeta if undefined
 
         const t_final = 50;
-        const num_points = 200; // Increased points for smoother curves
-        const t = Array.from({ length: num_points }, (_, i) => i * t_final / (num_points - 1));
+        const dt = 0.1; // Use nice increment of 0.1
+        const num_points = Math.floor(t_final / dt) + 1;
+        const t = Array.from({ length: num_points }, (_, i) => i * dt);
 
         let y: number[] = Array(t.length).fill(0);
         let y_input: number[] = Array(t.length).fill(0);
@@ -137,12 +143,12 @@ export default function ProcessControlPage() {
         const seriesData: SeriesOption[] = [
             {
                 name: 'System Response', type: 'line', data: t.map((time, i) => [time, y[i]]),
-                smooth: true, symbol: 'none', lineStyle: { color: '#ffff00', width: 2 }, // Yellow
+                smooth: true, symbol: 'none', lineStyle: { color: '#00ff00', width: 4 }, // Green, increased width
                 emphasis: { focus: 'series' }
             },
             {
                 name: 'Input', type: 'line', data: t.map((time, i) => [time, y_input[i]]),
-                smooth: false, symbol: 'none', lineStyle: { color: '#ff0000', type: 'dashed' }, // Red dashed
+                smooth: false, symbol: 'none', lineStyle: { color: '#ff0000', type: 'dashed', width: 3 }, // Red dashed, increased width
                 emphasis: { focus: 'series' }
             }
         ];
@@ -165,15 +171,41 @@ export default function ProcessControlPage() {
             },
             tooltip: {
                 trigger: 'axis',
-                formatter: (params: any) => {
-                    let tooltipText = `<span style="font-family: 'Merriweather Sans';">Time: ${params[0].axisValueLabel}<br/>`; // Apply font to tooltip
-                    params.forEach((param: any) => {
-                        tooltipText += `${param.marker}${param.seriesName}: ${param.value[1].toPrecision(4)}<br/>`;
-                    });
-                    tooltipText += `</span>`;
-                    return tooltipText;
+                backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+                borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+                borderWidth: 1,
+                textStyle: { 
+                    color: textColor, 
+                    fontFamily: 'Merriweather Sans' 
                 },
-                textStyle: { fontFamily: 'Merriweather Sans' } // Also set font here for consistency
+                axisPointer: {
+                    type: 'cross',
+                    label: {
+                        show: true,
+                        backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+                        color: textColor,
+                        borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+                        borderWidth: 1,
+                        fontFamily: 'Merriweather Sans',
+                        formatter: function (params: any) {
+                            if (params.axisDimension === 'x') {
+                                return `Time: ${params.value.toFixed(2)}`;
+                            } else {
+                                return `Value: ${params.value.toFixed(3)}`;
+                            }
+                        }
+                    }
+                },
+                formatter: (params: any) => {
+                    let tooltipText = `Time: ${params[0].axisValueLabel}<br/>`;
+                    params.forEach((param: any) => {
+                        // Map series names to their correct colors
+                        const color = param.seriesName === 'System Response' ? '#00ff00' : 
+                                     param.seriesName === 'Input' ? '#ff0000' : param.color;
+                        tooltipText += `<span style="color: ${color};">${param.seriesName}: ${param.value[1].toPrecision(3)}</span><br/>`;
+                    });
+                    return tooltipText;
+                }
             },
             legend: {
                 data: ['System Response', 'Input'],
@@ -182,10 +214,12 @@ export default function ProcessControlPage() {
                   fontSize: 12, 
                   fontFamily: 'Merriweather Sans' 
                 }, // Apply font
-                top: 'bottom',
-                type: 'scroll'
+                top: '96%',
+                type: 'scroll',
+                itemWidth: 25,
+                itemHeight: 2
             },
-            grid: { left: '8%', right: '8%', bottom: '15%', top: '15%', containLabel: true },
+            grid: { left: '8%', right: '8%', bottom: '10%', top: '3%', containLabel: true },
             toolbox: {
                 feature: { saveAsImage: { name: 'process-dynamics-plot', backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff' } },
                 iconStyle: { borderColor: textColor },
@@ -195,6 +229,7 @@ export default function ProcessControlPage() {
                 type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,
                 min: 0, max: 50, // Fixed X-axis range
                 axisLabel: { 
+                  showMaxLabel: false, // Hide maximum value label on x-axis
                   color: textColor, 
                   fontSize: 14, 
                   fontFamily: 'Merriweather Sans', 
@@ -214,6 +249,7 @@ export default function ProcessControlPage() {
                 min: finalYAxisRange[0], // Use the passed finalYAxisRange
                 max: finalYAxisRange[1], // Use the passed finalYAxisRange
                 axisLabel: { 
+                  showMaxLabel: false, // Hide maximum value label on y-axis
                   color: textColor, 
                   fontSize: 14, 
                   fontFamily: 'Merriweather Sans', 
@@ -309,12 +345,12 @@ export default function ProcessControlPage() {
     const metrics = simulationResult?.metrics;
 
     return (
-        <div className="container mx-auto p-4 md:p-8">
+        <div className="container mx-auto p-4 md:p-8 px-8 md:px-16">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Controls Column */}
                 <div className="lg:col-span-1 space-y-6">
                     <Card>
-                        <CardContent className="space-y-4"> {/* Removed pt-6 */}
+                        <CardContent className="space-y-4 pt-2"> {/* Reduced pt-6 to pt-2 */}
                             <Label>Order:</Label>
                             <div className="flex gap-2">
                                 <Button variant={order === 'first' ? 'default' : 'outline'} onClick={() => handleOrderChange('first')} className="flex-1">1st Order</Button>
@@ -329,34 +365,118 @@ export default function ProcessControlPage() {
                     </Card>
 
                     <Card>
-                        <CardContent className="space-y-6"> {/* Removed pt-6 */}
+                        <CardContent className="space-y-6 pt-2"> {/* Reduced pt-6 to pt-2 */}
                             {/* K Slider */}
-                            <div className="space-y-2">
-                                <Label htmlFor="k-slider" className="flex justify-between"><span>Gain (K):</span><span>{formatNumber(params.K)}</span></Label>
-                                <Slider id="k-slider" min={0} max={10} step={0.1} value={[params.K]} onValueChange={([val]) => handleParamChange('K', val)} />
+                            <div className="space-y-4">
+                                <Label htmlFor="k-slider">Gain (K): {formatNumber(params.K)}</Label>
+                                <div className="flex items-center gap-3">
+                                    <Slider 
+                                        id="k-slider" 
+                                        min={0} 
+                                        max={parseFloat(maxKSlider)} 
+                                        step={0.1} 
+                                        value={[params.K]} 
+                                        onValueChange={([val]) => handleParamChange('K', val)}
+                                        className="flex-1"
+                                    />
+                                    <div className="flex items-center gap-1">
+                                        <Label htmlFor="maxKInput" className="text-xs text-muted-foreground">Max:</Label>
+                                        <Input
+                                            id="maxKInput"
+                                            type="number"
+                                            value={maxKSlider}
+                                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxKSlider(e.target.value)}
+                                            className="w-20 h-8 text-xs"
+                                            min="0.1"
+                                        />
+                                    </div>
+                                </div>
                             </div>
                             {/* M Slider */}
-                            <div className="space-y-2">
-                                <Label htmlFor="m-slider" className="flex justify-between"><span>Magnitude (M):</span><span>{formatNumber(params.M)}</span></Label>
-                                <Slider id="m-slider" min={0} max={10} step={0.1} value={[params.M]} onValueChange={([val]) => handleParamChange('M', val)} />
+                            <div className="space-y-4">
+                                <Label htmlFor="m-slider">Magnitude (M): {formatNumber(params.M)}</Label>
+                                <div className="flex items-center gap-3">
+                                    <Slider 
+                                        id="m-slider" 
+                                        min={0} 
+                                        max={parseFloat(maxMSlider)} 
+                                        step={0.1} 
+                                        value={[params.M]} 
+                                        onValueChange={([val]) => handleParamChange('M', val)}
+                                        className="flex-1"
+                                    />
+                                    <div className="flex items-center gap-1">
+                                        <Label htmlFor="maxMInput" className="text-xs text-muted-foreground">Max:</Label>
+                                        <Input
+                                            id="maxMInput"
+                                            type="number"
+                                            value={maxMSlider}
+                                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxMSlider(e.target.value)}
+                                            className="w-20 h-8 text-xs"
+                                            min="0.1"
+                                        />
+                                    </div>
+                                </div>
                             </div>
                             {/* Tau Slider */}
-                            <div className="space-y-2">
-                                <Label htmlFor="tau-slider" className="flex justify-between"><span>Time Constant (&tau;):</span><span>{formatNumber(params.tau)}</span></Label>
-                                <Slider id="tau-slider" min={0.1} max={10} step={0.1} value={[params.tau]} onValueChange={([val]) => handleParamChange('tau', val)} />
+                            <div className="space-y-4">
+                                <Label htmlFor="tau-slider">Time Constant (&tau;): {formatNumber(params.tau)}</Label>
+                                <div className="flex items-center gap-3">
+                                    <Slider 
+                                        id="tau-slider" 
+                                        min={0.1} 
+                                        max={parseFloat(maxTauSlider)} 
+                                        step={0.1} 
+                                        value={[params.tau]} 
+                                        onValueChange={([val]) => handleParamChange('tau', val)}
+                                        className="flex-1"
+                                    />
+                                    <div className="flex items-center gap-1">
+                                        <Label htmlFor="maxTauInput" className="text-xs text-muted-foreground">Max:</Label>
+                                        <Input
+                                            id="maxTauInput"
+                                            type="number"
+                                            value={maxTauSlider}
+                                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxTauSlider(e.target.value)}
+                                            className="w-20 h-8 text-xs"
+                                            min="0.1"
+                                        />
+                                    </div>
+                                </div>
                             </div>
                             {/* Zeta Slider (Conditional) */}
                             {order === 'second' && (
-                                <div className="space-y-2">
-                                    <Label htmlFor="zeta-slider" className="flex justify-between"><span>Damping Ratio (&zeta;):</span><span>{formatNumber(params.zeta)}</span></Label>
-                                    <Slider id="zeta-slider" min={0} max={2} step={0.01} value={[params.zeta ?? 1]} onValueChange={([val]) => handleParamChange('zeta', val)} />
+                                <div className="space-y-4">
+                                    <Label htmlFor="zeta-slider">Damping Ratio (&zeta;): {formatNumber(params.zeta)}</Label>
+                                    <div className="flex items-center gap-3">
+                                        <Slider 
+                                            id="zeta-slider" 
+                                            min={0} 
+                                            max={parseFloat(maxZetaSlider)} 
+                                            step={0.01} 
+                                            value={[params.zeta ?? 1]} 
+                                            onValueChange={([val]) => handleParamChange('zeta', val)}
+                                            className="flex-1"
+                                        />
+                                        <div className="flex items-center gap-1">
+                                            <Label htmlFor="maxZetaInput" className="text-xs text-muted-foreground">Max:</Label>
+                                            <Input
+                                                id="maxZetaInput"
+                                                type="number"
+                                                value={maxZetaSlider}
+                                                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setMaxZetaSlider(e.target.value)}
+                                                className="w-20 h-8 text-xs"
+                                                min="0.01"
+                                            />
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </CardContent>
                     </Card>
 
                     <Card>
-                         <CardContent> {/* Removed pt-6 */}
+                         <CardContent className="pt-2"> {/* Reduced pt-6 to pt-2 */}
                             <div className="flex items-center space-x-2">
                                 <Checkbox id="lock-y-axis" checked={lockYAxis} onCheckedChange={handleLockChange} />
                                 <Label htmlFor="lock-y-axis">Lock Y-axis</Label>
@@ -387,7 +507,7 @@ export default function ProcessControlPage() {
                 {/* Plot Column */}
                 <div className="lg:col-span-2">
                     <Card>
-                        <CardContent className="pt-6">
+                        <CardContent className="py-2">
                             <div className="relative aspect-square rounded-md overflow-hidden">
                                 {isLoading && (
                                     <div className="absolute inset-0 flex items-center justify-center bg-background/60 dark:bg-background/70 z-10 backdrop-blur-sm">

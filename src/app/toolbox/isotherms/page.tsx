@@ -212,6 +212,9 @@ export default function LangmuirIsothermPage() {
 
       const newOptions: EChartsOption = {
         backgroundColor: 'transparent',
+        animation: true,
+        animationDuration: 300,
+        animationEasing: 'cubicOut',
         title: {
           text: chartTitle,
           left: 'center',
@@ -250,6 +253,7 @@ export default function LangmuirIsothermPage() {
             inside: false
           },
           axisLabel: {
+            showMaxLabel: false, // Hide maximum value label on x-axis
             color: textColor,
             fontSize: 16,
             fontFamily: 'Merriweather Sans',
@@ -280,6 +284,7 @@ export default function LangmuirIsothermPage() {
             inside: false
           },
           axisLabel: {
+            showMaxLabel: false, // Hide maximum value label on y-axis
             color: textColor,
             fontSize: 16,
             fontFamily: 'Merriweather Sans',
@@ -298,12 +303,32 @@ export default function LangmuirIsothermPage() {
             fontSize: 12,
             fontFamily: 'Merriweather Sans'
           },
+          axisPointer: {
+            type: 'cross',
+            label: {
+              show: true,
+              backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+              color: textColor,
+              borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+              borderWidth: 1,
+              fontFamily: 'Merriweather Sans',
+              formatter: function (params: any) {
+                if (params.axisDimension === 'x') {
+                  const xLabel = independentVar === 'pressure' ? 'P' : 'C';
+                  return `${xLabel}: ${params.value.toFixed(3)}`;
+                } else {
+                  const yLabel = selectedIsotherm === 'langmuir' ? 'θ' : 'q';
+                  return `${yLabel}: ${params.value.toFixed(3)}`;
+                }
+              }
+            }
+          },
           formatter: function (params: any) {
             if (Array.isArray(params) && params.length > 0) {
               const point = params[0];
               const xLabel = independentVar === 'pressure' ? 'P' : 'C';
               const yLabel = selectedIsotherm === 'langmuir' ? 'θ' : 'q';
-              return `${xLabel}: ${formatNumberToPrecision(point.axisValue, 3)}<br/>${yLabel}: ${formatNumberToPrecision(point.value[1], 3)}`;
+              return `${xLabel}: ${formatNumberToPrecision(point.axisValue, 3)}<br/><span style="color: ${point.color};">${yLabel}: ${formatNumberToPrecision(point.value[1], 3)}</span>`;
             }
             return '';
           }
@@ -578,8 +603,8 @@ export default function LangmuirIsothermPage() {
                       echarts={echarts}
                       option={echartsOptions}
                       style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }}
-                      notMerge={false}
-                      lazyUpdate={false}
+                      notMerge={true}
+                      lazyUpdate={true}
                     />
                   )}
                 </div>

@@ -770,8 +770,10 @@ export default function PidTuningPage() {
           let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
           params.forEach((param: any) => {
             const value = parseFloat(param.value[1]).toPrecision(3);
-            const color = param.color;
-            tooltip += `<span style="display:inline-block;margin-right:5px;border-radius:10px;width:10px;height:10px;background-color:${color};"></span>${param.seriesName}: ${value}<br/>`;
+            // Map series names to their correct colors
+            const color = param.seriesName === 'Process Variable' ? '#3b82f6' : 
+                         param.seriesName === 'Setpoint' ? '#ef4444' : param.color;
+            tooltip += `<span style="color: ${color};">${param.seriesName}: ${value}</span><br/>`;
           });
           return tooltip;
         },
@@ -800,9 +802,8 @@ export default function PidTuningPage() {
         bottom: '2%',
         left: 'center',
         textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-        itemWidth: 12,
-        itemHeight: 12,
-        icon: 'rect'
+        itemWidth: 25,
+        itemHeight: 2
       },
       series: [
         {

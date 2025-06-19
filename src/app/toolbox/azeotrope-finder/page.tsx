@@ -621,16 +621,16 @@ export default function AzeotropeFinderPage() {
         axisPointer: {
           type: 'cross',
           label: {
-            backgroundColor: '#1e293b', // Match main tooltip background
-            color: '#e5e7eb',           // Match main tooltip text color
+            backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff',
+            color: textColor,
             fontFamily: 'Merriweather Sans',
-            borderColor: '#3b82f6',     // Match main tooltip border color
+            borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
             borderWidth: 1,
           }
         },
-        backgroundColor: '#1e293b',
-        borderColor: '#3b82f6',
-        textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
+        backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff',
+        borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
+        textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
         formatter: (params: any) => {
             if (!Array.isArray(params) || params.length === 0) return '';
             let tooltipHtml = `${scanParamName}: <b>${formatNumberToPrecision(params[0].axisValue, 4)}</b><br/>`;
@@ -646,7 +646,7 @@ export default function AzeotropeFinderPage() {
                     ? value.toFixed(1) 
                     : formatNumberToPrecision(value, precision);
 
-                tooltipHtml += `${param.marker} ${seriesName}: <b>${formattedValue}</b><br/>`;
+                tooltipHtml += `<span style="color: ${param.color};"><b>${seriesName}: ${formattedValue}</b></span><br/>`;
             });
             return tooltipHtml;
         }
