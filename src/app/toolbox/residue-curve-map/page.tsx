@@ -1042,16 +1042,16 @@ export default function TernaryResidueMapPage() {
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: titleA, font: axisTitleFont, standoff: 25 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Top (Intermediate)
-                baxis: { title: { text: titleB, font: axisTitleFont, standoff: 25 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Left (Heaviest)
-                caxis: { title: { text: titleC, font: axisTitleFont, standoff: 25 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Right (Lightest)
-                bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8',
+                aaxis: { title: { text: titleA, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Top (Intermediate)
+                baxis: { title: { text: titleB, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Left (Heaviest)
+                caxis: { title: { text: titleC, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Right (Lightest)
+                bgcolor: 'transparent',
             },
-            margin: { l: 70, r: 70, b: 70, t: 90, pad: 5 }, // Standard margins
+            margin: { l: 90, r: 90, b: 90, t: 110, pad: 10 }, // Increased margins for better text display
             autosize: true,
-            paper_bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8', 
+            paper_bgcolor: 'transparent', 
             font: basePlotFontObject, // Global font setting
-            plot_bgcolor: currentTheme === 'dark' ? '#08306b' : '#f0f4f8', 
+            plot_bgcolor: 'transparent', 
             annotations: [], 
             shapes: [], 
         };
@@ -1516,12 +1516,9 @@ export default function TernaryResidueMapPage() {
                 {/* Right panel: Plot */}
                 <div className="lg:col-span-2">
                     <Card>
-                        <CardHeader>
-                            {/* <CardTitle>Ternary Residue Curve Map</CardTitle> */} {/* Removed this line */}
-                        </CardHeader>
-                        <CardContent className="bg-[#08306b] p-1 rounded-md">
+                        <CardContent className="p-2">
                             <div 
-                                className="relative h-[600px]" 
+                                className="relative w-full h-[600px] md:h-[700px]" 
                                 ref={setPlotContainerRef} // Assign the state setter to the ref prop
                             >
                                 <Plot 

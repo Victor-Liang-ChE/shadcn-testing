@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useCallback, KeyboardEvent, useRef } from 'react';
+import { useTheme } from "next-themes";
 
 // Import ECharts components
 import ReactECharts from 'echarts-for-react';
@@ -113,6 +114,8 @@ function solveODERK45(
 
 // --- KineticsPage Component ---
 export default function KineticsPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
   // Default reaction setup
   const defaultReaction = '2H2 + O2 -> 2H2O';
   const defaultReactants = '2H2 + O2';
@@ -156,6 +159,8 @@ export default function KineticsPage() {
   ): EChartsOption => {
     setLoading(true);
     try {
+      // Theme-aware colors
+      const textColor = resolvedTheme === 'dark' ? '#ffffff' : '#000000';
       if (ks.length !== reactions.length) {
         throw new Error("The number of rate constants does not match the number of reactions.");
       }
@@ -224,14 +229,26 @@ export default function KineticsPage() {
       }));
 
       return {
-        backgroundColor: '#08306b',
+        backgroundColor: 'transparent',
         animation: false,
         title: {
             text: 'Concentration Profiles', left: 'center',
-            textStyle: { color: '#fff', fontSize: 18, fontFamily: 'Merriweather Sans' }
+            textStyle: { 
+              fontSize: 18, 
+              fontFamily: 'Merriweather Sans',
+              color: textColor
+            }
         },
         tooltip: {
           trigger: 'axis',
+          backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+          borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+          borderWidth: 1,
+          textStyle: {
+            color: textColor,
+            fontSize: 12,
+            fontFamily: 'Merriweather Sans'
+          },
           formatter: (params: any) => {
              let tooltipText = `Time: ${params[0].axisValueLabel}<br/>`;
              params.forEach((param: any) => {
@@ -240,9 +257,6 @@ export default function KineticsPage() {
                  tooltipText += `${param.marker}${formattedName}: ${param.value[1].toPrecision(3)}<br/>`;
              });
              return tooltipText;
-          },
-          textStyle: { // Font only, no rich text needed here
-              fontFamily: 'Merriweather Sans',
           }
         },
         legend: {
@@ -253,7 +267,7 @@ export default function KineticsPage() {
               return name.replace(/(\d+)/g, '{sub|$1}');
           },
           textStyle: {
-             color: '#fff',
+             color: textColor,
              fontSize: 12,
              fontFamily: 'Merriweather Sans',
              rich: { // Keep rich text config for legend rendering
@@ -266,12 +280,12 @@ export default function KineticsPage() {
           top: 'bottom',
           type: 'scroll',
         },
-        grid: { // Keep grid settings using containLabel or fixed values as preferred
-          left: '5%', right: '5%', bottom: '10%', top: '12%', containLabel: true
+        grid: { // Reduce top spacing to bring graph closer to title
+          left: '5%', right: '5%', bottom: '10%', top: '8%', containLabel: true
         },
         toolbox: {
-          feature: { saveAsImage: { name: 'kinetics-plot', backgroundColor: '#08306b' } },
-          iconStyle: { borderColor: '#fff' }, orient: 'vertical', right: 10, bottom: 15
+          feature: { saveAsImage: { name: 'kinetics-plot', backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff' } },
+          iconStyle: { borderColor: textColor }, orient: 'vertical', right: 10, bottom: 15
         },
         xAxis: {
           type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,
@@ -279,15 +293,15 @@ export default function KineticsPage() {
           max: xAxisMax,
           axisLabel: {
             showMaxLabel: false, // <<< HIDE MAX LABEL for X-axis
-            color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans',
+            color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans',
             formatter: (value: number) => { // Keep formatter for non-max labels
                 if (Math.abs(value) < 1e-6) return '0';
                 return value.toFixed(2);
             }
           },
-          nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: '#fff', width: 2 } },
-          axisTick: { lineStyle: { color: '#fff', width: 2 } },
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor, width: 2 } },
+          axisTick: { lineStyle: { color: textColor, width: 2 } },
           splitLine: { show: false }
         },
         yAxis: {
@@ -296,15 +310,15 @@ export default function KineticsPage() {
           max: yAxisMax,
           axisLabel: {
             showMaxLabel: false, // <<< HIDE MAX LABEL for Y-axis
-            color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans',
+            color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans',
             formatter: (value: number) => { // Keep formatter for non-max labels
                 if (Math.abs(value) < 1e-6) return '0';
                 return value.toPrecision(3);
             }
           },
-          nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: '#fff', width: 2 } },
-          axisTick: { lineStyle: { color: '#fff', width: 2 } },
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor, width: 2 } },
+          axisTick: { lineStyle: { color: textColor, width: 2 } },
           splitLine: { show: false }
         },
         series: seriesData, // series.name is now plain
@@ -315,7 +329,7 @@ export default function KineticsPage() {
     } finally {
       setLoading(false);
     }
-  }, []); // Dependencies remain empty
+  }, [resolvedTheme]); // Dependencies include resolvedTheme
 
   // --- submitForm, useEffect, and event handlers remain the same ---
   const submitForm = useCallback((
@@ -336,6 +350,13 @@ export default function KineticsPage() {
 
   useEffect(() => { submitForm(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-generate chart when theme changes (if reactions are confirmed)
+  useEffect(() => {
+    if (confirmedReactions && species.length > 0) {
+      submitForm();
+    }
+  }, [resolvedTheme, confirmedReactions, species.length, submitForm]);
 
   const addReactionInput = () => { setReactionInputs([...reactionInputs, { reaction: '', reactants: '', products: '', rateConstant: 1 }]); setConfirmedReactions(false); };
   const removeReactionInput = () => { if (reactionInputs.length > 1) { setReactionInputs(reactionInputs.slice(0, -1)); setConfirmedReactions(false); } };
@@ -439,13 +460,13 @@ export default function KineticsPage() {
           {/* Column 2: Plot */}
           <div className="lg:col-span-2">
             <Card>
-              <CardContent className="pt-6">
-                <div className="relative h-[500px] md:h-[600px] rounded-md overflow-hidden" style={{ backgroundColor: '#08306b' }}>
-                  {loading && ( <div className="absolute inset-0 flex items-center justify-center text-white z-10 bg-opacity-50 backdrop-blur-sm">Generating plot...</div> )}
+              <CardContent className="p-4">
+                <div className="relative aspect-square rounded-md overflow-hidden">
+                  {loading && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground z-10 bg-opacity-50 backdrop-blur-sm">Generating plot...</div> )}
                   {showGraph && Object.keys(echartsOptions).length > 0 ? (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={false}/>
                   ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-400"> {species.length > 0 ? "Adjust parameters..." : "Enter reactions..."} </div>
+                    <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"> {species.length > 0 ? "Adjust parameters..." : "Enter reactions..."} </div>
                   )}
                 </div>
               </CardContent>

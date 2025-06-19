@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useTheme } from "next-themes";
 
 // Import ECharts components
 import ReactECharts from 'echarts-for-react';
@@ -169,6 +170,8 @@ const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string
 };
 
 export default function McCabeThielePage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
   // Input States - Updated defaults for initial load
   const [comp1Name, setComp1Name] = useState('methanol');
   const [comp2Name, setComp2Name] = useState('water');
@@ -704,11 +707,11 @@ export default function McCabeThielePage() {
       name: 'Equilibrium Line',
       type: 'line',
       data: xValues.map((x, i) => [x, yValues[i]]),
-      color: 'yellow', symbol: 'none', lineStyle: { width: 2.5 }, z: 5, animation: false,
+      color: 'blue', symbol: 'none', lineStyle: { width: 2.5 }, z: 5, animation: false,
     });
     series.push({
       name: 'y = x Line', type: 'line', data: [[0, 0], [1, 1]],
-      color: 'white', symbol: 'none', lineStyle: { width: 1.5, type: 'dotted' }, animation: false,
+      color: 'cyan', symbol: 'none', lineStyle: { width: 1.5, type: 'dotted' }, animation: false,
     });
 
     const rectifyingSlope = r / (r + 1);
@@ -791,7 +794,7 @@ export default function McCabeThielePage() {
     }
     if (feedStageCount === 0 && stageCount > 0) { feedStageCount = stageCount; }
     series.push({
-        name: 'Stages', type: 'line', data: stageLineData, color: 'white',
+        name: 'Stages', type: 'line', data: stageLineData, color: 'black',
         symbol: 'none', lineStyle: { width: 2 }, connectNulls: false, legendHoverLink: false, animation: false,
     });
     setStages(stageCount); setFeedStage(feedStageCount);
@@ -891,36 +894,39 @@ export default function McCabeThielePage() {
     // Axis label will refer to comp1
     const axisCompLabel = dispComp1Cap;
 
+    // Theme-dependent colors
+    const isDark = resolvedTheme === 'dark';
+    const textColor = isDark ? 'white' : '#000000';
+
     setEchartsOptions({
         backgroundColor: 'transparent',
-        title: { text: titleText, left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
+        title: { text: titleText, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '5%', right: '5%', bottom: '5%', top: '5%', containLabel: true },
         xAxis: {
             type: 'value', min: 0, max: 1, interval: 0.1,
             name: `Liquid Mole Fraction ${axisCompLabel} (x)`, // Updated label
-            nameLocation: 'middle', nameGap: 30, nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' },
-            axisLine: { lineStyle: { color: 'white' } }, axisTick: { lineStyle: { color: 'white' }, length: 5, inside: false },
-            axisLabel: { color: 'white', fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
+            nameLocation: 'middle', nameGap: 30, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
         },
         yAxis: {
             type: 'value', min: 0, max: 1, interval: 0.1,
             name: `Vapor Mole Fraction ${axisCompLabel} (y)`, // Updated label
-            nameLocation: 'middle', nameGap: 40, nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' },
-            axisLine: { lineStyle: { color: 'white' } }, axisTick: { lineStyle: { color: 'white' }, length: 5, inside: false },
-            axisLabel: { color: 'white', fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
+            nameLocation: 'middle', nameGap: 40, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
         },
         legend: {
             orient: 'vertical', right: '2%', top: 'center',
             data: series.map(s => s.name).filter(name => name !== 'Key Points' && name !== 'Stages') as string[],
 
-            textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+            textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
             itemWidth: 12, itemHeight: 12, icon: 'rect',
-        },
-        tooltip: { 
-            show: true, 
-            trigger: 'axis', 
-            backgroundColor: '#08306b', // Dark blue background for tooltip
-            borderColor: '#55aaff', // A lighter blue for border
+        },        tooltip: {
+            show: true,
+            trigger: 'axis',
+            backgroundColor: isDark ? '#08306b' : '#ffffff', // Theme-aware background for tooltip
+            borderColor: isDark ? '#55aaff' : '#333333', // Theme-aware border
             borderWidth: 1,
             textStyle: { 
                 color: 'white', // White text for tooltip
@@ -931,9 +937,9 @@ export default function McCabeThielePage() {
                 type: 'cross',
                 label: {
                     show: true,
-                    backgroundColor: '#08306b', // Dark blue for axis pointer label
-                    color: 'white', // White text for axis pointer label
-                    borderColor: '#55aaff',
+                    backgroundColor: isDark ? '#08306b' : '#ffffff', // Theme-aware background for axis pointer label
+                    color: isDark ? 'white' : 'black', // Theme-aware text color for axis pointer label
+                    borderColor: isDark ? '#55aaff' : '#333333',
                     borderWidth: 1,
                     shadowBlur: 0, // Optional: remove shadow if any
                     shadowColor: 'transparent',
@@ -950,7 +956,7 @@ export default function McCabeThielePage() {
                     }
                 },
                 crossStyle: { // Optional: style the crosshair lines
-                    color: '#999'
+                    color: isDark ? '#999' : '#666'
                 }
             },
             formatter: function (params: any) {
@@ -982,12 +988,12 @@ export default function McCabeThielePage() {
         animationDuration: 300, animationEasing: 'cubicInOut',
         toolbox: {
             show: true, orient: 'vertical', right: 0, top: 'bottom',
-            feature: { saveAsImage: { show: true, title: 'Save as Image', name: `mccabe-thiele-${displayedComp1}-${displayedComp2}`, backgroundColor: '#08306b', pixelRatio: 2 } },
-            iconStyle: { borderColor: '#fff' }
+            feature: { saveAsImage: { show: true, title: 'Save as Image', name: `mccabe-thiele-${displayedComp1}-${displayedComp2}`, backgroundColor: isDark ? '#08306b' : '#ffffff', pixelRatio: 2 } },
+            iconStyle: { borderColor: textColor }
         },
         series: series,
     });
-  }, [xd, xb, xf, q, r, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, displayedFluidPackage, buffer]);
+  }, [xd, xb, xf, q, r, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, displayedFluidPackage, buffer, resolvedTheme]);
 
   useEffect(() => {
     if (equilibriumData?.x && equilibriumData?.y) {
@@ -1322,9 +1328,9 @@ export default function McCabeThielePage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2">
-                <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
-                   {loading && ( <div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Loading & Calculating XY Data...</div><div className="text-sm text-gray-300">Using { fluidPackage.toUpperCase()} model.</div></div></div> )}
-                   {!loading && !equilibriumData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-white">Please provide inputs and update graph.</div> )}
+                <div className="relative aspect-square rounded-md">
+                   {loading && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Loading & Calculating XY Data...</div><div className="text-sm text-muted-foreground/70">Using { fluidPackage.toUpperCase()} model.</div></div></div> )}
+                   {!loading && !equilibriumData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and update graph.</div> )}
                    {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div> )}
                   {!loading && equilibriumData && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} notMerge={false} lazyUpdate={false} />

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useTheme } from 'next-themes';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
 import type { EChartsOption, SeriesOption } from 'echarts';
@@ -52,6 +53,8 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 };
 
 export default function LangmuirIsothermPage() {
+  const { resolvedTheme } = useTheme();
+  
   // Isotherm Type State
   type IsothermType = 'langmuir' | 'freundlich' | 'bet' | 'temkin';
   const [selectedIsotherm, setSelectedIsotherm] = useState<IsothermType>('langmuir');
@@ -185,6 +188,9 @@ export default function LangmuirIsothermPage() {
     if (isothermData) {
       // Calculate yAxisMax based on actual data range
       const yAxisMax = Math.max(...isothermData.q) * 1.2;
+      
+      // Theme-aware colors
+      const textColor = resolvedTheme === 'dark' ? '#ffffff' : '#000000';
 
       // Set chart title based on selected isotherm
       let chartTitle = 'Adsorption Isotherm';
@@ -211,7 +217,7 @@ export default function LangmuirIsothermPage() {
           left: 'center',
           top: '20px',
           textStyle: {
-            color: 'white',
+            color: textColor,
             fontSize: 18,
             fontFamily: 'Merriweather Sans'
           }
@@ -231,20 +237,20 @@ export default function LangmuirIsothermPage() {
           nameLocation: 'middle',
           nameGap: 30,
           nameTextStyle: {
-            color: 'white',
+            color: textColor,
             fontSize: 15,
             fontFamily: 'Merriweather Sans'
           },
           axisLine: {
-            lineStyle: { color: 'white' }
+            lineStyle: { color: textColor }
           },
           axisTick: {
-            lineStyle: { color: 'white' },
+            lineStyle: { color: textColor },
             length: 5,
             inside: false
           },
           axisLabel: {
-            color: 'white',
+            color: textColor,
             fontSize: 16,
             fontFamily: 'Merriweather Sans',
             formatter: (value: any) => formatNumberToPrecision(value, 3)
@@ -261,20 +267,20 @@ export default function LangmuirIsothermPage() {
           nameLocation: 'middle',
           nameGap: 60,
           nameTextStyle: {
-            color: 'white',
+            color: textColor,
             fontSize: 15,
             fontFamily: 'Merriweather Sans'
           },
           axisLine: {
-            lineStyle: { color: 'white' }
+            lineStyle: { color: textColor }
           },
           axisTick: {
-            lineStyle: { color: 'white' },
+            lineStyle: { color: textColor },
             length: 5,
             inside: false
           },
           axisLabel: {
-            color: 'white',
+            color: textColor,
             fontSize: 16,
             fontFamily: 'Merriweather Sans',
             formatter: (value: any) => formatNumberToPrecision(value, 3)
@@ -284,11 +290,11 @@ export default function LangmuirIsothermPage() {
         tooltip: {
           show: true,
           trigger: 'axis',
-          backgroundColor: '#08306b',
-          borderColor: '#55aaff',
+          backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+          borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
           borderWidth: 1,
           textStyle: {
-            color: 'white',
+            color: textColor,
             fontSize: 12,
             fontFamily: 'Merriweather Sans'
           },
@@ -324,18 +330,18 @@ export default function LangmuirIsothermPage() {
               show: true,
               title: 'Save as Image',
               name: 'langmuir-isotherm',
-              backgroundColor: '#08306b',
+              backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
               pixelRatio: 2
             }
           },
           iconStyle: {
-            borderColor: '#fff'
+            borderColor: textColor
           }
         }
       };
       setEchartsOptions(newOptions);
     }
-  }, [isothermData, selectedIsotherm, langmuirK, independentVar, freundlichKf, freundlichNf, betQm, betCb, betCs, temkinAt, temkinBt]);
+  }, [isothermData, selectedIsotherm, langmuirK, independentVar, freundlichKf, freundlichNf, betQm, betCb, betCs, temkinAt, temkinBt, resolvedTheme]);
 
   return (
     <TooltipProvider>
@@ -527,7 +533,7 @@ export default function LangmuirIsothermPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2">
-                <div className="relative h-[500px] md:h-[600px] rounded-md" style={{ backgroundColor: '#08306b' }}>
+                <div className="relative aspect-square rounded-md">
                   {/* Concentration/Pressure Switch - Top Right */}
                   <div className="absolute top-4 right-4 z-10">
                     <div className="flex items-center gap-2 bg-muted rounded-lg p-1">

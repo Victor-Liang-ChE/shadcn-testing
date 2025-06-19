@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -82,6 +83,8 @@ interface ExtendedCalculationResults extends CalculationResults {
 }
 
 export default function ReactorDesignPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
   const [reactorType, setReactorType] = useState<ReactorType>('CSTR');
   const [reactionPhase, setReactionPhase] = useState<ReactionPhase>('Liquid');
   const [operationMode, setOperationMode] = useState<'SinglePass' | 'Recycle'>('SinglePass');
@@ -506,21 +509,25 @@ export default function ReactorDesignPage() {
     });
 
     // Charting logic
+    // Theme-dependent colors
+    const isDark = resolvedTheme === 'dark';
+    const textColor = isDark ? 'white' : '#000000';
+    
     let chartOptions: EChartsOption = {
         backgroundColor: 'transparent',
         animation: false,
         animationDuration: 0,
-        title: { text: 'Conversion vs Volume', left: 'center', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } },
+        title: { text: 'Conversion vs Volume', left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
         xAxis: { 
           type: 'value', 
           name: 'Reactor Volume (L)', 
           nameLocation: 'middle', 
           nameGap: 30, 
-          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: 'white' } }, 
-          axisTick: { lineStyle: { color: 'white' } },
-          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor } }, 
+          axisTick: { lineStyle: { color: textColor } },
+          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           splitLine: { show: false }
         },
         yAxis: { 
@@ -528,29 +535,29 @@ export default function ReactorDesignPage() {
           name: 'Percentage (%)', 
           nameLocation: 'middle', 
           nameGap: 40, 
-          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: 'white' } }, 
-          axisTick: { lineStyle: { color: 'white' } },
-          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor } }, 
+          axisTick: { lineStyle: { color: textColor } },
+          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           splitLine: { show: false }
         },
         legend: { 
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           data: ['Conversion', 'Selectivity']
         },
         tooltip: { 
           trigger: 'axis', 
-          backgroundColor: '#08306b', 
-          borderColor: '#55aaff', 
+          backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff', 
+          borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333', 
           borderWidth: 1,
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: white;">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} L<br/>`;
             
             params.forEach((param: any) => {
               if (param.seriesName === 'Conversion' || param.seriesName === 'Selectivity') {
@@ -574,12 +581,12 @@ export default function ReactorDesignPage() {
             Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
         );
 
-        chartOptions.title = { text: 'Conversion vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Conversion vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.legend = { 
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           data: ['Conversion']
         };
 
@@ -611,12 +618,12 @@ export default function ReactorDesignPage() {
             Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
         );
 
-        chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.legend = { 
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           data: ['Selectivity']
         };
 
@@ -642,35 +649,35 @@ export default function ReactorDesignPage() {
             }
         ];
     } else if (graphType === 'flowrates') {
-        chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
           type: 'value', 
           name: 'Flow Rate (mol/s)', 
           nameLocation: 'middle', 
           nameGap: 50, 
-          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: 'white' } }, 
-          axisTick: { lineStyle: { color: 'white' } },
-          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor } }, 
+          axisTick: { lineStyle: { color: textColor } },
+          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           splitLine: { show: false }
         };
         chartOptions.legend = {
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           data: components.map(c => c.name)
         };
         chartOptions.tooltip = { 
           trigger: 'axis', 
-          backgroundColor: '#08306b', 
-          borderColor: '#55aaff', 
+          backgroundColor: isDark ? '#08306b' : '#ffffff', 
+          borderColor: isDark ? '#55aaff' : '#333333', 
           borderWidth: 1,
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: white;">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} L<br/>`;
             
             params.forEach((param: any) => {
               const value = formatToSigFigs(param.value[1]);
@@ -710,35 +717,35 @@ export default function ReactorDesignPage() {
             }
         }));
     } else { // 'composition'
-        chartOptions.title = { text: 'Composition vs Volume', left: 'center', top: '3%', textStyle: { color: 'white', fontSize: 18, fontFamily: 'Merriweather Sans' } };
+        chartOptions.title = { text: 'Composition vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
           type: 'value', 
           name: 'Composition (mol%)', 
           nameLocation: 'middle', 
           nameGap: 50, 
-          nameTextStyle: { color: 'white', fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: 'white' } }, 
-          axisTick: { lineStyle: { color: 'white' } },
-          axisLabel: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor } }, 
+          axisTick: { lineStyle: { color: textColor } },
+          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           splitLine: { show: false }
         };
         chartOptions.legend = {
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           data: components.map(c => c.name)
         };
         chartOptions.tooltip = { 
           trigger: 'axis', 
-          backgroundColor: '#08306b', 
-          borderColor: '#55aaff', 
+          backgroundColor: isDark ? '#08306b' : '#ffffff', 
+          borderColor: isDark ? '#55aaff' : '#333333', 
           borderWidth: 1,
-          textStyle: { color: 'white', fontSize: 12, fontFamily: 'Merriweather Sans' },
+          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: white;">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} L<br/>`;
             
             params.forEach((param: any) => {
               const value = formatToSigFigs(param.value[1]);
@@ -781,7 +788,7 @@ export default function ReactorDesignPage() {
 
     setGraphOptions(chartOptions);
 
-  }, [parsedParallelReactions, reactorType, reactorVolume, maxVolumeSlider, kinetics.reactionTempK, volumetricFlowRate, components, reactionPhase, totalPressure, graphType]);
+  }, [parsedParallelReactions, reactorType, reactorVolume, maxVolumeSlider, kinetics.reactionTempK, volumetricFlowRate, components, reactionPhase, totalPressure, graphType, resolvedTheme]);
 
 
   // Update graph when calculation results change - immediate updates
@@ -789,7 +796,7 @@ export default function ReactorDesignPage() {
     if (showGraph && calculationResults && operationMode === 'SinglePass') {
       generateGraphData();
     }
-  }, [showGraph, calculationResults, graphType, reactorType, maxVolumeSlider, operationMode]);
+  }, [showGraph, calculationResults, graphType, reactorType, maxVolumeSlider, operationMode, generateGraphData]);
 
   // Reactor SVG Visualization
   const renderReactorSVG = () => {
@@ -1721,7 +1728,7 @@ export default function ReactorDesignPage() {
               /* Graph Display - Replaces visualization and results */
               <Card>
                 <CardContent>
-                  <div className="relative w-full aspect-square rounded-md" style={{ backgroundColor: '#08306b' }}>
+                  <div className="relative w-full aspect-square rounded-md">
                     {/* PFR/CSTR Switch on top-left corner of graph */}
                     <div className="absolute top-4 left-4 z-10">
                       <div className="flex items-center gap-2 bg-muted rounded-lg p-1">

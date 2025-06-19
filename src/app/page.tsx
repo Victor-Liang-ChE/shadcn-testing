@@ -1,5 +1,8 @@
+'use client';
+
 import Image from "next/image";
 import Link from "next/link";
+import { useTheme } from "next-themes";
 import {
   Card,
   CardContent,
@@ -33,50 +36,66 @@ const supabaseLogoPath = "/logos/supabase.svg"; // Added Supabase logo path
 const tailwindLogoPath = "/logos/tailwind.svg";
 const shadcnLogoPath = "/logos/shadcn.svg";
 const kineticsThumbnailPath = "/thumbnails/kinetics-thumbnail.png";
+const kineticsThumbnailLightPath = "/thumbnails/kinetics-thumbnail-light.png";
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
+const mccabeThumbnailLightPath = "/thumbnails/mccabe-thiele-thumbnail-light.png";
 const dynamicsThumbnailPath = "/thumbnails/process-dynamics-thumbnail.png";
+const dynamicsThumbnailLightPath = "/thumbnails/process-dynamics-thumbnail-light.png";
 const azeotropeThumbnailPath = "/thumbnails/azeotrope-finder-thumbnail.png";
+const azeotropeThumbnailLightPath = "/thumbnails/azeotrope-finder-thumbnail-light.png";
+const pidThumbnailPath = "/thumbnails/pid-tuning-thumbnail.png";
+const pidThumbnailLightPath = "/thumbnails/pid-tuning-thumbnail-light.png";
 const labIllustrationPath = "/images/lab-illustration.png";
 const compoundPropertiesThumbnailPath = "/thumbnails/compound-properties-thumbnail.png";
-const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.png"; // Added for Residue Curve Map
+const compoundPropertiesThumbnailLightPath = "/thumbnails/compound-properties-thumbnail-light.png";
+const residueCurveMapThumbnailPath = "/thumbnails/residue-curve-map-thumbnail.png";
+const residueCurveMapThumbnailLightPath = "/thumbnails/residue-curve-map-thumbnail-light.png";
 const reactorDesignThumbnailPath = "/thumbnails/reactor-design-thumbnail.png";
+const reactorDesignThumbnailLightPath = "/thumbnails/reactor-design-thumbnail-light.png";
 
 export default function Home() {
+  const { resolvedTheme } = useTheme();
+
   const homeFeaturedSimulations = [
     {
       name: "McCabe-Thiele",
       path: "/toolbox/mccabe-thiele",
       description:
         "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
-      thumbnailPath: mccabeThumbnailPath
+      thumbnailPath: mccabeThumbnailPath,
+      thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
       name: "Reactor Design",
       path: "/toolbox/reactor-design",
       description:
         "Design and analyze chemical reactors. Calculate conversions and outlet flow rates for CSTR and PFR configurations.",
-      thumbnailPath: reactorDesignThumbnailPath
+      thumbnailPath: reactorDesignThumbnailPath,
+      thumbnailLightPath: reactorDesignThumbnailLightPath
     },
     {
       name: "Azeotrope Finder",
       path: "/toolbox/azeotrope-finder",
       description:
         "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
-      thumbnailPath: azeotropeThumbnailPath
+      thumbnailPath: azeotropeThumbnailPath,
+      thumbnailLightPath: azeotropeThumbnailLightPath
     },
     {
       name: "Compound Properties",
       path: "/toolbox/compound-properties",
       description:
         "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
-      thumbnailPath: compoundPropertiesThumbnailPath
+      thumbnailPath: compoundPropertiesThumbnailPath,
+      thumbnailLightPath: compoundPropertiesThumbnailLightPath
     },
     {
       name: "Residue Curve Map",
       path: "/toolbox/residue-curve-map",
       description:
         "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
-      thumbnailPath: residueCurveMapThumbnailPath
+      thumbnailPath: residueCurveMapThumbnailPath,
+      thumbnailLightPath: residueCurveMapThumbnailLightPath
     },
     {
       name: "Reaction Kinetics",
@@ -84,6 +103,7 @@ export default function Home() {
       description:
         "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
       thumbnailPath: kineticsThumbnailPath,
+      thumbnailLightPath: kineticsThumbnailLightPath,
     },
     {
       name: "Process Dynamics",
@@ -91,6 +111,15 @@ export default function Home() {
       description:
         "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
       thumbnailPath: dynamicsThumbnailPath,
+      thumbnailLightPath: dynamicsThumbnailLightPath,
+    },
+    {
+      name: "PID Tuning",
+      path: "/toolbox/pid-tuning",
+      description:
+        "Interactive PID controller tuning simulation. Adjust parameters and observe system response in real-time.",
+      thumbnailPath: pidThumbnailPath,
+      thumbnailLightPath: pidThumbnailLightPath,
     },
   ];
 
@@ -343,7 +372,7 @@ export default function Home() {
                     alt="GitHub Logo"
                     width={30}
                     height={30}
-                    className="dark:invert"
+                    className={resolvedTheme === 'dark' ? 'invert' : ''}
                   />
                   <span className="sr-only">GitHub</span>
                 </a>
@@ -389,10 +418,10 @@ export default function Home() {
                         <CSTRVisualization className="w-full h-full" showLabel={true} />
                       ) : (
                         <Image
-                          src={simulation.thumbnailPath}
+                          src={resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
                           alt={`${simulation.name} Thumbnail`}
                           layout="fill"
-                          objectFit="contain"
+                          objectFit={simulation.name === "Residue Curve Map" ? "cover" : "contain"}
                         />
                       )}
                     </div>

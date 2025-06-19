@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useTheme } from "next-themes";
 
 // ECharts imports
 import ReactECharts from 'echarts-for-react';
@@ -49,6 +50,8 @@ const formatNumber = (num: number | null | undefined, precision = 2): string => 
 
 // --- Main Component ---
 export default function ProcessControlPage() {
+    const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+    
     const [order, setOrder] = useState<OrderType>('first');
     const [functionType, setFunctionType] = useState<FunctionType>('step');
     const [params, setParams] = useState<ProcessParams>({ K: 1, M: 1, tau: 1, zeta: 1 });
@@ -116,13 +119,16 @@ export default function ProcessControlPage() {
     // --- ECharts Options Generation ---
     // Modified: Accepts finalYAxisRange, removed setYAxisRange call
     const generateEchartsOptions = useCallback((simResult: SimulationResult | null, finalYAxisRange: [number, number]): EChartsOption => {
+        // Theme-aware colors
+        const textColor = resolvedTheme === 'dark' ? '#ffffff' : '#000000';
+        
         if (!simResult) {
             return {
                 title: { text: 'Simulation Error or Not Run', left: 'center' },
                 xAxis: { type: 'value' },
                 yAxis: { type: 'value', min: finalYAxisRange[0], max: finalYAxisRange[1] }, // Use provided range
                 series: [],
-                backgroundColor: '#08306b'
+                backgroundColor: 'transparent'
             };
         }
 
@@ -147,11 +153,15 @@ export default function ProcessControlPage() {
 
 
         return {
-            backgroundColor: '#08306b',
+            backgroundColor: 'transparent',
             animation: false,
             title: {
                 text: titleText, left: 'center',
-                textStyle: { color: '#fff', fontSize: 18, fontFamily: 'Merriweather Sans' } // Apply font
+                textStyle: { 
+                  fontSize: 18, 
+                  fontFamily: 'Merriweather Sans',
+                  color: textColor
+                } // Apply font
             },
             tooltip: {
                 trigger: 'axis',
@@ -167,38 +177,60 @@ export default function ProcessControlPage() {
             },
             legend: {
                 data: ['System Response', 'Input'],
-                textStyle: { color: '#fff', fontSize: 12, fontFamily: 'Merriweather Sans' }, // Apply font
+                textStyle: { 
+                  color: textColor, 
+                  fontSize: 12, 
+                  fontFamily: 'Merriweather Sans' 
+                }, // Apply font
                 top: 'bottom',
                 type: 'scroll'
             },
             grid: { left: '8%', right: '8%', bottom: '15%', top: '15%', containLabel: true },
             toolbox: {
-                feature: { saveAsImage: { name: 'process-dynamics-plot', backgroundColor: '#08306b' } },
-                iconStyle: { borderColor: '#fff' },
+                feature: { saveAsImage: { name: 'process-dynamics-plot', backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff' } },
+                iconStyle: { borderColor: textColor },
                 orient: 'vertical', right: 10, bottom: 40
             },
             xAxis: {
                 type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,
                 min: 0, max: 50, // Fixed X-axis range
-                axisLabel: { color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toFixed(1) }, // Apply font
-                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Apply font
-                axisLine: { lineStyle: { color: '#fff' } },
-                axisTick: { lineStyle: { color: '#fff' } },
+                axisLabel: { 
+                  color: textColor, 
+                  fontSize: 14, 
+                  fontFamily: 'Merriweather Sans', 
+                  formatter: (v: number) => v.toFixed(1) 
+                }, // Apply font
+                nameTextStyle: { 
+                  color: textColor, 
+                  fontSize: 15, 
+                  fontFamily: 'Merriweather Sans' 
+                }, // Apply font
+                axisLine: { lineStyle: { color: textColor } },
+                axisTick: { lineStyle: { color: textColor } },
                 splitLine: { show: false }
             },
             yAxis: {
                 type: 'value', name: 'Response / Input', nameLocation: 'middle', nameGap: 50,
                 min: finalYAxisRange[0], // Use the passed finalYAxisRange
                 max: finalYAxisRange[1], // Use the passed finalYAxisRange
-                axisLabel: { color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toPrecision(3) }, // Apply font
-                nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Apply font
-                axisLine: { lineStyle: { color: '#fff' } },
-                axisTick: { lineStyle: { color: '#fff' } },
+                axisLabel: { 
+                  color: textColor, 
+                  fontSize: 14, 
+                  fontFamily: 'Merriweather Sans', 
+                  formatter: (v: number) => v.toPrecision(3) 
+                }, // Apply font
+                nameTextStyle: { 
+                  color: textColor, 
+                  fontSize: 15, 
+                  fontFamily: 'Merriweather Sans' 
+                }, // Apply font
+                axisLine: { lineStyle: { color: textColor } },
+                axisTick: { lineStyle: { color: textColor } },
                 splitLine: { show: false }
             },
             series: seriesData
         };
-    }, [order, functionType]);
+    }, [order, functionType, resolvedTheme]);
 
     // --- Effects ---
     useEffect(() => {
@@ -356,7 +388,7 @@ export default function ProcessControlPage() {
                 <div className="lg:col-span-2">
                     <Card>
                         <CardContent className="pt-6">
-                            <div className="relative h-[500px] md:h-[600px] rounded-md overflow-hidden border bg-card">
+                            <div className="relative aspect-square rounded-md overflow-hidden">
                                 {isLoading && (
                                     <div className="absolute inset-0 flex items-center justify-center bg-background/60 dark:bg-background/70 z-10 backdrop-blur-sm">
                                         <Skeleton className="h-3/4 w-3/4 rounded-md"/>

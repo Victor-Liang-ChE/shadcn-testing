@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useTheme } from "next-themes";
 
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
@@ -266,6 +267,8 @@ interface AppLineSeriesOption extends LineSeriesOption {
 }
 
 export default function CompoundPropertiesPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
   const nextCompoundId = useRef(0); 
 
   const createNewCompoundState = (name: string = ''): CompoundInputState => {
@@ -847,6 +850,10 @@ export default function CompoundPropertiesPage() {
         // yAxisUnitRef.current stores X-axis unit for Boiling Point (pressure unit), or Y-axis unit for others.
         yAxisUnitRef.current = isBoilingPointPlot ? displayUnit : yAxisUnit; 
 
+        // Theme-dependent colors
+        const isDark = resolvedTheme === 'dark';
+        const textColor = isDark ? 'white' : '#000000';
+
         let yAxisTickFormatter = isBoilingPointPlot 
             ? (val: number) => val.toFixed(0) // Temp C
             : (val: number) => formatNumberToPrecision(val, 7); // Property value
@@ -871,12 +878,12 @@ export default function CompoundPropertiesPage() {
           axisLine: { show: true, lineStyle: { color: propDef.color, width: 2 } },
           axisLabel: { 
             formatter: yAxisTickFormatter, 
-            color: '#e0e6f1', 
+            color: textColor, 
             fontSize: 16, 
             fontFamily: 'Merriweather Sans',
             margin: dynamicAxisLabelMargin, 
           },
-          nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' }, 
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, 
           splitLine: { show: false },
           scale: true, // Y-axis always auto-scales
           min: undefined, 
@@ -889,7 +896,7 @@ export default function CompoundPropertiesPage() {
             nameLocation: 'middle',
             nameGap: 30,
             axisLabel: {
-                color: '#e0e6f1', // Corrected from #e6e6e6 to #e0e6f1 for consistency
+                color: textColor, // Corrected from #e6e6e6 to #e0e6f1 for consistency
                 fontFamily: 'Merriweather Sans',
                 fontSize: 16,
                 formatter: isBoilingPointPlot
@@ -909,8 +916,8 @@ export default function CompoundPropertiesPage() {
                       }
                     : (val: number) => (val - 273.15).toFixed(0) // Temp Kelvin to Celsius for display
             },
-            nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
-            axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor, width: 2 } },
             splitLine: { show: false },
             // Apply calculated range and interval for Boiling Point X-axis
             scale: isBoilingPointPlot ? false : (finalPlotTminKelvin !== undefined ? false : true),
@@ -919,7 +926,6 @@ export default function CompoundPropertiesPage() {
             interval: isBoilingPointPlot ? pressureAxisInterval : xAxisKelvinInterval,
         };
 
-
         setEchartsOptions({
           backgroundColor: 'transparent', 
           title: {
@@ -927,14 +933,14 @@ export default function CompoundPropertiesPage() {
                 ? `Boiling Point (Temperature vs. Pressure): ${titleCompoundNames || 'Selected Compounds'}` 
                 : `${propDef.displayName}: ${titleCompoundNames || 'Selected Compounds'}`,
             left: 'center',
-            textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
+            textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' },
           },
           tooltip: {
             trigger: 'axis',
             axisPointer: { 
               type: 'cross',
               label: {
-                backgroundColor: '#ffffff', // Background of the label box
+                backgroundColor: isDark ? '#1e293b' : '#ffffff', // Theme-aware background of the label box
                 formatter: function (params: { value: number | string | Date; axisDimension: string; }) { 
                   let valueAsNumber: number;
                   const paramValue = params.value; 
@@ -972,12 +978,12 @@ export default function CompoundPropertiesPage() {
                   return formatNumberToPrecision(valueAsNumber, 3); // Fallback
                 },
                 fontFamily: 'Merriweather Sans', // Font for the text inside the label
-                color: '#333' // Color of the text inside the label
+                color: textColor // Color of the text inside the label
               }
             },
-            backgroundColor: '#1e293b', // Background of the main tooltip box
-            borderColor: '#3b82f6',
-            textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
+            backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff', // Background of the main tooltip box
+            borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
+            textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
             formatter: (params: any) => {
                 if (!Array.isArray(params) || params.length === 0) return '';
                 
@@ -1005,7 +1011,7 @@ export default function CompoundPropertiesPage() {
           legend: {
             data: finalSeriesToPlot.map(s => s.name as string), // Use filtered series for legend data
             bottom: 5, // Reduced gap to x-axis
-            textStyle: { color: '#9ca3af', fontFamily: 'Merriweather Sans', fontSize: 11 },
+            textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 11 },
             inactiveColor: '#4b5563',
             type: 'scroll',
             formatter: (name) => {
@@ -1039,13 +1045,17 @@ export default function CompoundPropertiesPage() {
             top: 'auto',          
             left: 'auto',         
             feature: { 
-              saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' },
+              saveAsImage: { show: true, title: 'Save as Image', backgroundColor: isDark ? '#0f172a' : '#ffffff' },
             },
-            iconStyle: { borderColor: '#9ca3af' }
+            iconStyle: { borderColor: textColor }
           },
         });
 
     } else if (plotMode === 'constants') {
+        // Theme-dependent colors
+        const isDark = resolvedTheme === 'dark';
+        const textColor = isDark ? 'white' : '#000000';
+        
         const constDef = constantPropertiesConfig.find(c => c.jsonKey === propertyKey);
         if (!constDef) {
           console.warn(`Constant definition for key ${propertyKey} not found.`);
@@ -1131,15 +1141,15 @@ export default function CompoundPropertiesPage() {
             nameLocation: 'middle' as const,
             nameGap: calculatedNameGap, 
             axisLine: { show: true, lineStyle: { color: constDef.color || '#EE6666', width: 2 } },
-            axisTick: { show: true, lineStyle: { color: '#e0e6f1' } }, // Added Y-axis tick marks
+            axisTick: { show: true, lineStyle: { color: textColor } }, // Added Y-axis tick marks
             axisLabel: { 
               formatter: (val: number) => formatNumberToPrecision(val, 4), 
-              color: '#e0e6f1', 
+              color: textColor, 
               fontSize: 16, 
               fontFamily: 'Merriweather Sans',
               margin: dynamicAxisLabelMargin, 
             },
-            nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             splitLine: { show: false },
             scale: true, // Reverted: Ensure auto-scaling
             min: undefined, // Reverted: Let ECharts determine min
@@ -1147,28 +1157,28 @@ export default function CompoundPropertiesPage() {
         };
 
         setEchartsOptions({
-            backgroundColor: '#08306b',
+            backgroundColor: 'transparent',
             title: {
                 text: `${constDef.displayName} for ${allCompoundsData.filter(c => c.data && c.name.trim()).map(c => c.data!.name).join(' vs ')}`, // Updated title format
                 left: 'center',
-                textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
+                textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' },
             },
             tooltip: {
                 trigger: 'item', 
                 formatter: (params: any) => {
                     return `${params.name}<br/>${constDef.displayName}: <b>${formatNumberToPrecision(params.value, 4)}${displayUnit !== '-' ? ' ' + displayUnit : ''}</b>`;
                 },
-                backgroundColor: '#1e293b',
-                borderColor: '#3b82f6',
-                textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
+                backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff',
+                borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
+                textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
             },
             legend: { show: false }, 
             grid: { left: '17%', right: '4%', bottom: '3%', containLabel: true }, 
             xAxis: {
                 type: 'category',
                 data: compoundNames,
-                axisLabel: { color: '#e0e6f1', fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, 
-                axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
+                axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, 
+                axisLine: { lineStyle: { color: textColor, width: 2 } },
             },
             yAxis: yAxisConfig,
             series: [{
@@ -1182,7 +1192,7 @@ export default function CompoundPropertiesPage() {
                     show: true,
                     position: 'top',
                     formatter: (params: any) => formatNumberToPrecision(params.value, 3),
-                    color: '#e0e6f1',
+                    color: textColor,
                     fontFamily: 'Merriweather Sans' // Added font family for bar labels
                 }
             }] as any, // Use type assertion here for consistency
@@ -1194,13 +1204,13 @@ export default function CompoundPropertiesPage() {
               top: 'auto',          
               left: 'auto',         
               feature: { 
-                saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' }, 
+                saveAsImage: { show: true, title: 'Save as Image', backgroundColor: isDark ? '#0f172a' : '#ffffff' }, 
               }, 
-              iconStyle: { borderColor: '#9ca3af' } 
+              iconStyle: { borderColor: textColor } 
             },
         });
     }
-  }, [plotMode]);
+  }, [plotMode, resolvedTheme]);
 
   const handleFetchAndPlot = useCallback(async () => {
     setLoading(true);
@@ -1547,7 +1557,7 @@ export default function CompoundPropertiesPage() {
         }
        } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
     }
-  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData]); 
+  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData, resolvedTheme]); 
 
   const canExportCSV = echartsOptions && 
                        echartsOptions.series && 
@@ -2022,9 +2032,9 @@ export default function CompoundPropertiesPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2">
-                <div className="relative h-[600px] md:h-[700px] rounded-md bg-[#08306b]">
-                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Loading Properties...</div></div></div>)}
-                  {!loading && compounds.every(c => !c.data && !c.error) && !overallError && (<div className="absolute inset-0 flex items-center justify-center text-white">Please enter compound(s) and fetch properties.</div>)}
+                <div className="relative aspect-square rounded-md">
+                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Loading Properties...</div></div></div>)}
+                  {!loading && compounds.every(c => !c.data && !c.error) && !overallError && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please enter compound(s) and fetch properties.</div>)}
                   {overallError && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400 px-4 text-center">Error: {overallError}</div>)}
                   {!loading && Object.keys(echartsOptions).length > 0 && compounds.some(c=>c.data) && !overallError && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />

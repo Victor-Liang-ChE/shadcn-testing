@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useTheme } from "next-themes";
 
 // ECharts imports (ensure all necessary components are registered as in other pages)
 import ReactECharts from 'echarts-for-react';
@@ -100,6 +101,8 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 
 
 export default function AzeotropeFinderPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
   const [comp2Name, setComp2Name] = useState('Water');   // Default to water
@@ -602,11 +605,15 @@ export default function AzeotropeFinderPage() {
     const x_az_data = azeotropeScanData.map(d => [d.scanVal, d.x_az]);
     const dependent_val_data = azeotropeScanData.map(d => [d.scanVal, d.dependentVal]);
 
+    // Theme-dependent colors
+    const isDark = resolvedTheme === 'dark';
+    const textColor = isDark ? 'white' : '#000000';
+
     const options: EChartsOption = {
       title: { 
         text: titleText, 
         left: 'center', 
-        textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
       },
       backgroundColor: 'transparent',
       tooltip: {
@@ -649,9 +656,9 @@ export default function AzeotropeFinderPage() {
       xAxis: {
         show: true, 
         type: 'value', name: scanParamName, nameLocation: 'middle', nameGap: 30,
-        axisLabel: { color: '#e7e7eb', fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
-        nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
-        axisLine: { lineStyle: { color: '#4b5563', width: 2.5 } }, // Added width
+        axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
+        nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+        axisLine: { lineStyle: { color: textColor, width: 2.5 } }, // Added width
         splitLine: { show: false }, // Removed grid lines
         scale: true      },
       yAxis: [
@@ -659,8 +666,8 @@ export default function AzeotropeFinderPage() {
           show: true, 
           type: 'value', name: compositionAxisName, nameLocation: 'middle', nameGap: 50, min: 0, max: 1,
           position: 'left', 
-          axisLabel: { color: '#e7e7eb', formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
-          nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+          axisLabel: { color: textColor, formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
           axisLine: { lineStyle: { color: '#22c55e', width: 2.5 } }, // Changed color to green for composition axis, added width
           splitLine: { show: false }, // Removed grid lines
         },
@@ -668,12 +675,12 @@ export default function AzeotropeFinderPage() {
           show: true, 
           type: 'value', name: dependentParamName, nameLocation: 'middle', nameGap: 60, position: 'right',
           axisLabel: { 
-            color: '#e7e7eb', // Changed color
+            color: textColor, // Changed color
             formatter: (v: number) => (displayedScanType === 'vs_P_find_T') ? v.toFixed(1) : formatNumberToPrecision(v, 3), 
             fontFamily: 'Merriweather Sans',
             fontSize: 16 // Added fontSize
           },
-          nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
           axisLine: { lineStyle: { color: '#f59e0b', width: 2.5 } }, // Added width
           splitLine: { show: false }, // Removed grid lines
           scale: true,
@@ -694,7 +701,7 @@ export default function AzeotropeFinderPage() {
       },
     };
     setEchartsOptions(options);
-  }, [azeotropeScanData, displayedComp1, displayedComp2, displayedFluidPackage, displayedScanType]);
+  }, [azeotropeScanData, displayedComp1, displayedComp2, displayedFluidPackage, displayedScanType, resolvedTheme]);
 
   useEffect(() => {
     generateAzeotropeEChartsOptions();
@@ -805,9 +812,9 @@ export default function AzeotropeFinderPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2"> {/* Minimal padding for graph card content */}
-                <div className="relative h-[600px] md:h-[700px] rounded-md" style={{ backgroundColor: '#08306b' }}> {/* Dark background for plot area */}
-                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Scanning for Azeotropes...</div><div className="text-sm text-gray-300">Using {fluidPackage.toUpperCase()} model.</div></div></div>)}
-                  {!loading && !displayedComp1 && !error && (<div className="absolute inset-0 flex items-center justify-center text-white">Please provide inputs and find azeotropes.</div>)}
+                <div className="relative aspect-square rounded-md"> {/* Plot area */}
+                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Scanning for Azeotropes...</div><div className="text-sm text-muted-foreground/70">Using {fluidPackage.toUpperCase()} model.</div></div></div>)}
+                  {!loading && !displayedComp1 && !error && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and find azeotropes.</div>)}
                   {error && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div>)}
                   {!loading && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />
