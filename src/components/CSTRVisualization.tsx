@@ -22,9 +22,11 @@ export const CSTRVisualization: React.FC<CSTRVisualizationProps> = ({
         <line x1="200" y1="-40" x2="200" y2="150" stroke="currentColor" strokeWidth="8"/>
         
         {/* Stirrer blades with spinning animation - smaller */}
-        <g className="animate-spin" style={{transformOrigin: '200px 90px'}}>
-          <line x1="140" y1="90" x2="260" y2="90" stroke="currentColor" strokeWidth="8"/>
-          <line x1="200" y1="50" x2="200" y2="130" stroke="currentColor" strokeWidth="8"/>
+        <g className="animate-spin" style={{transformOrigin: '200px 150px'}}>
+          {/* A smaller horizontal blade centered at (200, 150) */}
+          <line x1="160" y1="150" x2="240" y2="150" stroke="currentColor" strokeWidth="8"/>
+          {/* A vertical blade of the same length, also centered at (200, 150) */}
+          <line x1="200" y1="110" x2="200" y2="190" stroke="currentColor" strokeWidth="8"/>
         </g>
         
         {/* CSTR Label */}
