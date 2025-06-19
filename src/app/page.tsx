@@ -326,7 +326,7 @@ export default function Home() {
 
               <div className="bio-paragraph flex items-center gap-2">
                 <p>
-                  Currently a senior at the University of California, Santa
+                  Based in San Francisco, but currently a senior at the University of California, Santa
                   Barbara.
                 </p>
                 <Image
