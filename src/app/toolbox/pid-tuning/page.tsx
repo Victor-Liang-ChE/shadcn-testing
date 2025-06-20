@@ -173,8 +173,6 @@ export default function PidTuningPage() {
   const [result, setResult] = useState<TuningResult | null>(null);
   const [displayedMethod, setDisplayedMethod] = useState<string>('');
   
-  // Debounce timer for calculations
-  const debounceTimer = React.useRef<NodeJS.Timeout | null>(null);
   const echartsRef = useRef<ReactECharts | null>(null); // Ref for ECharts instance
 
   // Simulation function for closed-loop response
@@ -362,14 +360,9 @@ export default function PidTuningPage() {
     handleCalculate();
   }, []);
 
-  // Effect to run calculation when inputs change (debounced)
+  // Effect to run calculation when inputs change
   React.useEffect(() => {
-    if (debounceTimer.current) {
-      clearTimeout(debounceTimer.current);
-    }
-    debounceTimer.current = setTimeout(() => {
-      handleCalculate();
-    }, 1); // 1ms debounce delay - same as reactor design
+    handleCalculate();
   }, [
     k, tau, tau2, tau3, beta, theta, kcu, pu, tauC, zeta,
     tuningMethod, controllerType, itaeInputType, imcModelCase,
@@ -722,6 +715,7 @@ export default function PidTuningPage() {
 
     return {
       backgroundColor: 'transparent',
+      animation: false,
       title: { 
         text: `${controllerType} Controller Step Response`, 
         left: 'center',
@@ -766,7 +760,7 @@ export default function PidTuningPage() {
         },
         formatter: function(params: any) {
           if (!params || !Array.isArray(params)) return '';
-          const time = params[0]?.axisValue;
+          const time = params[0]?.value[0]; // Get time from first series data point
           let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
           params.forEach((param: any) => {
             const value = parseFloat(param.value[1]).toPrecision(3);
@@ -829,9 +823,9 @@ export default function PidTuningPage() {
   return (
     <TooltipProvider>
       <div className="container mx-auto p-4 md:p-6 px-4 md:px-16">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Column 1: Controls (50% width on large screens) */}
-          <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+          {/* Column 1: Controls (40% width on large screens) */}
+          <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle>{controllerType} Tuning Parameters</CardTitle>
@@ -1051,30 +1045,6 @@ export default function PidTuningPage() {
                 {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
               </CardContent>
             </Card>
-          </div>
-           {/* Column 2: Results (50% width on large screens) */}
-          <div className="space-y-6">
-            {/* Graph Card */}
-            <Card>
-              <CardContent className="p-0 pb-0">
-                <div className="aspect-square rounded-md pt-0 px-2 pb-0">
-                   {Object.keys(graphOptions).length > 0 ? (
-                     <ReactECharts 
-                       ref={echartsRef} 
-                       echarts={echarts} 
-                       option={graphOptions} 
-                       style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
-                       notMerge={false} 
-                       lazyUpdate={false} 
-                     />
-                   ) : (
-                     <div className="flex items-center justify-center h-full text-muted-foreground">
-                       Adjust parameters above to see controller response simulation
-                     </div>
-                   )}
-                </div>
-              </CardContent>
-            </Card>
 
             {/* Controller Settings Card */}
             <Card>
@@ -1119,6 +1089,30 @@ export default function PidTuningPage() {
                         )}
                     </div>
                 )}
+              </CardContent>
+            </Card>
+          </div>
+           {/* Column 2: Graph (60% width on large screens) */}
+          <div className="lg:col-span-3">
+            {/* Graph Card */}
+            <Card>
+              <CardContent className="p-0 pb-0">
+                <div className="aspect-square rounded-md pt-0 px-2 pb-0">
+                   {Object.keys(graphOptions).length > 0 ? (
+                     <ReactECharts 
+                       ref={echartsRef} 
+                       echarts={echarts} 
+                       option={graphOptions} 
+                       style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
+                       notMerge={true} 
+                       lazyUpdate={false} 
+                     />
+                   ) : (
+                     <div className="flex items-center justify-center h-full text-muted-foreground">
+                       Adjust parameters above to see controller response simulation
+                     </div>
+                   )}
+                </div>
               </CardContent>
             </Card>
           </div>
