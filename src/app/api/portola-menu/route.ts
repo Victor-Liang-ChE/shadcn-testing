@@ -40,6 +40,19 @@ const HEADERS_TO_EXCLUDE = new Set([
 ]);
 
 /**
+ * Cleans menu item text by removing dietary tags and extra whitespace
+ * @param text - The raw menu item text
+ * @returns Cleaned text with dietary tags removed
+ */
+function cleanMenuItemText(text: string): string {
+    return text
+        .replace(/\s*\(vgn\)\s*/gi, '') // Remove (vgn) tags
+        .replace(/\s*\(v\)\s*/gi, '')   // Remove (v) tags
+        .trim()                         // Remove leading/trailing whitespace
+        .replace(/\s+/g, ' ');          // Normalize internal whitespace
+}
+
+/**
  * Parses a meal table from the new weekly menu layout.
  * @param $ - The Cheerio instance.
  * @param mealId - The ID for the meal's container (e.g., '#dinner-body').
@@ -90,7 +103,8 @@ function parseMealTable($: cheerio.CheerioAPI, mealId: string): MenuData {
         if (colIndex >= days.length) return;
 
         $(cellElement).find('dd').each((itemIndex, itemElement) => {
-          const itemText = $(itemElement).text().trim();
+          const rawItemText = $(itemElement).text().trim();
+          const itemText = cleanMenuItemText(rawItemText);
 
           // Apply the new highlighting rule
           const shouldHighlight = itemIndex === 0 && SECTIONS_TO_HIGHLIGHT.has(currentStationTitle);
