@@ -67,7 +67,7 @@ import {
 type ReactorType = 'PFR' | 'CSTR';
 type ReactionPhase = 'Liquid' | 'Gas';
 
-const R_GAS_CONSTANT = 8.314; // J/(mol*K) or L*kPa/(mol*K) depending on units
+const R_GAS_CONSTANT = 8.314; // J/(mol*K) or m³*kPa/(mol*K) depending on units
 
 // Interface for a single point on the graph
 interface DataPoint {
@@ -105,9 +105,9 @@ export default function ReactorDesignPage() {
     reactionTempK: '350', // Kelvin
   });
 
-  const [reactorVolume, setReactorVolume] = useState<string>('100'); // e.g., Liters
+  const [reactorVolume, setReactorVolume] = useState<string>('100'); // e.g., cubic meters
   const [totalPressure, setTotalPressure] = useState<string>('1'); // e.g., bar (for gas phase)
-  const [volumetricFlowRate, setVolumetricFlowRate] = useState<string>('1'); // v0 (for liquid phase, L/s)
+  const [volumetricFlowRate, setVolumetricFlowRate] = useState<string>('1'); // v0 (for liquid phase, m³/s)
   const [maxVolumeSlider, setMaxVolumeSlider] = useState<string>('1000'); // User-defined max for volume slider
   const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('500'); // User-defined max for temperature slider
   const [maxFlowRateSlider, setMaxFlowRateSlider] = useState<string>('10'); // User-defined max for flow rate slider
@@ -521,7 +521,7 @@ export default function ReactorDesignPage() {
         grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
         xAxis: { 
           type: 'value', 
-          name: 'Reactor Volume (L)', 
+          name: 'Reactor Volume (m³)', 
           nameLocation: 'middle', 
           nameGap: 30, 
           nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
@@ -567,7 +567,7 @@ export default function ReactorDesignPage() {
               fontFamily: 'Merriweather Sans',
               formatter: function (params: any) {
                 if (params.axisDimension === 'x') {
-                  return `Volume: ${params.value.toFixed(2)} L`;
+                  return `Volume: ${params.value.toFixed(2)} m³`;
                 } else {
                   return `${params.value.toFixed(1)}%`;
                 }
@@ -577,7 +577,7 @@ export default function ReactorDesignPage() {
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
             
             params.forEach((param: any) => {
               if (param.seriesName === 'Conversion' || param.seriesName === 'Selectivity') {
@@ -697,7 +697,7 @@ export default function ReactorDesignPage() {
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
             
             params.forEach((param: any) => {
               const value = formatToSigFigs(param.value[1]);
@@ -765,7 +765,7 @@ export default function ReactorDesignPage() {
           formatter: function(params: any) {
             if (!Array.isArray(params)) return '';
             const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} L<br/>`;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
             
             params.forEach((param: any) => {
               const value = formatToSigFigs(param.value[1]);
@@ -952,7 +952,7 @@ export default function ReactorDesignPage() {
                     <div className="flex items-center gap-1">
                       <Label htmlFor="reactorVolumeSlider" className="text-sm font-medium whitespace-nowrap">Reactor Volume:</Label>
                       <span className="text-sm font-medium w-12 text-right">{reactorVolume}</span>
-                      <span className="text-xs text-muted-foreground">L</span>
+                      <span className="text-xs text-muted-foreground">m³</span>
                     </div>
                     <Slider
                       id="reactorVolumeSlider"
@@ -1044,7 +1044,7 @@ export default function ReactorDesignPage() {
                       <div className="flex items-center gap-1">
                         <Label htmlFor="volumetricFlowRateSlider" className="text-sm font-medium whitespace-nowrap">Vol Flow Rate:</Label>
                         <span className="text-sm font-medium w-12 text-right">{volumetricFlowRate}</span>
-                        <span className="text-xs text-muted-foreground">L/s</span>
+                        <span className="text-xs text-muted-foreground">m³/s</span>
                       </div>
                       <Slider
                         id="volumetricFlowRateSlider"
@@ -1577,7 +1577,7 @@ export default function ReactorDesignPage() {
                                   <div className="text-blue-700 dark:text-blue-300 text-sm">
                                     Single pass conversion is only {formatToSigFigs(recycleResults.singlePassConversion.value * 100)}%. 
                                     Try:
-                                    <br />• Increasing reactor volume from {reactorVolume}L to {Math.ceil(parseFloat(reactorVolume) * 5)}L+
+                                    <br />• Increasing reactor volume from {reactorVolume}m³ to {Math.ceil(parseFloat(reactorVolume) * 5)}m³+
                                     <br />• Increasing temperature from {kinetics.reactionTempK}K to {Math.ceil(parseFloat(kinetics.reactionTempK) + 50)}K+
                                   </div>
                                 </div>
