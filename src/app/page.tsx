@@ -345,10 +345,10 @@ export default function Home() {
               <div className="bio-paragraph flex items-baseline gap-2">
                 <span>Want to contact me?</span>
                 <a
-                  href="mailto:victorliang@ucsb.edu"
+                  href="mailto:victorl1725@gmail.com"
                   className="text-primary hover:underline"
                 >
-                  victorliang@ucsb.edu
+                  victorl1725@gmail.com
                 </a>
                 <span>📧</span>
               </div>
