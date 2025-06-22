@@ -1399,7 +1399,17 @@ export default function PidTuningPage() {
               borderWidth: 1,
               shadowBlur: 0,
               shadowColor: 'transparent',
-              fontFamily: 'Merriweather Sans'
+              fontFamily: 'Merriweather Sans',
+              formatter: function(params: any) {
+                // Format axis pointer labels to 3 significant figures
+                if (params.axisDimension === 'x') {
+                  // For frequency (x-axis), format to 3 sig figs
+                  return parseFloat(params.value).toPrecision(3);
+                } else {
+                  // For magnitude/phase (y-axis), format to 3 sig figs
+                  return parseFloat(params.value).toPrecision(3);
+                }
+              }
             },
             crossStyle: {
               color: '#999'
