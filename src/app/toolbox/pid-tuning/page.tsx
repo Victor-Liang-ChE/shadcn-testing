@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, memo, useRef } from 'react';
+import React, { useState, useMemo, useCallback, memo, useRef, useEffect } from 'react';
 import { useTheme } from "next-themes";
 
 // Import ECharts components
@@ -145,7 +145,7 @@ export default function PidTuningPage() {
   const [tau2, setTau2] = useState('5.0'); // For Case B
   const [tau3, setTau3] = useState('2.0'); // For Case I
   const [beta, setBeta] = useState('1.0'); // For Case D
-  const [theta, setTheta] = useState('2.0');
+  const [theta, setTheta] = useState('0.1');
   const [kcu, setKcu] = useState('2.0');
   const [pu, setPu] = useState('5.0');
   const [tauC, setTauC] = useState('2.0'); // For IMC method
@@ -173,13 +173,120 @@ export default function PidTuningPage() {
   const [result, setResult] = useState<TuningResult | null>(null);
   const [displayedMethod, setDisplayedMethod] = useState<string>('');
   
-  const echartsRef = useRef<ReactECharts | null>(null); // Ref for ECharts instance
+  // Simulation Control States
+  const [currentSetpoint, setCurrentSetpoint] = useState<number>(1);
+  const [simulationTime, setSimulationTime] = useState<number>(0);
+  const [isSimulationRunning, setIsSimulationRunning] = useState<boolean>(false);
+  const [currentPV, setCurrentPV] = useState<number>(0);
+  const [controlError, setControlError] = useState<number>(0);
+  const [divergenceWarning, setDivergenceWarning] = useState<boolean>(false);
+  const [resetCountdown, setResetCountdown] = useState<number>(0);
+  const [showErrorGraph, setShowErrorGraph] = useState<boolean>(false);
+  const [graphMode, setGraphMode] = useState<'process' | 'error'>('process');
+  const [graphInitialized, setGraphInitialized] = useState<boolean>(false);
+  
+  // Add a ref for immediate setpoint updates that the simulation can access
+  const currentSetpointRef = useRef<number>(1);
+  // Add a ref for the error graph state that the simulation can access
+  const showErrorGraphRef = useRef<boolean>(false);
+  const graphModeRef = useRef<'process' | 'error'>('process');
+  // Add a ref for the PID result that the simulation can access
+  const resultRef = useRef<TuningResult | null>(null);
+  // Add refs for warning states to prevent graph flickering
+  const divergenceWarningRef = useRef<boolean>(false);
+  const resetCountdownRef = useRef<number>(0);
 
-  // Simulation function for closed-loop response
+  const echartsRef = useRef<ReactECharts | null>(null); // Ref for ECharts instance
+  const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for countdown timer
+  
+  // Add simulation state refs for real-time simulation
+  const simulationStateRef = useRef({
+    pv: 0,
+    prev_pv: 0,
+    integral_error: 0,
+    filtered_derivative: 0,
+    y1: 0, // For second-order models
+    y2: 0, // For second-order models
+    delayBuffer: [] as number[],
+  });
+
+  const simulationDataRef = useRef<{ time: number; pv: number; sp: number }[]>([]);
+
+  // Single-step simulation function for real-time updates
+  const runSingleSimulationStep = (
+    time: number,
+    dt: number,
+    processParams: { K: number; tau: number; theta: number; tau2?: number; zeta?: number },
+    controller: { Kc: number; tauI: number | null; tauD: number | null },
+    modelCase: ImcModelCase,
+    setpointValue: number
+  ) => {
+    const { K, tau, theta, tau2, zeta } = processParams;
+    const { Kc, tauI, tauD } = controller;
+
+    // Get current state from the ref
+    const state = simulationStateRef.current;
+    let { pv, prev_pv, integral_error, filtered_derivative, y1, y2, delayBuffer } = state;
+
+    // --- Derivative Filter ---
+    const alpha = 0.1;
+    const T_filter = (tauD && tauD > 0) ? Math.max(alpha * tauD, dt) : dt;
+
+    const error = setpointValue - pv;
+
+    // --- PID Controller with Derivative Filter ---
+    const p_term = Kc * error;
+    if (tauI && tauI > 0) {
+      integral_error += (Kc / tauI) * error * dt;
+    }
+
+    const raw_derivative = (prev_pv - pv) / dt;
+    filtered_derivative += (dt / T_filter) * (raw_derivative - filtered_derivative);
+    const derivative_term = (tauD && tauD > 0) ? Kc * tauD * filtered_derivative : 0;
+    
+    const controller_output = p_term + integral_error + derivative_term;
+    
+    // --- Process Simulation (Handles different models) ---
+    // If theta is very small (< 0.1), skip delay to minimize startup delay
+    let delayed_input;
+    if (theta < 0.1) {
+      delayed_input = controller_output;
+    } else {
+      delayed_input = delayBuffer.shift() || 0;
+      delayBuffer.push(controller_output);
+    }
+
+    // Select the correct process model for simulation
+    if (modelCase === 'B' || modelCase === 'K' || modelCase === 'I') {
+      const tau1_sim = tau;
+      const tau2_sim = tau2 || tau;
+      const y1_deriv = (K * delayed_input - y1) / tau1_sim;
+      y1 += y1_deriv * dt;
+      const y2_deriv = (y1 - y2) / tau2_sim;
+      y2 += y2_deriv * dt;
+      pv = y2;
+    } else {
+      const pv_deriv = tau > 0 ? (K * delayed_input - pv) / tau : 0;
+      pv += pv_deriv * dt;
+    }
+
+    prev_pv = pv;
+    
+    // Update the state in the ref for the next tick
+    simulationStateRef.current = { pv, prev_pv, integral_error, filtered_derivative, y1, y2, delayBuffer };
+
+    // Return the data point for this step
+    return { time, pv, sp: setpointValue };
+  };
+
+  // Simulation function for closed-loop response (kept for compatibility but not used in real-time mode)
   const simulateClosedLoopResponse = (
     processParams: { K: number; tau: number; theta: number; tau2?: number; zeta?: number },
     controller: { Kc: number; tauI: number | null; tauD: number | null },
-    modelCase: ImcModelCase
+    modelCase: ImcModelCase,
+    setpointValue: number = 1,
+    disturbanceTime?: number
   ): { time: number; pv: number; sp: number }[] => {
     
     const { K, tau, theta, tau2, zeta } = processParams;
@@ -212,7 +319,10 @@ export default function PidTuningPage() {
 
     for (let i = 1; i <= n_steps; i++) {
       const time = i * dt;
-      const setpoint = time > dt ? 1 : 0;
+      
+      // Setpoint logic - step change at t > dt
+      let setpoint = time > dt ? setpointValue : 0;
+      
       const error = setpoint - pv;
 
       // --- PID Controller with Derivative Filter ---
@@ -231,22 +341,22 @@ export default function PidTuningPage() {
       const controller_output = p_term + integral_error + derivative_term;
       
       // --- Process Simulation (Handles different models) ---
-      const delayed_output = delayBuffer.shift() || 0;
-      delayBuffer.push(controller_output);
+      const delayed_input = delayBuffer.shift() || 0;
+      delayBuffer.push(controller_output); // No continuous disturbance
 
       // Select the correct process model for simulation
       if (modelCase === 'B' || modelCase === 'K' || modelCase === 'I') {
         // Second-Order Overdamped (Two Lags in series)
         const tau1_sim = tau;
         const tau2_sim = tau2 || tau; // Fallback if tau2 not provided
-        const y1_deriv = (K * delayed_output - y1) / tau1_sim;
+        const y1_deriv = (K * delayed_input - y1) / tau1_sim;
         y1 += y1_deriv * dt;
         const y2_deriv = (y1 - y2) / tau2_sim;
         y2 += y2_deriv * dt;
         pv = y2;
       } else {
         // Default to FOPTD for all other relevant cases (G, H, ITAE, AMIGO etc.)
-        const pv_deriv = tau > 0 ? (K * delayed_output - pv) / tau : 0;
+        const pv_deriv = tau > 0 ? (K * delayed_input - pv) / tau : 0;
         pv += pv_deriv * dt;
       }
 
@@ -369,6 +479,13 @@ export default function PidTuningPage() {
     handleCalculate
   ]);
 
+  // Auto-start simulation when result is first calculated
+  React.useEffect(() => {
+    if (result && !isSimulationRunning && !loading) {
+      startSimulation();
+    }
+  }, [result, loading]);
+
   // Update controller type when tuning method changes
   React.useEffect(() => {
     const availableTypes = getAvailableControllerTypes(tuningMethod);
@@ -387,6 +504,33 @@ export default function PidTuningPage() {
       }
     }
   }, [controllerType, tuningMethod]);
+
+  // Keep the refs in sync with the state
+  React.useEffect(() => {
+    showErrorGraphRef.current = showErrorGraph;
+    graphModeRef.current = graphMode;
+  }, [showErrorGraph, graphMode]);
+
+  // Keep the result ref in sync with the result state
+  React.useEffect(() => {
+    resultRef.current = result;
+  }, [result]);
+
+  // Keep the warning refs in sync with the warning states
+  React.useEffect(() => {
+    divergenceWarningRef.current = divergenceWarning;
+    resetCountdownRef.current = resetCountdown;
+  }, [divergenceWarning, resetCountdown]);
+
+  // Keep the setpoint ref in sync with the setpoint state
+  React.useEffect(() => {
+    currentSetpointRef.current = currentSetpoint;
+  }, [currentSetpoint]);
+
+  // Sync showErrorGraph with graphMode for backward compatibility
+  React.useEffect(() => {
+    setShowErrorGraph(graphMode === 'error');
+  }, [graphMode]);
 
   // --- Individual Tuning Rule Functions ---
   
@@ -660,6 +804,296 @@ export default function PidTuningPage() {
       return { kc, tauI, tauD };
   };
 
+  // Simulation Control Functions - Live changes without reset
+  const handleSetpointChange = (direction: 'up' | 'down') => {
+    setCurrentSetpoint(prevSetpoint => {
+      let newSetpoint = prevSetpoint;
+      
+      if (direction === 'up' && prevSetpoint < 2) {
+        newSetpoint = prevSetpoint + 1;
+      } else if (direction === 'down' && prevSetpoint > 0) {
+        newSetpoint = prevSetpoint - 1;
+      }
+      
+      // Update ref immediately
+      currentSetpointRef.current = newSetpoint;
+      
+      // Update all existing setpoint data in the simulation to reflect the change immediately
+      simulationDataRef.current = simulationDataRef.current.map(point => ({
+        ...point,
+        sp: newSetpoint
+      }));
+      
+      // Update the graph immediately to show the setpoint change
+      const echartsInstance = echartsRef.current?.getEchartsInstance();
+      if (echartsInstance) {
+        if (graphModeRef.current === 'error') {
+          // For error graph, update error data and zero line
+          const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
+          const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
+          echartsInstance.setOption({
+            series: [
+              {
+                data: errorData,
+              },
+              {
+                data: zeroData,
+              }
+            ]
+          });
+        } else {
+          // For process graph, update PV, SP, and custom series
+          echartsInstance.setOption({
+            series: [
+              {
+                data: simulationDataRef.current.map(p => [p.time, p.pv]),
+              },
+              {
+                data: simulationDataRef.current.map(p => [p.time, p.sp]),
+              },
+              {
+                data: [0] // Trigger custom series re-render
+              }
+            ]
+          });
+        }
+      }
+      
+      return newSetpoint;
+    });
+  };
+
+  const triggerDisturbance = (direction: 'up' | 'down') => {
+    const currentPV = simulationStateRef.current.pv;
+    
+    if (direction === 'up' && currentPV < 2.0) {
+      simulationStateRef.current.pv = currentPV + 0.5;
+    } else if (direction === 'down' && currentPV > 0.0) {
+      simulationStateRef.current.pv = currentPV - 0.5;
+    }
+    
+    simulationStateRef.current.prev_pv = simulationStateRef.current.pv;
+  };
+
+  // Start simulation automatically and provide reset functionality
+  const startSimulation = (forceStart = false) => {
+    if (isSimulationRunning && !forceStart) return; // Already running, unless forced
+    
+    const dt = 0.1;
+    const numTheta = parseFloat(theta);
+    // If theta is very small, use minimal delay buffer to reduce startup delay
+    const delaySteps = numTheta < 0.1 ? 0 : Math.floor(numTheta / dt);
+
+    simulationStateRef.current = {
+      pv: 0,
+      prev_pv: 0,
+      integral_error: 0,
+      filtered_derivative: 0,
+      y1: 0,
+      y2: 0,
+      delayBuffer: new Array(delaySteps).fill(0),
+    };
+    
+    // Don't update the ref from state here - it should already be up to date
+    // currentSetpointRef.current = currentSetpoint;
+    
+    // Reset data array using the current ref value
+    simulationDataRef.current = [{ time: 0, pv: 0, sp: currentSetpointRef.current }];
+    setSimulationTime(0);
+    setIsSimulationRunning(true);
+    
+    // Force graph update to show the correct initial setpoint
+    const echartsInstance = echartsRef.current?.getEchartsInstance();
+    if (echartsInstance) {
+      if (graphModeRef.current === 'error') {
+        // For error graph, update error data and zero line
+        const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
+        const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
+        echartsInstance.setOption({
+          series: [
+            {
+              data: errorData,
+            },
+            {
+              data: zeroData,
+            }
+          ]
+        });
+      } else {
+        // For process graph, update PV, SP, and custom series
+        echartsInstance.setOption({
+          series: [
+            {
+              data: simulationDataRef.current.map(p => [p.time, p.pv]),
+            },
+            {
+              data: simulationDataRef.current.map(p => [p.time, p.sp]),
+            },
+            {
+              data: [0] // Trigger custom series re-render
+            }
+          ]
+        });
+      }
+    }
+    
+    const startTime = Date.now();
+    
+    simulationIntervalRef.current = setInterval(() => {
+        const echartsInstance = echartsRef.current?.getEchartsInstance();
+        if (!echartsInstance || !resultRef.current) {
+            return;
+        }
+
+        const elapsedTime = (Date.now() - startTime) / 1000;
+        const time = parseFloat(elapsedTime.toFixed(1));
+        const dt = 0.1;
+
+        // --- Get parameters for this tick ---
+        const processParams = {
+            K: parseFloat(k),
+            tau: parseFloat(tau),
+            theta: parseFloat(theta),
+            tau2: parseFloat(tau2),
+            zeta: parseFloat(zeta)
+        };
+        const controllerParams = {
+            Kc: resultRef.current.kc || 0,
+            tauI: resultRef.current.tauI,
+            tauD: resultRef.current.tauD
+        };
+        const simModelCase = tuningMethod === 'imc' ? imcModelCase : 'G';
+        
+        // --- Run one step of the simulation ---
+        const newDataPoint = runSingleSimulationStep(
+            time,
+            dt,
+            processParams,
+            controllerParams,
+            simModelCase,
+            currentSetpointRef.current
+        );
+        
+        simulationDataRef.current.push(newDataPoint);
+
+        // Update current PV and error for the UI
+        setCurrentPV(newDataPoint.pv);
+        setControlError(newDataPoint.sp - newDataPoint.pv);
+
+        // Check for divergence - if control error exceeds 3, trigger warning (lowered for testing)
+        const currentError = Math.abs(newDataPoint.sp - newDataPoint.pv);
+        if (currentError > 3 && !divergenceWarning && !countdownIntervalRef.current) {
+          setDivergenceWarning(true);
+          setResetCountdown(3);
+          
+          // Start countdown timer (only if one isn't already running)
+          countdownIntervalRef.current = setInterval(() => {
+            setResetCountdown(prev => {
+              if (prev <= 1) {
+                clearInterval(countdownIntervalRef.current!);
+                countdownIntervalRef.current = null;
+                // Reset the simulation
+                resetSimulation();
+                setDivergenceWarning(false);
+                setResetCountdown(0);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+
+        // Keep only the last 2000 data points to prevent memory issues
+        if (simulationDataRef.current.length > 2000) {
+          simulationDataRef.current = simulationDataRef.current.slice(-2000);
+        }
+
+        // Calculate dynamic x-axis range to keep current time on left/middle of screen
+        const currentTime = time;
+        const timeWindow = 30; // Show 30 seconds worth of data
+        const xMin = Math.max(0, currentTime - timeWindow * 0.7); // Current time at 70% of the way across
+        const xMax = Math.max(timeWindow, currentTime + timeWindow * 0.3);
+
+        // --- Dynamically update the ECharts graph ---
+        if (graphModeRef.current === 'error') {
+          // For error graph, update error data and zero line
+          const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
+          const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
+          echartsInstance.setOption({
+            xAxis: {
+              min: xMin,
+              max: xMax
+            },
+            series: [
+              {
+                data: errorData,
+              },
+              {
+                data: zeroData,
+              }
+            ]
+          });
+        } else {
+          // For process graph, update PV, SP, and custom series
+          echartsInstance.setOption({
+            xAxis: {
+              min: xMin,
+              max: xMax
+            },
+            series: [
+              {
+                data: simulationDataRef.current.map(p => [p.time, p.pv]),
+              },
+              {
+                data: simulationDataRef.current.map(p => [p.time, p.sp]),
+              },
+              {
+                data: [time] // Trigger custom series re-render with current time
+              }
+            ]
+          });
+        }
+        
+        setSimulationTime(time); // Update time for display if needed
+        
+        // Optional: Stop simulation after a certain time
+        if (time >= 1000) { // Increased from 200 to 1000 seconds
+          resetSimulation(); 
+        }
+
+    }, 100); // Update every 100ms
+  };
+
+  // Reset simulation - stops current simulation and restarts it
+  const resetSimulation = () => {
+    if (simulationIntervalRef.current) {
+      clearInterval(simulationIntervalRef.current);
+      simulationIntervalRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setIsSimulationRunning(false);
+    setDivergenceWarning(false);
+    setResetCountdown(0);
+    
+    // Force start simulation immediately
+    startSimulation(true);
+  };
+
+  // Cleanup simulation interval on unmount
+  React.useEffect(() => {
+    return () => {
+      if (simulationIntervalRef.current) {
+        clearInterval(simulationIntervalRef.current);
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, []);
+
   const formatResult = (value: number | null) => {
     if (value === null || isNaN(value)) return '---';
     if (value === 0) return '0.00';
@@ -668,44 +1102,18 @@ export default function PidTuningPage() {
     return value.toPrecision(3);
   }
 
-  // Graph options for ECharts
+  // Graph options for ECharts - Real-time simulation
   const graphOptions = useMemo((): EChartsOption => {
-    // Only run simulation if we have calculated results
+    // Only initialize chart if we have calculated results
     if (!result) {
       console.log('Graph not showing - no results:', { result });
       return {};
     }
 
-    // --- FIX: Assemble the correct process parameters based on the selected model ---
-    const processParams = {
-      K: parseFloat(k),
-      tau: parseFloat(tau),
-      theta: parseFloat(theta),
-      tau2: parseFloat(tau2), // for Case B, I, K
-      zeta: parseFloat(zeta)  // for Case C, D, H, etc.
-    };
-
-    const controllerParams = {
-      Kc: result.kc || 0,
-      tauI: result.tauI,
-      tauD: result.tauD
-    };
-
-    console.log('Process params:', processParams);
-    console.log('Controller params:', controllerParams);
-
-    // Check if parameters are valid for simulation
-    if (isNaN(processParams.K) || isNaN(processParams.tau) || isNaN(processParams.theta) || !controllerParams.Kc) {
-      console.log('Invalid parameters for simulation');
-      return {};
+    // Mark graph as initialized once we have results
+    if (!graphInitialized) {
+      setGraphInitialized(true);
     }
-
-    // Determine which IMC model to use for the simulation.
-    // Default to 'G' (FOPTD) if not IMC, as it's the most common.
-    const simModelCase = tuningMethod === 'imc' ? imcModelCase : 'G';
-
-    const simulationData = simulateClosedLoopResponse(processParams, controllerParams, simModelCase);
-    console.log('Simulation data points:', simulationData.length);
 
     // Theme-dependent colors
     const isDark = resolvedTheme === 'dark';
@@ -715,9 +1123,9 @@ export default function PidTuningPage() {
 
     return {
       backgroundColor: 'transparent',
-      animation: false,
+      animation: false, // Disable animation for live updates
       title: { 
-        text: `${controllerType} Controller Step Response`, 
+        text: graphMode === 'error' ? `${controllerType} Controller Error` : `${controllerType} Controller Simulation`, 
         left: 'center',
         top: '0%',
         textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } 
@@ -731,17 +1139,25 @@ export default function PidTuningPage() {
         nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
         axisLine: { lineStyle: { color: textColor } },
         axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
-        axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
-        splitLine: { show: false }
+        axisLabel: { 
+          color: textColor, 
+          fontSize: 16, 
+          fontFamily: 'Merriweather Sans',
+          showMinLabel: false,
+          showMaxLabel: false
+        },
+        splitLine: { show: false },
+        min: 0,
+        max: 30 // Dynamic range will be set during simulation
       },
       yAxis: {
         type: 'value',
-        name: 'Process Variable',
+        name: graphMode === 'error' ? 'Control Error' : 'Process Variable',
         nameLocation: 'middle',
         nameGap: 40,
         nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
-        min: 0,
-        max: 2,
+        min: graphMode === 'error' ? -3 : -0.5,
+        max: graphMode === 'error' ? 3 : 2.5,
         axisLine: { lineStyle: { color: textColor } },
         axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
         axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
@@ -762,13 +1178,44 @@ export default function PidTuningPage() {
           if (!params || !Array.isArray(params)) return '';
           const time = params[0]?.value[0]; // Get time from first series data point
           let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
-          params.forEach((param: any) => {
-            const value = parseFloat(param.value[1]).toPrecision(3);
-            // Map series names to their correct colors
-            const color = param.seriesName === 'Process Variable' ? '#3b82f6' : 
-                         param.seriesName === 'Setpoint' ? '#ef4444' : param.color;
-            tooltip += `<span style="color: ${color};">${param.seriesName}: ${value}</span><br/>`;
-          });
+          
+          if (graphMode === 'error') {
+            // Error graph tooltip
+            params.forEach((param: any) => {
+              if (param.seriesName === 'Control Error') {
+                const value = parseFloat(param.value[1]).toPrecision(3);
+                tooltip += `<span style="color: white;">Control Error: ${value}</span><br/>`;
+              }
+            });
+          } else {
+            // Main graph tooltip
+            let pvValue = 0;
+            let spValue = 0;
+            
+            params.forEach((param: any) => {
+              const value = parseFloat(param.value[1]).toPrecision(3);
+              // Map series names to their correct colors
+              const color = param.seriesName === 'Process Variable' ? '#00ff51ff' : 
+                           param.seriesName === 'Setpoint' ? '#ef4444' : param.color;
+              
+              // Skip the Control Error Range series in tooltip
+              if (param.seriesName !== 'Control Error Range') {
+                tooltip += `<span style="color: ${color};">${param.seriesName}: ${value}</span><br/>`;
+                
+                // Store values for error calculation
+                if (param.seriesName === 'Process Variable') {
+                  pvValue = parseFloat(param.value[1]);
+                } else if (param.seriesName === 'Setpoint') {
+                  spValue = parseFloat(param.value[1]);
+                }
+              }
+            });
+            
+            // Calculate and display error
+            const error = spValue - pvValue;
+            tooltip += `<span style="color: white;">Control Error: ${error.toFixed(2)}</span><br/>`;
+          }
+          
           return tooltip;
         },
         axisPointer: {
@@ -789,10 +1236,12 @@ export default function PidTuningPage() {
         }
       },
       legend: {
-        data: [
-          { name: 'Process Variable', itemStyle: { color: '#3b82f6' } },
-          { name: 'Setpoint', itemStyle: { color: '#ef4444' } }
-        ],
+        data: graphMode === 'error' 
+          ? [{ name: 'Control Error', itemStyle: { color: '#ffffff' } }]
+          : [
+              { name: 'Process Variable', itemStyle: { color: '#00ff51ff' } },
+              { name: 'Setpoint', itemStyle: { color: '#ef4444' } }
+            ],
         bottom: '2%',
         left: 'center',
         textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
@@ -800,25 +1249,270 @@ export default function PidTuningPage() {
         itemHeight: 2
       },
       series: [
+        // Main series based on graph mode
+        ...(graphMode === 'error' ? [
+          {
+            name: 'Control Error',
+            type: 'line',
+            data: simulationDataRef.current.map(p => [p.time, p.sp - p.pv]), // Populate with current error data
+            showSymbol: false,
+            lineStyle: { width: 3, color: '#ffffff' },
+            smooth: true
+          },
+          {
+            name: 'Zero Line',
+            type: 'line',
+            data: simulationDataRef.current.map(p => [p.time, 0]), // Zero reference line
+            showSymbol: false,
+            lineStyle: { type: 'dashed', color: '#888888', width: 1 },
+            silent: true // Don't show in tooltip
+          }
+        ] : [
+          {
+            name: 'Process Variable',
+            type: 'line',
+            data: [], // Start with empty data - will be populated by simulation
+            showSymbol: false,
+            lineStyle: { width: 3, color: '#00ff51ff' },
+            smooth: true
+          },
+          {
+            name: 'Setpoint',
+            type: 'line',
+            data: [], // Start with empty data - will be populated by simulation  
+            showSymbol: false,
+            lineStyle: { type: 'dashed', color: '#ef4444', width: 2 }
+          },
+          {
+            name: 'Control Error Range',
+            type: 'custom',
+            renderItem: (params: any, api: any) => {
+              if (!simulationDataRef.current.length) return null;
+              
+              const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
+              if (!currentData) return null;
+              
+              const currentTime = currentData.time;
+              const currentPV = currentData.pv;
+              const currentSP = currentData.sp;
+              const error = currentSP - currentPV;
+              
+              // Only show if we have valid data and the current time is visible
+              const timeRange = 30; // Current visible time window
+              const currentVisibleTime = Math.max(0, currentTime - timeRange);
+              
+              if (currentTime < currentVisibleTime) return null;
+              
+              // Calculate positions
+              const x = api.coord([currentTime, 0])[0];
+              const y1 = api.coord([0, currentSP])[1];
+              const y2 = api.coord([0, currentPV])[1];
+              const yMid = (y1 + y2) / 2;
+              
+              // Theme-aware colors
+              const isDark = resolvedTheme === 'dark';
+              const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+              const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+              
+              return {
+                type: 'group',
+                children: [
+                  // Vertical line showing the error range
+                  {
+                    type: 'line',
+                    shape: {
+                      x1: x,
+                      y1: y1,
+                      x2: x,
+                      y2: y2
+                    },
+                    style: {
+                      stroke: lineColor,
+                      lineWidth: 2,
+                      opacity: 0.7
+                    }
+                  },
+                  // Top bracket
+                  {
+                    type: 'line',
+                    shape: {
+                      x1: x - 5,
+                      y1: y1,
+                      x2: x + 5,
+                      y2: y1
+                    },
+                    style: {
+                      stroke: lineColor,
+                      lineWidth: 2
+                    }
+                  },
+                  // Bottom bracket
+                  {
+                    type: 'line',
+                    shape: {
+                      x1: x - 5,
+                      y1: y2,
+                      x2: x + 5,
+                      y2: y2
+                    },
+                    style: {
+                      stroke: lineColor,
+                      lineWidth: 2
+                    }
+                  },
+                  // Error value text
+                  {
+                    type: 'text',
+                    style: {
+                      text: error.toFixed(2),
+                      x: x + 10,
+                      y: yMid,
+                      textVerticalAlign: 'middle',
+                      textAlign: 'left',
+                      fill: textColor,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      fontWeight: 'bold'
+                    }
+                  }
+                ]
+              };
+            },
+            data: [0] // Dummy data to trigger renderItem
+          } as any
+        ]),
+        // Warning overlay (always present, shows for both graph modes)
         {
-          name: 'Process Variable',
-          type: 'line',
-          data: simulationData.map(p => [p.time, p.pv]),
-          showSymbol: false,
-          lineStyle: { width: 3, color: '#3b82f6' },
-          smooth: true
-        },
-        {
-          name: 'Setpoint',
-          type: 'line',
-          data: simulationData.map(p => [p.time, p.sp]),
-          showSymbol: false,
-          lineStyle: { type: 'dashed', color: '#ef4444', width: 2 }
-        }
-      ]
+          name: 'Warning Overlay',
+          type: 'custom',
+          renderItem: (params: any, api: any) => {
+            if (!divergenceWarningRef.current) return null;
+            
+            // Get the current visible x-axis range to properly center the warning
+            const currentTime = simulationDataRef.current.length > 0 
+              ? simulationDataRef.current[simulationDataRef.current.length - 1].time 
+              : 50;
+            const timeWindow = 30; // Match the timeWindow from the simulation
+            const xMin = Math.max(0, currentTime - timeWindow * 0.7);
+            const xMax = Math.max(timeWindow, currentTime + timeWindow * 0.3);
+            const xMidValue = (xMin + xMax) / 2; // Center of current visible range
+            
+            // Use coordinate conversion to get center of the actual plot area
+            const yMidValue = graphMode === 'error' ? 0 : 1; // Middle of y-axis range
+            const centerCoords = api.coord([xMidValue, yMidValue]); // Use center of current visible x-range
+            const centerX = centerCoords[0];
+            const centerY = centerCoords[1];
+            
+            const isDark = resolvedTheme === 'dark';
+            
+            return {
+              type: 'group',
+              children: [
+                // Warning background
+                {
+                  type: 'rect',
+                  shape: {
+                    x: centerX - 150,
+                    y: centerY - 40,
+                    width: 300,
+                    height: 80
+                  },
+                  style: {
+                    fill: isDark ? 'rgba(127, 29, 29, 0.95)' : 'rgba(254, 226, 226, 0.95)',
+                    stroke: '#ef4444',
+                    lineWidth: 2
+                  }
+                },
+                // Warning title
+                {
+                  type: 'text',
+                  style: {
+                    text: '⚠ Warning: Poor Tuning Parameters!',
+                    x: centerX,
+                    y: centerY - 15,
+                    textAlign: 'center',
+                    textVerticalAlign: 'middle',
+                    fill: isDark ? '#fecaca' : '#dc2626',
+                    fontSize: 14,
+                    fontWeight: 'bold',
+                    fontFamily: 'Merriweather Sans'
+                  }
+                },
+                // Countdown text
+                {
+                  type: 'text',
+                  style: {
+                    text: `Process diverging! Resetting in ${resetCountdownRef.current}s...`,
+                    x: centerX,
+                    y: centerY + 10,
+                    textAlign: 'center',
+                    textVerticalAlign: 'middle',
+                    fill: isDark ? '#f87171' : '#b91c1c',
+                    fontSize: 12,
+                    fontFamily: 'Merriweather Sans'
+                  }
+                }
+              ]
+            };
+          },
+          data: [0], // Dummy data to trigger renderItem
+          silent: true // Don't show in tooltip
+        } as any
+      ].filter(Boolean)
     };
 
-  }, [result, k, tau, theta, tau2, zeta, imcModelCase, tuningMethod, controllerType, resolvedTheme]);
+  }, [!!result, controllerType, resolvedTheme, graphMode]); // Only recalculate when result becomes available or essential properties change
+
+  // Effect to handle graph switching between process and error views
+  React.useEffect(() => {
+    const echartsInstance = echartsRef.current?.getEchartsInstance();
+    if (!echartsInstance || !simulationDataRef.current.length) return;
+
+    // Force a complete chart re-render when switching graph types
+    // This ensures the correct series structure is used
+    echartsInstance.setOption(graphOptions, true); // true = not merge, replace completely
+    
+    // Then update with current data
+    if (graphMode === 'error') {
+      // Switch to error graph
+      const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
+      const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
+      echartsInstance.setOption({
+        series: [
+          {
+            data: errorData,
+          },
+          {
+            data: zeroData,
+          }
+        ]
+      });
+    } else {
+      // Switch to process graph
+      echartsInstance.setOption({
+        series: [
+          {
+            data: simulationDataRef.current.map(p => [p.time, p.pv]),
+          },
+          {
+            data: simulationDataRef.current.map(p => [p.time, p.sp]),
+          },
+          {
+            data: [simulationDataRef.current[simulationDataRef.current.length - 1]?.time || 0] // Trigger custom series re-render
+          }
+        ]
+      });
+    }
+  }, [graphMode, graphOptions]);
+
+  // Cleanup simulation on component unmount
+  useEffect(() => {
+    return () => {
+      if (simulationIntervalRef.current) {
+        clearInterval(simulationIntervalRef.current);
+      }
+    };
+  }, []);
 
   return (
     <TooltipProvider>
@@ -1046,6 +1740,73 @@ export default function PidTuningPage() {
               </CardContent>
             </Card>
 
+            {/* Simulation Control Card */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle>Simulation Control</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={resetSimulation}
+                  disabled={!result || loading || divergenceWarning}
+                >
+                  Reset
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  {/* Setpoint and Disturbance Controls - Side by Side */}
+                  <div className="flex items-center gap-4">
+                    {/* Setpoint Control */}
+                    <div className="flex items-center gap-2">
+                      <Label className="text-sm font-medium">Setpoint Value: {currentSetpoint}</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleSetpointChange('down')}
+                        disabled={currentSetpoint <= 0 || divergenceWarning}
+                        className="w-8 h-6 p-0 text-xs"
+                      >
+                        -
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleSetpointChange('up')}
+                        disabled={currentSetpoint >= 2 || divergenceWarning}
+                        className="w-8 h-6 p-0 text-xs"
+                      >
+                        +
+                      </Button>
+                    </div>
+
+                    {/* Disturbance Control */}
+                    <div className="flex items-center gap-2">
+                      <Label className="text-sm font-medium">Process Disturbance:</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => triggerDisturbance('down')}
+                        disabled={!isSimulationRunning || currentPV < 0 || divergenceWarning}
+                        className="w-12 h-6 p-0 text-xs"
+                      >
+                        -0.5
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => triggerDisturbance('up')}
+                        disabled={!isSimulationRunning || currentPV > 2 || divergenceWarning}
+                        className="w-12 h-6 p-0 text-xs"
+                      >
+                        +0.5
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Controller Settings Card */}
             <Card>
               <CardHeader>
@@ -1096,8 +1857,22 @@ export default function PidTuningPage() {
           <div className="lg:col-span-3">
             {/* Graph Card */}
             <Card>
-              <CardContent className="p-0 pb-0">
-                <div className="aspect-square rounded-md pt-0 px-2 pb-0">
+              <CardContent className="py-2">
+                <div className="relative aspect-square rounded-md pt-0 px-2 pb-0">
+                  {/* Graph Mode Selector - Top Right */}
+                  <div className="absolute top-4 right-4 z-10">
+                    <div className="bg-muted rounded-lg p-1">
+                      <Select value={graphMode} onValueChange={(value) => setGraphMode(value as 'process' | 'error')}>
+                        <SelectTrigger className="w-[140px] h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="process">Process</SelectItem>
+                          <SelectItem value="error">Error</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                    {Object.keys(graphOptions).length > 0 ? (
                      <ReactECharts 
                        ref={echartsRef} 
