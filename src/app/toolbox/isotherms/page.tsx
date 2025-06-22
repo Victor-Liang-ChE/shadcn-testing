@@ -36,8 +36,6 @@ import { Slider } from "@/components/ui/slider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input"; // Added for BET C_s input
-
 // Function to format numbers to avoid long decimals - moved outside component
 const formatNumberToPrecision = (num: any, precision: number = 3): string => {
   if (typeof num === 'number') {
@@ -56,7 +54,7 @@ export default function LangmuirIsothermPage() {
   const { resolvedTheme } = useTheme();
   
   // Isotherm Type State
-  type IsothermType = 'langmuir' | 'freundlich' | 'bet' | 'temkin';
+  type IsothermType = 'langmuir' | 'freundlich' | 'temkin';
   const [selectedIsotherm, setSelectedIsotherm] = useState<IsothermType>('langmuir');
 
   // Input States
@@ -67,13 +65,6 @@ export default function LangmuirIsothermPage() {
   // Freundlich
   const [freundlichKf, setFreundlichKf] = useState<number>(2);
   const [freundlichNf, setFreundlichNf] = useState<number>(2);
-
-  // BET
-  const [betQm, setBetQm] = useState<number>(10); // Monolayer capacity
-  const [betCb, setBetCb] = useState<number>(50); // BET constant
-  const [betCs, setBetCs] = useState<number>(10); // Saturation concentration (input)
-  const [betCsInput, setBetCsInput] = useState<string>(String(10));
-
 
   // Temkin
   const [temkinAt, setTemkinAt] = useState<number>(1); // Temkin equilibrium binding constant
@@ -98,21 +89,11 @@ export default function LangmuirIsothermPage() {
       let maxConcentration = 5; // Default max concentration for plotting
       const concentrationPoints = 100; // Fixed number of points
 
-      if (selectedIsotherm === 'bet') {
-        // For BET, plot up to Cs if Cs is lower than default maxConcentration
-        // and ensure C does not exceed Cs.
-        maxConcentration = betCs * 0.999; // Plot very close to Cs but not exactly Cs to avoid division by zero
-      }
-
       for (let i = 0; i <= concentrationPoints; i++) {
         let c = (i / concentrationPoints) * maxConcentration;
         if (c === 0 && (selectedIsotherm === 'freundlich' || selectedIsotherm === 'temkin')) {
             c = 1e-12; // Use a very small value instead of zero for better precision
         }
-        if (selectedIsotherm === 'bet' && c >= betCs) {
-            c = betCs * 0.999; // Cap C at just below Cs for BET
-        }
-
 
         let q: number;
         switch (selectedIsotherm) {
@@ -123,27 +104,6 @@ export default function LangmuirIsothermPage() {
             break;
           case 'freundlich':
             q = freundlichKf * Math.pow(c, 1 / freundlichNf);
-            break;
-          case 'bet':
-            // Validate parameters
-            if (betCs <= 0 || betCb <= 0 || betQm <= 0) {
-              q = 0;
-              break;
-            }
-            
-            if (c >= betCs) {
-              q = Number.POSITIVE_INFINITY; // Represents saturation
-            } else {
-              const relativeConc = c / betCs;
-              const numerator = betQm * betCb * c;
-              const denominator = (betCs - c) * (1 + (betCb - 1) * relativeConc);
-              q = numerator / denominator;
-              
-              // Handle near-saturation asymptote
-              if (!isFinite(q) || q < 0) {
-                q = betQm * 100; // Fallback to high value
-              }
-            }
             break;
           case 'temkin':
             // q = B_temkin * ln(A_temkin * C)
@@ -174,7 +134,6 @@ export default function LangmuirIsothermPage() {
     selectedIsotherm,
     langmuirK, independentVar,
     freundlichKf, freundlichNf,
-    betQm, betCb, betCs,
     temkinAt, temkinBt
   ]);
 
@@ -200,9 +159,6 @@ export default function LangmuirIsothermPage() {
           break;
         case 'freundlich':
           chartTitle = 'Freundlich Adsorption Isotherm';
-          break;
-        case 'bet':
-          chartTitle = 'BET Adsorption Isotherm';
           break;
         case 'temkin':
           chartTitle = 'Temkin Adsorption Isotherm';
@@ -235,7 +191,7 @@ export default function LangmuirIsothermPage() {
         xAxis: {
           type: 'value',
           min: 0,
-          max: selectedIsotherm === 'bet' ? betCs : Math.max(...isothermData.c),
+          max: Math.max(...isothermData.c),
           name: independentVar === 'pressure' ? 'Pressure, P (bar)' : 'Concentration, C (mol/L)',
           nameLocation: 'middle',
           nameGap: 30,
@@ -340,8 +296,8 @@ export default function LangmuirIsothermPage() {
             smooth: true,
             data: isothermData.c.map((val, index) => [val, isothermData.q[index]]),
             showSymbol: false,
-            color: 'yellow',
-            lineStyle: { width: 2.5 },
+            color: 'green',
+            lineStyle: { width: 3.5 },
             animation: false
           }
         ],
@@ -366,7 +322,7 @@ export default function LangmuirIsothermPage() {
       };
       setEchartsOptions(newOptions);
     }
-  }, [isothermData, selectedIsotherm, langmuirK, independentVar, freundlichKf, freundlichNf, betQm, betCb, betCs, temkinAt, temkinBt, resolvedTheme]);
+  }, [isothermData, selectedIsotherm, langmuirK, independentVar, freundlichKf, freundlichNf, temkinAt, temkinBt, resolvedTheme]);
 
   return (
     <TooltipProvider>
@@ -444,68 +400,6 @@ export default function LangmuirIsothermPage() {
                         value={[freundlichNf]}
                         onValueChange={(value) => setFreundlichNf(value[0])}
                         style={{ '--primary': 'hsl(0 84% 60%)' } as React.CSSProperties}
-                      />
-                    </div>
-                  </>
-                )}
-
-                {selectedIsotherm === 'bet' && (
-                  <>
-                    <div className="space-y-3">
-                      <Label htmlFor="betQm">
-                        <span>BET Monolayer Capacity (q<sub style={{fontSize: '0.75em', lineHeight: '1'}}>m</sub>): {betQm.toFixed(2)}</span>
-                      </Label>
-                      <Slider
-                        id="betQm"
-                        min={1}
-                        max={50}
-                        step={0.5}
-                        value={[betQm]}
-                        onValueChange={(value) => setBetQm(value[0])}
-                        style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}
-                      />
-                    </div>
-                    <div className="space-y-3">
-                      <Label htmlFor="betCb">
-                        <span>BET Constant (C<sub style={{fontSize: '0.75em', lineHeight: '1'}}>b</sub>): {betCb.toFixed(2)}</span>
-                      </Label>
-                      <Slider
-                        id="betCb"
-                        min={1}
-                        max={300} // BET C_b can be large
-                        step={1}
-                        value={[betCb]}
-                        onValueChange={(value) => setBetCb(value[0])}
-                        style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}
-                      />
-                    </div>
-                    <div className="space-y-3">
-                      <Label htmlFor="betCs">
-                        <span>BET Saturation Concentration (C<sub style={{fontSize: '0.75em', lineHeight: '1'}}>s</sub>): {betCs.toFixed(2)}</span>
-                      </Label>
-                      <Input
-                        id="betCs"
-                        type="number"
-                        value={betCsInput}
-                        onChange={(e) => {
-                            setBetCsInput(e.target.value);
-                            const numVal = parseFloat(e.target.value);
-                            if (!isNaN(numVal) && numVal > 0) {
-                                setBetCs(numVal);
-                            }
-                        }}
-                        onBlur={() => { // Ensure state is updated if input is valid, or reset if not
-                            const numVal = parseFloat(betCsInput);
-                            if (!isNaN(numVal) && numVal > 0) {
-                                setBetCs(numVal);
-                            } else { // Reset to current valid betCs if input is bad
-                                setBetCsInput(String(betCs));
-                            }
-                        }}
-                        placeholder="e.g., 10"
-                        min="0.01" // C_s must be positive
-                        step="0.1"
-                        className="mt-1"
                       />
                     </div>
                   </>
