@@ -1119,7 +1119,7 @@ export default function PidTuningPage() {
 
         const elapsedTime = (Date.now() - startTime) / 1000;
         const time = parseFloat(elapsedTime.toFixed(1));
-        const dt = 0.1;
+        const dt = 0.05;
 
         // --- Get parameters for this tick ---
         const processParams = {
