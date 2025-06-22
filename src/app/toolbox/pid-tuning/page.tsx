@@ -182,14 +182,14 @@ export default function PidTuningPage() {
   const [divergenceWarning, setDivergenceWarning] = useState<boolean>(false);
   const [resetCountdown, setResetCountdown] = useState<number>(0);
   const [showErrorGraph, setShowErrorGraph] = useState<boolean>(false);
-  const [graphMode, setGraphMode] = useState<'process' | 'error'>('process');
+  const [graphMode, setGraphMode] = useState<'process' | 'error' | 'bode' | 'nyquist'>('process');
   const [graphInitialized, setGraphInitialized] = useState<boolean>(false);
   
   // Add a ref for immediate setpoint updates that the simulation can access
   const currentSetpointRef = useRef<number>(1);
   // Add a ref for the error graph state that the simulation can access
   const showErrorGraphRef = useRef<boolean>(false);
-  const graphModeRef = useRef<'process' | 'error'>('process');
+  const graphModeRef = useRef<'process' | 'error' | 'bode' | 'nyquist'>('process');
   // Add a ref for the PID result that the simulation can access
   const resultRef = useRef<TuningResult | null>(null);
   // Add refs for warning states to prevent graph flickering
@@ -399,6 +399,12 @@ export default function PidTuningPage() {
     return []; // No P-only IMC rules
   };
 
+  // Helper function to determine controller type from IMC model case
+  const getControllerTypeFromImcCase = (modelCase: ImcModelCase): ControllerType => {
+    const piOnlyCases: ImcModelCase[] = ['A', 'E', 'G', 'M'];
+    return piOnlyCases.includes(modelCase) ? 'PI' : 'PID';
+  };
+
   // --- Calculation Logic ---
   const handleCalculate = React.useCallback(() => {
     setLoading(true);
@@ -479,6 +485,15 @@ export default function PidTuningPage() {
     handleCalculate
   ]);
 
+  // Effect to reset simulation only when model-related parameters change (not slider values)
+  React.useEffect(() => {
+    if (result && isSimulationRunning) {
+      resetSimulation();
+    }
+  }, [
+    tuningMethod, controllerType, itaeInputType, imcModelCase
+  ]);
+
   // Auto-start simulation when result is first calculated
   React.useEffect(() => {
     if (result && !isSimulationRunning && !loading) {
@@ -488,22 +503,28 @@ export default function PidTuningPage() {
 
   // Update controller type when tuning method changes
   React.useEffect(() => {
-    const availableTypes = getAvailableControllerTypes(tuningMethod);
-    if (!availableTypes.includes(controllerType)) {
-      setControllerType(availableTypes[availableTypes.length - 1]);
+    if (tuningMethod === 'imc') {
+      // For IMC, auto-determine controller type from selected model case
+      const requiredControllerType = getControllerTypeFromImcCase(imcModelCase);
+      setControllerType(requiredControllerType);
+    } else {
+      // For other methods, check if current controller type is available
+      const availableTypes = getAvailableControllerTypes(tuningMethod);
+      if (!availableTypes.includes(controllerType)) {
+        setControllerType(availableTypes[availableTypes.length - 1]);
+      }
     }
   }, [tuningMethod]);
 
-  // Update IMC model case when controller type changes for IMC method
+  // Auto-determine controller type from IMC model case for IMC method
   React.useEffect(() => {
     if (tuningMethod === 'imc') {
-      const availableCases = getAvailableImcCases(controllerType);
-      if (!availableCases.includes(imcModelCase)) {
-        // Set to a default compatible case
-        setImcModelCase(availableCases[0]);
+      const requiredControllerType = getControllerTypeFromImcCase(imcModelCase);
+      if (controllerType !== requiredControllerType) {
+        setControllerType(requiredControllerType);
       }
     }
-  }, [controllerType, tuningMethod]);
+  }, [imcModelCase, tuningMethod]);
 
   // Keep the refs in sync with the state
   React.useEffect(() => {
@@ -804,6 +825,47 @@ export default function PidTuningPage() {
       return { kc, tauI, tauD };
   };
 
+  const calculateFrequencyResponse = (
+    processParams: { K: number; tau: number; theta: number; },
+    controller: { Kc: number; tauI: number | null; tauD: number | null }
+  ) => {
+    const { K, tau, theta } = processParams;
+    const { Kc, tauI, tauD } = controller;
+    const bodeData = { magnitude: [] as [number, number][], phase: [] as [number, number][] };
+    const nyquistData = [] as [number, number][];
+    const nyquistDataNegative = [] as [number, number][]; // For negative frequencies
+    const points = 200;
+
+    for (let i = 0; i <= points; i++) {
+      const w = Math.pow(10, -2 + (i * 4) / points); // Freq range 10^-2 to 10^2
+
+      // Gp(s) = K*e^(-s*theta)/(tau*s+1)
+      const gp_real = K * (Math.cos(w*theta) - w*tau*Math.sin(w*theta)) / (1 + w*w*tau*tau);
+      const gp_imag = K * (-Math.sin(w*theta) - w*tau*Math.cos(w*theta)) / (1 + w*w*tau*tau);
+      
+      // Gc(s) = Kc*(1 + 1/(tauI*s) + tauD*s)
+      const gc_real = Kc;
+      let gc_imag = (Kc * (tauD || 0) * w) - (tauI ? Kc / (tauI * w) : 0);
+
+      // Gol(s) = Gc(s) * Gp(s)
+      const gol_real = gc_real * gp_real - gc_imag * gp_imag;
+      const gol_imag = gc_real * gp_imag + gc_imag * gp_real;
+
+      const magnitude = Math.sqrt(gol_real**2 + gol_imag**2);
+      bodeData.magnitude.push([w, 20 * Math.log10(magnitude)]);
+      bodeData.phase.push([w, Math.atan2(gol_imag, gol_real) * (180 / Math.PI)]);
+
+      // --- Add this for Nyquist Plot ---
+      nyquistData.push([gol_real, gol_imag]);
+      nyquistDataNegative.push([gol_real, -gol_imag]); // Complex conjugate for w < 0
+    }
+    
+    // The full Nyquist contour is the negative frequency data reversed, then the positive data
+    const fullNyquistData = [...nyquistDataNegative.reverse(), ...nyquistData];
+
+    return { bodeData, nyquistData: fullNyquistData };
+  };
+
   // Simulation Control Functions - Live changes without reset
   const handleSetpointChange = (direction: 'up' | 'down') => {
     setCurrentSetpoint(prevSetpoint => {
@@ -827,31 +889,86 @@ export default function PidTuningPage() {
       // Update the graph immediately to show the setpoint change
       const echartsInstance = echartsRef.current?.getEchartsInstance();
       if (echartsInstance) {
-        if (graphModeRef.current === 'error') {
-          // For error graph, update error data and zero line
+        if (graphModeRef.current === 'bode') {
+          // Bode plot doesn't need setpoint updates - it's controller-based only
+          // No action needed
+        } else if (graphModeRef.current === 'nyquist') {
+          // Nyquist plot doesn't need setpoint updates - it's controller-based only
+          // No action needed
+        } else if (graphModeRef.current === 'error') {
+          // For error graph, update error data and zero line - provide complete series configurations
           const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
           const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
           echartsInstance.setOption({
             series: [
               {
+                name: 'Control Error',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { width: 3, color: '#ffffff' },
+                smooth: true,
                 data: errorData,
               },
               {
+                name: 'Zero Line',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { type: 'dashed', color: '#888888', width: 1 },
+                silent: true,
                 data: zeroData,
               }
             ]
           });
         } else {
-          // For process graph, update PV, SP, and custom series
+          // For process graph, update PV, SP, and custom series - provide complete series configurations
           echartsInstance.setOption({
             series: [
               {
+                name: 'Process Variable',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { width: 3, color: '#00ff51ff' },
+                smooth: true,
                 data: simulationDataRef.current.map(p => [p.time, p.pv]),
               },
               {
+                name: 'Setpoint',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
                 data: simulationDataRef.current.map(p => [p.time, p.sp]),
               },
               {
+                name: 'Control Error Range',
+                type: 'custom',
+                renderItem: (params: any, api: any) => {
+                  if (!simulationDataRef.current.length) return null;
+                  const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
+                  if (!currentData) return null;
+                  const currentTime = currentData.time;
+                  const currentPV = currentData.pv;
+                  const currentSP = currentData.sp;
+                  const error = currentSP - currentPV;
+                  const timeRange = 30;
+                  const currentVisibleTime = Math.max(0, currentTime - timeRange);
+                  if (currentTime < currentVisibleTime) return null;
+                  const x = api.coord([currentTime, 0])[0];
+                  const y1 = api.coord([0, currentSP])[1];
+                  const y2 = api.coord([0, currentPV])[1];
+                  const yMid = (y1 + y2) / 2;
+                  const isDark = resolvedTheme === 'dark';
+                  const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+                  const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+                  return {
+                    type: 'group',
+                    children: [
+                      { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
+                      { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
+                      { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
+                      { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
+                    ]
+                  };
+                },
                 data: [0] // Trigger custom series re-render
               }
             ]
@@ -905,31 +1022,86 @@ export default function PidTuningPage() {
     // Force graph update to show the correct initial setpoint
     const echartsInstance = echartsRef.current?.getEchartsInstance();
     if (echartsInstance) {
-      if (graphModeRef.current === 'error') {
-        // For error graph, update error data and zero line
+      if (graphModeRef.current === 'bode') {
+        // Bode plot doesn't need initialization updates - it's static
+        // No action needed
+      } else if (graphModeRef.current === 'nyquist') {
+        // Nyquist plot doesn't need initialization updates - it's static
+        // No action needed
+      } else if (graphModeRef.current === 'error') {
+        // For error graph, update error data and zero line - provide complete series configurations
         const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
         const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
         echartsInstance.setOption({
           series: [
             {
+              name: 'Control Error',
+              type: 'line',
+              showSymbol: false,
+              lineStyle: { width: 3, color: '#ffffff' },
+              smooth: true,
               data: errorData,
             },
             {
+              name: 'Zero Line',
+              type: 'line',
+              showSymbol: false,
+              lineStyle: { type: 'dashed', color: '#888888', width: 1 },
+              silent: true,
               data: zeroData,
             }
           ]
         });
       } else {
-        // For process graph, update PV, SP, and custom series
+        // For process graph, update PV, SP, and custom series - provide complete series configurations
         echartsInstance.setOption({
           series: [
             {
+              name: 'Process Variable',
+              type: 'line',
+              showSymbol: false,
+              lineStyle: { width: 3, color: '#00ff51ff' },
+              smooth: true,
               data: simulationDataRef.current.map(p => [p.time, p.pv]),
             },
             {
+              name: 'Setpoint',
+              type: 'line',
+              showSymbol: false,
+              lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
               data: simulationDataRef.current.map(p => [p.time, p.sp]),
             },
             {
+              name: 'Control Error Range',
+              type: 'custom',
+              renderItem: (params: any, api: any) => {
+                if (!simulationDataRef.current.length) return null;
+                const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
+                if (!currentData) return null;
+                const currentTime = currentData.time;
+                const currentPV = currentData.pv;
+                const currentSP = currentData.sp;
+                const error = currentSP - currentPV;
+                const timeRange = 30;
+                const currentVisibleTime = Math.max(0, currentTime - timeRange);
+                if (currentTime < currentVisibleTime) return null;
+                const x = api.coord([currentTime, 0])[0];
+                const y1 = api.coord([0, currentSP])[1];
+                const y2 = api.coord([0, currentPV])[1];
+                const yMid = (y1 + y2) / 2;
+                const isDark = resolvedTheme === 'dark';
+                const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+                const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+                return {
+                  type: 'group',
+                  children: [
+                    { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
+                    { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
+                    { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
+                    { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
+                  ]
+                };
+              },
               data: [0] // Trigger custom series re-render
             }
           ]
@@ -1015,8 +1187,14 @@ export default function PidTuningPage() {
         const xMax = Math.max(timeWindow, currentTime + timeWindow * 0.3);
 
         // --- Dynamically update the ECharts graph ---
-        if (graphModeRef.current === 'error') {
-          // For error graph, update error data and zero line
+        if (graphModeRef.current === 'bode') {
+          // Bode plot doesn't need real-time updates - it's static based on controller parameters
+          // No dynamic updates needed
+        } else if (graphModeRef.current === 'nyquist') {
+          // Nyquist plot doesn't need real-time updates - it's static based on controller parameters
+          // No dynamic updates needed
+        } else if (graphModeRef.current === 'error') {
+          // For error graph, update error data and zero line - provide complete series configurations
           const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
           const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
           echartsInstance.setOption({
@@ -1026,15 +1204,25 @@ export default function PidTuningPage() {
             },
             series: [
               {
+                name: 'Control Error',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { width: 3, color: '#ffffff' },
+                smooth: true,
                 data: errorData,
               },
               {
+                name: 'Zero Line',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { type: 'dashed', color: '#888888', width: 1 },
+                silent: true,
                 data: zeroData,
               }
             ]
           });
         } else {
-          // For process graph, update PV, SP, and custom series
+          // For process graph, update PV, SP, and custom series - provide complete series configurations
           echartsInstance.setOption({
             xAxis: {
               min: xMin,
@@ -1042,12 +1230,51 @@ export default function PidTuningPage() {
             },
             series: [
               {
+                name: 'Process Variable',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { width: 3, color: '#00ff51ff' },
+                smooth: true,
                 data: simulationDataRef.current.map(p => [p.time, p.pv]),
               },
               {
+                name: 'Setpoint',
+                type: 'line',
+                showSymbol: false,
+                lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
                 data: simulationDataRef.current.map(p => [p.time, p.sp]),
               },
               {
+                name: 'Control Error Range',
+                type: 'custom',
+                renderItem: (params: any, api: any) => {
+                  if (!simulationDataRef.current.length) return null;
+                  const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
+                  if (!currentData) return null;
+                  const currentTime = currentData.time;
+                  const currentPV = currentData.pv;
+                  const currentSP = currentData.sp;
+                  const error = currentSP - currentPV;
+                  const timeRange = 30;
+                  const currentVisibleTime = Math.max(0, currentTime - timeRange);
+                  if (currentTime < currentVisibleTime) return null;
+                  const x = api.coord([currentTime, 0])[0];
+                  const y1 = api.coord([0, currentSP])[1];
+                  const y2 = api.coord([0, currentPV])[1];
+                  const yMid = (y1 + y2) / 2;
+                  const isDark = resolvedTheme === 'dark';
+                  const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+                  const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+                  return {
+                    type: 'group',
+                    children: [
+                      { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
+                      { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
+                      { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
+                      { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
+                    ]
+                  };
+                },
                 data: [time] // Trigger custom series re-render with current time
               }
             ]
@@ -1102,8 +1329,309 @@ export default function PidTuningPage() {
     return value.toPrecision(3);
   }
 
+  const frequencyResponseData = useMemo(() => {
+    if (!result) return null;
+    const processParams = { K: parseFloat(k), tau: parseFloat(tau), theta: parseFloat(theta) };
+    if (isNaN(processParams.K) || isNaN(processParams.tau) || isNaN(processParams.theta)) return null;
+    const controller = { Kc: result.kc || 0, tauI: result.tauI, tauD: result.tauD };
+    return calculateFrequencyResponse(processParams, controller);
+  }, [result, k, tau, theta]);
+
   // Graph options for ECharts - Real-time simulation
   const graphOptions = useMemo((): EChartsOption => {
+    // Theme-dependent colors
+    const isDark = resolvedTheme === 'dark';
+    const textColor = isDark ? 'white' : '#000000';
+    const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
+    const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
+    const axisLineStyle = { lineStyle: { color: textColor } };
+
+    // --- BODE PLOT CONFIGURATION ---
+    if (graphMode === 'bode') {
+      if (!frequencyResponseData) return {};
+      return {
+        backgroundColor: 'transparent',
+        animation: false,
+        title: { 
+          text: `${controllerType} Controller Bode Plot`, 
+          left: 'center',
+          top: '0%',
+          textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } 
+        },
+        tooltip: {
+          show: true,
+          trigger: 'axis',
+          backgroundColor: tooltipBg,
+          borderColor: tooltipBorder,
+          borderWidth: 1,
+          textStyle: { 
+            color: textColor,
+            fontSize: 12,
+            fontFamily: 'Merriweather Sans'
+          },
+          formatter: function(params: any) {
+            if (!params || !Array.isArray(params) || params.length === 0) return '';
+            
+            const frequency = params[0]?.value[0];
+            if (frequency === undefined) return '';
+            
+            let tooltip = `<span style="color: ${textColor};">Frequency: ${parseFloat(frequency).toPrecision(3)} rad/s</span><br/>`;
+            
+            params.forEach((param: any) => {
+              if (param.seriesName === 'Magnitude') {
+                const magnitude = param.value[1];
+                tooltip += `<span style="color: #00ff51ff;">Magnitude: ${parseFloat(magnitude).toPrecision(3)} dB</span><br/>`;
+              } else if (param.seriesName === 'Phase') {
+                const phase = param.value[1];
+                tooltip += `<span style="color: #3b82f6;">Phase: ${parseFloat(phase).toPrecision(3)} deg</span><br/>`;
+              }
+            });
+            
+            return tooltip;
+          },
+          axisPointer: {
+            type: 'cross',
+            label: {
+              show: true,
+              backgroundColor: tooltipBg,
+              color: textColor,
+              borderColor: tooltipBorder,
+              borderWidth: 1,
+              shadowBlur: 0,
+              shadowColor: 'transparent',
+              fontFamily: 'Merriweather Sans'
+            },
+            crossStyle: {
+              color: '#999'
+            }
+          }
+        },
+        axisPointer: { link: [{ xAxisIndex: 'all' }] },
+        grid: [
+          { left: '8%', right: '5%', top: '15%', height: '35%', containLabel: true }, // Magnitude plot
+          { left: '8%', right: '5%', bottom: '12%', height: '35%', containLabel: true }  // Phase plot
+        ],
+        xAxis: [
+          { 
+            type: 'log', 
+            gridIndex: 0, 
+            axisLine: { lineStyle: { color: textColor } },
+            axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { show: false },
+            splitLine: { show: false }
+          },
+          { 
+            type: 'log', 
+            gridIndex: 1, 
+            name: 'Frequency (rad/s)', 
+            nameLocation: 'middle', 
+            nameGap: 30,
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor } },
+            axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+            splitLine: { show: false }
+          }
+        ],
+        yAxis: [
+          { 
+            type: 'value', 
+            gridIndex: 0, 
+            name: 'Magnitude (dB)', 
+            nameLocation: 'middle', 
+            nameGap: 50,
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor } },
+            axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+            splitLine: { show: false }
+          },
+          { 
+            type: 'value', 
+            gridIndex: 1, 
+            name: 'Phase (deg)', 
+            nameLocation: 'middle', 
+            nameGap: 50,
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor } },
+            axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+            splitLine: { show: false }
+          }
+        ],
+        series: [
+          { 
+            name: 'Magnitude', 
+            type: 'line', 
+            xAxisIndex: 0, 
+            yAxisIndex: 0, 
+            showSymbol: false, 
+            data: frequencyResponseData.bodeData.magnitude, 
+            lineStyle: { color: '#00ff51ff', width: 2 } 
+          },
+          { 
+            name: 'Phase', 
+            type: 'line', 
+            xAxisIndex: 1, 
+            yAxisIndex: 1, 
+            showSymbol: false, 
+            data: frequencyResponseData.bodeData.phase, 
+            lineStyle: { color: '#3b82f6', width: 2 } 
+          }
+        ]
+      };
+    }
+    
+    // --- NYQUIST PLOT CONFIGURATION ---
+    if (graphMode === 'nyquist') {
+      if (!frequencyResponseData) return {};
+      return {
+        backgroundColor: 'transparent',
+        animation: false,
+        title: { 
+          text: `${controllerType} Controller Nyquist Plot`, 
+          left: 'center',
+          top: '0%',
+          textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } 
+        },
+        grid: { left: '5%', right: '5%', bottom: '12%', top: '8%', containLabel: true },
+        tooltip: {
+          show: true,
+          trigger: 'item',
+          backgroundColor: tooltipBg,
+          borderColor: tooltipBorder,
+          borderWidth: 1,
+          textStyle: { 
+            color: textColor,
+            fontSize: 12,
+            fontFamily: 'Merriweather Sans'
+          },
+          formatter: function(params: any) {
+            if (!params || !params.value || !Array.isArray(params.value)) return '';
+            
+            const real = params.value[0];
+            const imag = params.value[1];
+            
+            return `<span style="color: #00ff51ff;">Real: ${parseFloat(real).toPrecision(3)}</span><br/>` +
+                   `<span style="color: #00ff51ff;">Imaginary: ${parseFloat(imag).toPrecision(3)}</span>`;
+          },
+          axisPointer: {
+            type: 'cross',
+            label: {
+              show: true,
+              backgroundColor: tooltipBg,
+              color: textColor,
+              borderColor: tooltipBorder,
+              borderWidth: 1,
+              shadowBlur: 0,
+              shadowColor: 'transparent',
+              fontFamily: 'Merriweather Sans'
+            },
+            crossStyle: {
+              color: '#999'
+            }
+          }
+        },
+        xAxis: { 
+          type: 'value', 
+          name: 'Real Axis', 
+          nameLocation: 'middle',
+          nameGap: 30,
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+          scale: true, 
+          axisLine: { lineStyle: { color: textColor } },
+          axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+          axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+          splitLine: { show: false }
+        },
+        yAxis: { 
+          type: 'value', 
+          name: 'Imaginary Axis', 
+          nameLocation: 'middle',
+          nameGap: 50,
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+          scale: true, 
+          axisLine: { lineStyle: { color: textColor } },
+          axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+          axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+          splitLine: { show: false }
+        },
+        series: [
+          {
+            name: 'Open Loop Response',
+            type: 'line',
+            showSymbol: false,
+            data: frequencyResponseData.nyquistData,
+            lineStyle: { color: '#00ff51ff', width: 2 },
+            markPoint: {
+              // These are the new, combined mark points
+              data: [
+                // 1. The existing critical point marker
+                {
+                  name: 'Critical Point',
+                  coord: [-1, 0],
+                  symbol: 'cross',
+                  symbolSize: 12,
+                  label: {
+                    show: true,
+                    formatter: '(-1, 0)',
+                    color: textColor,
+                    fontFamily: 'Merriweather Sans',
+                    fontSize: 14
+                  }
+                },
+                // 2. The new direction arrows, generated dynamically
+                ...(() => {
+                  const arrows = [];
+                  const nyquistPoints = frequencyResponseData.nyquistData;
+                  if (!nyquistPoints || nyquistPoints.length < 2) return [];
+
+                  // Place ~6 arrows, avoiding the start/end where the plot can be chaotic
+                  const numArrows = 6;
+                  const startIndex = Math.floor(nyquistPoints.length * 0.1);
+                  const endIndex = Math.floor(nyquistPoints.length * 0.9);
+                  const step = Math.floor((endIndex - startIndex) / numArrows);
+
+                  if (step <= 0) return []; // Not enough data points
+
+                  for (let i = startIndex; i < endIndex; i += step) {
+                    const currentPoint = nyquistPoints[i];
+                    // Look ahead a few points to get a stable direction vector
+                    const nextPoint = nyquistPoints[Math.min(i + 5, nyquistPoints.length - 1)];
+
+                    if (currentPoint && nextPoint) {
+                      const dx = nextPoint[0] - currentPoint[0];
+                      const dy = nextPoint[1] - currentPoint[1];
+
+                      // Only add an arrow if there's noticeable movement
+                      if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+                        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+                        arrows.push({
+                          name: `Direction Arrow ${i}`,
+                          coord: currentPoint,
+                          // FIX: Use a custom SVG path for the arrow symbol.
+                          // This places the tip of the arrow directly on the curve.
+                          symbol: 'path://M 0 0 L -10 5 L -10 -5 Z',
+                          symbolSize: 12,
+                          symbolRotate: angle,
+                          itemStyle: {
+                            color: '#00ff51ff'
+                          },
+                          label: { show: false } // Hide labels for arrows
+                        });
+                      }
+                    }
+                  }
+                  return arrows;
+                })()
+              ]
+            }
+          } as any
+        ]
+      };
+    }
+    
+    // --- EXISTING PROCESS & ERROR PLOT CONFIGURATION ---
     // Only initialize chart if we have calculated results
     if (!result) {
       console.log('Graph not showing - no results:', { result });
@@ -1114,12 +1642,6 @@ export default function PidTuningPage() {
     if (!graphInitialized) {
       setGraphInitialized(true);
     }
-
-    // Theme-dependent colors
-    const isDark = resolvedTheme === 'dark';
-    const textColor = isDark ? 'white' : '#000000';
-    const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
-    const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
 
     return {
       backgroundColor: 'transparent',
@@ -1461,7 +1983,7 @@ export default function PidTuningPage() {
       ].filter(Boolean)
     };
 
-  }, [!!result, controllerType, resolvedTheme, graphMode]); // Only recalculate when result becomes available or essential properties change
+  }, [!!result, controllerType, resolvedTheme, graphMode]); // Reduced dependencies to prevent flickering
 
   // Effect to handle graph switching between process and error views
   React.useEffect(() => {
@@ -1473,37 +1995,197 @@ export default function PidTuningPage() {
     echartsInstance.setOption(graphOptions, true); // true = not merge, replace completely
     
     // Then update with current data
-    if (graphMode === 'error') {
-      // Switch to error graph
+    if (graphMode === 'bode') {
+      // Bode plot doesn't need data updates - it's static based on calculated parameters
+      // The graph options already contain all the necessary data
+    } else if (graphMode === 'nyquist') {
+      // Nyquist plot doesn't need data updates - it's static based on calculated parameters
+      // The graph options already contain all the necessary data
+    } else if (graphMode === 'error') {
+      // Switch to error graph - provide complete series configurations
       const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
       const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
       echartsInstance.setOption({
         series: [
           {
+            name: 'Control Error',
+            type: 'line',
+            showSymbol: false,
+            lineStyle: { width: 3, color: '#ffffff' },
+            smooth: true,
             data: errorData,
           },
           {
+            name: 'Zero Line',
+            type: 'line',
+            showSymbol: false,
+            lineStyle: { type: 'dashed', color: '#888888', width: 1 },
+            silent: true,
             data: zeroData,
           }
         ]
       });
     } else {
-      // Switch to process graph
+      // Switch to process graph - provide complete series configurations
       echartsInstance.setOption({
         series: [
           {
+            name: 'Process Variable',
+            type: 'line',
+            showSymbol: false,
+            lineStyle: { width: 3, color: '#00ff51ff' },
+            smooth: true,
             data: simulationDataRef.current.map(p => [p.time, p.pv]),
           },
           {
+            name: 'Setpoint',
+            type: 'line',
+            showSymbol: false,
+            lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
             data: simulationDataRef.current.map(p => [p.time, p.sp]),
           },
           {
+            name: 'Control Error Range',
+            type: 'custom',
+            renderItem: (params: any, api: any) => {
+              if (!simulationDataRef.current.length) return null;
+              const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
+              if (!currentData) return null;
+              const currentTime = currentData.time;
+              const currentPV = currentData.pv;
+              const currentSP = currentData.sp;
+              const error = currentSP - currentPV;
+              const timeRange = 30;
+              const currentVisibleTime = Math.max(0, currentTime - timeRange);
+              if (currentTime < currentVisibleTime) return null;
+              const x = api.coord([currentTime, 0])[0];
+              const y1 = api.coord([0, currentSP])[1];
+              const y2 = api.coord([0, currentPV])[1];
+              const yMid = (y1 + y2) / 2;
+              const isDark = resolvedTheme === 'dark';
+              const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+              const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
+              return {
+                type: 'group',
+                children: [
+                  { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
+                  { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
+                  { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
+                  { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
+                ]
+              };
+            },
             data: [simulationDataRef.current[simulationDataRef.current.length - 1]?.time || 0] // Trigger custom series re-render
           }
         ]
       });
     }
   }, [graphMode, graphOptions]);
+
+  // Effect to update Bode and Nyquist plots when frequency response data changes
+  React.useEffect(() => {
+    if (frequencyResponseData) {
+      const echartsInstance = echartsRef.current?.getEchartsInstance();
+      if (echartsInstance) {
+        if (graphMode === 'bode') {
+          // Complete series configuration for Bode plot
+          echartsInstance.setOption({
+            series: [
+              {
+                name: 'Magnitude',
+                type: 'line',
+                xAxisIndex: 0,
+                yAxisIndex: 0,
+                showSymbol: false,
+                data: frequencyResponseData.bodeData.magnitude,
+                lineStyle: { color: '#00ff51ff', width: 2 }
+              },
+              {
+                name: 'Phase',
+                type: 'line',
+                xAxisIndex: 1,
+                yAxisIndex: 1,
+                showSymbol: false,
+                data: frequencyResponseData.bodeData.phase,
+                lineStyle: { color: '#3b82f6', width: 2 }
+              }
+            ]
+          });
+        } else if (graphMode === 'nyquist') {
+          // Complete series configuration for Nyquist plot
+          const isDark = resolvedTheme === 'dark';
+          const textColor = isDark ? 'white' : '#000000';
+
+          echartsInstance.setOption({
+            series: [
+              {
+                name: 'Open Loop Response',
+                type: 'line',
+                showSymbol: false,
+                data: frequencyResponseData.nyquistData,
+                lineStyle: { color: '#00ff51ff', width: 2 },
+                markPoint: {
+                  data: [
+                    // 1. Critical Point
+                    {
+                      name: 'Critical Point',
+                      coord: [-1, 0],
+                      symbol: 'cross',
+                      symbolSize: 12,
+                      label: {
+                        show: true,
+                        formatter: '(-1, 0)',
+                        color: textColor,
+                        fontFamily: 'Merriweather Sans',
+                        fontSize: 14
+                      }
+                    },
+                    // 2. Direction Arrows, regenerated with the new data
+                    ...(() => {
+                      const arrows = [];
+                      const nyquistPoints = frequencyResponseData.nyquistData;
+                      if (!nyquistPoints || nyquistPoints.length < 2) return [];
+
+                      const numArrows = 6;
+                      const startIndex = Math.floor(nyquistPoints.length * 0.1);
+                      const endIndex = Math.floor(nyquistPoints.length * 0.9);
+                      const step = Math.floor((endIndex - startIndex) / numArrows);
+
+                      if (step <= 0) return [];
+
+                      for (let i = startIndex; i < endIndex; i += step) {
+                        const currentPoint = nyquistPoints[i];
+                        const nextPoint = nyquistPoints[Math.min(i + 5, nyquistPoints.length - 1)];
+
+                        if (currentPoint && nextPoint) {
+                          const dx = nextPoint[0] - currentPoint[0];
+                          const dy = nextPoint[1] - currentPoint[1];
+
+                          if (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6) {
+                            const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+                            arrows.push({
+                              coord: currentPoint,
+                              // FIX: Use the same custom SVG path here as well.
+                              symbol: 'path://M 0 0 L -10 5 L -10 -5 Z',
+                              symbolSize: 12,
+                              symbolRotate: angle,
+                              itemStyle: { color: '#00ff51ff' },
+                              label: { show: false }
+                            });
+                          }
+                        }
+                      }
+                      return arrows;
+                    })()
+                  ]
+                }
+              }
+            ]
+          });
+        }
+      }
+    }
+  }, [frequencyResponseData, graphMode, resolvedTheme]);
 
   // Cleanup simulation on component unmount
   useEffect(() => {
@@ -1540,27 +2222,30 @@ export default function PidTuningPage() {
                       </Select>
                   </div>
 
-                  {/* Controller Type Selector */}
-                  <div className="flex items-center gap-2">
-                      <Label htmlFor="controllerType" className="text-sm font-medium whitespace-nowrap">Controller Type:</Label>
-                      <Select value={controllerType} onValueChange={(value) => setControllerType(value as ControllerType)}>
-                          <SelectTrigger id="controllerType" className="flex-1"><SelectValue /></SelectTrigger>
-                          <SelectContent className="max-h-[400px]">
-                              {getAvailableControllerTypes(tuningMethod).map(type => (
-                                <SelectItem key={type} value={type}>{type}</SelectItem>
-                              ))}
-                          </SelectContent>
-                      </Select>
-                  </div>
+                  {/* Controller Type Selector (hidden for IMC method) */}
+                  {tuningMethod !== 'imc' && (
+                    <div className="flex items-center gap-2">
+                        <Label htmlFor="controllerType" className="text-sm font-medium whitespace-nowrap">Controller Type:</Label>
+                        <Select value={controllerType} onValueChange={(value) => setControllerType(value as ControllerType)}>
+                            <SelectTrigger id="controllerType" className="flex-1"><SelectValue /></SelectTrigger>
+                            <SelectContent className="max-h-[400px]">
+                                {getAvailableControllerTypes(tuningMethod).map(type => (
+                                  <SelectItem key={type} value={type}>{type}</SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                  )}
 
                   {/* Model Case Selector (only shown for IMC) */}
                   {tuningMethod === 'imc' && (
                     <div className="flex items-center gap-2">
-                        <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Model Case:</Label>
+                        <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Process Model:</Label>
                         <Select value={imcModelCase} onValueChange={(v) => setImcModelCase(v as ImcModelCase)}>
                             <SelectTrigger id="imcModelCase" className="flex-1"><SelectValue /></SelectTrigger>
                             <SelectContent className="max-h-[400px]">
-                                {getAvailableImcCases(controllerType).map(caseVal => {
+                                {/* Show all IMC cases A-O */}
+                                {(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'] as ImcModelCase[]).map(caseVal => {
                                   const descriptions = {
                                     'A': 'A: First-Order',
                                     'B': 'B: Second-Order Overdamped',
@@ -1862,13 +2547,15 @@ export default function PidTuningPage() {
                   {/* Graph Mode Selector - Top Right */}
                   <div className="absolute top-4 right-4 z-10">
                     <div className="bg-muted rounded-lg p-1">
-                      <Select value={graphMode} onValueChange={(value) => setGraphMode(value as 'process' | 'error')}>
+                      <Select value={graphMode} onValueChange={(value) => setGraphMode(value as any)}>
                         <SelectTrigger className="w-[140px] h-8">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="process">Process</SelectItem>
                           <SelectItem value="error">Error</SelectItem>
+                          <SelectItem value="bode">Bode Plot</SelectItem>
+                          <SelectItem value="nyquist">Nyquist Plot</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
