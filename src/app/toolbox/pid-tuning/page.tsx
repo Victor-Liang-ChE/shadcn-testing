@@ -134,6 +134,7 @@ const SliderGroup = ({ label, tooltip, value, onChange, min, max, step, unit, ma
 // --- Main Component ---
 export default function PidTuningPage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  const purpleColor = '#9333ea'; // A nice purple for the controller output
   
   // Input States
   const [tuningMethod, setTuningMethod] = useState<TuningMethod>('imc');
@@ -182,19 +183,36 @@ export default function PidTuningPage() {
   const [divergenceWarning, setDivergenceWarning] = useState<boolean>(false);
   const [resetCountdown, setResetCountdown] = useState<number>(0);
   const [showErrorGraph, setShowErrorGraph] = useState<boolean>(false);
-  const [graphMode, setGraphMode] = useState<'process' | 'error' | 'bode' | 'nyquist'>('process');
+  const [graphMode, setGraphMode] = useState<'process' | 'error' | 'bode' | 'nyquist' | 'power'>('process');
   const [graphInitialized, setGraphInitialized] = useState<boolean>(false);
   
   // Add a ref for immediate setpoint updates that the simulation can access
   const currentSetpointRef = useRef<number>(1);
   // Add a ref for the error graph state that the simulation can access
   const showErrorGraphRef = useRef<boolean>(false);
-  const graphModeRef = useRef<'process' | 'error' | 'bode' | 'nyquist'>('process');
+  const graphModeRef = useRef<'process' | 'error' | 'bode' | 'nyquist' | 'power'>('process');
   // Add a ref for the PID result that the simulation can access
   const resultRef = useRef<TuningResult | null>(null);
   // Add refs for warning states to prevent graph flickering
   const divergenceWarningRef = useRef<boolean>(false);
   const resetCountdownRef = useRef<number>(0);
+
+  // Add these states and refs for the new multi-view functionality
+  const [isMultiView, setIsMultiView] = useState<boolean>(false);
+  const [multiViewData, setMultiViewData] = useState<{ time: number; pv: number; sp: number; output: number }[]>([]);
+  const isMultiViewRef = useRef<boolean>(false);
+
+  // Add state for the new overlapped graph view
+  const [isOverlappedView, setIsOverlappedView] = useState<boolean>(false);
+  const isOverlappedViewRef = useRef<boolean>(false);
+  useEffect(() => {
+    isOverlappedViewRef.current = isOverlappedView;
+  }, [isOverlappedView]);
+
+  const multiViewProcessRef = useRef<ReactECharts | null>(null);
+  const multiViewErrorRef = useRef<ReactECharts | null>(null);
+  const multiViewOutputRef = useRef<ReactECharts | null>(null);
+  const overlappedChartRef = useRef<ReactECharts | null>(null); // Ref for the new overlapped chart
 
   const echartsRef = useRef<ReactECharts | null>(null); // Ref for ECharts instance
   const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -211,7 +229,126 @@ export default function PidTuningPage() {
     delayBuffer: [] as number[],
   });
 
-  const simulationDataRef = useRef<{ time: number; pv: number; sp: number }[]>([]);
+  const simulationDataRef = useRef<{ time: number; pv: number; sp: number; output: number }[]>([]);
+
+  const multiViewProcessOptions = useMemo(() => {
+    return getMultiViewProcessOptions(resolvedTheme === 'dark', []);
+  }, [resolvedTheme]);
+
+  const multiViewErrorOptions = useMemo(() => {
+    return getMultiViewErrorOptions(resolvedTheme === 'dark', []);
+  }, [resolvedTheme]);
+
+  const multiViewOutputOptions = useMemo(() => {
+    return getMultiViewOutputOptions(resolvedTheme === 'dark', []);
+  }, [resolvedTheme]);
+
+  function getOverlappedGraphOptions(isDark: boolean): EChartsOption {
+    const textColor = isDark ? 'white' : '#000000';
+    const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
+    const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
+
+    return {
+      backgroundColor: 'transparent',
+      title: { text: 'Combined Simulation View', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, left: 'center', top: '2%' },
+      grid: { left: '8%', right: '8%', bottom: '15%', top: '12%', containLabel: true },
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: tooltipBg,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        axisPointer: { type: 'cross', label: { backgroundColor: tooltipBg, color: textColor, borderColor: tooltipBorder, fontFamily: 'Merriweather Sans' } },
+        formatter: function(params: any) {
+          if (!params || !Array.isArray(params) || params.length === 0) return '';
+          const time = params[0]?.value[0];
+          if (time === undefined) return '';
+
+          let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
+          const seriesMap = new Map<string, { value: number, color: string }>();
+
+          params.forEach((param: any) => {
+            seriesMap.set(param.seriesName, {
+              value: parseFloat(param.value[1]),
+              color: param.color
+            });
+          });
+
+          const formatLine = (name: string, color: string) => {
+            if (seriesMap.has(name)) {
+              const series = seriesMap.get(name)!;
+              tooltip += `<span style="color: ${color};">${name}: ${series.value.toPrecision(3)}</span><br/>`;
+            }
+          };
+
+          formatLine('Process Variable', '#00ff51ff');
+          formatLine('Setpoint', '#ef4444');
+          formatLine('Control Error', '#3b82f6');
+          formatLine('Controller Output', purpleColor);
+
+          return tooltip;
+        }
+      },
+      legend: {
+        data: [
+          { name: 'Process Variable', icon: 'rect', itemStyle: { color: '#00ff51ff' } },
+          { name: 'Setpoint', icon: 'rect', itemStyle: { color: '#ef4444' } },
+          { name: 'Control Error', icon: 'rect', itemStyle: { color: '#3b82f6' } },
+          { name: 'Controller Output', icon: 'rect', itemStyle: { color: purpleColor } }
+        ],
+        bottom: '2%',
+        left: 'center',
+        textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        itemWidth: 25,
+        itemHeight: 2
+      },
+      xAxis: {
+        type: 'value',
+        name: 'Time (s)',
+        min: 0,
+        max: 30,
+        nameLocation: 'middle',
+        nameGap: 25,
+        nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: { 
+          color: textColor, 
+          fontSize: 16, 
+          fontFamily: 'Merriweather Sans',
+          showMinLabel: false,
+          showMaxLabel: false
+        },
+        splitLine: { show: false } 
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Value',
+        min: -0.5,
+        max: 2.5,
+        nameLocation: 'middle',
+        nameGap: 50,
+        axisLine: { lineStyle: { color: textColor } },
+        axisLabel: {
+          color: textColor,
+          fontSize: 16,
+          fontFamily: 'Merriweather Sans'
+        },
+        nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+        splitLine: { show: false }
+      },
+      series: [
+        { name: 'Process Variable', type: 'line', data: [], showSymbol: false, lineStyle: { color: '#00ff51ff', width: 3 } },
+        { name: 'Setpoint', type: 'line', data: [], showSymbol: false, lineStyle: { color: '#ef4444', type: 'dashed', width: 3 } },
+        { name: 'Control Error', type: 'line', data: [], showSymbol: false, lineStyle: { color: '#3b82f6', width: 3 } },
+        { name: 'Controller Output', type: 'line', data: [], showSymbol: false, lineStyle: { color: purpleColor, width: 3 } }
+      ]
+    };
+  }
+
+  const overlappedGraphOptions = useMemo(() => {
+    return getOverlappedGraphOptions(resolvedTheme === 'dark');
+  }, [resolvedTheme]);
 
   // Single-step simulation function for real-time updates
   const runSingleSimulationStep = (
@@ -276,8 +413,8 @@ export default function PidTuningPage() {
     // Update the state in the ref for the next tick
     simulationStateRef.current = { pv, prev_pv, integral_error, filtered_derivative, y1, y2, delayBuffer };
 
-    // Return the data point for this step
-    return { time, pv, sp: setpointValue };
+    // Return the data point for this step including controller output
+    return { time, pv, sp: setpointValue, output: controller_output };
   };
 
   // Simulation function for closed-loop response (kept for compatibility but not used in real-time mode)
@@ -547,6 +684,21 @@ export default function PidTuningPage() {
   React.useEffect(() => {
     currentSetpointRef.current = currentSetpoint;
   }, [currentSetpoint]);
+
+  // ADD THIS NEW useEffect to sync the multi-view ref and data
+  React.useEffect(() => {
+    isMultiViewRef.current = isMultiView;
+    // When switching to multi-view, copy the current simulation data to populate the charts
+    if (isMultiView) {
+      const currentData = simulationDataRef.current.length > 0 
+        ? simulationDataRef.current.map(p => ({ ...p, output: 0 })) // Add output field with default value
+        : [{ time: 0, pv: 0, sp: currentSetpointRef.current, output: 0 }];
+      setMultiViewData(currentData);
+    } else {
+      // Clear data when leaving multi-view to save memory
+      setMultiViewData([]);
+    }
+  }, [isMultiView]);
 
   // Sync showErrorGraph with graphMode for backward compatibility
   React.useEffect(() => {
@@ -877,100 +1029,32 @@ export default function PidTuningPage() {
         newSetpoint = prevSetpoint - 1;
       }
       
-      // Update ref immediately
       currentSetpointRef.current = newSetpoint;
       
-      // Update all existing setpoint data in the simulation to reflect the change immediately
       simulationDataRef.current = simulationDataRef.current.map(point => ({
         ...point,
         sp: newSetpoint
       }));
       
-      // Update the graph immediately to show the setpoint change
       const echartsInstance = echartsRef.current?.getEchartsInstance();
       if (echartsInstance) {
-        if (graphModeRef.current === 'bode') {
-          // Bode plot doesn't need setpoint updates - it's controller-based only
-          // No action needed
-        } else if (graphModeRef.current === 'nyquist') {
-          // Nyquist plot doesn't need setpoint updates - it's controller-based only
-          // No action needed
+        if (graphModeRef.current === 'bode' || graphModeRef.current === 'nyquist' || graphModeRef.current === 'power') {
+          // No update needed for these modes when setpoint changes,
+          // as their data is not directly tied to the setpoint value itself
+          // in a way that requires an immediate series data update.
         } else if (graphModeRef.current === 'error') {
-          // For error graph, update error data and zero line - provide complete series configurations
-          const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
-          const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
           echartsInstance.setOption({
             series: [
-              {
-                name: 'Control Error',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { width: 3, color: '#ffffff' },
-                smooth: true,
-                data: errorData,
-              },
-              {
-                name: 'Zero Line',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { type: 'dashed', color: '#888888', width: 1 },
-                silent: true,
-                data: zeroData,
-              }
+              { name: 'Control Error', data: simulationDataRef.current.map(p => [p.time, p.sp - p.pv]) },
+              { name: 'Zero Line', data: simulationDataRef.current.map(p => [p.time, 0]) }
             ]
           });
-        } else {
-          // For process graph, update PV, SP, and custom series - provide complete series configurations
+        } else { // 'process'
           echartsInstance.setOption({
             series: [
-              {
-                name: 'Process Variable',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { width: 3, color: '#00ff51ff' },
-                smooth: true,
-                data: simulationDataRef.current.map(p => [p.time, p.pv]),
-              },
-              {
-                name: 'Setpoint',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
-                data: simulationDataRef.current.map(p => [p.time, p.sp]),
-              },
-              {
-                name: 'Control Error Range',
-                type: 'custom',
-                renderItem: (params: any, api: any) => {
-                  if (!simulationDataRef.current.length) return null;
-                  const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
-                  if (!currentData) return null;
-                  const currentTime = currentData.time;
-                  const currentPV = currentData.pv;
-                  const currentSP = currentData.sp;
-                  const error = currentSP - currentPV;
-                  const timeRange = 30;
-                  const currentVisibleTime = Math.max(0, currentTime - timeRange);
-                  if (currentTime < currentVisibleTime) return null;
-                  const x = api.coord([currentTime, 0])[0];
-                  const y1 = api.coord([0, currentSP])[1];
-                  const y2 = api.coord([0, currentPV])[1];
-                  const yMid = (y1 + y2) / 2;
-                  const isDark = resolvedTheme === 'dark';
-                  const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
-                  const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
-                  return {
-                    type: 'group',
-                    children: [
-                      { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
-                      { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
-                      { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
-                      { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
-                    ]
-                  };
-                },
-                data: [0] // Trigger custom series re-render
-              }
+              { name: 'Process Variable', data: simulationDataRef.current.map(p => [p.time, p.pv]) },
+              { name: 'Setpoint', data: simulationDataRef.current.map(p => [p.time, p.sp]) },
+              { name: 'Control Error Range', data: [simulationDataRef.current[simulationDataRef.current.length - 1]?.time || 0] }
             ]
           });
         }
@@ -1011,109 +1095,15 @@ export default function PidTuningPage() {
       delayBuffer: new Array(delaySteps).fill(0),
     };
     
-    // Don't update the ref from state here - it should already be up to date
-    // currentSetpointRef.current = currentSetpoint;
-    
     // Reset data array using the current ref value
-    simulationDataRef.current = [{ time: 0, pv: 0, sp: currentSetpointRef.current }];
+    simulationDataRef.current = [{ time: 0, pv: 0, sp: currentSetpointRef.current, output: 0 }];
     setSimulationTime(0);
     setIsSimulationRunning(true);
-    
-    // Force graph update to show the correct initial setpoint
-    const echartsInstance = echartsRef.current?.getEchartsInstance();
-    if (echartsInstance) {
-      if (graphModeRef.current === 'bode') {
-        // Bode plot doesn't need initialization updates - it's static
-        // No action needed
-      } else if (graphModeRef.current === 'nyquist') {
-        // Nyquist plot doesn't need initialization updates - it's static
-        // No action needed
-      } else if (graphModeRef.current === 'error') {
-        // For error graph, update error data and zero line - provide complete series configurations
-        const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
-        const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
-        echartsInstance.setOption({
-          series: [
-            {
-              name: 'Control Error',
-              type: 'line',
-              showSymbol: false,
-              lineStyle: { width: 3, color: '#ffffff' },
-              smooth: true,
-              data: errorData,
-            },
-            {
-              name: 'Zero Line',
-              type: 'line',
-              showSymbol: false,
-              lineStyle: { type: 'dashed', color: '#888888', width: 1 },
-              silent: true,
-              data: zeroData,
-            }
-          ]
-        });
-      } else {
-        // For process graph, update PV, SP, and custom series - provide complete series configurations
-        echartsInstance.setOption({
-          series: [
-            {
-              name: 'Process Variable',
-              type: 'line',
-              showSymbol: false,
-              lineStyle: { width: 3, color: '#00ff51ff' },
-              smooth: true,
-              data: simulationDataRef.current.map(p => [p.time, p.pv]),
-            },
-            {
-              name: 'Setpoint',
-              type: 'line',
-              showSymbol: false,
-              lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
-              data: simulationDataRef.current.map(p => [p.time, p.sp]),
-            },
-            {
-              name: 'Control Error Range',
-              type: 'custom',
-              renderItem: (params: any, api: any) => {
-                if (!simulationDataRef.current.length) return null;
-                const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
-                if (!currentData) return null;
-                const currentTime = currentData.time;
-                const currentPV = currentData.pv;
-                const currentSP = currentData.sp;
-                const error = currentSP - currentPV;
-                const timeRange = 30;
-                const currentVisibleTime = Math.max(0, currentTime - timeRange);
-                if (currentTime < currentVisibleTime) return null;
-                const x = api.coord([currentTime, 0])[0];
-                const y1 = api.coord([0, currentSP])[1];
-                const y2 = api.coord([0, currentPV])[1];
-                const yMid = (y1 + y2) / 2;
-                const isDark = resolvedTheme === 'dark';
-                const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
-                const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
-                return {
-                  type: 'group',
-                  children: [
-                    { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
-                    { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
-                    { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
-                    { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
-                  ]
-                };
-              },
-              data: [0] // Trigger custom series re-render
-            }
-          ]
-        });
-      }
-    }
     
     const startTime = Date.now();
     
     simulationIntervalRef.current = setInterval(() => {
-        const echartsInstance = echartsRef.current?.getEchartsInstance();
-        if (!echartsInstance || !resultRef.current) {
+        if (!resultRef.current) {
             return;
         }
 
@@ -1152,7 +1142,7 @@ export default function PidTuningPage() {
         setCurrentPV(newDataPoint.pv);
         setControlError(newDataPoint.sp - newDataPoint.pv);
 
-        // Check for divergence - if control error exceeds 3, trigger warning (lowered for testing)
+        // Check for divergence - if control error exceeds 3, trigger warning
         const currentError = Math.abs(newDataPoint.sp - newDataPoint.pv);
         if (currentError > 3 && !divergenceWarning && !countdownIntervalRef.current) {
           setDivergenceWarning(true);
@@ -1183,112 +1173,107 @@ export default function PidTuningPage() {
         // Calculate dynamic x-axis range to keep current time on left/middle of screen
         const currentTime = time;
         const timeWindow = 30; // Show 30 seconds worth of data
-        const xMin = Math.max(0, currentTime - timeWindow * 0.7); // Current time at 70% of the way across
-        const xMax = Math.max(timeWindow, currentTime + timeWindow * 0.3);
+        // Continuous sliding window – current time appears ~75% across
+        const xMin = Math.max(0, currentTime - timeWindow * 0.75);
+        const xMax = Math.max(timeWindow, currentTime + timeWindow * 0.25);
 
-        // --- Dynamically update the ECharts graph ---
-        if (graphModeRef.current === 'bode') {
-          // Bode plot doesn't need real-time updates - it's static based on controller parameters
-          // No dynamic updates needed
-        } else if (graphModeRef.current === 'nyquist') {
-          // Nyquist plot doesn't need real-time updates - it's static based on controller parameters
-          // No dynamic updates needed
-        } else if (graphModeRef.current === 'error') {
-          // For error graph, update error data and zero line - provide complete series configurations
-          const errorData = simulationDataRef.current.map(p => [p.time, p.sp - p.pv]);
-          const zeroData = simulationDataRef.current.map(p => [p.time, 0]);
-          echartsInstance.setOption({
-            xAxis: {
-              min: xMin,
-              max: xMax
-            },
-            series: [
-              {
-                name: 'Control Error',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { width: 3, color: '#ffffff' },
-                smooth: true,
-                data: errorData,
-              },
-              {
-                name: 'Zero Line',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { type: 'dashed', color: '#888888', width: 1 },
-                silent: true,
-                data: zeroData,
-              }
-            ]
-          });
-        } else {
-          // For process graph, update PV, SP, and custom series - provide complete series configurations
-          echartsInstance.setOption({
-            xAxis: {
-              min: xMin,
-              max: xMax
-            },
-            series: [
-              {
-                name: 'Process Variable',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { width: 3, color: '#00ff51ff' },
-                smooth: true,
-                data: simulationDataRef.current.map(p => [p.time, p.pv]),
-              },
-              {
-                name: 'Setpoint',
-                type: 'line',
-                showSymbol: false,
-                lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
-                data: simulationDataRef.current.map(p => [p.time, p.sp]),
-              },
-              {
-                name: 'Control Error Range',
-                type: 'custom',
-                renderItem: (params: any, api: any) => {
-                  if (!simulationDataRef.current.length) return null;
-                  const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
-                  if (!currentData) return null;
-                  const currentTime = currentData.time;
-                  const currentPV = currentData.pv;
-                  const currentSP = currentData.sp;
-                  const error = currentSP - currentPV;
-                  const timeRange = 30;
-                  const currentVisibleTime = Math.max(0, currentTime - timeRange);
-                  if (currentTime < currentVisibleTime) return null;
-                  const x = api.coord([currentTime, 0])[0];
-                  const y1 = api.coord([0, currentSP])[1];
-                  const y2 = api.coord([0, currentPV])[1];
-                  const yMid = (y1 + y2) / 2;
-                  const isDark = resolvedTheme === 'dark';
-                  const lineColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
-                  const textColor = Math.abs(error) > 3 ? '#ef4444' : (isDark ? '#ffffff' : '#000000');
-                  return {
-                    type: 'group',
-                    children: [
-                      { type: 'line', shape: { x1: x, y1: y1, x2: x, y2: y2 }, style: { stroke: lineColor, lineWidth: 2, opacity: 0.7 } },
-                      { type: 'line', shape: { x1: x - 5, y1: y1, x2: x + 5, y2: y1 }, style: { stroke: lineColor, lineWidth: 2 } },
-                      { type: 'line', shape: { x1: x - 5, y1: y2, x2: x + 5, y2: y2 }, style: { stroke: lineColor, lineWidth: 2 } },
-                      { type: 'text', style: { text: error.toFixed(2), x: x + 10, y: yMid, textVerticalAlign: 'middle', textAlign: 'left', fill: textColor, fontSize: 12, fontFamily: 'monospace', fontWeight: 'bold' } }
-                    ]
-                  };
+        // --- ROBUST LIVE UPDATE LOGIC ---
+        if (isMultiViewRef.current) {
+          if (isOverlappedViewRef.current) {
+            // --- Update logic for the new OVERLAPPED graph ---
+            const overlappedChart = overlappedChartRef.current?.getEchartsInstance();
+            if (overlappedChart) {
+              const allData = simulationDataRef.current;
+              overlappedChart.setOption({
+                animationDuration: 0,
+                animationDurationUpdate: 0,
+                xAxis: { min: xMin, max: xMax, animation: false },
+                series: [
+                  { name: 'Process Variable', data: allData.map(p => [p.time, p.pv]) },
+                  { name: 'Setpoint', data: allData.map(p => [p.time, p.sp]) },
+                  { name: 'Control Error', data: allData.map(p => [p.time, p.sp - p.pv]) },
+                  { name: 'Controller Output', data: allData.map(p => [p.time, p.output]) }
+                ]
+              });
+            }
+          } else {
+            // --- This block will now run correctly for MULTI-VIEW (separated) ---
+            const allData = simulationDataRef.current;
+            const processChart = multiViewProcessRef.current?.getEchartsInstance();
+            const errorChart = multiViewErrorRef.current?.getEchartsInstance();
+            const outputChart = multiViewOutputRef.current?.getEchartsInstance();
+
+            if (processChart) {
+              processChart.setOption({
+                animationDuration: 0,
+                animationDurationUpdate: 0,
+                xAxis: { min: xMin, max: xMax, animation: false },
+                series: [{ data: allData.map(p => [p.time, p.pv]) }, { data: allData.map(p => [p.time, p.sp]) }]
+              });
+            }
+            if (errorChart) {
+              errorChart.setOption({
+                animationDuration: 0,
+                animationDurationUpdate: 0,
+                xAxis: { min: xMin, max: xMax, animation: false },
+                series: [{ data: allData.map(p => [p.time, p.sp - p.pv]) }, { data: allData.map(p => [p.time, 0]) }]
+              });
+            }
+            if (outputChart) {
+              outputChart.setOption({
+                animationDuration: 0,
+                animationDurationUpdate: 0,
+                xAxis: { min: xMin, max: xMax, animation: false },
+                yAxis: {
+                  animationDuration: 0,
+                  animationDurationUpdate: 0
                 },
-                data: [time] // Trigger custom series re-render with current time
-              }
-            ]
-          });
-        }
-        
-        setSimulationTime(time); // Update time for display if needed
-        
-        // Optional: Stop simulation after a certain time
-        if (time >= 1000) { // Increased from 200 to 1000 seconds
-          resetSimulation(); 
+                series: [{ data: allData.map(p => [p.time, p.output]) }]
+              });
+            }
+          }
+        } else {
+          // --- This is the original, working logic for SINGLE-VIEW ---
+          const singleChart = echartsRef.current?.getEchartsInstance();
+          if (singleChart) {
+            if (graphModeRef.current === 'bode' || graphModeRef.current === 'nyquist') {
+              // No update needed
+            } else if (graphModeRef.current === 'error') {
+              singleChart.setOption({
+                xAxis: { min: xMin, max: xMax },
+                series: [
+                  { name: 'Control Error', data: simulationDataRef.current.map(p => [p.time, p.sp - p.pv]) },
+                  { name: 'Zero Line', data: simulationDataRef.current.map(p => [p.time, 0]) }
+                ]
+              });
+            } else if (graphModeRef.current === 'power') {
+              singleChart.setOption({
+                xAxis: { min: xMin, max: xMax },
+                yAxis: {
+                  min: -0.5,
+                  max: 2.5,
+                  animation: false, // ensures y-axis does not glide
+                },
+                series: [
+                  { name: 'Controller Output', data: simulationDataRef.current.map(p => [p.time, p.output]) }
+                ]
+              });
+            } else { // 'process'
+              singleChart.setOption({
+                xAxis: { min: xMin, max: xMax },
+                series: [
+                  { name: 'Process Variable', data: simulationDataRef.current.map(p => [p.time, p.pv]) },
+                  { name: 'Setpoint', data: simulationDataRef.current.map(p => [p.time, p.sp]) },
+                  { name: 'Control Error Range', data: [simulationDataRef.current[simulationDataRef.current.length - 1]?.time || 0] }
+                ]
+              });
+            }
+          }
         }
 
-    }, 100); // Update every 100ms
+        setSimulationTime(time);
+        if (time >= 1000) resetSimulation();
+    }, 100);
   };
 
   // Reset simulation - stops current simulation and restarts it
@@ -1321,8 +1306,357 @@ export default function PidTuningPage() {
     };
   }, []);
 
+  // Add these helper functions for multi-view chart options
+  function getMultiViewProcessOptions(isDark: boolean, data: any[]): EChartsOption {
+    const textColor = isDark ? 'white' : '#000000';
+    const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
+    const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
+    
+    return {
+      backgroundColor: 'transparent',
+      title: { 
+        text: 'Process Simulation', 
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, 
+        left: 'center',
+        top: '2%'
+      },
+      grid: { left: '8%', right: '8%', bottom: '15%', top: '12%', containLabel: true },
+      tooltip: {
+        show: true,
+        trigger: 'axis',
+        backgroundColor: tooltipBg,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        textStyle: { 
+          color: textColor,
+          fontSize: 12,
+          fontFamily: 'Merriweather Sans'
+        },
+        formatter: function(params: any) {
+          if (!params || !Array.isArray(params) || params.length < 1) return '';
+          const time = params[0]?.value[0];
+          if (time === undefined) return '';
+
+          let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
+
+          params.forEach((param: any) => {
+            const value = parseFloat(param.value[1]).toPrecision(3);
+            const color = param.seriesName === 'Process Variable' ? '#00ff51ff' : '#ef4444';
+            tooltip += `<span style="color: ${color};">${param.seriesName}: ${value}</span><br/>`;
+          });
+
+          return tooltip;
+        },
+        axisPointer: {
+          type: 'cross',
+          label: {
+            show: true,
+            backgroundColor: tooltipBg,
+            color: textColor,
+            borderColor: tooltipBorder,
+            borderWidth: 1,
+            shadowBlur: 0,
+            shadowColor: 'transparent',
+            fontFamily: 'Merriweather Sans'
+          },
+          crossStyle: { color: '#999' }
+        }
+      },
+      xAxis: {
+        type: 'value',
+        name: 'Time (s)',
+        min: 0,
+        max: 30,
+        nameLocation: 'middle',
+        nameGap: 25,
+        nameTextStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: {
+          color: textColor,
+          fontSize: 12,
+          fontFamily: 'Merriweather Sans',
+          showMinLabel: false,
+          showMaxLabel: false
+        },
+        splitLine: { show: false }
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Process Variable',
+        nameLocation: 'middle',
+        nameGap: 45,
+        nameTextStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        min: -0.5,
+        max: 2.5,
+        scale: true,
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        splitLine: { show: false }
+      },
+      legend: {
+        data: [
+          { name: 'Process Variable', icon: 'rect', itemStyle: { color: '#00ff51ff' } },
+          { name: 'Setpoint', icon: 'rect', itemStyle: { color: '#ef4444' } }
+        ],
+        bottom: '2%',
+        left: 'center',
+        textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        itemWidth: 25,
+        itemHeight: 2
+      },
+      series: [
+        { 
+          name: 'Process Variable', 
+          type: 'line', 
+          data: data.map(p => [p.time, p.pv]), 
+          showSymbol: false, 
+          lineStyle: { color: '#00ff51ff', width: 3 },
+          smooth: true
+        },
+        { 
+          name: 'Setpoint', 
+          type: 'line', 
+          data: data.map(p => [p.time, p.sp]), 
+          showSymbol: false, 
+          lineStyle: { color: '#ef4444', type: 'dashed', width: 2 } 
+        }
+      ]
+    };
+  };
+
+  function getMultiViewErrorOptions(isDark: boolean, data: any[]): EChartsOption {
+    const textColor = isDark ? 'white' : '#000000';
+    const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
+    const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
+    
+    return {
+      backgroundColor: 'transparent',
+      title: { 
+        text: 'Control Error', 
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, 
+        left: 'center',
+        top: '2%'
+      },
+      grid: { left: '8%', right: '8%', bottom: '15%', top: '12%', containLabel: true },
+      tooltip: {
+        show: true,
+        trigger: 'axis',
+        backgroundColor: tooltipBg,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        textStyle: { 
+          color: textColor,
+          fontSize: 12,
+          fontFamily: 'Merriweather Sans'
+        },
+        formatter: function(params: any) {
+          if (!params || !Array.isArray(params)) return '';
+          const time = params[0]?.value[0];
+          if (time === undefined) return '';
+          let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
+          params.forEach((param: any) => {
+            if (param.seriesName === 'Control Error') {
+              const value = parseFloat(param.value[1]).toPrecision(3);
+              tooltip += `<span style=\"color: #3b82f6;\">Control Error: ${value}</span><br/>`;
+            }
+          });
+          return tooltip;
+        },
+        axisPointer: {
+          type: 'cross',
+          label: {
+            show: true,
+            backgroundColor: tooltipBg,
+            color: textColor,
+            borderColor: tooltipBorder,
+            borderWidth: 1,
+            shadowBlur: 0,
+            shadowColor: 'transparent',
+            fontFamily: 'Merriweather Sans'
+          },
+          crossStyle: { color: '#999' }
+        }
+      },
+      xAxis: {
+        type: 'value',
+        name: 'Time (s)',
+        min: 0,
+        max: 30,
+        nameLocation: 'middle',
+        nameGap: 25,
+        nameTextStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: {
+          color: textColor,
+          fontSize: 12,
+          fontFamily: 'Merriweather Sans',
+          showMinLabel: false,
+          showMaxLabel: false
+        },
+        splitLine: { show: false }
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Control Error',
+        nameLocation: 'middle',
+        nameGap: 45,
+        nameTextStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        min: -3,
+        max: 3,
+        scale: true,
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        splitLine: { show: false }
+      },
+      legend: {
+        data: [
+          { 
+            name: 'Control Error', 
+            icon: 'rect',
+            itemStyle: { color: '#3b82f6' }
+          }
+        ],
+        bottom: '2%',
+        left: 'center',
+        textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        itemWidth: 25,
+        itemHeight: 2
+      },
+      series: [
+        { 
+          name: 'Control Error', 
+          type: 'line', 
+          data: data.map(p => [p.time, p.sp - p.pv]), 
+          showSymbol: false, 
+          lineStyle: { color: '#3b82f6', width: 3 },
+          smooth: true
+        },
+        { 
+          name: 'Zero Line', 
+          type: 'line', 
+          data: data.map(p => [p.time, 0]), 
+          showSymbol: false, 
+          lineStyle: { color: '#888888', type: 'dashed', width: 1 },
+          silent: true
+        }
+      ]
+    };
+  };
+
+  function getMultiViewOutputOptions(isDark: boolean, data: any[]): EChartsOption {
+    const textColor = isDark ? 'white' : '#000000';
+    const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
+    const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
+    
+    return {
+      backgroundColor: 'transparent',
+      title: { 
+        text: 'Controller Output', 
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, 
+        left: 'center',
+        top: '2%'
+      },
+      grid: { left: '8%', right: '8%', bottom: '15%', top: '12%', containLabel: true },
+      tooltip: {
+        show: true,
+        trigger: 'axis',
+        backgroundColor: tooltipBg,
+        borderColor: tooltipBorder,
+        borderWidth: 1,
+        textStyle: { 
+          color: textColor,
+          fontSize: 12,
+          fontFamily: 'Merriweather Sans'
+        },
+        formatter: function(params: any) {
+          if (!params || !Array.isArray(params) || params.length === 0) return '';
+          const time = params[0]?.value[0];
+          if (time === undefined) return '';
+          let tooltip = `Time: ${parseFloat(time).toPrecision(3)} s<br/>`;
+          params.forEach((param: any) => {
+            if (param.seriesName === 'Controller Output') {
+              const value = parseFloat(param.value[1]).toPrecision(3);
+              tooltip += `<span style="color: ${purpleColor};">${param.seriesName}: ${value}</span><br/>`;
+            }
+          });
+          return tooltip;
+        },
+        axisPointer: {
+          type: 'cross',
+          label: {
+            show: true,
+            backgroundColor: tooltipBg,
+            color: textColor,
+            borderColor: tooltipBorder,
+            borderWidth: 1,
+            shadowBlur: 0,
+            shadowColor: 'transparent',
+            fontFamily: 'Merriweather Sans'
+          },
+          crossStyle: { color: '#999' }
+        }
+      },
+      xAxis: {
+        type: 'value',
+        name: 'Time (s)',
+        min: 0,
+        max: 30,
+        nameLocation: 'middle',
+        nameGap: 25,
+        nameTextStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: {
+          color: textColor,
+          fontSize: 12,
+          fontFamily: 'Merriweather Sans',
+          showMinLabel: false,
+          showMaxLabel: false
+        },
+        splitLine: { show: false }
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Controller Output',
+        nameLocation: 'middle',
+        nameGap: 45,
+        nameTextStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        min: -0.5,
+        max: 2.5,
+        scale: true,
+        axisLine: { lineStyle: { color: textColor } },
+        axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+        axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        splitLine: { show: false }
+      },
+      legend: {
+        data: [{ name: 'Controller Output', icon: 'rect', itemStyle: { color: purpleColor } }],
+        bottom: '2%',
+        left: 'center',
+        textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        itemWidth: 25,
+        itemHeight: 2
+      },
+      series: [
+        { 
+          name: 'Controller Output', 
+          type: 'line', 
+          data: data.map(p => [p.time, p.output]), 
+          showSymbol: false, 
+          lineStyle: { color: purpleColor, width: 3 },
+          smooth: true
+        }
+      ]
+    };
+  };
+
   const formatResult = (value: number | null) => {
-    if (value === null || isNaN(value)) return '---';
+    if (value === null || isNaN(value)) return 'N/A';
+    if (Math.abs(value) < 0.001 && value !== 0) return value.toExponential(2);
     if (value === 0) return '0.00';
     
     // Always format to exactly 3 significant figures
@@ -1657,17 +1991,19 @@ export default function PidTuningPage() {
       backgroundColor: 'transparent',
       animation: false, // Disable animation for live updates
       title: { 
-        text: graphMode === 'error' ? `${controllerType} Controller Error` : `${controllerType} Controller Simulation`, 
+        text: graphMode === 'error' ? `${controllerType} Controller Error` : 
+              graphMode === 'power' ? `${controllerType} Controller Output` : 
+              `${controllerType} Controller Simulation`, 
         left: 'center',
-        top: '0%',
+        top: '2%',
         textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } 
       },
-      grid: { left: '5%', right: '5%', bottom: '12%', top: '5%', containLabel: true },
+      grid: { left: '5%', right: '5%', bottom: '15%', top: '8%', containLabel: true },
       xAxis: {
         type: 'value',
         name: 'Time (s)',
         nameLocation: 'middle',
-        nameGap: 30,
+        nameGap: 35,
         nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
         axisLine: { lineStyle: { color: textColor } },
         axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
@@ -1684,12 +2020,14 @@ export default function PidTuningPage() {
       },
       yAxis: {
         type: 'value',
-        name: graphMode === 'error' ? 'Control Error' : 'Process Variable',
+        name: graphMode === 'error' ? 'Control Error' : 
+              graphMode === 'power' ? 'Controller Output' : 
+              'Process Variable',
         nameLocation: 'middle',
         nameGap: 40,
         nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
-        min: graphMode === 'error' ? -3 : -0.5,
-        max: graphMode === 'error' ? 3 : 2.5,
+        min: graphMode === 'error' ? -3 : graphMode === 'power' ? (currentSetpointRef.current || 1) - 1 : -0.5,
+        max: graphMode === 'error' ? 3 : graphMode === 'power' ? (currentSetpointRef.current || 1) + 1 : 2.5,
         axisLine: { lineStyle: { color: textColor } },
         axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
         axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
@@ -1716,8 +2054,14 @@ export default function PidTuningPage() {
             params.forEach((param: any) => {
               if (param.seriesName === 'Control Error') {
                 const value = parseFloat(param.value[1]).toPrecision(3);
-                tooltip += `<span style="color: white;">Control Error: ${value}</span><br/>`;
+                tooltip += `<span style="color: #3b82f6;">Control Error: ${value}</span><br/>`;
               }
+            });
+          } else if (graphMode === 'power') {
+            // Controller Output graph tooltip
+            params.forEach((param:any)=>{
+              const value = parseFloat(param.value[1]).toPrecision(3);
+              tooltip += `<span style="color: ${purpleColor};">Controller Output: ${value}</span><br/>`;
             });
           } else {
             // Main graph tooltip
@@ -1745,7 +2089,7 @@ export default function PidTuningPage() {
             
             // Calculate and display error
             const error = spValue - pvValue;
-            tooltip += `<span style="color: white;">Control Error: ${error.toFixed(2)}</span><br/>`;
+            tooltip += `<span style="color: #3b82f6;">Control Error: ${error.toFixed(2)}</span><br/>`;
           }
           
           return tooltip;
@@ -1769,7 +2113,9 @@ export default function PidTuningPage() {
       },
       legend: {
         data: graphMode === 'error' 
-          ? [{ name: 'Control Error', itemStyle: { color: '#ffffff' } }]
+          ? [{ name: 'Control Error', itemStyle: { color: '#3b82f6' } }]
+          : graphMode === 'power'
+          ? [{ name: 'Controller Output', itemStyle: { color: purpleColor } }]
           : [
               { name: 'Process Variable', itemStyle: { color: '#00ff51ff' } },
               { name: 'Setpoint', itemStyle: { color: '#ef4444' } }
@@ -1777,8 +2123,8 @@ export default function PidTuningPage() {
         bottom: '2%',
         left: 'center',
         textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-        itemWidth: 25,
-        itemHeight: 2
+        itemWidth: 40,
+        itemHeight: 3
       },
       series: [
         // Main series based on graph mode
@@ -1798,6 +2144,15 @@ export default function PidTuningPage() {
             showSymbol: false,
             lineStyle: { type: 'dashed', color: '#888888', width: 1 },
             silent: true // Don't show in tooltip
+          }
+        ] : graphMode === 'power' ? [
+          {
+            name: 'Controller Output',
+            type: 'line',
+            data: simulationDataRef.current.map(p => [p.time, p.output]), // Controller output data
+            showSymbol: false,
+            lineStyle: { width: 3, color: purpleColor },
+            smooth: true
           }
         ] : [
           {
@@ -2021,7 +2376,7 @@ export default function PidTuningPage() {
             name: 'Control Error',
             type: 'line',
             showSymbol: false,
-            lineStyle: { width: 3, color: '#ffffff' },
+            lineStyle: { width: 3, color: '#3b82f6' },
             smooth: true,
             data: errorData,
           },
@@ -2032,6 +2387,20 @@ export default function PidTuningPage() {
             lineStyle: { type: 'dashed', color: '#888888', width: 1 },
             silent: true,
             data: zeroData,
+          }
+        ]
+      });
+    } else if (graphMode === 'power') {
+      // Switch to power graph - provide complete series configurations
+      echartsInstance.setOption({
+        series: [
+          {
+            name: 'Controller Output',
+            type: 'line',
+            showSymbol: false,
+            lineStyle: { width: 3, color: purpleColor },
+            smooth: true,
+            data: simulationDataRef.current.map(p => [p.time, p.output]),
           }
         ]
       });
@@ -2208,10 +2577,222 @@ export default function PidTuningPage() {
 
   return (
     <TooltipProvider>
-      <div className="container mx-auto p-4 md:p-6 px-4 md:px-16">
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-          {/* Column 1: Controls (40% width on large screens) */}
-          <div className="lg:col-span-2 space-y-6">
+      <div className="container mx-auto p-4 sm:p-6 lg:p-8">
+        {isMultiView && (multiViewData.length > 0 || simulationDataRef.current.length > 0) ? (
+          // --- NEW: MULTI-GRAPH VIEW ---
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <Button variant="outline" onClick={() => setIsMultiView(false)}>
+                ← Back to Single Graph View
+              </Button>
+              <Button variant="outline" onClick={() => setIsOverlappedView(!isOverlappedView)}>
+                {isOverlappedView ? 'Separate Graphs' : 'Overlap Graphs'}
+              </Button>
+            </div>
+
+            {isOverlappedView ? (
+              // --- Overlapped View ---
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+                <div className="lg:col-span-2 space-y-4">
+                  {/* PID Tuning Parameters */}
+                  <Card>
+                    <CardHeader className="pb-1">
+                      <CardTitle>{controllerType} Tuning Parameters</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6 p-4 pt-1">
+                      <div className="space-y-4">
+                        {/* Tuning Method Selector */}
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor="tuningMethod" className="text-sm font-medium whitespace-nowrap">Tuning Method:</Label>
+                          <Select value={tuningMethod} onValueChange={(value) => setTuningMethod(value as TuningMethod)}>
+                            <SelectTrigger id="tuningMethod" className="flex-1"><SelectValue /></SelectTrigger>
+                            <SelectContent className="max-h-[400px]">
+                              <SelectItem value="imc">IMC</SelectItem>
+                              <SelectItem value="itae">ITAE</SelectItem>
+                              <SelectItem value="amigo">AMIGO</SelectItem>
+                              <SelectItem value="ziegler-nichols">Ziegler-Nichols</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Controller Type Selector (hidden for IMC method) */}
+                        {tuningMethod !== 'imc' && (
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor="controllerType" className="text-sm font-medium whitespace-nowrap">Controller Type:</Label>
+                            <Select value={controllerType} onValueChange={(value) => setControllerType(value as ControllerType)}>
+                              <SelectTrigger id="controllerType" className="flex-1"><SelectValue /></SelectTrigger>
+                              <SelectContent className="max-h-[400px]">
+                                {getAvailableControllerTypes(tuningMethod).map(type => (
+                                  <SelectItem key={type} value={type}>{type}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+
+                        {/* IMC Model Case Selector (only for IMC method) */}
+                        {tuningMethod === 'imc' && (
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Model Case:</Label>
+                            <Select value={imcModelCase} onValueChange={(value) => setImcModelCase(value as ImcModelCase)}>
+                              <SelectTrigger id="imcModelCase" className="flex-1"><SelectValue /></SelectTrigger>
+                              <SelectContent className="max-h-[400px]">
+                                {getAvailableImcCases(controllerType).map(modelCase => (
+                                  <SelectItem key={modelCase} value={modelCase}>{modelCase}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+
+                        {/* ITAE Input Type Selector (only for ITAE method) */}
+                        {tuningMethod === 'itae' && (
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor="itaeInputType" className="text-sm font-medium whitespace-nowrap">Input Type:</Label>
+                            <Select value={itaeInputType} onValueChange={(value) => setItaeInputType(value as ItaeInputType)}>
+                              <SelectTrigger id="itaeInputType" className="flex-1"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="disturbance">Disturbance</SelectItem>
+                                <SelectItem value="setpoint">Setpoint</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Simulation Controls */}
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                      <CardTitle>Simulation Control</CardTitle>
+                      <Button variant="outline" size="sm" onClick={resetSimulation} disabled={!result || loading || divergenceWarning}>
+                        Reset
+                      </Button>
+                    </CardHeader>
+                    <CardContent className="space-y-4 pt-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Label className="text-sm font-medium">Setpoint:</Label>
+                          <span className="text-sm font-semibold">{currentSetpoint.toFixed(1)}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="icon" onClick={() => handleSetpointChange('down')} disabled={currentSetpoint <= 0 || divergenceWarning} className="w-8 h-8">-</Button>
+                          <Button variant="outline" size="icon" onClick={() => handleSetpointChange('up')} disabled={currentSetpoint >= 2 || divergenceWarning} className="w-8 h-8">+</Button>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <Label className="text-sm font-medium">Process Disturbance:</Label>
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="sm" onClick={() => triggerDisturbance('down')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">-0.5</Button>
+                          <Button variant="outline" size="sm" onClick={() => triggerDisturbance('up')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">+0.5</Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <div className="lg:col-span-3">
+                  <Card>
+                    <CardContent className="p-2">
+                      <div className="h-[600px]">
+                        <ReactECharts
+                          ref={overlappedChartRef}
+                          echarts={echarts}
+                          option={overlappedGraphOptions}
+                          style={{ height: '100%', width: '100%' }}
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
+            ) : (
+              // --- Separated View ---
+              <>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {/* Process Chart */}
+                  <Card>
+                    <CardContent className="p-2">
+                      <div className="h-[400px]">
+                        <ReactECharts
+                          ref={multiViewProcessRef}
+                          echarts={echarts}
+                          option={multiViewProcessOptions}
+                          style={{ height: '100%', width: '100%' }}
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Error Chart */}
+                  <Card>
+                    <CardContent className="p-2">
+                      <div className="h-[400px]">
+                        <ReactECharts
+                          ref={multiViewErrorRef}
+                          echarts={echarts}
+                          option={multiViewErrorOptions}
+                          style={{ height: '100%', width: '100%' }}
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  {/* Controller Output Chart */}
+                  <Card>
+                    <CardContent className="p-2">
+                      <div className="h-[400px]">
+                        <ReactECharts
+                          ref={multiViewOutputRef}
+                          echarts={echarts}
+                          option={multiViewOutputOptions}
+                          style={{ height: '100%', width: '100%' }}
+                        />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+                
+                {/* Shared Simulation Controls */}
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle>Simulation Control</CardTitle>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={resetSimulation}
+                      disabled={!result || loading || divergenceWarning}
+                    >
+                      Reset
+                    </Button>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-3">
+                      {/* Setpoint Control */}
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm font-medium">Setpoint Value: {currentSetpoint}</Label>
+                        <Button variant="outline" size="sm" onClick={() => handleSetpointChange('down')} disabled={currentSetpoint <= 0 || divergenceWarning} className="w-8 h-6 p-0 text-xs">-</Button>
+                        <Button variant="outline" size="sm" onClick={() => handleSetpointChange('up')} disabled={currentSetpoint >= 2 || divergenceWarning} className="w-8 h-6 p-0 text-xs">+</Button>
+                      </div>
+
+                      {/* Process Disturbance Control */}
+                      <div className="flex items-center gap-2">
+                        <Label className="text-sm font-medium">Process Disturbance:</Label>
+                        <Button variant="outline" size="sm" onClick={() => triggerDisturbance('down')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">-0.5</Button>
+                        <Button variant="outline" size="sm" onClick={() => triggerDisturbance('up')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">+0.5</Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </div>
+        ) : (
+          // --- EXISTING SINGLE GRAPH VIEW ---
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            {/* Column 1: Controls (40% width on large screens) */}
+            <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle>{controllerType} Tuning Parameters</CardTitle>
@@ -2475,27 +3056,10 @@ export default function PidTuningPage() {
                       </Button>
                     </div>
 
-                    {/* Disturbance Control */}
                     <div className="flex items-center gap-2">
                       <Label className="text-sm font-medium">Process Disturbance:</Label>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => triggerDisturbance('down')}
-                        disabled={!isSimulationRunning || currentPV < 0 || divergenceWarning}
-                        className="w-12 h-6 p-0 text-xs"
-                      >
-                        -0.5
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => triggerDisturbance('up')}
-                        disabled={!isSimulationRunning || currentPV > 2 || divergenceWarning}
-                        className="w-12 h-6 p-0 text-xs"
-                      >
-                        +0.5
-                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => triggerDisturbance('down')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">-0.5</Button>
+                      <Button variant="outline" size="sm" onClick={() => triggerDisturbance('up')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">+0.5</Button>
                     </div>
                   </div>
                 </div>
@@ -2558,12 +3122,13 @@ export default function PidTuningPage() {
                   <div className="absolute top-4 right-4 z-10">
                     <div className="bg-muted rounded-lg p-1">
                       <Select value={graphMode} onValueChange={(value) => setGraphMode(value as any)}>
-                        <SelectTrigger className="w-[140px] h-8">
+                        <SelectTrigger className="w-[180px] h-8">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="process">Process</SelectItem>
                           <SelectItem value="error">Error</SelectItem>
+                          <SelectItem value="power">Controller Output</SelectItem>
                           <SelectItem value="bode">Bode Plot</SelectItem>
                           <SelectItem value="nyquist">Nyquist Plot</SelectItem>
                         </SelectContent>
@@ -2587,8 +3152,16 @@ export default function PidTuningPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* ADD THIS BUTTON to switch to multi-view */}
+            <div className="flex justify-center mt-4">
+              <Button variant="secondary" onClick={() => setIsMultiView(true)} disabled={!result}>
+                View All Dynamic Graphs
+              </Button>
+            </div>
           </div>
-        </div>
+          </div>
+        )}
       </div>
     </TooltipProvider>
   );
