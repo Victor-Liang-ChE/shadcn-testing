@@ -203,7 +203,7 @@ export default function PidTuningPage() {
   const isMultiViewRef = useRef<boolean>(false);
 
   // Add state for the new overlapped graph view
-  const [isOverlappedView, setIsOverlappedView] = useState<boolean>(false);
+  const [isOverlappedView, setIsOverlappedView] = useState<boolean>(true);
   const isOverlappedViewRef = useRef<boolean>(false);
   useEffect(() => {
     isOverlappedViewRef.current = isOverlappedView;
@@ -2591,10 +2591,10 @@ export default function PidTuningPage() {
             </div>
 
             {isOverlappedView ? (
-              // --- Overlapped View ---
-              <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-                <div className="lg:col-span-2 space-y-4">
-                  {/* PID Tuning Parameters */}
+              // --- Overlapped View (Corrected) ---
+              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                <div className="lg:col-span-2 space-y-6">
+                  {/* PID Tuning Parameters Card */}
                   <Card>
                     <CardHeader className="pb-1">
                       <CardTitle>{controllerType} Tuning Parameters</CardTitle>
@@ -2603,66 +2603,173 @@ export default function PidTuningPage() {
                       <div className="space-y-4">
                         {/* Tuning Method Selector */}
                         <div className="flex items-center gap-2">
-                          <Label htmlFor="tuningMethod" className="text-sm font-medium whitespace-nowrap">Tuning Method:</Label>
-                          <Select value={tuningMethod} onValueChange={(value) => setTuningMethod(value as TuningMethod)}>
-                            <SelectTrigger id="tuningMethod" className="flex-1"><SelectValue /></SelectTrigger>
-                            <SelectContent className="max-h-[400px]">
-                              <SelectItem value="imc">IMC</SelectItem>
-                              <SelectItem value="itae">ITAE</SelectItem>
-                              <SelectItem value="amigo">AMIGO</SelectItem>
-                              <SelectItem value="ziegler-nichols">Ziegler-Nichols</SelectItem>
-                            </SelectContent>
-                          </Select>
+                            <Label htmlFor="tuningMethod" className="text-sm font-medium whitespace-nowrap">Tuning Method:</Label>
+                            <Select value={tuningMethod} onValueChange={(value) => setTuningMethod(value as TuningMethod)}>
+                                <SelectTrigger id="tuningMethod" className="flex-1"><SelectValue /></SelectTrigger>
+                                <SelectContent className="max-h-[400px]">
+                                    <SelectItem value="imc">IMC</SelectItem>
+                                    <SelectItem value="itae">ITAE</SelectItem>
+                                    <SelectItem value="amigo">AMIGO</SelectItem>
+                                    <SelectItem value="ziegler-nichols">Ziegler-Nichols</SelectItem>
+                                </SelectContent>
+                            </Select>
                         </div>
 
                         {/* Controller Type Selector (hidden for IMC method) */}
                         {tuningMethod !== 'imc' && (
                           <div className="flex items-center gap-2">
-                            <Label htmlFor="controllerType" className="text-sm font-medium whitespace-nowrap">Controller Type:</Label>
-                            <Select value={controllerType} onValueChange={(value) => setControllerType(value as ControllerType)}>
-                              <SelectTrigger id="controllerType" className="flex-1"><SelectValue /></SelectTrigger>
-                              <SelectContent className="max-h-[400px]">
-                                {getAvailableControllerTypes(tuningMethod).map(type => (
-                                  <SelectItem key={type} value={type}>{type}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                              <Label htmlFor="controllerType" className="text-sm font-medium whitespace-nowrap">Controller Type:</Label>
+                              <Select value={controllerType} onValueChange={(value) => setControllerType(value as ControllerType)}>
+                                  <SelectTrigger id="controllerType" className="flex-1"><SelectValue /></SelectTrigger>
+                                  <SelectContent className="max-h-[400px]">
+                                      {getAvailableControllerTypes(tuningMethod).map(type => (
+                                        <SelectItem key={type} value={type}>{type}</SelectItem>
+                                      ))}
+                                  </SelectContent>
+                              </Select>
                           </div>
                         )}
 
-                        {/* IMC Model Case Selector (only for IMC method) */}
+                        {/* Model Case Selector (only shown for IMC) */}
                         {tuningMethod === 'imc' && (
                           <div className="flex items-center gap-2">
-                            <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Model Case:</Label>
-                            <Select value={imcModelCase} onValueChange={(value) => setImcModelCase(value as ImcModelCase)}>
-                              <SelectTrigger id="imcModelCase" className="flex-1"><SelectValue /></SelectTrigger>
-                              <SelectContent className="max-h-[400px]">
-                                {getAvailableImcCases(controllerType).map(modelCase => (
-                                  <SelectItem key={modelCase} value={modelCase}>{modelCase}</SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                              <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Process Model:</Label>
+                              <Select value={imcModelCase} onValueChange={(v) => setImcModelCase(v as ImcModelCase)}>
+                                  <SelectTrigger id="imcModelCase" className="flex-1"><SelectValue /></SelectTrigger>
+                                  <SelectContent className="max-h-[400px]">
+                                      {/* Show all IMC cases A-O */}
+                                      {(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'] as ImcModelCase[]).map(caseVal => {
+                                        const descriptions = {
+                                          'A': 'A: First-Order',
+                                          'B': 'B: Second-Order Overdamped',
+                                          'C': 'C: Second-Order Underdamped',
+                                          'D': 'D: Second-Order Underdamped + RHP Zero',
+                                          'E': 'E: Integrator',
+                                          'F': 'F: First-Order + Integrator',
+                                          'G': 'G: FOPTD',
+                                          'H': 'H: FOPTD',
+                                          'I': 'I: SOPTD Overdamped + LHP Zero',
+                                          'J': 'J: SOPTD Underdamped + LHP Zero',
+                                          'K': 'K: SOPTD Overdamped + RHP Zero',
+                                          'L': 'L: SOPTD Underdamped + RHP Zero',
+                                          'M': 'M: Integrator + Delay',
+                                          'N': 'N: Integrator + Delay',
+                                          'O': 'O: FOPTD + Integrator',
+                                        };
+                                        return (
+                                          <SelectItem key={caseVal} value={caseVal}>
+                                            {descriptions[caseVal]}
+                                          </SelectItem>
+                                        );
+                                      })}
+                                  </SelectContent>
+                              </Select>
                           </div>
                         )}
 
-                        {/* ITAE Input Type Selector (only for ITAE method) */}
+                        {/* ITAE Input Type Selector (only shown for ITAE) */}
                         {tuningMethod === 'itae' && (
                           <div className="flex items-center gap-2">
-                            <Label htmlFor="itaeInputType" className="text-sm font-medium whitespace-nowrap">Input Type:</Label>
-                            <Select value={itaeInputType} onValueChange={(value) => setItaeInputType(value as ItaeInputType)}>
-                              <SelectTrigger id="itaeInputType" className="flex-1"><SelectValue /></SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="disturbance">Disturbance</SelectItem>
-                                <SelectItem value="setpoint">Setpoint</SelectItem>
-                              </SelectContent>
-                            </Select>
+                              <Label htmlFor="itaeInputType" className="text-sm font-medium whitespace-nowrap">Input Type:</Label>
+                              <Select value={itaeInputType} onValueChange={(v) => setItaeInputType(v as ItaeInputType)}>
+                                  <SelectTrigger id="itaeInputType" className="flex-1"><SelectValue /></SelectTrigger>
+                                  <SelectContent className="max-h-[400px]">
+                                      <SelectItem value="disturbance">Disturbance Rejection</SelectItem>
+                                      <SelectItem value="setpoint">Set-Point Tracking</SelectItem>
+                                  </SelectContent>
+                              </Select>
                           </div>
                         )}
+                        <hr />
+                        {/* Inline Input Logic with Sliders */}
+                        {tuningMethod === 'ziegler-nichols' && (
+                          <>
+                            <SliderGroup 
+                                label={<span>Ultimate Gain (K<sub>cu</sub>):</span>} 
+                                tooltip="The proportional gain at which the system has sustained oscillations."
+                                value={kcu} onChange={setKcu} min={0.1} max={maxKcu} step={0.01}
+                                maxValue={maxKcu} onMaxChange={setMaxKcu}
+                            />
+                            <SliderGroup 
+                                label={<span>Ultimate Period (P<sub>u</sub>):</span>} 
+                                tooltip="The period of the sustained oscillations at the ultimate gain (in time units)."
+                                value={pu} onChange={setPu} min={0.1} max={maxPu} step={0.01}
+                                maxValue={maxPu} onMaxChange={setMaxPu}
+                            />
+                          </>
+                        )}
+
+                        {tuningMethod === 'itae' && (
+                           <>
+                              <SliderGroup 
+                                  label="Process Gain (K):" tooltip="Ratio of change in output to the change in input at steady state."
+                                  value={k} onChange={setK} min={0.1} max={maxK} step={0.01}
+                                  maxValue={maxK} onMaxChange={setMaxK}
+                              />
+                              <SliderGroup 
+                                  label="Time Constant (τ):" tooltip="Time it takes for the process to reach 63.2% of its final value."
+                                  value={tau} onChange={setTau} min={0.1} max={maxTau} step={0.01}
+                                  maxValue={maxTau} onMaxChange={setMaxTau}
+                              />
+                              <SliderGroup 
+                                  label="Dead Time (θ):" tooltip="Delay before the process output starts to respond to an input change."
+                                  value={theta} onChange={setTheta} min={0.1} max={maxTheta} step={0.01}
+                                  maxValue={maxTheta} onMaxChange={setMaxTheta}
+                              />
+                          </>
+                        )}
+                        
+                        {tuningMethod === 'amigo' && (
+                          <>
+                            <SliderGroup 
+                                label="Process Gain (K):" tooltip="For FOPTD, standard gain. For Integrator model, K is the integrator gain."
+                                value={k} onChange={setK} min={0.1} max={maxK} step={0.01}
+                                maxValue={maxK} onMaxChange={setMaxK}
+                            />
+                            <SliderGroup 
+                                label="Time Constant (τ):" tooltip="Time constant for FOPTD model. Set to 0 for integrator model."
+                                value={tau} onChange={setTau} min={0} max={maxTau} step={0.01}
+                                maxValue={maxTau} onMaxChange={setMaxTau}
+                            />
+                            <SliderGroup 
+                                label="Dead Time (θ):" tooltip="Delay before the process output starts to respond."
+                                value={theta} onChange={setTheta} min={0.1} max={maxTheta} step={0.01}
+                                maxValue={maxTheta} onMaxChange={setMaxTheta}
+                            />
+                          </>
+                        )}
+
+                        {tuningMethod === 'imc' && (() => {
+                            const showTau = ['A', 'C', 'D', 'F', 'G', 'H', 'J', 'L', 'O'].includes(imcModelCase);
+                            const showTau1 = ['B', 'I', 'K'].includes(imcModelCase);
+                            const showTau2 = ['B', 'I', 'K'].includes(imcModelCase);
+                            const showTau3 = ['I', 'J', 'K', 'L'].includes(imcModelCase);
+                            const showZeta = ['C', 'D', 'J', 'L'].includes(imcModelCase);
+                            const showTheta = ['G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'].includes(imcModelCase);
+                            const showBeta = imcModelCase === 'D';
+                            let tau3Label = <span>Zero Time Constant (τ₃):</span>;
+                            if (['K', 'L'].includes(imcModelCase)) { tau3Label = <span>RHP Zero Time Constant (τ₃):</span>; }
+
+                            return (
+                                <>
+                                    <SliderGroup label="Process Gain (K):" tooltip="Ratio of change in output to the change in input at steady state." value={k} onChange={setK} min={0.1} max={maxK} step={0.01} maxValue={maxK} onMaxChange={setMaxK} />
+                                    {showTau && <SliderGroup label={<span>Time Constant (τ):</span>} tooltip="Primary time constant of the process model." value={tau} onChange={setTau} min={0.1} max={maxTau} step={0.01} maxValue={maxTau} onMaxChange={setMaxTau} />}
+                                    {showTau1 && <SliderGroup label={<span>Time Constant 1 (τ₁):</span>} tooltip="First time constant of the second-order model." value={tau} onChange={setTau} min={0.1} max={maxTau} step={0.01} maxValue={maxTau} onMaxChange={setMaxTau} />}
+                                    {showTau2 && <SliderGroup label={<span>Time Constant 2 (τ₂):</span>} tooltip="Second time constant of the second-order model." value={tau2} onChange={setTau2} min={0.1} max={maxTau2} step={0.01} maxValue={maxTau2} onMaxChange={setMaxTau2} />}
+                                    {showTau3 && <SliderGroup label={tau3Label} tooltip="The time constant of the numerator zero term." value={tau3} onChange={setTau3} min={0.1} max={maxTau3} step={0.01} maxValue={maxTau3} onMaxChange={setMaxTau3} />}
+                                    {showZeta && <SliderGroup label={<span>Damping Factor (ζ):</span>} tooltip="The damping factor of the second-order model." value={zeta} onChange={setZeta} min={0.05} max={maxZeta} step={0.01} maxValue={maxZeta} onMaxChange={setMaxZeta} />}
+                                    {showBeta && <SliderGroup label={<span>RHP Zero (β):</span>} tooltip="The right-hand plane zero term. Must be positive." value={beta} onChange={setBeta} min={0.1} max={maxBeta} step={0.01} maxValue={maxBeta} onMaxChange={setMaxBeta} />}
+                                    {showTheta && <SliderGroup label="Dead Time (θ):" tooltip="Delay before the process output starts to respond." value={theta} onChange={setTheta} min={0.1} max={maxTheta} step={0.01} maxValue={maxTheta} onMaxChange={setMaxTheta} />}
+                                    <SliderGroup label={<span>IMC Tuning Parameter (τ<sub>c</sub>):</span>} tooltip="The desired closed-loop time constant. A larger value gives a slower, more robust response." value={tauC} onChange={setTauC} min={0.1} max={maxTauC} step={0.01} maxValue={maxTauC} onMaxChange={setMaxTauC} />
+                                </>
+                            );
+                        })()}
                       </div>
+                      {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
                     </CardContent>
                   </Card>
-
-                  {/* Simulation Controls */}
+                  
+                  {/* Simulation Control Card */}
                   <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                       <CardTitle>Simulation Control</CardTitle>
@@ -2670,32 +2777,47 @@ export default function PidTuningPage() {
                         Reset
                       </Button>
                     </CardHeader>
-                    <CardContent className="space-y-4 pt-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Label className="text-sm font-medium">Setpoint:</Label>
-                          <span className="text-sm font-semibold">{currentSetpoint.toFixed(1)}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="icon" onClick={() => handleSetpointChange('down')} disabled={currentSetpoint <= 0 || divergenceWarning} className="w-8 h-8">-</Button>
-                          <Button variant="outline" size="icon" onClick={() => handleSetpointChange('up')} disabled={currentSetpoint >= 2 || divergenceWarning} className="w-8 h-8">+</Button>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Label className="text-sm font-medium">Process Disturbance:</Label>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" onClick={() => triggerDisturbance('down')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">-0.5</Button>
-                          <Button variant="outline" size="sm" onClick={() => triggerDisturbance('up')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">+0.5</Button>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-4">
+                          <div className="flex items-center gap-2">
+                            <Label className="text-sm font-medium">Setpoint Value: {currentSetpoint}</Label>
+                            <Button variant="outline" size="sm" onClick={() => handleSetpointChange('down')} disabled={currentSetpoint <= 0 || divergenceWarning} className="w-8 h-6 p-0 text-xs">-</Button>
+                            <Button variant="outline" size="sm" onClick={() => handleSetpointChange('up')} disabled={currentSetpoint >= 2 || divergenceWarning} className="w-8 h-6 p-0 text-xs">+</Button>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Label className="text-sm font-medium">Process Disturbance:</Label>
+                            <Button variant="outline" size="sm" onClick={() => triggerDisturbance('down')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">-0.5</Button>
+                            <Button variant="outline" size="sm" onClick={() => triggerDisturbance('up')} disabled={!isSimulationRunning} className="w-12 h-6 p-0 text-xs">+0.5</Button>
+                          </div>
                         </div>
                       </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Controller Settings Card */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Calculated Controller Settings</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {loading && ( <div className="flex items-center justify-center text-muted-foreground p-8">Calculating...</div> )}
+                      {!loading && !result && ( <div className="flex items-center justify-center text-muted-foreground p-8">Please provide inputs and start tuning.</div> )}
+                      {result && !loading && (
+                          <div className={`grid grid-cols-1 gap-4 ${controllerType === 'P' ? 'sm:grid-cols-1' : controllerType === 'PI' ? 'sm:grid-cols-2' : 'sm:grid-cols-3'}`}>
+                              <Tooltip><TooltipTrigger asChild><div className="p-4 bg-muted rounded-md cursor-help flex items-center justify-center gap-2"><p className="text-2xl font-medium" dangerouslySetInnerHTML={{ __html: 'K<sub>c</sub>:' }} /><p className="text-2xl font-bold font-mono">{formatResult(result.kc)}</p></div></TooltipTrigger><TooltipContent><p>Proportional Gain</p></TooltipContent></Tooltip>
+                              {controllerType !== 'P' && (<Tooltip><TooltipTrigger asChild><div className="p-4 bg-muted rounded-md cursor-help flex items-center justify-center gap-2"><p className="text-2xl font-medium" dangerouslySetInnerHTML={{ __html: 'τ<sub>I</sub>:' }} /><p className="text-2xl font-bold font-mono">{formatResult(result.tauI)}</p></div></TooltipTrigger><TooltipContent><p>Integral Time</p></TooltipContent></Tooltip>)}
+                              {controllerType !== 'PI' && controllerType !== 'P' && (<Tooltip><TooltipTrigger asChild><div className="p-4 bg-muted rounded-md cursor-help flex items-center justify-center gap-2"><p className="text-2xl font-medium" dangerouslySetInnerHTML={{ __html: 'τ<sub>D</sub>:' }} /><p className="text-2xl font-bold font-mono">{formatResult(result.tauD)}</p></div></TooltipTrigger><TooltipContent><p>Derivative Time</p></TooltipContent></Tooltip>)}
+                          </div>
+                      )}
                     </CardContent>
                   </Card>
                 </div>
 
                 <div className="lg:col-span-3">
                   <Card>
-                    <CardContent className="p-2">
-                      <div className="h-[600px]">
+                    <CardContent className="py-2">
+                      <div className="relative aspect-square rounded-md pt-0 px-2 pb-0">
                         <ReactECharts
                           ref={overlappedChartRef}
                           echarts={echarts}
