@@ -82,12 +82,12 @@ export default function Home() {
       thumbnailLightPath: kineticsThumbnailLightPath,
     },
     {
-      name: "Isotherms",
-      path: "/toolbox/isotherms",
+      name: "PID Tuning",
+      path: "/toolbox/pid-tuning",
       description:
-        "Explore and visualize adsorption isotherms including Langmuir, Freundlich, and Temkin models for surface chemistry analysis.",
-      thumbnailPath: isothermsThumbnailPath,
-      thumbnailLightPath: isothermsThumbnailLightPath
+        "Interactive PID controller tuning simulation. Adjust parameters and observe system response in real-time.",
+      thumbnailPath: pidThumbnailPath,
+      thumbnailLightPath: pidThumbnailLightPath,
     },
     {
       name: "McCabe-Thiele",
@@ -98,12 +98,12 @@ export default function Home() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "PID Tuning",
-      path: "/toolbox/pid-tuning",
+      name: "Isotherms",
+      path: "/toolbox/isotherms",
       description:
-        "Interactive PID controller tuning simulation. Adjust parameters and observe system response in real-time.",
-      thumbnailPath: pidThumbnailPath,
-      thumbnailLightPath: pidThumbnailLightPath,
+        "Explore and visualize adsorption isotherms including Langmuir, Freundlich, and Temkin models for surface chemistry analysis.",
+      thumbnailPath: isothermsThumbnailPath,
+      thumbnailLightPath: isothermsThumbnailLightPath
     },
     {
       name: "Process Dynamics",
