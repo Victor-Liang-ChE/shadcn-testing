@@ -2914,7 +2914,7 @@ export default function PidTuningPage() {
           // --- EXISTING SINGLE GRAPH VIEW ---
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
             {/* Column 1: Controls (40% width on large screens) */}
-            <div className="lg:col-span-2 space-y-6">
+            <div className="lg:col-span-2 space-y-6 mt-[46px]">
             <Card>
               <CardHeader className="pb-1">
                 <CardTitle>{controllerType} Tuning Parameters</CardTitle>
@@ -3236,6 +3236,12 @@ export default function PidTuningPage() {
           </div>
            {/* Column 2: Graph (60% width on large screens) */}
           <div className="lg:col-span-3">
+            {/* Place the button at the top right, above the graph card */}
+            <div className="flex justify-end items-center mb-2">
+              <Button variant="secondary" onClick={() => setIsMultiView(true)} disabled={!result}>
+                View All Dynamic Graphs
+              </Button>
+            </div>
             {/* Graph Card */}
             <Card>
               <CardContent className="py-2">
@@ -3274,13 +3280,6 @@ export default function PidTuningPage() {
                 </div>
               </CardContent>
             </Card>
-
-            {/* ADD THIS BUTTON to switch to multi-view */}
-            <div className="flex justify-center mt-4">
-              <Button variant="secondary" onClick={() => setIsMultiView(true)} disabled={!result}>
-                View All Dynamic Graphs
-              </Button>
-            </div>
           </div>
           </div>
         )}
