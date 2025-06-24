@@ -2636,25 +2636,25 @@ export default function PidTuningPage() {
                               <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Process Model:</Label>
                               <Select value={imcModelCase} onValueChange={(v) => setImcModelCase(v as ImcModelCase)}>
                                   <SelectTrigger id="imcModelCase" className="flex-1"><SelectValue /></SelectTrigger>
-                                  <SelectContent className="max-h-[400px]">
+                                  <SelectContent className="max-h-none">
                                       {/* Show all IMC cases A-O */}
                                       {(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'] as ImcModelCase[]).map(caseVal => {
                                         const descriptions = {
-                                          'A': 'A: First-Order',
-                                          'B': 'B: Second-Order Overdamped',
-                                          'C': 'C: Second-Order Underdamped',
-                                          'D': 'D: Second-Order Underdamped + RHP Zero',
-                                          'E': 'E: Integrator',
-                                          'F': 'F: First-Order + Integrator',
-                                          'G': 'G: FOPTD',
-                                          'H': 'H: FOPTD',
-                                          'I': 'I: SOPTD Overdamped + LHP Zero',
-                                          'J': 'J: SOPTD Underdamped + LHP Zero',
-                                          'K': 'K: SOPTD Overdamped + RHP Zero',
-                                          'L': 'L: SOPTD Underdamped + RHP Zero',
-                                          'M': 'M: Integrator + Delay',
-                                          'N': 'N: Integrator + Delay',
-                                          'O': 'O: FOPTD + Integrator',
+                                          'A': 'First-Order',
+                                          'B': 'Second-Order Overdamped',
+                                          'C': 'Second-Order Underdamped',
+                                          'D': 'Second-Order Underdamped + RHP Zero',
+                                          'E': 'Integrator',
+                                          'F': 'First-Order + Integrator',
+                                          'G': 'FOPTD',
+                                          'H': 'FOPTD',
+                                          'I': 'SOPTD Overdamped + LHP Zero',
+                                          'J': 'SOPTD Underdamped + LHP Zero',
+                                          'K': 'SOPTD Overdamped + RHP Zero',
+                                          'L': 'SOPTD Underdamped + RHP Zero',
+                                          'M': 'Integrator + Delay',
+                                          'N': 'Integrator + Delay',
+                                          'O': 'FOPTD + Integrator',
                                         };
                                         return (
                                           <SelectItem key={caseVal} value={caseVal}>
@@ -2965,24 +2965,25 @@ export default function PidTuningPage() {
                           <Label htmlFor="imcModelCase" className="text-sm font-medium whitespace-nowrap">Process Model:</Label>
                           <Select value={imcModelCase} onValueChange={(v) => setImcModelCase(v as ImcModelCase)}>
                             <SelectTrigger id="imcModelCase" className="flex-1"><SelectValue /></SelectTrigger>
-                            <SelectContent className="max-h-[400px]">
+                            <SelectContent className="max-h-none">
+                              {/* Show all IMC cases A-O */}
                               {(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O'] as ImcModelCase[]).map(caseVal => {
                                 const descriptions = {
-                                  'A': 'A: First-Order',
-                                  'B': 'B: Second-Order Overdamped',
-                                  'C': 'C: Second-Order Underdamped',
-                                  'D': 'D: Second-Order Underdamped + RHP Zero',
-                                  'E': 'E: Integrator',
-                                  'F': 'F: First-Order + Integrator',
-                                  'G': 'G: FOPTD',
-                                  'H': 'H: FOPTD',
-                                  'I': 'I: SOPTD Overdamped + LHP Zero',
-                                  'J': 'J: SOPTD Underdamped + LHP Zero',
-                                  'K': 'K: SOPTD Overdamped + RHP Zero',
-                                  'L': 'L: SOPTD Underdamped + RHP Zero',
-                                  'M': 'M: Integrator + Delay',
-                                  'N': 'N: Integrator + Delay',
-                                  'O': 'O: FOPTD + Integrator',
+                                  'A': 'First-Order',
+                                  'B': 'Second-Order Overdamped',
+                                  'C': 'Second-Order Underdamped',
+                                  'D': 'Second-Order Underdamped + RHP Zero',
+                                  'E': 'Integrator',
+                                  'F': 'First-Order + Integrator',
+                                  'G': 'FOPTD',
+                                  'H': 'FOPTD',
+                                  'I': 'SOPTD Overdamped + LHP Zero',
+                                  'J': 'SOPTD Underdamped + LHP Zero',
+                                  'K': 'SOPTD Overdamped + RHP Zero',
+                                  'L': 'SOPTD Underdamped + RHP Zero',
+                                  'M': 'Integrator + Delay',
+                                  'N': 'Integrator + Delay',
+                                  'O': 'FOPTD + Integrator',
                                 };
                                 return (
                                   <SelectItem key={caseVal} value={caseVal}>
