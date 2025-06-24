@@ -329,7 +329,8 @@ export default function KineticsPage() {
              rich: { // Keep rich text config for legend rendering
                 sub: {
                     fontSize: 9,
-                    verticalAlign: 'bottom'
+                    verticalAlign: 'bottom',
+                    fontFamily: 'Merriweather Sans'
                 }
              }
           },
