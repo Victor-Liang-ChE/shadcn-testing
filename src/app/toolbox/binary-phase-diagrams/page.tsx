@@ -740,13 +740,13 @@ export default function VleDiagramPage() {
                         <CardHeader><CardTitle>Pure Component Boiling Points</CardTitle></CardHeader>
                         <CardContent>
                           <div className="grid grid-cols-2 gap-4 text-center">
-                            <div>
+                            <div className="p-4 bg-muted rounded-md">
                               <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
-                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.t[chartData.t.length - 1] - 273.15, 3)} °C</p>
+                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.t[chartData.t.length - 1] - 273.15, 3)} °C</p>
                             </div>
-                            <div>
+                            <div className="p-4 bg-muted rounded-md">
                               <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
-                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.t[0] - 273.15, 3)} °C</p>
+                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.t[0] - 273.15, 3)} °C</p>
                             </div>
                           </div>
                         </CardContent>
@@ -757,13 +757,13 @@ export default function VleDiagramPage() {
                         <CardHeader><CardTitle>Pure Component Boiling Pressures</CardTitle></CardHeader>
                         <CardContent>
                           <div className="grid grid-cols-2 gap-4 text-center">
-                            <div>
+                            <div className="p-4 bg-muted rounded-md">
                               <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
-                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.p[chartData.p.length - 1] / 1e5, 3)} bar</p>
+                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.p[chartData.p.length - 1] / 1e5, 3)} bar</p>
                             </div>
-                            <div>
+                            <div className="p-4 bg-muted rounded-md">
                               <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
-                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.p[0] / 1e5, 3)} bar</p>
+                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.p[0] / 1e5, 3)} bar</p>
                             </div>
                           </div>
                         </CardContent>
