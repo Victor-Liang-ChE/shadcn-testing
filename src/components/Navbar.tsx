@@ -58,6 +58,9 @@ function Navbar() {
       case "/toolbox/isotherms":
         return "Isotherm Simulator";
 
+      case "/toolbox/binary-phase-diagrams":
+        return "Binary Phase Diagrams";
+
       case "/misc":
           return "Miscellaneous Projects";
   

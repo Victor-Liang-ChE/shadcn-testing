@@ -55,6 +55,8 @@ const reactorDesignThumbnailPath = "/thumbnails/reactor-design-thumbnail.png";
 const reactorDesignThumbnailLightPath = "/thumbnails/reactor-design-thumbnail-light.png";
 const isothermsThumbnailPath = "/thumbnails/isotherms-thumbnail.png";
 const isothermsThumbnailLightPath = "/thumbnails/isotherms-thumbnail-light.png";
+const binaryPhaseThumbnailPath = "/thumbnails/binary-phase-diagrams-thumbnail.png";
+const binaryPhaseThumbnailLightPath = "/thumbnails/binary-phase-diagrams-thumbnail-light.png";
 
 export default function Home() {
   const { resolvedTheme } = useTheme();
@@ -98,12 +100,12 @@ export default function Home() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "Isotherms",
-      path: "/toolbox/isotherms",
+      name: "Binary Phase Diagram",
+      path: "/toolbox/binary-phase-diagrams",
       description:
-        "Explore and visualize adsorption isotherms including Langmuir, Freundlich, and Temkin models for surface chemistry analysis.",
-      thumbnailPath: isothermsThumbnailPath,
-      thumbnailLightPath: isothermsThumbnailLightPath
+        "Generate and visualize binary phase diagrams using various thermodynamic models.",
+      thumbnailPath: binaryPhaseThumbnailPath,
+      thumbnailLightPath: binaryPhaseThumbnailLightPath
     },
     {
       name: "Process Dynamics",
@@ -136,6 +138,14 @@ export default function Home() {
         "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
       thumbnailPath: compoundPropertiesThumbnailPath,
       thumbnailLightPath: compoundPropertiesThumbnailLightPath
+    },
+    {
+      name: "Isotherms",
+      path: "/toolbox/isotherms",
+      description:
+        "Explore and visualize adsorption isotherms including Langmuir, Freundlich, and Temkin models for surface chemistry analysis.",
+      thumbnailPath: isothermsThumbnailPath,
+      thumbnailLightPath: isothermsThumbnailLightPath
     }
   ];
 
