@@ -471,7 +471,7 @@ export default function McCabeThielePage() {
     };
   }, [activeSuggestionInput]);
 
-  const calculateEquilibriumCurve = useCallback(async (showLoading: boolean = true) => {
+  const calculateEquilibriumCurve = useCallback(async (showLoading: boolean = true, pointsCount: number = 51) => {
     if (showLoading) {
       setLoading(true);
       setEquilibriumData(null);
@@ -537,7 +537,8 @@ export default function McCabeThielePage() {
             throw new Error(`Unsupported fluid package: ${fluidPackage}`);
         }
 
-        const x_feed_values = Array.from({ length: 51 }, (_, i) => parseFloat((i * 0.02).toFixed(3))); // 51 points for x1 from 0 to 1 (step 0.02)
+        const stepSize = 1 / (pointsCount - 1); // Dynamic step based on desired resolution
+        const x_feed_values = Array.from({ length: pointsCount }, (_, i) => parseFloat((i * stepSize).toFixed(4))); // Variable resolution
         const calculated_x_values: number[] = [];
         const calculated_y_values: number[] = [];
 
@@ -1133,7 +1134,8 @@ export default function McCabeThielePage() {
           hasMounted.current = true;
           return;
       }
-      calculateEquilibriumCurve(false);
+      // Use a lighter resolution (21 points) for real-time slider updates
+      calculateEquilibriumCurve(false, 21);
   }, [temperatureC, pressureBar]);
 
   return (
