@@ -69,7 +69,7 @@ export default function VleDiagramPage() {
     const [diagramType, setDiagramType] = useState<DiagramType>('txy');
     const [temperatureC, setTemperatureC] = useState<number | null>(60);
     const [pressureBar, setPressureBar] = useState<number | null>(1);
-    const [fluidPackage, setFluidPackage] = useState<FluidPackageType>('unifac');
+    const [fluidPackage, setFluidPackage] = useState<FluidPackageType>('uniquac');
     const [temperatureInput, setTemperatureInput] = useState<string>(String(temperatureC));
     const [pressureInput, setPressureInput] = useState<string>(String(pressureBar));
     const [tempMax, setTempMax] = useState<string>('100');
