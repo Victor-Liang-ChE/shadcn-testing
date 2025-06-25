@@ -181,6 +181,8 @@ export default function McCabeThielePage() {
   // New string states for input fields
   const [temperatureInput, setTemperatureInput] = useState<string>(temperatureC !== null ? String(temperatureC) : '');
   const [pressureInput, setPressureInput] = useState<string>(pressureBar !== null ? String(pressureBar) : '');
+  const [tempMax, setTempMax] = useState<string>('100');
+  const [pressureMax, setPressureMax] = useState<string>('10');
 
   const [useTemperature, setUseTemperature] = useState(true);
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeMcCabe>('uniquac');
@@ -469,11 +471,12 @@ export default function McCabeThielePage() {
     };
   }, [activeSuggestionInput]);
 
-  const calculateEquilibriumCurve = useCallback(async () => {
-    console.log(`McCabe: calculateEquilibriumCurve called. Comp1: ${comp1Name}, Comp2: ${comp2Name}, Package: ${fluidPackage}`);
-    setLoading(true);
+  const calculateEquilibriumCurve = useCallback(async (showLoading: boolean = true) => {
+    if (showLoading) {
+      setLoading(true);
+      setEquilibriumData(null);
+    }
     setError(null);
-    setEquilibriumData(null);
 
     if (!comp1Name || !comp2Name) {
         setError("Please enter valid compound names.");
@@ -608,9 +611,9 @@ export default function McCabeThielePage() {
     } catch (err: any) {
         console.error("McCabe: Error calculating equilibrium curve:", err);
         setError(`Calculation failed: ${err.message}`);
-        setEquilibriumData(null);
+        if (showLoading) setEquilibriumData(null);
     } finally {
-        setLoading(false);
+        if (showLoading) setLoading(false);
     }
   }, [comp1Name, comp2Name, useTemperature, temperatureC, pressureBar, fluidPackage]);
 
@@ -1004,21 +1007,6 @@ export default function McCabeThielePage() {
   }, [equilibriumData, generateEChartsOptions]);
 
   const handleUpdateGraphClick = () => {
-    // Ensure numeric states are up-to-date before calculating,
-    // though onChange should keep them in sync.
-    // This explicit parse could be a fallback if needed, but generally not required with the new onChange.
-    const tempNum = parseFloat(temperatureInput);
-    if (useTemperature) {
-      if (temperatureInput.trim() === '' || isNaN(tempNum)) setTemperatureC(null);
-      else setTemperatureC(tempNum);
-    }
-    
-    const pressNum = parseFloat(pressureInput);
-    if (!useTemperature) {
-      if (pressureInput.trim() === '' || isNaN(pressNum)) setPressureBar(null);
-      else setPressureBar(pressNum);
-    }
-
     calculateEquilibriumCurve();
   };
 
@@ -1123,70 +1111,48 @@ export default function McCabeThielePage() {
     // This avoids complex cascading updates and relies on the user not being able to move sliders past the calculated boundaries.
   };
 
+  // Helper to compute a 'nice' slider step given the maximum value
+  const computeStep = (maxVal: number): number => {
+    const desiredSteps = 100;
+    const raw = maxVal / desiredSteps;
+    const exponent = Math.floor(Math.log10(raw));
+    const pow10 = Math.pow(10, exponent);
+    const mant = raw / pow10;
+    let niceMant: number;
+    if (mant <= 1) niceMant = 1;
+    else if (mant <= 2) niceMant = 2;
+    else if (mant <= 5) niceMant = 5;
+    else niceMant = 10;
+    return niceMant * pow10;
+  };
+
+  // Silent recalculation when fixed condition slider changes
+  const hasMounted = useRef(false);
+  useEffect(() => {
+      if (!hasMounted.current) {
+          hasMounted.current = true;
+          return;
+      }
+      calculateEquilibriumCurve(false);
+  }, [temperatureC, pressureBar]);
+
   return (
     <TooltipProvider>
-      <div className="container mx-auto p-4 md:p-8 px-8 md:px-32">
+      <div className="container mx-auto p-4 md:p-8 px-4 md:px-16">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-1 space-y-6">
             <Card>
               <CardContent className="space-y-6 p-4">
                 <div className="space-y-4">
                   {/* Temperature/Pressure Toggle and Input */}
-                  <div className="flex items-center gap-2">
+                  <div>
                     <Tabs value={useTemperature ? "temperature" : "pressure"} onValueChange={(value) => setUseTemperature(value === "temperature")}>
-                        <TabsList className="grid grid-cols-2">
-                            <TabsTrigger value="temperature">Temperature</TabsTrigger> {/* Full word */}
-                            <TabsTrigger value="pressure">Pressure</TabsTrigger>    {/* Full word */}
-                        </TabsList>
+                      <TabsList className="flex w-full">
+                        <TabsTrigger value="temperature" className="flex-1 text-center">Temperature</TabsTrigger>
+                        <TabsTrigger value="pressure" className="flex-1 text-center">Pressure</TabsTrigger>
+                      </TabsList>
                     </Tabs>
-                    {useTemperature ? (
-                        <Input
-                           id="temperature" type="text"
-                           value={temperatureInput}
-                           onChange={(e) => {
-                              const valStr = e.target.value;
-                              setTemperatureInput(valStr); // Update display string
-
-                              if (valStr.trim() === '') {
-                                  setTemperatureC(null);
-                              } else if (valStr === '-') {
-                                  setTemperatureC(null);
-                              } else {
-                                  const num = parseFloat(valStr);
-                                  setTemperatureC(isNaN(num) ? null : num);
-                              }
-                           }}
-                           onKeyDown={handleKeyDown} 
-                           placeholder="Enter value" 
-                           required={useTemperature} disabled={!useTemperature} className="flex-1"
-                        />
-                    ) : (
-                        <Input
-                           id="pressure" type="text"
-                           value={pressureInput}
-                           onChange={(e) => {
-                              const valStr = e.target.value;
-                              setPressureInput(valStr); // Update display string
-
-                              if (valStr.trim() === '') {
-                                  setPressureBar(null);
-                              } else if (valStr === '-') {
-                                  setPressureBar(null);
-                              } else {
-                                  const num = parseFloat(valStr);
-                                  setPressureBar(isNaN(num) ? null : num);
-                              }
-                           }}
-                           onKeyDown={handleKeyDown} 
-                           placeholder="Enter value" 
-                           required={!useTemperature} disabled={useTemperature} className="flex-1"
-                        />
-                    )}
-                    {/* Unit Indicator */}
-                    <span className="ml-1 text-sm text-muted-foreground w-8 text-left">
-                        {useTemperature ? "°C" : "bar"}
-                    </span>
-                   </div>
+                  </div>
 
                   {/* Component Inputs - Side by side with placeholders and swap button */}
                   <div className="flex items-center gap-2">
@@ -1281,6 +1247,38 @@ export default function McCabeThielePage() {
             {/* Slider Card */}
             <Card>
                <CardContent className="space-y-8 pt-6 pb-6">
+                {/* Fixed condition slider */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="fixedCondition">
+                      {useTemperature ? `Temperature (°C): ${temperatureC}` : `Pressure (bar): ${pressureBar}`}
+                    </Label>
+                    <div className="flex items-center gap-1">
+                      <Label className="text-xs text-muted-foreground">Max:</Label>
+                      <Input
+                        type="text"
+                        value={useTemperature ? tempMax : pressureMax}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                          if (useTemperature) setTempMax(e.target.value);
+                          else setPressureMax(e.target.value);
+                        }}
+                        className="w-16 h-8 text-xs"
+                      />
+                    </div>
+                  </div>
+                  <Slider
+                    id="fixedCondition"
+                    min={0}
+                    max={useTemperature ? parseFloat(tempMax) : parseFloat(pressureMax)}
+                    step={computeStep(useTemperature ? parseFloat(tempMax) : parseFloat(pressureMax))}
+                    value={[useTemperature ? (temperatureC || 0) : (pressureBar || 0)]}
+                    onValueChange={([v]: number[]) => {
+                      if (useTemperature) setTemperatureC(v);
+                      else setPressureBar(v);
+                    }}
+                    className="w-full"
+                  />
+                </div>
                  {/* xd Slider */}
                  <div className="space-y-3">
                    <Label htmlFor="xd">
@@ -1323,6 +1321,22 @@ export default function McCabeThielePage() {
                  </div>
                </CardContent>
             </Card>
+            {stages !== null && feedStage !== null && (
+              <Card>
+                <CardContent>
+                  <div className="grid grid-cols-2 gap-4 text-center">
+                    <div className="p-4 bg-muted rounded-md">
+                      <p className="text-sm font-medium">Number of Stages</p>
+                      <p className="text-2xl font-bold">{stages}</p>
+                    </div>
+                    <div className="p-4 bg-muted rounded-md">
+                      <p className="text-sm font-medium">Feed Stage</p>
+                      <p className="text-2xl font-bold">{feedStage}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
           {/* Column 2: Plot and Results Cards */}
           <div className="lg:col-span-2 space-y-6">
@@ -1336,12 +1350,6 @@ export default function McCabeThielePage() {
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} notMerge={false} lazyUpdate={false} />
                   )}
                 </div>
-                {stages !== null && feedStage !== null && (
-                  <div className="grid grid-cols-2 gap-4 text-center mt-4 pt-2">
-                    <div className="p-4 bg-muted rounded-md"><p className="text-sm font-medium">Number of Stages</p><p className="text-2xl font-bold">{stages}</p></div>
-                    <div className="p-4 bg-muted rounded-md"><p className="text-sm font-medium">Feed Stage</p><p className="text-2xl font-bold">{feedStage}</p></div>
-                  </div>
-                )}
               </CardContent>
             </Card>
           </div>
