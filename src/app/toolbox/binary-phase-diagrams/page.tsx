@@ -145,6 +145,11 @@ export default function VleDiagramPage() {
         if (!loading) generateDiagram();
     }, [diagramType, fluidPackage]);
 
+    // Auto-generate when constant condition toggle (T/P) changes
+    useEffect(() => {
+        if (!loading) generateDiagram();
+    }, [useTemperatureForXY]);
+
     const generateEchartsOptions = useCallback((data: VleChartData, params = displayedParams, themeOverride?: string) => {
         if (!data || data.x.length === 0) return;
         const series: SeriesOption[] = [];
@@ -192,6 +197,17 @@ export default function VleDiagramPage() {
             series.push({ name: 'y=x', type: 'line', data: [[0, 0], [1, 1]], symbol: 'none', lineStyle: { width: 1.5, type: 'dotted' }, color: 'cyan' });
         }
         
+        // Determine y-axis range for T-x-y and P-x-y diagrams
+        let yMin: number | undefined;
+        let yMax: number | undefined;
+        if (diagramType === 'txy' && tC) {
+            yMin = Math.min(...tC) * 0.9;
+            yMax = Math.max(...tC) * 1.1;
+        } else if (diagramType === 'pxy' && pressBar) {
+            yMin = Math.min(...pressBar) * 0.9;
+            yMax = Math.max(...pressBar) * 1.1;
+        }
+        
         const themeToUse = themeOverride ?? resolvedTheme;
         const isDark = themeToUse === 'dark';
         const textColor = isDark ? 'white' : '#000000';
@@ -220,9 +236,9 @@ export default function VleDiagramPage() {
             grid: {
                 top: '5%',
                 bottom: '10%',
-                left: '5%',
+                left: '10%',
                 right: '5%',
-                containLabel: true,
+                containLabel: false,
             },
             xAxis: {
                 type: 'value', min: 0, max: 1, interval: 0.1,
@@ -234,9 +250,11 @@ export default function VleDiagramPage() {
             yAxis: {
                 type: 'value',
                 name: yAxisName,
+                min: yMin,
+                max: yMax,
                 nameLocation: 'middle', nameGap: 40, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
                 axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
-                axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
+                axisLabel: { showMinLabel: false, showMaxLabel: false, color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
             },
             legend: {
                 orient: 'horizontal',
@@ -560,6 +578,40 @@ export default function VleDiagramPage() {
                             {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
                         </CardContent>
                     </Card>
+                    {chartData && diagramType === 'txy' && chartData.t && (
+                      <Card>
+                        <CardHeader><CardTitle>Pure Component Boiling Points</CardTitle></CardHeader>
+                        <CardContent>
+                          <div className="grid grid-cols-2 gap-4 text-center">
+                            <div>
+                              <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
+                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.t[chartData.t.length - 1] - 273.15, 3)} °C</p>
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
+                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.t[0] - 273.15, 3)} °C</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
+                    {chartData && diagramType === 'pxy' && chartData.p && (
+                      <Card>
+                        <CardHeader><CardTitle>Pure Component Boiling Pressures</CardTitle></CardHeader>
+                        <CardContent>
+                          <div className="grid grid-cols-2 gap-4 text-center">
+                            <div>
+                              <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
+                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.p[chartData.p.length - 1] / 1e5, 3)} bar</p>
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
+                              <p className="text-lg font-bold">{formatNumberToPrecision(chartData.p[0] / 1e5, 3)} bar</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )}
                 </div>
                 <div className="lg:col-span-2">
                     <Card className="h-full"><CardContent className="py-2 h-full">
