@@ -76,12 +76,12 @@ export default function Home() {
       thumbnailLightPath: reactorDesignThumbnailLightPath
     },
     {
-      name: "Reaction Kinetics",
-      path: "/toolbox/kinetics",
+      name: "Binary Phase Diagram",
+      path: "/toolbox/binary-phase-diagrams",
       description:
-        "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
-      thumbnailPath: kineticsThumbnailPath,
-      thumbnailLightPath: kineticsThumbnailLightPath,
+        "Generate and visualize binary phase diagrams using various thermodynamic models.",
+      thumbnailPath: binaryPhaseThumbnailPath,
+      thumbnailLightPath: binaryPhaseThumbnailLightPath
     },
     {
       name: "PID Tuning",
@@ -100,12 +100,12 @@ export default function Home() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "Binary Phase Diagram",
-      path: "/toolbox/binary-phase-diagrams",
+      name: "Reaction Kinetics",
+      path: "/toolbox/kinetics",
       description:
-        "Generate and visualize binary phase diagrams using various thermodynamic models.",
-      thumbnailPath: binaryPhaseThumbnailPath,
-      thumbnailLightPath: binaryPhaseThumbnailLightPath
+        "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
+      thumbnailPath: kineticsThumbnailPath,
+      thumbnailLightPath: kineticsThumbnailLightPath,
     },
     {
       name: "Process Dynamics",
