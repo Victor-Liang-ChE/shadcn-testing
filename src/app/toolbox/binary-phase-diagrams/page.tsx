@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeftRight } from 'lucide-react';
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Slider } from "@/components/ui/slider";
 
 import {
     calculateVleDiagramData,
@@ -46,6 +47,21 @@ function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
     return debounced as (...args: Parameters<F>) => void;
 }
 
+// Utility to compute a 'nice' slider step given the maximum value
+function computeStep(maxVal: number): number {
+    const desiredSteps = 100;
+    const raw = maxVal / desiredSteps;
+    const exponent = Math.floor(Math.log10(raw));
+    const pow10 = Math.pow(10, exponent);
+    const mant = raw / pow10;
+    let niceMant: number;
+    if (mant <= 1) niceMant = 1;
+    else if (mant <= 2) niceMant = 2;
+    else if (mant <= 5) niceMant = 5;
+    else niceMant = 10;
+    return niceMant * pow10;
+}
+
 export default function VleDiagramPage() {
     const { resolvedTheme } = useTheme();
     const [comp1Name, setComp1Name] = useState('methanol');
@@ -56,6 +72,8 @@ export default function VleDiagramPage() {
     const [fluidPackage, setFluidPackage] = useState<FluidPackageType>('unifac');
     const [temperatureInput, setTemperatureInput] = useState<string>(String(temperatureC));
     const [pressureInput, setPressureInput] = useState<string>(String(pressureBar));
+    const [tempMax, setTempMax] = useState<string>('100');
+    const [pressureMax, setPressureMax] = useState<string>('10');
     const [useTemperatureForXY, setUseTemperatureForXY] = useState(true);
     const [chartData, setChartData] = useState<VleChartData | null>(null);
     const [loading, setLoading] = useState(false);
@@ -79,15 +97,31 @@ export default function VleDiagramPage() {
     const suggestions1Ref = useRef<HTMLDivElement>(null);
     const suggestions2Ref = useRef<HTMLDivElement>(null);
 
-    const generateDiagram = useCallback(async () => {
-        setLoading(true); setError(null); setChartData(null);
+    // Cache CompoundData to avoid repeated Supabase fetches when only T/P changes
+    const compoundCacheRef = useRef<Record<string, any>>({});
+
+    const generateDiagram = useCallback(async (showLoading: boolean = true) => {
+        if (showLoading) {
+            setLoading(true);
+            setChartData(null);
+        }
+        setError(null);
         if (!comp1Name || !comp2Name) {
             setError("Please enter both compound names.");
-            setLoading(false);
+            if (showLoading) setLoading(false);
             return;
         }
         try {
-            const [data1, data2] = await Promise.all([fetchCompoundData(comp1Name), fetchCompoundData(comp2Name)]);
+            // Helper to fetch with cache
+            const getCompound = async (nm: string) => {
+                const key = nm.trim().toLowerCase();
+                if (compoundCacheRef.current[key]) return compoundCacheRef.current[key];
+                const fetched = await fetchCompoundData(nm);
+                compoundCacheRef.current[key] = fetched;
+                return fetched;
+            };
+
+            const [data1, data2] = await Promise.all([getCompound(comp1Name), getCompound(comp2Name)]);
             
             let fixedConditionValue: number;
             let isTempFixed: boolean;
@@ -122,7 +156,7 @@ export default function VleDiagramPage() {
         } catch (err: any) {
             setError(`Calculation failed: ${err.message}`);
         } finally {
-            setLoading(false);
+            if (showLoading) setLoading(false);
         }
     }, [comp1Name, comp2Name, diagramType, fluidPackage, pressureBar, temperatureC, useTemperatureForXY, resolvedTheme, temperatureInput, pressureInput]);
 
@@ -149,6 +183,41 @@ export default function VleDiagramPage() {
     useEffect(() => {
         if (!loading) generateDiagram();
     }, [useTemperatureForXY]);
+
+    // Auto-generate when comp names change due to suggestion or swap
+    useEffect(() => {
+        if (autoGenerateOnCompChange) {
+            generateDiagram();
+            setAutoGenerateOnCompChange(false);
+        }
+    }, [comp1Name, comp2Name]);
+
+    // Debounced graph update for slider changes
+    const debouncedSliderUpdate = useCallback(debounce(() => generateDiagram(false), 150), [generateDiagram]);
+
+    // Auto-generate when pressure slider changes (T-x-y) with debounce
+    useEffect(() => {
+        if (diagramType === 'txy') debouncedSliderUpdate();
+    }, [pressureBar, diagramType]);
+
+    // Auto-generate when temperature slider changes (P-x-y) with debounce
+    useEffect(() => {
+        if (diagramType === 'pxy') debouncedSliderUpdate();
+    }, [temperatureC, diagramType]);
+
+    // Auto-generate for XY diagram when using constant T
+    useEffect(() => {
+        if (!loading && diagramType === 'xy' && useTemperatureForXY) {
+            generateDiagram(false);
+        }
+    }, [temperatureC, diagramType, useTemperatureForXY]);
+
+    // Auto-generate for XY diagram when using constant P
+    useEffect(() => {
+        if (!loading && diagramType === 'xy' && !useTemperatureForXY) {
+            generateDiagram(false);
+        }
+    }, [pressureBar, diagramType, useTemperatureForXY]);
 
     const generateEchartsOptions = useCallback((data: VleChartData, params = displayedParams, themeOverride?: string) => {
         if (!data || data.x.length === 0) return;
@@ -217,15 +286,23 @@ export default function VleDiagramPage() {
         let inputPressureString = (params as any).pressureInput ?? pressureInput;
         let titleConditionTextRaw = '';
         if (diagramType === 'txy') {
-            titleConditionTextRaw = pressureInput ? `at ${inputPressureString} bar` : '';
+            if (params.pressure != null) {
+                titleConditionTextRaw = `at ${formatNumberToPrecision(params.pressure, 3)} bar`;
+            }
         } else if (diagramType === 'pxy') {
-            titleConditionTextRaw = temperatureInput ? `at ${inputTempString} °C` : '';
+            if (params.temp != null) {
+                titleConditionTextRaw = `at ${formatNumberToPrecision(params.temp, 3)} °C`;
+            }
         } else if (diagramType === 'xy') {
             if (useTemperatureForXY) {
-                titleConditionTextRaw = temperatureInput ? `at ${inputTempString} °C` : '';
+                if (params.temp != null) {
+                    titleConditionTextRaw = `at ${formatNumberToPrecision(params.temp, 3)} °C`;
+                }
             } else {
-                titleConditionTextRaw = pressureInput ? `at ${inputPressureString} bar` : '';
-        }
+                if (params.pressure != null) {
+                    titleConditionTextRaw = `at ${formatNumberToPrecision(params.pressure, 3)} bar`;
+                }
+            }
         }
         const titleText = `${comp1Label}-${comp2Label} ${diagramType.toUpperCase()} Diagram ${titleConditionTextRaw}`;
         const xAxisName = diagramType === 'xy' ? `Liquid Mole Fraction ${comp1Label} (x)` : `Mole Fraction ${comp1Label} (x/y)`;
@@ -343,7 +420,7 @@ export default function VleDiagramPage() {
                 }
             },
             series: series,
-            animationDuration: 300, animationEasing: 'cubicInOut',
+            animationDuration: 1, animationEasing: 'cubicInOut',
             toolbox: {
                 show: true, orient: 'vertical', right: 0, top: 'bottom',
                 feature: { saveAsImage: { show: true, title: 'Save as Image', name: `phase-diagram-${comp1Label}-${comp2Label}`, backgroundColor: isDark ? '#08306b' : '#ffffff', pixelRatio: 2 } },
@@ -373,9 +450,97 @@ export default function VleDiagramPage() {
 
     const renderConditionalInput = () => {
         switch (diagramType) {
-            case 'txy': return <div className="flex items-center gap-2"><Label htmlFor="pressure" className="whitespace-nowrap">Pressure:</Label><Input id="pressure" type="text" value={pressureInput} onChange={e => { setPressureInput(e.target.value); setPressureBar(parseFloat(e.target.value) || null); }} onKeyDown={handleKeyDown} placeholder="e.g., 1.0" className="flex-1" /><span className="text-sm text-muted-foreground w-8 text-left">bar</span></div>;
-            case 'pxy': return <div className="flex items-center gap-2"><Label htmlFor="temperature" className="whitespace-nowrap">Temperature:</Label><Input id="temperature" type="text" value={temperatureInput} onChange={e => { setTemperatureInput(e.target.value); setTemperatureC(parseFloat(e.target.value) || null); }} onKeyDown={handleKeyDown} placeholder="e.g., 60" className="flex-1" /><span className="text-sm text-muted-foreground w-8 text-left">°C</span></div>;
-            case 'xy': return <div className="flex items-center gap-2"><Tabs value={useTemperatureForXY ? "temperature" : "pressure"} onValueChange={(v) => setUseTemperatureForXY(v === "temperature")} className="flex-shrink-0"><TabsList><TabsTrigger value="temperature">Constant T</TabsTrigger><TabsTrigger value="pressure">Constant P</TabsTrigger></TabsList></Tabs>{useTemperatureForXY ? <Input id="temperature-xy" type="text" value={temperatureInput} onChange={e => { setTemperatureInput(e.target.value); setTemperatureC(parseFloat(e.target.value) || null); }} onKeyDown={handleKeyDown} placeholder="Temp" className="flex-1" /> : <Input id="pressure-xy" type="text" value={pressureInput} onChange={e => { setPressureInput(e.target.value); setPressureBar(parseFloat(e.target.value) || null); }} onKeyDown={handleKeyDown} placeholder="Pressure" className="flex-1" />}<span className="text-sm text-muted-foreground w-8 text-left">{useTemperatureForXY ? "°C" : "bar"}</span></div>;
+            case 'txy':
+                return (
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                            <Label htmlFor="pressure-slider">Pressure (bar): {pressureBar}</Label>
+                            <div className="flex items-center gap-1">
+                                <Label className="text-xs text-muted-foreground">Max:</Label>
+                                <Input
+                                    type="text"
+                                    value={pressureMax}
+                                    onChange={(e) => setPressureMax(e.target.value)}
+                                    className="w-16 h-8 text-xs"
+                                />
+                            </div>
+                        </div>
+                        <Slider
+                            id="pressure-slider"
+                            min={0}
+                            max={parseFloat(pressureMax) || 0}
+                            step={computeStep(parseFloat(pressureMax) || 0)}
+                            value={[pressureBar || 0]}
+                            onValueChange={([v]) => setPressureBar(v)}
+                            className="w-full"
+                        />
+                    </div>
+                );
+            case 'pxy':
+                return (
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                            <Label htmlFor="temperature-slider">Temperature (°C): {temperatureC}</Label>
+                            <div className="flex items-center gap-1">
+                                <Label className="text-xs text-muted-foreground">Max:</Label>
+                                <Input
+                                    type="text"
+                                    value={tempMax}
+                                    onChange={(e) => setTempMax(e.target.value)}
+                                    className="w-16 h-8 text-xs"
+                                />
+                            </div>
+                        </div>
+                        <Slider
+                            id="temperature-slider"
+                            min={0}
+                            max={parseFloat(tempMax) || 0}
+                            step={computeStep(parseFloat(tempMax) || 0)}
+                            value={[temperatureC || 0]}
+                            onValueChange={([v]) => setTemperatureC(v)}
+                            className="w-full"
+                        />
+                    </div>
+                );
+            case 'xy':
+                return (
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <Tabs value={useTemperatureForXY ? "temperature" : "pressure"} onValueChange={v => setUseTemperatureForXY(v === "temperature")}>
+                                    <TabsList>
+                                        <TabsTrigger value="temperature">T</TabsTrigger>
+                                        <TabsTrigger value="pressure">P</TabsTrigger>
+                                    </TabsList>
+                                </Tabs>
+                                <span className="text-sm">
+                                    {useTemperatureForXY
+                                        ? `${formatNumberToPrecision(temperatureC ?? 0, 3)} °C`
+                                        : `${formatNumberToPrecision(pressureBar ?? 0, 3)} bar`}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                                <Label className="text-xs text-muted-foreground">Max:</Label>
+                                <Input
+                                    type="text"
+                                    value={useTemperatureForXY ? tempMax : pressureMax}
+                                    onChange={e => useTemperatureForXY ? setTempMax(e.target.value) : setPressureMax(e.target.value)}
+                                    className="w-16 h-8 text-xs"
+                                />
+                            </div>
+                        </div>
+                        <Slider
+                            id="xy-slider"
+                            min={0}
+                            max={useTemperatureForXY ? parseFloat(tempMax) || 0 : parseFloat(pressureMax) || 0}
+                            step={computeStep(useTemperatureForXY ? parseFloat(tempMax) || 0 : parseFloat(pressureMax) || 0)}
+                            value={[useTemperatureForXY ? temperatureC ?? 0 : pressureBar ?? 0]}
+                            onValueChange={([v]) => useTemperatureForXY ? setTemperatureC(v) : setPressureBar(v)}
+                            className="w-full"
+                        />
+                    </div>
+                );
+            default: return null;
         }
     };
 
@@ -418,7 +583,7 @@ export default function VleDiagramPage() {
         }
     }, []);
 
-    const debouncedFetchSuggestions = useCallback(debounce(fetchSuggestions, 300), [fetchSuggestions]);
+    const debouncedFetchSuggestions = useCallback(debounce(fetchSuggestions, 1), [fetchSuggestions]);
 
     const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newValue = e.target.value;
@@ -478,14 +643,6 @@ export default function VleDiagramPage() {
             document.removeEventListener("mousedown", handleClickOutside);
         };
     }, [activeSuggestionInput]);
-
-    // Auto-generate when comp names change due to suggestion or swap
-    useEffect(() => {
-        if (autoGenerateOnCompChange) {
-            generateDiagram();
-            setAutoGenerateOnCompChange(false);
-        }
-    }, [comp1Name, comp2Name]);
 
     return (
         <div className="container mx-auto p-4 md:p-8">
@@ -574,7 +731,7 @@ export default function VleDiagramPage() {
                                     <Select value={fluidPackage} onValueChange={(v) => setFluidPackage(v as FluidPackageType)}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="srk">SRK</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem></SelectContent></Select>
                                 </div>
                             </div>
-                            <Button onClick={generateDiagram} disabled={loading} className="w-full">{loading ? 'Calculating...' : 'Generate Diagram'}</Button>
+                            <Button onClick={() => generateDiagram()} disabled={loading} className="w-full">{loading ? 'Calculating...' : 'Generate Diagram'}</Button>
                             {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
                         </CardContent>
                     </Card>

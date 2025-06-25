@@ -319,7 +319,8 @@ export async function fetchCompoundData(compoundName: string): Promise<CompoundD
 // --- 6. MASTER CALCULATION FUNCTION ---
 export async function calculateVleDiagramData(
     components: CompoundData[], diagramType: DiagramType,
-    fluidPackage: FluidPackageType, fixedConditionValue: number, isTempFixed: boolean
+    fluidPackage: FluidPackageType, fixedConditionValue: number, isTempFixed: boolean,
+    points: number = 51
 ): Promise<VleChartData> {
     const params = await fetchInteractionParams(fluidPackage, components[0], components[1]);
     
@@ -374,7 +375,8 @@ export async function calculateVleDiagramData(
                 return calculateBubbleTemperatureEos(components, x1, P, initialT, eosFugacityFunc, k_ij);
             };
 
-            const x_values_inner = Array.from({ length: 49 }, (_, i) => parseFloat(((i + 1) * 0.02).toFixed(4)));
+            const step = 1 / (points - 1);
+            const x_values_inner = Array.from({ length: points - 2 }, (_, i) => parseFloat(((i + 1) * step).toFixed(4)));
             const innerResults = x_values_inner.map(calculationRunner);
             
             if (Tbp2) { finalResults.push({ comp1_feed: 0, comp1_equilibrium: 0, T_K: Tbp2, P_Pa: P }); }
@@ -389,7 +391,8 @@ export async function calculateVleDiagramData(
                 const initialT = (Tbp1 && Tbp2) ? x1*Tbp1 + (1-x1)*Tbp2 : 373.15;
                 return calculateBubbleTemperatureActivity(components, x1, P, initialT, (x, T) => calculateActivityGamma(components,x,T,fluidPackage,params));
             };
-            const x_values_inner = Array.from({ length: 49 }, (_, i) => parseFloat(((i + 1) * 0.02).toFixed(4)));
+            const step2 = 1 / (points - 1);
+            const x_values_inner = Array.from({ length: points - 2 }, (_, i) => parseFloat(((i + 1) * step2).toFixed(4)));
             const innerResults = x_values_inner.map(calculationRunner);
             
             if (Tbp2) { finalResults.push({ comp1_feed: 0, comp1_equilibrium: 0, T_K: Tbp2, P_Pa: P }); }
@@ -399,7 +402,8 @@ export async function calculateVleDiagramData(
 
     } else { // This is a P-x-y or isothermal x-y diagram
         const T = fixedConditionValue + 273.15;
-        const x_values = Array.from({ length: 51 }, (_, i) => i * 0.02);
+        const step3 = 1 / (points - 1);
+        const x_values = Array.from({ length: points }, (_, i) => parseFloat((i * step3).toFixed(4)));
         const calculationRunner = (x1: number) => {
             const initialP = calculatePsat_Pa(components[0].antoine, T) * x1 + calculatePsat_Pa(components[1].antoine, T) * (1-x1) || 101325;
             switch (fluidPackage) {
