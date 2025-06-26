@@ -707,15 +707,16 @@ export default function McCabeThielePage() {
         return;
     }
     const series: SeriesOption[] = [];
+    // Swapped colors: Equilibrium Line now cyan, y = x Line now blue
     series.push({
       name: 'Equilibrium Line',
       type: 'line',
       data: xValues.map((x, i) => [x, yValues[i]]),
-      color: 'blue', symbol: 'none', lineStyle: { width: 2.5 }, z: 5, animation: false,
+      color: 'cyan', symbol: 'none', lineStyle: { width: 3.5 }, z: 5, animation: false,
     });
     series.push({
       name: 'y = x Line', type: 'line', data: [[0, 0], [1, 1]],
-      color: 'cyan', symbol: 'none', lineStyle: { width: 1.5, type: 'dotted' }, animation: false,
+      color: 'blue', symbol: 'none', lineStyle: { width: 3.5, type: 'dotted' }, animation: false,
     });
 
     const rectifyingSlope = r / (r + 1);
@@ -733,17 +734,17 @@ export default function McCabeThielePage() {
 
     series.push({
         name: 'Rectifying Section', type: 'line', data: [[xd, xd], [xIntersect, yIntersect]],
-        color: 'orange', symbol: 'none', lineStyle: { width: 2.5 }, animation: false,
+        color: 'orange', symbol: 'none', lineStyle: { width: 3.5 }, animation: false,
     });
     const feedLineData: EChartsPoint[] = [[xf, xf]];
     if (feedSlope === Infinity) { feedLineData.push([xf, yIntersect]); } else { feedLineData.push([xIntersect, yIntersect]); }
     series.push({
         name: 'Feed Section', type: 'line', data: feedLineData,
-        color: 'red', symbol: 'none', lineStyle: { width: 2.5 }, animation: false,
+        color: 'red', symbol: 'none', lineStyle: { width: 3.5 }, animation: false,
     });
     series.push({
         name: 'Stripping Section', type: 'line', data: [[xIntersect, yIntersect], [xb, xb]],
-        color: 'green', symbol: 'none', lineStyle: { width: 2.5 }, animation: false,
+        color: 'green', symbol: 'none', lineStyle: { width: 3.5 }, animation: false,
     });
     series.push({
         name: 'Key Points', type: 'scatter',
@@ -799,7 +800,7 @@ export default function McCabeThielePage() {
     if (feedStageCount === 0 && stageCount > 0) { feedStageCount = stageCount; }
     series.push({
         name: 'Stages', type: 'line', data: stageLineData, color: 'black',
-        symbol: 'none', lineStyle: { width: 2 }, connectNulls: false, legendHoverLink: false, animation: false,
+        symbol: 'none', lineStyle: { width: 3 }, connectNulls: false, legendHoverLink: false, animation: false,
     });
     setStages(stageCount); setFeedStage(feedStageCount);
 
