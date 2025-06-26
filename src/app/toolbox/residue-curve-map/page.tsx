@@ -18,34 +18,21 @@ import {
     AntoineParams, 
 } from '@/lib/vle-types';
 import { 
-    simulateSingleResidueCurveODE as simulateWilsonODE, 
-    TernaryWilsonParams
-} from '@/lib/residue-curves-ode-wilson';
-import { simulateSingleResidueCurveODE_Unifac as simulateUnifacODE } from '@/lib/residue-curves-ode-unifac';
-import { simulateSingleResidueCurveODE_Nrtl as simulateNrtlODE, TernaryNrtlParams, findAzeotropeNRTL, type AzeotropeResult as NrtlAzeotropeResult } from '@/lib/residue-curves-ode-nrtl';
+    simulateResidueCurveODE,
+    type FluidPackageResidue
+} from '@/lib/residue-curves-ode';
 import { 
-    simulateSingleResidueCurveODE_Pr as simulatePrODE, 
-    TernaryPrParams, 
-    findAzeotropePr, 
-    type AzeotropeResult as PrAzeotropeResult 
-} from '@/lib/residue-curves-ode-pr';
-import { 
-    simulateSingleResidueCurveODE_Srk as simulateSrkODE, 
+    TernaryWilsonParams,
+    TernaryNrtlParams,
+    TernaryPrParams,
     TernarySrkParams,
-    findAzeotropeSrk, // Added import
-    type AzeotropeResult as SrkAzeotropeResult // Added import
-} from '@/lib/residue-curves-ode-srk';
-import { 
-    simulateSingleResidueCurveODE_Uniquac as simulateUniquacODE, 
     TernaryUniquacParams,
-    // Placeholder: Assume findAzeotropeUniquac and its result type exist
-    // findAzeotropeUniquac, // Will be uncommented effectively by adding the import below
-    // type AzeotropeResult as UniquacAzeotropeResult // Will be uncommented effectively
-} from '@/lib/residue-curves-ode-uniquac';
-
-// Assuming residue-curves-ode-uniquac.ts will export these:
-// If not, these are placeholders and the actual implementation is needed in the uniquac file.
-import { findAzeotropeUniquac, type AzeotropeResult as UniquacAzeotropeResult } from '@/lib/residue-curves-ode-uniquac';
+    findAzeotropeNRTL,
+    findAzeotropePr,
+    findAzeotropeSrk,
+    findAzeotropeUniquac,
+    type AzeotropeResult
+} from '@/lib/residue-curves-ode';
 
 import { fetchWilsonInteractionParams, R_gas_const_J_molK } from '@/lib/vle-calculations-wilson'; 
 import { fetchUnifacInteractionParams, UnifacParameters, calculatePsat_Pa } from '@/lib/vle-calculations-unifac'; 
@@ -146,9 +133,11 @@ interface AzeotropeDisplayInfo {
     // but are not strictly needed for basic plotting.
 }
 
-// Placeholder type for UniquacAzeotropeResult if not properly imported.
-// Ensure this matches the actual structure from residue-curves-ode-uniquac.ts
-// type UniquacAzeotropeResult = NrtlAzeotropeResult; // Example if similar to NRTL
+// Map per-model azeotrope result names to unified interface
+type NrtlAzeotropeResult = AzeotropeResult;
+type PrAzeotropeResult = AzeotropeResult;
+type SrkAzeotropeResult = AzeotropeResult & { y: number[] };
+type UniquacAzeotropeResult = AzeotropeResult;
 
 export default function TernaryResidueMapPage() {
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
@@ -716,38 +705,22 @@ export default function TernaryResidueMapPage() {
                 let promise: Promise<ResidueCurve | null>;
                 switch (fluidPackage) {
                     case 'wilson':
-                        promise = simulateWilsonODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryWilsonParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        promise = simulateResidueCurveODE('wilson', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryWilsonParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
                         break;
                     case 'unifac':
-                        promise = simulateUnifacODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as UnifacParameters, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        promise = simulateResidueCurveODE('unifac', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as UnifacParameters, d_xi_step_for_model, max_steps, initialTempGuess_K);
                         break;
                     case 'nrtl':
-                        promise = simulateNrtlODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryNrtlParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        promise = simulateResidueCurveODE('nrtl', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryNrtlParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
                         break;
                     case 'pr':
-                        promise = simulatePrODE(
-                            start_x_3comp,
-                            P_system_Pa,
-                            compoundsForBackend,
-                            activityModelParams as TernaryPrParams,
-                            d_xi_step_for_model,
-                            max_steps,
-                            initialTempGuess_K
-                        );
+                        promise = simulateResidueCurveODE('pr', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryPrParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
                         break;
                     case 'srk':
-                        promise = simulateSrkODE(
-                            start_x_3comp,
-                            P_system_Pa,
-                            compoundsForBackend,
-                            activityModelParams as TernarySrkParams,
-                            d_xi_step_for_model,
-                            max_steps,
-                            initialTempGuess_K
-                        );
+                        promise = simulateResidueCurveODE('srk', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernarySrkParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
                         break;
                     case 'uniquac':
-                        promise = simulateUniquacODE(start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryUniquacParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        promise = simulateResidueCurveODE('uniquac', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryUniquacParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
                         break;
                     default:
                         throw new Error(`Simulation function not implemented for ${fluidPackage}`);
