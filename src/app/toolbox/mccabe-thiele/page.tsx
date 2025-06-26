@@ -47,55 +47,40 @@ import { ArrowLeftRight } from 'lucide-react'; // Import swap icon
 
 // Import VLE calculation logic and types
 import {
-    calculatePsat_Pa as libCalculatePsat_Pa, // Shared Psat
-    // UNIFAC
-    calculateUnifacGamma,
-    calculateBubbleTemperature as calculateBubbleTemperatureUnifac,
-    calculateBubblePressure as calculateBubblePressureUnifac,
-    fetchUnifacInteractionParams,
-    type UnifacParameters,
-} from '@/lib/vle-calculations-unifac';
-
-import {
-    // NRTL
-    fetchNrtlParameters,
-    calculateNrtlGamma,
-    calculateBubbleTemperatureNrtl,
-    calculateBubblePressureNrtl,
-    type NrtlInteractionParams
-} from '@/lib/vle-calculations-nrtl';
-
-import {
-    // PR
-    fetchPrInteractionParams,
-    calculateBubbleTemperaturePr,
-    calculateBubblePressurePr,
-    type PrInteractionParams
-} from '@/lib/vle-calculations-pr';
-
-import {
-    // SRK
-    fetchSrkInteractionParams,
-    calculateBubbleTemperatureSrk,
-    calculateBubblePressureSrk,
-    type SrkInteractionParams
-} from '@/lib/vle-calculations-srk';
-
-import {
-    // UNIQUAC
-    fetchUniquacInteractionParams,
-    calculateBubbleTemperatureUniquac,
-    calculateBubblePressureUniquac,
-    type UniquacInteractionParams as LibUniquacInteractionParams // Alias to avoid conflict if local type exists
-} from '@/lib/vle-calculations-uniquac';
-
-import {
-    // Wilson
-    fetchWilsonInteractionParams,
-    calculateBubbleTemperatureWilson,
-    calculateBubblePressureWilson,
-    type WilsonInteractionParams as LibWilsonInteractionParams // Alias
-} from '@/lib/vle-calculations-wilson';
+  calculatePsat_Pa as libCalculatePsat_Pa,
+  // UNIFAC
+  calculateUnifacGamma,
+  calculateBubbleTemperatureUnifac,
+  calculateBubblePressureUnifac,
+  fetchUnifacInteractionParams,
+  type UnifacParameters,
+  // NRTL
+  fetchNrtlParameters,
+  calculateNrtlGamma,
+  calculateBubbleTemperatureNrtl,
+  calculateBubblePressureNrtl,
+  type NrtlInteractionParams,
+  // Peng–Robinson
+  fetchPrInteractionParams,
+  calculateBubbleTemperaturePr,
+  calculateBubblePressurePr,
+  type PrInteractionParams,
+  // SRK
+  fetchSrkInteractionParams,
+  calculateBubbleTemperatureSrk,
+  calculateBubblePressureSrk,
+  type SrkInteractionParams,
+  // UNIQUAC
+  fetchUniquacInteractionParams,
+  calculateBubbleTemperatureUniquac,
+  calculateBubblePressureUniquac,
+  type UniquacInteractionParams as LibUniquacInteractionParams,
+  // Wilson
+  fetchWilsonInteractionParams,
+  calculateBubbleTemperatureWilson,
+  calculateBubblePressureWilson,
+  type WilsonInteractionParams as LibWilsonInteractionParams
+} from '@/lib/vle-calculations';
 
 // Import Shared VLE Types
 import type {
@@ -551,12 +536,12 @@ export default function McCabeThielePage() {
                 const currentFixedTempK = temperatureC! + 273.15;
                 const initialPressureGuess = (libCalculatePsat_Pa(data1.antoine!, currentFixedTempK) + libCalculatePsat_Pa(data2.antoine!, currentFixedTempK)) / 2 || 101325;
                 
-                if (fluidPackage === 'unifac') resultPoint = calculateBubblePressureUnifac(components, x1_val, currentFixedTempK, activityParameters as UnifacParameters, initialPressureGuess);
-                else if (fluidPackage === 'nrtl') resultPoint = calculateBubblePressureNrtl(components, x1_val, currentFixedTempK, activityParameters as NrtlInteractionParams, initialPressureGuess);
+                if (fluidPackage === 'unifac') resultPoint = calculateBubblePressureUnifac(components, x1_val, currentFixedTempK, activityParameters as UnifacParameters);
+                else if (fluidPackage === 'nrtl') resultPoint = calculateBubblePressureNrtl(components, x1_val, currentFixedTempK, activityParameters as NrtlInteractionParams);
                 else if (fluidPackage === 'pr') resultPoint = calculateBubblePressurePr(components, x1_val, currentFixedTempK, activityParameters as PrInteractionParams, initialPressureGuess);
                 else if (fluidPackage === 'srk') resultPoint = calculateBubblePressureSrk(components, x1_val, currentFixedTempK, activityParameters as SrkInteractionParams, initialPressureGuess);
-                else if (fluidPackage === 'uniquac') resultPoint = calculateBubblePressureUniquac(components, x1_val, currentFixedTempK, activityParameters as LibUniquacInteractionParams, initialPressureGuess);
-                else if (fluidPackage === 'wilson') resultPoint = calculateBubblePressureWilson(components, x1_val, currentFixedTempK, activityParameters as LibWilsonInteractionParams, initialPressureGuess);
+                else if (fluidPackage === 'uniquac') resultPoint = calculateBubblePressureUniquac(components, x1_val, currentFixedTempK, activityParameters as LibUniquacInteractionParams);
+                else if (fluidPackage === 'wilson') resultPoint = calculateBubblePressureWilson(components, x1_val, currentFixedTempK, activityParameters as LibWilsonInteractionParams);
             } else { // Constant Pressure, calculate T_bubble and y1
                 // pressureBar is guaranteed not null here
                 const currentFixedPressurePa = pressureBar! * 1e5;

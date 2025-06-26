@@ -26,16 +26,11 @@ import { CanvasRenderer } from 'echarts/renderers';
 import {
     calculatePsat_Pa as libCalculatePsat_Pa,
     calculateUnifacGamma as libCalculateUnifacGamma,
-    calculateBubbleTemperature as calculateBubbleTemperatureUnifac, // Renamed for clarity
-    calculateBubblePressure as calculateBubblePressureUnifac,   // Renamed for clarity
+    calculateBubbleTemperatureUnifac,
+    calculateBubblePressureUnifac,
     fetchUnifacInteractionParams,
-    // type AntoineParams, // Moved
-    // type UnifacGroupComposition, // Moved or local to unifac.ts
-    // type CompoundData, // Moved
-    type UnifacParameters, // Stays in unifac.ts
-    // type BubbleDewResult, // Moved
-    // type PrPureComponentParams // Moved
-} from '@/lib/vle-calculations-unifac';
+    type UnifacParameters,
+} from '@/lib/vle-calculations';
 
 // Import NRTL calculation logic and types
 import {
@@ -43,10 +38,8 @@ import {
     calculateNrtlGamma,
     calculateBubbleTemperatureNrtl,
     calculateBubblePressureNrtl,
-    // calculateDewTemperatureNrtl, // Keep if you implement
-    // calculateDewPressureNrtl,     // Keep if you implement
     type NrtlInteractionParams
-} from '@/lib/vle-calculations-nrtl';
+} from '@/lib/vle-calculations';
 
 // Import PR calculation logic and types
 import {
@@ -54,7 +47,7 @@ import {
     calculateBubbleTemperaturePr,
     calculateBubblePressurePr,
     type PrInteractionParams
-} from '@/lib/vle-calculations-pr';
+} from '@/lib/vle-calculations';
 
 // Import SRK calculation logic and types // ADDED
 import {
@@ -62,7 +55,7 @@ import {
     calculateBubbleTemperatureSrk,
     calculateBubblePressureSrk,
     type SrkInteractionParams
-} from '@/lib/vle-calculations-srk';
+} from '@/lib/vle-calculations';
 
 // Import UNIQUAC calculation logic and types // ADDED
 import {
@@ -70,7 +63,7 @@ import {
     calculateBubbleTemperatureUniquac,
     calculateBubblePressureUniquac,
     type UniquacInteractionParams
-} from '@/lib/vle-calculations-uniquac';
+} from '@/lib/vle-calculations';
 
 // Import Wilson calculation logic and types // ADDED
 import {
@@ -78,7 +71,7 @@ import {
     calculateBubbleTemperatureWilson,
     calculateBubblePressureWilson,
     type WilsonInteractionParams
-} from '@/lib/vle-calculations-wilson';
+} from '@/lib/vle-calculations';
 
 // Import Shared VLE Types
 import type {
@@ -672,17 +665,17 @@ export default function VleCalculatorPage() {
                     : targetPressurePa) || 101325;
 
                 if (fluidPackage === 'unifac') {
-                    bubbleP_resultPoint = calculateBubblePressureUnifac(components, x1_feed, targetTemperatureK, activityParameters as UnifacParameters, initialPressureGuessForBubbleP);
+                    bubbleP_resultPoint = calculateBubblePressureUnifac(components, x1_feed, targetTemperatureK, activityParameters as UnifacParameters);
                 } else if (fluidPackage === 'nrtl') { // nrtl
-                    bubbleP_resultPoint = calculateBubblePressureNrtl(components, x1_feed, targetTemperatureK, activityParameters as NrtlInteractionParams, initialPressureGuessForBubbleP);
+                    bubbleP_resultPoint = calculateBubblePressureNrtl(components, x1_feed, targetTemperatureK, activityParameters as NrtlInteractionParams);
                 } else if (fluidPackage === 'pr') { 
                      bubbleP_resultPoint = calculateBubblePressurePr(components, x1_feed, targetTemperatureK, activityParameters as PrInteractionParams, initialPressureGuessForBubbleP);
                 } else if (fluidPackage === 'srk') { 
                     bubbleP_resultPoint = calculateBubblePressureSrk(components, x1_feed, targetTemperatureK, activityParameters as SrkInteractionParams, initialPressureGuessForBubbleP);
                 } else if (fluidPackage === 'uniquac') { 
-                    bubbleP_resultPoint = calculateBubblePressureUniquac(components, x1_feed, targetTemperatureK, activityParameters as UniquacInteractionParams, initialPressureGuessForBubbleP);
+                    bubbleP_resultPoint = calculateBubblePressureUniquac(components, x1_feed, targetTemperatureK, activityParameters as UniquacInteractionParams);
                 } else if (fluidPackage === 'wilson') { // ADDED WILSON CASE
-                    bubbleP_resultPoint = calculateBubblePressureWilson(components, x1_feed, targetTemperatureK, activityParameters as WilsonInteractionParams, initialPressureGuessForBubbleP);
+                    bubbleP_resultPoint = calculateBubblePressureWilson(components, x1_feed, targetTemperatureK, activityParameters as WilsonInteractionParams);
                 }
                 
                 if (bubbleP_resultPoint && !bubbleP_resultPoint.error) {
@@ -849,17 +842,17 @@ export default function VleCalculatorPage() {
                         
                         let bubbleT_result: BubbleDewResult | null = null;
                         if (fluidPackage === 'unifac') {
-                            bubbleT_result = calculateBubbleTemperatureUnifac(components, x1_guess, P_system_Pa, activityParameters as UnifacParameters, initialTempGuess, 30, 1e-4);
+                            bubbleT_result = calculateBubbleTemperatureUnifac(components, x1_guess, P_system_Pa, activityParameters as UnifacParameters, initialTempGuess);
                         } else if (fluidPackage === 'nrtl') {
-                            bubbleT_result = calculateBubbleTemperatureNrtl(components, x1_guess, P_system_Pa, activityParameters as NrtlInteractionParams, initialTempGuess, 30, 1e-4);
+                            bubbleT_result = calculateBubbleTemperatureNrtl(components, x1_guess, P_system_Pa, activityParameters as NrtlInteractionParams, initialTempGuess);
                         } else if (fluidPackage === 'pr') { 
-                            bubbleT_result = calculateBubbleTemperaturePr(components, x1_guess, P_system_Pa, activityParameters as PrInteractionParams, initialTempGuess, 30, 1e-4);
+                            bubbleT_result = calculateBubbleTemperaturePr(components, x1_guess, P_system_Pa, activityParameters as PrInteractionParams, initialTempGuess);
                         } else if (fluidPackage === 'srk') { // CORRECTED
-                            bubbleT_result = calculateBubbleTemperatureSrk(components, x1_guess, P_system_Pa, activityParameters as SrkInteractionParams, initialTempGuess, 30, 1e-4);
+                            bubbleT_result = calculateBubbleTemperatureSrk(components, x1_guess, P_system_Pa, activityParameters as SrkInteractionParams, initialTempGuess);
                         } else if (fluidPackage === 'uniquac') { // CORRECTED
-                            bubbleT_result = calculateBubbleTemperatureUniquac(components, x1_guess, P_system_Pa, activityParameters as UniquacInteractionParams, initialTempGuess, 30, 1e-4);
+                            bubbleT_result = calculateBubbleTemperatureUniquac(components, x1_guess, P_system_Pa, activityParameters as UniquacInteractionParams, initialTempGuess);
                         } else if (fluidPackage === 'wilson') { // ADDED WILSON CASE
-                            bubbleT_result = calculateBubbleTemperatureWilson(components, x1_guess, P_system_Pa, activityParameters as WilsonInteractionParams, initialTempGuess, 30, 1e-4);
+                            bubbleT_result = calculateBubbleTemperatureWilson(components, x1_guess, P_system_Pa, activityParameters as WilsonInteractionParams, initialTempGuess);
                         }
 
                         if (bubbleT_result && bubbleT_result.error === undefined && typeof bubbleT_result.comp1_equilibrium === 'number' && !isNaN(bubbleT_result.comp1_equilibrium)) {
@@ -875,17 +868,17 @@ export default function VleCalculatorPage() {
                         const initialTempGuessFinal = x_az_found * T_bp1_est_final + (1 - x_az_found) * T_bp2_est_final;
                         let final_bubble_res: BubbleDewResult | null = null;
                         if (fluidPackage === 'unifac') {
-                            final_bubble_res = calculateBubbleTemperatureUnifac(components, x_az_found, P_system_Pa, activityParameters as UnifacParameters, initialTempGuessFinal, 30, 1e-4);
+                            final_bubble_res = calculateBubbleTemperatureUnifac(components, x_az_found, P_system_Pa, activityParameters as UnifacParameters, initialTempGuessFinal);
                         } else if (fluidPackage === 'nrtl') {
-                            final_bubble_res = calculateBubbleTemperatureNrtl(components, x_az_found, P_system_Pa, activityParameters as NrtlInteractionParams, initialTempGuessFinal, 30, 1e-4);
+                            final_bubble_res = calculateBubbleTemperatureNrtl(components, x_az_found, P_system_Pa, activityParameters as NrtlInteractionParams, initialTempGuessFinal);
                         } else if (fluidPackage === 'pr') { 
-                            final_bubble_res = calculateBubbleTemperaturePr(components, x_az_found, P_system_Pa, activityParameters as PrInteractionParams, initialTempGuessFinal, 30, 1e-4);
+                            final_bubble_res = calculateBubbleTemperaturePr(components, x_az_found, P_system_Pa, activityParameters as PrInteractionParams, initialTempGuessFinal);
                         } else if (fluidPackage === 'srk') { // CORRECTED
-                            final_bubble_res = calculateBubbleTemperatureSrk(components, x_az_found, P_system_Pa, activityParameters as SrkInteractionParams, initialTempGuessFinal, 30, 1e-4);
+                            final_bubble_res = calculateBubbleTemperatureSrk(components, x_az_found, P_system_Pa, activityParameters as SrkInteractionParams, initialTempGuessFinal);
                         } else if (fluidPackage === 'uniquac') { // CORRECTED
-                            final_bubble_res = calculateBubbleTemperatureUniquac(components, x_az_found, P_system_Pa, activityParameters as UniquacInteractionParams, initialTempGuessFinal, 30, 1e-4);
+                            final_bubble_res = calculateBubbleTemperatureUniquac(components, x_az_found, P_system_Pa, activityParameters as UniquacInteractionParams, initialTempGuessFinal);
                         } else if (fluidPackage === 'wilson') { // ADDED WILSON CASE
-                            final_bubble_res = calculateBubbleTemperatureWilson(components, x_az_found, P_system_Pa, activityParameters as WilsonInteractionParams, initialTempGuessFinal, 30, 1e-4);
+                            final_bubble_res = calculateBubbleTemperatureWilson(components, x_az_found, P_system_Pa, activityParameters as WilsonInteractionParams, initialTempGuessFinal);
                         }
                         if (final_bubble_res && final_bubble_res.error === undefined && final_bubble_res.T_K) {
                             dependent_val_found = final_bubble_res.T_K;
@@ -904,17 +897,17 @@ export default function VleCalculatorPage() {
 
                         let bubbleP_result: BubbleDewResult | null = null;
                         if (fluidPackage === 'unifac') {
-                            bubbleP_result = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters as UnifacParameters, initialPressureGuess || 101325, 10, 1e-5);
+                            bubbleP_result = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters as UnifacParameters);
                         } else if (fluidPackage === 'nrtl') {
-                            bubbleP_result = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters as NrtlInteractionParams, initialPressureGuess || 101325, 10, 1e-5);
+                            bubbleP_result = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters as NrtlInteractionParams);
                         } else if (fluidPackage === 'pr') { 
-                            bubbleP_result = calculateBubblePressurePr(components, x1_guess, T_system_K, activityParameters as PrInteractionParams, initialPressureGuess || 101325, 10, 1e-5);
+                            bubbleP_result = calculateBubblePressurePr(components, x1_guess, T_system_K, activityParameters as PrInteractionParams, initialPressureGuess || 101325);
                         } else if (fluidPackage === 'srk') { // CORRECTED
-                            bubbleP_result = calculateBubblePressureSrk(components, x1_guess, T_system_K, activityParameters as SrkInteractionParams, initialPressureGuess || 101325, 10, 1e-5);
+                            bubbleP_result = calculateBubblePressureSrk(components, x1_guess, T_system_K, activityParameters as SrkInteractionParams, initialPressureGuess || 101325);
                         } else if (fluidPackage === 'uniquac') { 
-                            bubbleP_result = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters as UniquacInteractionParams, initialPressureGuess || 101325, 10, 1e-5);
+                            bubbleP_result = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters as UniquacInteractionParams);
                         } else if (fluidPackage === 'wilson') { // ADDED WILSON CASE
-                            bubbleP_result = calculateBubblePressureWilson(components, x1_guess, T_system_K, activityParameters as WilsonInteractionParams, initialPressureGuess || 101325, 10, 1e-5);
+                            bubbleP_result = calculateBubblePressureWilson(components, x1_guess, T_system_K, activityParameters as WilsonInteractionParams);
                         }
                         
                         if (bubbleP_result && bubbleP_result.error === undefined && typeof bubbleP_result.comp1_equilibrium === 'number' && !isNaN(bubbleP_result.comp1_equilibrium)) {
@@ -932,17 +925,17 @@ export default function VleCalculatorPage() {
                             const initialPressureGuessFinal = x_az_found * P_sat1_est_final + (1 - x_az_found) * P_sat2_est_final;
                             let final_bubble_res: BubbleDewResult | null = null;
                             if (fluidPackage === 'unifac') {
-                                final_bubble_res = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters as UnifacParameters, initialPressureGuessFinal || 101325, 10, 1e-5);
+                                final_bubble_res = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters as UnifacParameters);
                             } else if (fluidPackage === 'nrtl') {
-                                final_bubble_res = calculateBubblePressureNrtl(components, x_az_found, T_system_K, activityParameters as NrtlInteractionParams, initialPressureGuessFinal || 101325, 10, 1e-5);
+                                final_bubble_res = calculateBubblePressureNrtl(components, x_az_found, T_system_K, activityParameters as NrtlInteractionParams);
                             } else if (fluidPackage === 'pr') { 
-                                final_bubble_res = calculateBubblePressurePr(components, x_az_found, T_system_K, activityParameters as PrInteractionParams, initialPressureGuessFinal || 101325, 10, 1e-5);
+                                final_bubble_res = calculateBubblePressurePr(components, x_az_found, T_system_K, activityParameters as PrInteractionParams, initialPressureGuessFinal || 101325);
                             } else if (fluidPackage === 'srk') { // CORRECTED
-                                final_bubble_res = calculateBubblePressureSrk(components, x_az_found, T_system_K, activityParameters as SrkInteractionParams, initialPressureGuessFinal || 101325, 10, 1e-5);
+                                final_bubble_res = calculateBubblePressureSrk(components, x_az_found, T_system_K, activityParameters as SrkInteractionParams, initialPressureGuessFinal || 101325);
                             } else if (fluidPackage === 'uniquac') { 
-                                final_bubble_res = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters as UniquacInteractionParams, initialPressureGuessFinal || 101325, 10, 1e-5);
+                                final_bubble_res = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters as UniquacInteractionParams);
                             } else if (fluidPackage === 'wilson') { // ADDED WILSON CASE
-                                final_bubble_res = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters as WilsonInteractionParams, initialPressureGuessFinal || 101325, 10, 1e-5);
+                                final_bubble_res = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters as WilsonInteractionParams);
                             }
                             if (final_bubble_res && final_bubble_res.error === undefined && final_bubble_res.P_Pa) {
                                 dependent_val_found = final_bubble_res.P_Pa / 1000;

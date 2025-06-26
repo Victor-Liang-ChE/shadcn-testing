@@ -34,12 +34,21 @@ import {
     type AzeotropeResult
 } from '@/lib/residue-curves-ode';
 
-import { fetchWilsonInteractionParams, R_gas_const_J_molK } from '@/lib/vle-calculations-wilson'; 
-import { fetchUnifacInteractionParams, UnifacParameters, calculatePsat_Pa } from '@/lib/vle-calculations-unifac'; 
-import { fetchNrtlParameters, type NrtlInteractionParams } from '@/lib/vle-calculations-nrtl';
-import { fetchPrInteractionParams, type PrInteractionParams } from '@/lib/vle-calculations-pr';
-import { fetchSrkInteractionParams, type SrkInteractionParams } from '@/lib/vle-calculations-srk';
-import { fetchUniquacInteractionParams, type UniquacInteractionParams } from '@/lib/vle-calculations-uniquac';
+import {
+  R_gas_const_J_molK,
+  calculatePsat_Pa,
+  fetchWilsonInteractionParams,
+  fetchUnifacInteractionParams,
+  fetchNrtlParameters,
+  fetchPrInteractionParams,
+  fetchSrkInteractionParams,
+  fetchUniquacInteractionParams,
+  type UnifacParameters,
+  type NrtlInteractionParams,
+  type PrInteractionParams,
+  type SrkInteractionParams,
+  type UniquacInteractionParams,
+} from '@/lib/vle-calculations';
 
 import { fetchAndConvertThermData, FetchedCompoundThermData } from '@/lib/antoine-utils'; 
 import type { Data, Layout } from 'plotly.js'; 

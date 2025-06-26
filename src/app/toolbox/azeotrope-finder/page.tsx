@@ -34,26 +34,42 @@ import { TooltipProvider } from "@/components/ui/tooltip"; // Assuming you might
 import { ArrowLeftRight, Terminal } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added Tabs
 
-// VLE Calculation Libraries (ensure all are imported as in test/page.tsx)
+// VLE Calculation Library – consolidated
 import {
     calculatePsat_Pa as libCalculatePsat_Pa,
-    calculateUnifacGamma, calculateBubbleTemperature as calculateBubbleTemperatureUnifac, calculateBubblePressure as calculateBubblePressureUnifac, fetchUnifacInteractionParams, type UnifacParameters,
-} from '@/lib/vle-calculations-unifac';
-import {
-    fetchNrtlParameters, calculateNrtlGamma, calculateBubbleTemperatureNrtl, calculateBubblePressureNrtl, type NrtlInteractionParams
-} from '@/lib/vle-calculations-nrtl';
-import {
-    fetchPrInteractionParams, calculateBubbleTemperaturePr, calculateBubblePressurePr, type PrInteractionParams
-} from '@/lib/vle-calculations-pr';
-import {
-    fetchSrkInteractionParams, calculateBubbleTemperatureSrk, calculateBubblePressureSrk, type SrkInteractionParams
-} from '@/lib/vle-calculations-srk';
-import {
-    fetchUniquacInteractionParams, calculateBubbleTemperatureUniquac, calculateBubblePressureUniquac, type UniquacInteractionParams as LibUniquacInteractionParams
-} from '@/lib/vle-calculations-uniquac';
-import {
-    fetchWilsonInteractionParams, calculateBubbleTemperatureWilson, calculateBubblePressureWilson, type WilsonInteractionParams as LibWilsonInteractionParams
-} from '@/lib/vle-calculations-wilson';
+    // UNIFAC
+    calculateUnifacGamma,
+    calculateBubbleTemperatureUnifac,
+    calculateBubblePressureUnifac,
+    fetchUnifacInteractionParams,
+    type UnifacParameters,
+    // NRTL
+    fetchNrtlParameters,
+    calculateNrtlGamma,
+    calculateBubbleTemperatureNrtl,
+    calculateBubblePressureNrtl,
+    type NrtlInteractionParams,
+    // Peng–Robinson
+    fetchPrInteractionParams,
+    calculateBubbleTemperaturePr,
+    calculateBubblePressurePr,
+    type PrInteractionParams,
+    // SRK
+    fetchSrkInteractionParams,
+    calculateBubbleTemperatureSrk,
+    calculateBubblePressureSrk,
+    type SrkInteractionParams,
+    // UNIQUAC
+    fetchUniquacInteractionParams,
+    calculateBubbleTemperatureUniquac,
+    calculateBubblePressureUniquac,
+    type UniquacInteractionParams as LibUniquacInteractionParams,
+    // Wilson
+    fetchWilsonInteractionParams,
+    calculateBubbleTemperatureWilson,
+    calculateBubblePressureWilson,
+    type WilsonInteractionParams as LibWilsonInteractionParams
+} from '@/lib/vle-calculations';
 
 // Shared VLE Types
 import type {
@@ -503,13 +519,13 @@ export default function AzeotropeFinderPage() {
                     const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
                     const initialPressureGuess = (P_sat1_est && P_sat2_est) ? (x1_guess * P_sat1_est + (1 - x1_guess) * P_sat2_est) : 101325;
                     
-                    if (fluidPackage === 'unifac') bubbleResult = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'nrtl') bubbleResult = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
+                    if (fluidPackage === 'unifac') bubbleResult = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters);
+                    else if (fluidPackage === 'nrtl') bubbleResult = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters);
                     // ... other fluid packages for bubbleP
                     else if (fluidPackage === 'pr') bubbleResult = calculateBubblePressurePr(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
                     else if (fluidPackage === 'srk') bubbleResult = calculateBubblePressureSrk(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'uniquac') bubbleResult = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'wilson') bubbleResult = calculateBubblePressureWilson(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
+                    else if (fluidPackage === 'uniquac') bubbleResult = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters);
+                    else if (fluidPackage === 'wilson') bubbleResult = calculateBubblePressureWilson(components, x1_guess, T_system_K, activityParameters);
                 }
 
                 if (bubbleResult && bubbleResult.error === undefined && typeof bubbleResult.comp1_equilibrium === 'number' && !isNaN(bubbleResult.comp1_equilibrium)) {
@@ -545,12 +561,12 @@ export default function AzeotropeFinderPage() {
                     const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
                     const initialPressureGuess = (P_sat1_est && P_sat2_est) ? (x_az_found * P_sat1_est + (1 - x_az_found) * P_sat2_est) : 101325;
 
-                    if (fluidPackage === 'unifac') finalBubbleResult = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'nrtl') finalBubbleResult = calculateBubblePressureNrtl(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
+                    if (fluidPackage === 'unifac') finalBubbleResult = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters);
+                    else if (fluidPackage === 'nrtl') finalBubbleResult = calculateBubblePressureNrtl(components, x_az_found, T_system_K, activityParameters);
                     else if (fluidPackage === 'pr') finalBubbleResult = calculateBubblePressurePr(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
                     else if (fluidPackage === 'srk') finalBubbleResult = calculateBubblePressureSrk(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'uniquac') finalBubbleResult = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'wilson') finalBubbleResult = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
+                    else if (fluidPackage === 'uniquac') finalBubbleResult = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters);
+                    else if (fluidPackage === 'wilson') finalBubbleResult = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters);
 
                     if (finalBubbleResult && finalBubbleResult.P_Pa) dependent_val_found = finalBubbleResult.P_Pa / 100000; // Convert to bar
                 }
