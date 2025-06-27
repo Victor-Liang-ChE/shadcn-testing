@@ -1462,41 +1462,24 @@ export function calculateSaturationTemperaturePurePr(
     return lnPhi(Z_L) - lnPhi(Z_V);
   };
 
-  // Generate coarse grid to find sign change
+  // Coarse scan then Brent root within the first sign-change bracket
   const Tmin = 0.3 * Tc_K;
-  const Tmax = 0.99 * Tc_K;
-  const Nscan = 80;
-  let T_low = Tmin;
-  let f_low = obj(T_low);
+  const Tmax = 0.999 * Tc_K;
+  const Nscan = 200;
+  let Tprev = Tmin;
+  let fprev = obj(Tprev);
   for (let i = 1; i <= Nscan; i++) {
-    const T_high = Tmin + (i / Nscan) * (Tmax - Tmin);
-    const f_high = obj(T_high);
-    if (!isFinite(f_low)) {
-      T_low = T_high; f_low = f_high; continue;
+    const Tcurr = Tmin + (i / Nscan) * (Tmax - Tmin);
+    const fcurr = obj(Tcurr);
+    if (!isFinite(fprev)) { Tprev = Tcurr; fprev = fcurr; continue; }
+    if (!isFinite(fcurr)) { continue; }
+    if (fprev * fcurr < 0) {
+      const root = _brentRoot(obj, Tprev, Tcurr, Number.EPSILON * Tc_K, maxIter);
+      if (root !== null) return root;
+      break; // if Brent failed continue scan? break to return null
     }
-    if (!isFinite(f_high)) { continue; }
-    if (f_low * f_high < 0) {
-      // Bisection within bracket
-      let lo = T_low, hi = T_high, flo = f_low, fhi = f_high;
-      for (let iter = 0; iter < maxIter; iter++) {
-        const mid = 0.5 * (lo + hi);
-        const fmid = obj(mid);
-        if (!isFinite(fmid)) { // shrink interval slightly
-          lo = lo + 0.1 * (hi - lo);
-          hi = hi - 0.1 * (hi - lo);
-          continue;
-        }
-        if (Math.abs(fmid) < tol) return mid;
-        if (flo * fmid < 0) {
-          hi = mid; fhi = fmid;
-        } else {
-          lo = mid; flo = fmid;
-        }
-      }
-      return 0.5 * (lo + hi);
-    }
-    T_low = T_high;
-    f_low = f_high;
+    Tprev = Tcurr;
+    fprev = fcurr;
   }
   return null;
 }
@@ -1564,4 +1547,85 @@ export function calculateSaturationTemperaturePureSrk(
     }
   }
   return null;
+}
+
+// --------------------------------------------------------------
+// Generic Brent's method root-finder for 1D scalar functions
+// --------------------------------------------------------------
+function _brentRoot(
+  f: (x: number) => number,
+  a: number,
+  b: number,
+  tolAbs: number,
+  maxIter = 100
+): number | null {
+  let fa = f(a);
+  let fb = f(b);
+  if (!isFinite(fa) || !isFinite(fb)) return null;
+  if (fa * fb > 0) return null; // not bracketed
+
+  if (Math.abs(fa) < Math.abs(fb)) {
+    [a, b] = [b, a];
+    [fa, fb] = [fb, fa];
+  }
+
+  let c = a, fc = fa, d = b - a, e = d;
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    if (Math.abs(fc) < Math.abs(fb)) {
+      a = b; b = c; c = a;
+      fa = fb; fb = fc; fc = fa;
+    }
+
+    const tol = 2 * Number.EPSILON * Math.abs(b) + tolAbs;
+    const m = 0.5 * (c - b);
+    if (Math.abs(m) <= tol || fb === 0) return b;
+
+    if (Math.abs(e) >= tol && Math.abs(fa) > Math.abs(fb)) {
+      // Attempt inverse quadratic / secant step
+      let s = fb / fa;
+      let p: number, q: number;
+      if (a === c) {
+        // secant
+        p = 2 * m * s;
+        q = 1 - s;
+      } else {
+        // inverse quadratic
+        const r = fc / fa;
+        const t = fb / fc;
+        p = s * (2 * m * r * (r - t) - (b - a) * (t - 1));
+        q = (r - 1) * (t - 1) * (s - 1);
+      }
+      if (p > 0) q = -q;
+      p = Math.abs(p);
+
+      const min1 = 3 * m * q - Math.abs(tol * q);
+      const min2 = Math.abs(e * q);
+      if (2 * p < (min1 < min2 ? min1 : min2)) {
+        e = d;
+        d = p / q;
+      } else {
+        d = m;
+        e = d;
+      }
+    } else {
+      // Bisection
+      d = m;
+      e = d;
+    }
+
+    a = b;
+    fa = fb;
+    if (Math.abs(d) > tol) {
+      b += d;
+    } else {
+      b += m > 0 ? tol : -tol;
+    }
+    fb = f(b);
+    if (!isFinite(fb)) return null;
+    if ((fb > 0 && fc > 0) || (fb < 0 && fc < 0)) {
+      c = a; fc = fa; e = d = b - a;
+    }
+  }
+  return null; // did not converge
 }
