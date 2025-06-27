@@ -1476,6 +1476,12 @@ export default function TernaryResidueMapPage() {
                                                 onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
                                                 placeholder={`e.g. Acetone`}
                                                 autoComplete="off"
+                                                onKeyDown={e => {
+                                                    if (e.key === 'Enter') {
+                                                        e.preventDefault();
+                                                        handleGenerateClick();
+                                                    }
+                                                }}
                                                 onFocus={() => {
                                                     setActiveSuggestionIndex(index);
                                                     if (componentsInput[index].name.trim()) {
@@ -1531,10 +1537,10 @@ export default function TernaryResidueMapPage() {
                                     <span className="ml-2 text-muted-foreground">bar</span> {/* Unit display */}
                                 </div>
                             </div>
-                            {/* Activity model on same line */}
+                            {/* Fluid package on same line */}
                             <div className="flex items-center space-x-2">
                                 <Label htmlFor="fluidPackage" className="whitespace-nowrap">
-                                    Activity Model:
+                                    Fluid Package:
                                 </Label>
                                 <Select
                                     value={fluidPackage}
