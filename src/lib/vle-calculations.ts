@@ -450,27 +450,41 @@ export function calculateDewPressureUnifac(
 export interface PrInteractionParams { k_ij: number; k_ji: number }
 
 export function solveCubicEOS(a: number, b: number, c: number, d: number): number[] | null {
-  // Normalized cubic Z^3 + aZ^2 + bZ + c = 0  -> using Cardano's method
-  const p = b - a * a / 3;
-  const q = (2 * a * a * a) / 27 - (a * b) / 3 + c;
-  const D = (q * q) / 4 + (p * p * p) / 27;
+  // General cubic a·Z³ + b·Z² + c·Z + d = 0  (Cardano) – returns only positive real roots
+  if (Math.abs(a) < 1e-12) return null;
+
+  // Normalize to Z³ + p Z² + q Z + r = 0
+  const p = b / a;
+  const q = c / a;
+  const r = d / a;
+
+  // Depressed cubic t³ + A t + B = 0 with Z = t – p/3
+  const A = q - (p * p) / 3;
+  const B = (2 * p * p * p) / 27 - (p * q) / 3 + r;
+  let D = (B * B) / 4 + (A * A * A) / 27; // Discriminant
+
+  if (Math.abs(D) < 1e-20) D = 0; // treat ~0 as zero
+
+  let roots: number[] = [];
   if (D > 0) {
-    const u = Math.cbrt(-q / 2 + Math.sqrt(D));
-    const v = Math.cbrt(-q / 2 - Math.sqrt(D));
-    return [u + v - a / 3].filter(z => z > 0);
+    // One real root
+    const S = Math.cbrt(-B / 2 + Math.sqrt(D));
+    const T = Math.cbrt(-B / 2 - Math.sqrt(D));
+    roots = [S + T - p / 3];
+  } else {
+    // Three real roots
+    const rho = 2 * Math.sqrt(-A / 3);
+    const theta = Math.acos(Math.max(-1, Math.min(1, (-B / 2) / Math.sqrt(-(A * A * A) / 27)))) / 3;
+    roots = [
+      rho * Math.cos(theta) - p / 3,
+      rho * Math.cos(theta + (2 * Math.PI) / 3) - p / 3,
+      rho * Math.cos(theta + (4 * Math.PI) / 3) - p / 3,
+    ];
   }
-  if (Math.abs(D) < 1e-12) {
-    const u = Math.cbrt(-q / 2);
-    return [2 * u - a / 3, -u - a / 3].filter((z, i, arr) => i === 0 || Math.abs(z - arr[0]) > 1e-8).filter(z => z > 0);
-  }
-  const r = Math.sqrt(-p * p * p / 27);
-  const phi = Math.acos(-q / (2 * r));
-  const m = 2 * Math.cbrt(r);
-  return [
-    m * Math.cos(phi / 3) - a / 3,
-    m * Math.cos((phi + 2 * Math.PI) / 3) - a / 3,
-    m * Math.cos((phi + 4 * Math.PI) / 3) - a / 3,
-  ].filter(z => z > 0);
+
+  // Keep positive roots (Z > 0)
+  const realPos = roots.filter(z => z > 1e-9).sort((x, y) => x - y);
+  return realPos.length ? realPos : null;
 }
 
 export function calculatePrFugacityCoefficients(
@@ -1416,20 +1430,15 @@ export function calculateSaturationTemperaturePurePr(
   component: CompoundData,
   P_Pa: number,
   tol: number = 1e-5,
-  maxIter: number = 60
+  maxIter: number = 100
 ): number | null {
-  // Ensure the pure-component PR parameters are available
   if (!component?.prParams) return null;
   const { Tc_K, Pc_Pa, omega } = component.prParams;
-  if (P_Pa >= Pc_Pa) return null; // No phase change above critical pressure
+  if (P_Pa >= Pc_Pa) return null;
 
-  // Initial bracketing – empirical but robust for most fluids
-  let T_low = 0.4 * Tc_K;
-  let T_high = 0.99 * Tc_K;
+  const R = R_gas_const_J_molK;
 
-  /** Peng–Robinson ln(phi) difference between liquid and vapour roots */
-  const objective = (T: number): number => {
-    const R = R_gas_const_J_molK;
+  const obj = (T: number): number => {
     const Tr = T / Tc_K;
     const kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
     const alpha = Math.pow(1 + kappa * (1 - Math.sqrt(Tr)), 2);
@@ -1439,9 +1448,8 @@ export function calculateSaturationTemperaturePurePr(
     const A = a * P_Pa / Math.pow(R * T, 2);
     const B = b * P_Pa / (R * T);
 
-    // Roots of the PR cubic (same helper as mixture case)
     const roots = solveCubicEOS(1, -(1 - B), A - 3 * B * B - 2 * B, -(A * B - B * B - B * B * B));
-    if (!roots || roots.length < 2) return Number.NaN;
+    if (!roots || roots.length < 2) return NaN;
     const Z_L = Math.min(...roots);
     const Z_V = Math.max(...roots);
 
@@ -1454,32 +1462,41 @@ export function calculateSaturationTemperaturePurePr(
     return lnPhi(Z_L) - lnPhi(Z_V);
   };
 
-  let f_low = objective(T_low);
-  let f_high = objective(T_high);
-
-  // Attempt to expand the bracket if necessary
-  for (let expand = 0; expand < 10 && f_low * f_high > 0; expand++) {
-    T_low *= 0.9;   // move down
-    T_high = 0.5 * (T_high + Tc_K); // move up towards Tc
-    f_low = objective(T_low);
-    f_high = objective(T_high);
-  }
-  if (f_low * f_high > 0 || !isFinite(f_low) || !isFinite(f_high)) return null;
-
-  // Bisection loop
-  for (let iter = 0; iter < maxIter; iter++) {
-    const T_mid = 0.5 * (T_low + T_high);
-    const f_mid = objective(T_mid);
-    if (!isFinite(f_mid)) return null;
-    if (Math.abs(f_mid) < tol) return T_mid;
-
-    if (f_low * f_mid < 0) {
-      T_high = T_mid;
-      f_high = f_mid;
-    } else {
-      T_low = T_mid;
-      f_low = f_mid;
+  // Generate coarse grid to find sign change
+  const Tmin = 0.3 * Tc_K;
+  const Tmax = 0.99 * Tc_K;
+  const Nscan = 80;
+  let T_low = Tmin;
+  let f_low = obj(T_low);
+  for (let i = 1; i <= Nscan; i++) {
+    const T_high = Tmin + (i / Nscan) * (Tmax - Tmin);
+    const f_high = obj(T_high);
+    if (!isFinite(f_low)) {
+      T_low = T_high; f_low = f_high; continue;
     }
+    if (!isFinite(f_high)) { continue; }
+    if (f_low * f_high < 0) {
+      // Bisection within bracket
+      let lo = T_low, hi = T_high, flo = f_low, fhi = f_high;
+      for (let iter = 0; iter < maxIter; iter++) {
+        const mid = 0.5 * (lo + hi);
+        const fmid = obj(mid);
+        if (!isFinite(fmid)) { // shrink interval slightly
+          lo = lo + 0.1 * (hi - lo);
+          hi = hi - 0.1 * (hi - lo);
+          continue;
+        }
+        if (Math.abs(fmid) < tol) return mid;
+        if (flo * fmid < 0) {
+          hi = mid; fhi = fmid;
+        } else {
+          lo = mid; flo = fmid;
+        }
+      }
+      return 0.5 * (lo + hi);
+    }
+    T_low = T_high;
+    f_low = f_high;
   }
   return null;
 }

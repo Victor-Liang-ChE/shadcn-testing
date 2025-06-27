@@ -98,6 +98,7 @@ interface ProcessedComponentData {
     thermData: FetchedCompoundThermData; // This now contains criticalProperties
     originalIndex: number; // 0, 1, or 2 based on input order
     bp_at_Psys_K?: number | null; // Boiling point at system pressure
+    isSCF?: boolean;
 }
 
 const initialComponentState = (): ComponentInputState => ({
@@ -175,6 +176,7 @@ export default function TernaryResidueMapPage() {
     const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>('dark'); // Default to dark
     const [plotContainerRef, setPlotContainerRef] = React.useState<HTMLDivElement | null>(null); // State to hold the div element
     const [directAzeotropes, setDirectAzeotropes] = useState<AzeotropeDisplayInfo[]>([]); // Use common display info
+    const [scfMessage, setScfMessage] = useState<string | null>(null);
 
     // Trigger re-generation automatically when the fluid-package selection changes
     const didMountFluidPkg = useRef(false);
@@ -548,33 +550,39 @@ export default function TernaryResidueMapPage() {
 
             const processedComponents: ProcessedComponentData[] = componentsInput.map((input, index) => {
                 const thermData = fetchedThermDataArray[index];
+                if (thermData.criticalProperties) {
+                    const { Tc_K, Pc_Pa, omega } = thermData.criticalProperties;
+                    console.log(`EOS BP attempt → ${input.name}: Tc=${Tc_K.toFixed(2)} K, Pc=${(Pc_Pa/1e5).toFixed(2)} bar, ω=${omega.toFixed(3)}`);
+                } else {
+                    console.log(`EOS BP attempt → ${input.name}: critical properties NOT found`);
+                }
                 let bp_at_Psys_K_val: number | null = null;
 
-                // Prefer EOS-based single-component saturation when model uses EOS
-                if (fluidPackage === 'pr' && thermData.criticalProperties) {
+                // Attempt EOS-based boiling point first if critical properties are available
+                if (thermData.criticalProperties) {
                     const compObj: CompoundData = {
                         name: input.name,
                         antoine: thermData.antoine,
                         prParams: thermData.criticalProperties as PrPureComponentParams,
-                        srkParams: null,
-                        unifacGroups: null,
-                        uniquacParams: null,
-                        wilsonParams: null,
-                    } as unknown as CompoundData;
-                    bp_at_Psys_K_val = calculateSaturationTemperaturePurePr(compObj, P_system_Pa);
-                    console.log(`EOS-PR BP debug → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
-                } else if (fluidPackage === 'srk' && thermData.criticalProperties) {
-                    const compObj: CompoundData = {
-                        name: input.name,
-                        antoine: thermData.antoine,
-                        prParams: null,
                         srkParams: thermData.criticalProperties as SrkPureComponentParams,
                         unifacGroups: null,
                         uniquacParams: null,
                         wilsonParams: null,
                     } as unknown as CompoundData;
-                    bp_at_Psys_K_val = calculateSaturationTemperaturePureSrk(compObj, P_system_Pa);
-                    console.log(`EOS-SRK BP debug → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
+                    bp_at_Psys_K_val = calculateSaturationTemperaturePurePr(compObj, P_system_Pa);
+                    if (bp_at_Psys_K_val !== null && !isNaN(bp_at_Psys_K_val)) {
+                        console.log(`EOS-PR BP → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val.toFixed(2)} K`);
+                    } else {
+                        console.warn(`EOS-PR BP failed for ${input.name}`);
+                    }
+
+                    const { Tc_K, Pc_Pa } = thermData.criticalProperties;
+                    // If operating above BOTH Pc and Tc – treat as supercritical fluid
+                    const isSCF = (P_system_Pa > Pc_Pa) && (bp_at_Psys_K_val !== null ? bp_at_Psys_K_val > Tc_K : true);
+                    if (isSCF) {
+                        console.log(`Supercritical conditions detected for ${input.name} (Pc=${(Pc_Pa/1e5).toFixed(2)} bar, Tc=${Tc_K.toFixed(1)} K). Marking as SCF.`);
+                        bp_at_Psys_K_val = Number.NaN; // Sentinel for SCF
+                    }
                 } else if (thermData.antoine) {
                     // Fallback to Antoine
                     bp_at_Psys_K_val = calculateBoilingPointAtPressureSecant(
@@ -583,6 +591,7 @@ export default function TernaryResidueMapPage() {
                         thermData.nbp_K || DEFAULT_INITIAL_T_K,
                         calculatePsat_Pa
                     );
+                    console.log(`Antoine BP fallback → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
                 }
 
                 return {
@@ -591,6 +600,7 @@ export default function TernaryResidueMapPage() {
                     thermData: thermData,
                     originalIndex: index,
                     bp_at_Psys_K: bp_at_Psys_K_val,
+                    isSCF: Number.isNaN(bp_at_Psys_K_val),
                 };
             });
 
@@ -619,6 +629,21 @@ export default function TernaryResidueMapPage() {
                 return a.thermData.nbp_K - b.thermData.nbp_K;
             });
             setPlotSortedComponents(sortedForPlot);
+
+            // If any component is super-critical under the selected conditions, abort plotting
+            const scfComponents = processedComponents.filter(pc => pc.isSCF);
+            if (scfComponents.length > 0) {
+                const scfNamesWithValues = scfComponents.map(c => {
+                    const Pc = c.thermData.criticalProperties?.Pc_Pa ?? NaN;
+                    return `${c.name} (Pc=${isNaN(Pc)?'N/A':(Pc/1e5).toFixed(2)} bar)`;
+                }).join(', ');
+                setScfMessage(`${scfNamesWithValues} is above its Pc at ${systemPressure} bar.\nA ternary residue-curve diagram cannot be generated under super-critical conditions.`);
+                setPlotlyData([]);
+                setIsLoading(false);
+                return;
+            } else {
+                setScfMessage(null); // clear previous message
+            }
 
             const compoundsForBackend: CompoundData[] = processedComponents
                 .sort((a,b) => a.originalIndex - b.originalIndex)
@@ -1027,21 +1052,21 @@ export default function TernaryResidueMapPage() {
         let titleC = componentsInput[0]?.name || 'Comp 1 (L)'; // c-axis (Right) = Lightest
 
         if (plotSortedComponents.length === 3) {
-            const formatBp = (bp_K: number | null | undefined) => 
-                bp_K ? `${(bp_K - 273.15).toFixed(1)}°C` : 'N/A';
+            const formatBp = (bp_K: number | null | undefined, isSCF?:boolean) => 
+                isSCF ? 'SCF' : (bp_K && !Number.isNaN(bp_K) ? `${(bp_K - 273.15).toFixed(1)}°C` : 'N/A');
 
             // a-axis (Top) = Intermediate component (plotSortedComponents[1])
             // Display BP at system pressure if available, else NBP
             const bpA = plotSortedComponents[1].bp_at_Psys_K ?? plotSortedComponents[1].thermData.nbp_K;
-            titleA = `${plotSortedComponents[1].name} (M, ${formatBp(bpA)})`;
+            titleA = `${plotSortedComponents[1].name} (M, ${formatBp(bpA, plotSortedComponents[1].isSCF)})`;
             
             // b-axis (Left) = Heaviest component (plotSortedComponents[2])
             const bpB = plotSortedComponents[2].bp_at_Psys_K ?? plotSortedComponents[2].thermData.nbp_K;
-            titleB = `${plotSortedComponents[2].name} (H, ${formatBp(bpB)})`;
+            titleB = `${plotSortedComponents[2].name} (H, ${formatBp(bpB, plotSortedComponents[2].isSCF)})`;
 
             // c-axis (Right) = Lightest component (plotSortedComponents[0])
             const bpC = plotSortedComponents[0].bp_at_Psys_K ?? plotSortedComponents[0].thermData.nbp_K;
-            titleC = `${plotSortedComponents[0].name} (L, ${formatBp(bpC)})`;
+            titleC = `${plotSortedComponents[0].name} (L, ${formatBp(bpC, plotSortedComponents[0].isSCF)})`;
         }
         
         const plotTitleColor = currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'; 
@@ -1543,12 +1568,18 @@ export default function TernaryResidueMapPage() {
                                 className="relative w-full h-[600px] md:h-[700px]" 
                                 ref={setPlotContainerRef} // Assign the state setter to the ref prop
                             >
-                                <Plot 
-                                    data={plotlyData} 
-                                    layout={plotlyLayout} 
-                                    useResizeHandler 
-                                    style={{ width: '100%', height: '100%' }} 
-                                />
+                                {scfMessage ? (
+                                    <div className="flex items-center justify-center w-full h-full text-center px-4">
+                                        <p className="text-lg md:text-2xl font-semibold whitespace-pre-line">{scfMessage}</p>
+                                    </div>
+                                ) : (
+                                    <Plot 
+                                        data={plotlyData} 
+                                        layout={plotlyLayout} 
+                                        useResizeHandler 
+                                        style={{ width: '100%', height: '100%' }} 
+                                    />
+                                )}
                             </div>
                         </CardContent>
                     </Card>
