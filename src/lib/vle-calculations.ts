@@ -1189,7 +1189,7 @@ export async function fetchPrInteractionParams(
   if (!casn1 || !casn2 || casn1 === casn2) return { k_ij: 0, k_ji: 0 };
   
   const { data, error } = await supabase
-    .from('pr parameters')
+    .from('peng-robinson parameters')
     .select('"CASN1", "CASN2", k12')
     .or(`and("CASN1".eq.${casn1},"CASN2".eq.${casn2}),and("CASN1".eq.${casn2},"CASN2".eq.${casn1})`)
     .limit(1);

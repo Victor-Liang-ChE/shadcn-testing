@@ -699,16 +699,20 @@ export default function TernaryResidueMapPage() {
             const allCurvesPromises: Promise<ResidueCurve | null>[] = [];
 
             // Adjust d_xi_step for each model
-            const base_d_xi_step_activity = 0.03; // Wilson, NRTL, UNIQUAC, UNIFAC - larger step
-            const base_d_xi_step_eos = 0.035;    // Larger step for PR/SRK
+            // --- FIX APPLIED HERE ---
+            // Drastically reduce the step size for EOS models for stability.
+            // A simple Euler integrator needs small steps for these complex equations.
+            const base_d_xi_step_activity = 0.03;    // Wilson, NRTL, UNIQUAC, UNIFAC
+            const base_d_xi_step_eos = 0.002;        // A much smaller, more stable step for PR/SRK.
 
             const d_xi_step_for_model =
                 (fluidPackage === 'pr' || fluidPackage === 'srk') ? base_d_xi_step_eos
-                : base_d_xi_step_activity; // UNIFAC now uses this
+                : base_d_xi_step_activity;
 
             const max_steps_unifac = 600; // Reduced max steps for UNIFAC
+            // Adjust max_steps for EOS to be larger to cover the diagram with the smaller step size.
             const max_steps = (fluidPackage === 'unifac') ? max_steps_unifac :
-                              (fluidPackage === 'pr' || fluidPackage === 'srk') ? 8000 : 800;
+                              (fluidPackage === 'pr' || fluidPackage === 'srk') ? 1200 : 800; // e.g., 1200 * 0.002 = 2.4 integration length
 
             for (const start_x_3comp of startingCompositions) {
                 let promise: Promise<ResidueCurve | null>;
@@ -736,12 +740,12 @@ export default function TernaryResidueMapPage() {
                 }
                 allCurvesPromises.push(promise);
             }
+
+            const allCurvesResults = await Promise.all(allCurvesPromises);
             
-            const resolvedCurves = await Promise.all(allCurvesPromises);
+            const validCurves = allCurvesResults.filter(curve => curve !== null && curve.length > 1) as ResidueCurve[];
 
-            const validCurves = resolvedCurves.filter(curve => curve !== null && curve.length > 1) as ResidueCurve[];
-
-            console.log(`Residue Curve Generation (${fluidPackage}): Total starting points: ${startingCompositions.length}. Resolved curves (pre-filter): ${resolvedCurves.length}. Null/Short curves: ${resolvedCurves.filter(c => c === null || c.length <=1).length}. Valid curves (length > 1): ${validCurves.length}`);
+            console.log(`Residue Curve Generation (${fluidPackage}): Total starting points: ${startingCompositions.length}. Resolved curves (pre-filter): ${allCurvesResults.length}. Null/Short curves: ${allCurvesResults.filter(c => c === null || c.length <=1).length}. Valid curves (length > 1): ${validCurves.length}`);
             if (validCurves.length > 0) {
                 console.log(`First valid curve (first 5 points): `, validCurves[0].slice(0, 5).map(p => ({x: p.x.map(val => val.toFixed(4)), T: p.T_K.toFixed(2)})));
                  if (validCurves[0].length > 5) {

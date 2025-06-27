@@ -188,7 +188,7 @@ export function findAzeotrope(
 const MIN_X_UNIFAC=1e-7;
 function normX_unifac(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_UNIFAC*(x.length-1);return x.map(v=>Math.max(MIN_X_UNIFAC,Math.min(mx,v/s)));}
 function bubbleTUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacParameters,Ti:number){let T=Ti;for(let i=0;i<35;i++){const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));if(Ps.some(p=>!isFinite(p)||p<=0))return null;const g=calculateUnifacGamma(comps,x,T,params) as number[];if(!g||g.some(v=>!isFinite(v)||v<=0))return null;const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];const err=Pcalc-P;if(Math.abs(err/P)<1e-4) return {T,g,Ps};T-=err/P*(T*0.1);if(T<100)T=100;}return null;}
-function odeUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacParameters,Ti:number){const bub=bubbleTUnifac(normX_unifac(x),P,comps,params,Ti);if(!bub)return null;const {T,g,Ps}=bub;const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]/P);const d=[0,1,2].map(i=>x[i]-y[i]);return {dxdxi:d,T};}
+function odeUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacParameters,Ti:number){const bub=bubbleTUnifac(normX_unifac(x),P,comps,params,Ti);if(!bub)return null;const {T,g,Ps}=bub;const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]/P);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
 async function simulateODE_Unifac(initX:number[],P:number,comps:CompoundData[],params:UnifacParameters,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{
   async function runDir(forward:boolean){const curve:ResidueCurve=[];let x=[...initX];let T=Ti;for(let i=0;i<maxSteps;i++){const r=odeUnifac(x,P,comps,params,T);if(!r)break;T=r.T;curve.push({x:normX_unifac(x),T_K:T,step:(forward?1:-1)*i*step});x=[0,1,2].map(j=>x[j]+(forward?1:-1)*r.dxdxi[j]*step);x=normX_unifac(x);if(x.some(v=>v<MIN_X_UNIFAC||v>1-MIN_X_UNIFAC))break;}return curve;}
   const fwd=await runDir(true);const bwd=await runDir(false);return [...bwd.reverse(),{x:normX_unifac(initX),T_K:Ti},...fwd];}
@@ -203,17 +203,77 @@ function getKijPr(i:number,j:number,p:TernaryPrParams):number{const key=`${Math.
 function calcPurePR(T:number,pr:{Tc_K:number;Pc_Pa:number;omega:number}){const Tr=T/pr.Tc_K;const m=0.37464+1.54226*pr.omega-0.26992*pr.omega*pr.omega;const alpha=(1+m*(1-Math.sqrt(Tr)))**2;const ac=0.45724*R*R*pr.Tc_K*pr.Tc_K/pr.Pc_Pa;const a=ac*alpha;const b=0.07780*R*pr.Tc_K/pr.Pc_Pa;return{a,b};}
 function calcMixturePR(x:number[],T:number,comps:CompoundData[],p:TernaryPrParams){const a_i=comps.map(c=>calcPurePR(T,c.prParams!).a);const b_i=comps.map(c=>calcPurePR(T,c.prParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijPr(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
 function prFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernaryPrParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijPr(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(2*Math.sqrt(2)*B)*(sum/a_mix-b_i[k]/b_mix)*Math.log((Z+(1+Math.sqrt(2))*B)/(Z+(1-Math.sqrt(2))*B));phi.push(Math.exp(term1+term2-term3));}return phi;}
-function solvePRBubbleT(x:number[],P:number,comps:CompoundData[],p:TernaryPrParams,Ti:number){let T=Ti;for(let iter=0;iter<40;iter++){const mix=calcMixturePR(x,T,comps,p);const coeff = {A:mix.a_mix*P/(R*R*T*T),B:mix.b_mix*P/(R*T)};const roots = solveCubicEOS(1,-(1-coeff.B),coeff.A-3*coeff.B*coeff.B-2*coeff.B,-(coeff.A*coeff.B-coeff.B*coeff.B-coeff.B*coeff.B*coeff.B)) as number[];
-  if(!roots || roots.length === 0) return null;
-  const positiveRoots = roots.filter(r=>r>0);
-  if(positiveRoots.length === 0) return null;
-  const ZL = Math.min(...positiveRoots);
-  const ZV = Math.max(...positiveRoots);
-  const phiL=prFugacity(x,T,P,ZL,mix.a_mix,mix.b_mix,mix.a_i,mix.b_i,p);const K=phiL.map((phi_val,i)=>{const Psat=calculatePsat_Pa(comps[i].antoine!,T);return phi_val*Psat/P;});const sumKx=K.reduce((acc,k,i)=>acc+k*x[i],0);const err=sumKx-1;if(Math.abs(err)<1e-5)return{T,K};T-=err*2; if(T<100)T=100;}return null;}
+function solvePRBubbleT(x:number[],P:number,comps:CompoundData[],p:TernaryPrParams,Ti:number){
+  let T=Ti;
+  let Tprev = T;
+  let errprev = 0;
+  for(let iter=0;iter<40;iter++){
+    const mix=calcMixturePR(x,T,comps,p);
+    const coeff = {A:mix.a_mix*P/(R*R*T*T),B:mix.b_mix*P/(R*T)};
+    const roots = solveCubicEOS(1,-(1-coeff.B),coeff.A-3*coeff.B*coeff.B-2*coeff.B,-(coeff.A*coeff.B-coeff.B*coeff.B-coeff.B*coeff.B*coeff.B)) as number[];
+    if(!roots || roots.length === 0) return null;
+    const validRoots = roots.filter(r => r > coeff.B);
+    if (validRoots.length === 0) return null;
+    const ZL = Math.min(...validRoots);
+    const phiL=prFugacity(x,T,P,ZL,mix.a_mix,mix.b_mix,mix.a_i,mix.b_i,p);
+    const K=phiL.map((phi_val,i)=>{const Psat=calculatePsat_Pa(comps[i].antoine!,T);return phi_val*Psat/P;});
+    const sumKx=K.reduce((acc,k,i)=>acc+k*x[i],0);
+    const err=sumKx-1;
+
+    if(Math.abs(err)<1e-5) return {T,K};
+
+    // Replace aggressive secant method with a more robust, damped update
+    const deltaT = err * 5; // A simple, small, dampened step
+    const max_dT = 10.0; // Max change of 10 K per step
+    T -= Math.max(-max_dT, Math.min(max_dT, deltaT)); // Apply dampened and capped step
+
+    if(!isFinite(T)) T=Ti; if(T<100)T=100; if(T>1000)T=1000;
+  }
+  return null;
+}
 function odePr(x:number[],P:number,comps:CompoundData[],p:TernaryPrParams,Ti:number){const bub=solvePRBubbleT(normX_pr(x),P,comps,p,Ti);if(!bub)return null;const {T,K}=bub;const y=K.map((k,i)=>k*x[i]);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
 async function simulateODE_Pr(initX:number[],P:number,comps:CompoundData[],p:TernaryPrParams,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{
-  async function runDir(fwd:boolean){const curve:ResidueCurve=[];let x=[...initX];let T=Ti;for(let i=0;i<maxSteps;i++){const r=odePr(x,P,comps,p,T);if(!r)break;T=r.T;curve.push({x:normX_pr(x),T_K:T,step:(fwd?1:-1)*i*step});x=[0,1,2].map(j=>x[j]+(fwd?1:-1)*r.dxdxi[j]*step);x=normX_pr(x);if(x.some(v=>v<MIN_X_PR||v>1-MIN_X_PR))break;}return curve;}
-  const fwd=await runDir(true);const bwd=await runDir(false);return [...bwd.reverse(),{x:normX_pr(initX),T_K:Ti},...fwd];}
+  async function runDir(fwd:boolean){
+    const curve:ResidueCurve=[];
+    let x=[...initX];
+    let T=Ti;
+    let current_step = step;
+    const min_step = 1e-5;
+    const max_step = 0.05;
+    const tol = 5e-4; // Increased tolerance for PR
+    const safetyFactor = 0.9;
+
+    for(let i=0;i<maxSteps;i++){
+      const r_full = odePr(x, P, comps, p, T);
+      if (!r_full) break;
+
+      const x_full = x.map((v, j) => v + (fwd ? 1 : -1) * r_full.dxdxi[j] * current_step);
+
+      const x_half = x.map((v, j) => v + (fwd ? 1 : -1) * r_full.dxdxi[j] * (current_step / 2));
+      const r_half = odePr(x_half, P, comps, p, r_full.T);
+      if (!r_half) break;
+      
+      const x_new_half = x_half.map((v, j) => v + (fwd ? 1 : -1) * r_half.dxdxi[j] * (current_step / 2));
+      
+      const error = Math.sqrt(x_new_half.reduce((sum, v, j) => sum + (v - x_full[j])**2, 0));
+
+      if (error < tol) {
+        T = r_half.T;
+        x = x_new_half;
+        curve.push({x: normX_pr(x), T_K:T, step:(fwd?1:-1)*i*current_step});
+        if(x.some(v=>v<MIN_X_PR||v>1-MIN_X_PR)) break;
+        current_step = Math.min(max_step, current_step * safetyFactor * Math.sqrt(tol / error));
+      } else {
+        current_step = Math.max(min_step, current_step * safetyFactor * Math.sqrt(tol / error));
+        i--; // Redo this step
+      }
+    }
+    return curve;
+  }
+  const fwd=await runDir(true);
+  const bwd=await runDir(false);
+  return [...bwd.reverse(),{x:normX_pr(initX),T_K:Ti},...fwd];
+}
 
 // =========================================================================
 //  S R K  (Soave–Redlich–Kwong)      – trimmed maths
@@ -225,9 +285,75 @@ function getKijSrk(i:number,j:number,p:TernarySrkParams):number{const key=`${Mat
 function calcPureSRK(T:number,srk:{Tc_K:number;Pc_Pa:number;omega:number}){const Tr=T/srk.Tc_K;const m=0.48+1.574*srk.omega-0.176*srk.omega*srk.omega;const alpha=(1+m*(1-Math.sqrt(Tr)))**2;const ac=0.42748*R*R*srk.Tc_K*srk.Tc_K/srk.Pc_Pa;const a=ac*alpha;const b=0.08664*R*srk.Tc_K/srk.Pc_Pa;return{a,b};}
 function mixSRK(x:number[],T:number,comps:CompoundData[],p:TernarySrkParams){const a_i=comps.map(c=>calcPureSRK(T,c.srkParams!).a);const b_i=comps.map(c=>calcPureSRK(T,c.srkParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijSrk(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
 function srkFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernarySrkParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijSrk(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(B)*(b_i[k]/b_mix - (2*sum/a_mix) )*Math.log(1+B/Z);phi.push(Math.exp(term1+term2+term3));}return phi;}
-function solveSRKBubbleT(x:number[],P:number,comps:CompoundData[],p:TernarySrkParams,Ti:number){let T=Ti;for(let iter=0;iter<40;iter++){const mix=mixSRK(x,T,comps,p);const coeff={A:mix.a_mix*P/(R*R*T*T),B:mix.b_mix*P/(R*T)};const roots=solveCubicEOS(1,-(1-coeff.B),coeff.A-3*coeff.B*coeff.B-2*coeff.B,-(coeff.A*coeff.B-coeff.B*coeff.B-coeff.B*coeff.B*coeff.B)) as number[];if(!roots||roots.length===0) return null;const pos=roots.filter(r=>r>0);if(pos.length===0)return null;const ZL=Math.min(...pos);const phiL=srkFugacity(x,T,P,ZL,mix.a_mix,mix.b_mix,mix.a_i,mix.b_i,p);const K=phiL.map((phi,i)=>{const Psat=calculatePsat_Pa(comps[i].antoine!,T);return phi*Psat/P;});const err=K.reduce((acc,k,i)=>acc+k*x[i],0)-1;if(Math.abs(err)<1e-5)return{T,K};T-=err*2;if(T<100)T=100;}return null;}
+function solveSRKBubbleT(x:number[],P:number,comps:CompoundData[],p:TernarySrkParams,Ti:number){
+  let T=Ti;
+  let Tprev_s=T;
+  let errprev_s=0;
+  for(let iter=0;iter<40;iter++){
+    const mix=mixSRK(x,T,comps,p);
+    const coeff={A:mix.a_mix*P/(R*R*T*T),B:mix.b_mix*P/(R*T)};
+    const roots = solveCubicEOS(1, -1, coeff.A - coeff.B - coeff.B * coeff.B, -coeff.A * coeff.B) as number[];
+    if(!roots||roots.length===0) return null;
+    const validRoots = roots.filter(r=>r>coeff.B);
+    if (validRoots.length === 0) return null;
+    const ZL=Math.min(...validRoots);
+    const phiL=srkFugacity(x,T,P,ZL,mix.a_mix,mix.b_mix,mix.a_i,mix.b_i,p);
+    const K=phiL.map((phi,i)=>{const Psat=calculatePsat_Pa(comps[i].antoine!,T);return phi*Psat/P;});
+    const err=K.reduce((acc,k,i)=>acc+k*x[i],0)-1;
+    
+    if(Math.abs(err)<1e-5) return {T,K};
+
+    // Replace aggressive secant method with a more robust, damped update
+    const deltaT_s = err * 5; // A simple, small, dampened step
+    const max_dT_s = 10.0; // Max change of 10 K per step
+    T -= Math.max(-max_dT_s, Math.min(max_dT_s, deltaT_s)); // Apply dampened and capped step
+
+    if(!isFinite(T)) T=Ti; if(T<100)T=100; if(T>1000)T=1000;
+  }
+  return null;
+}
 function odeSrk(x:number[],P:number,comps:CompoundData[],p:TernarySrkParams,Ti:number){const bub=solveSRKBubbleT(normX_srk(x),P,comps,p,Ti);if(!bub)return null;const {T,K}=bub;const y=K.map((k,i)=>k*x[i]);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
-async function simulateODE_Srk(initX:number[],P:number,comps:CompoundData[],p:TernarySrkParams,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{async function runDir(fwd:boolean){const curve:ResidueCurve=[];let x=[...initX];let T=Ti;for(let i=0;i<maxSteps;i++){const r=odeSrk(x,P,comps,p,T);if(!r)break;T=r.T;curve.push({x:normX_srk(x),T_K:T,step:(fwd?1:-1)*i*step});x=[0,1,2].map(j=>x[j]+(fwd?1:-1)*r.dxdxi[j]*step);x=normX_srk(x);if(x.some(v=>v<MIN_X_SRK||v>1-MIN_X_SRK))break;}return curve;}const fwd=await runDir(true);const bwd=await runDir(false);return [...bwd.reverse(),{x:normX_srk(initX),T_K:Ti},...fwd];}
+async function simulateODE_Srk(initX:number[],P:number,comps:CompoundData[],p:TernarySrkParams,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{
+  async function runDir(fwd:boolean){
+    const curve:ResidueCurve=[];
+    let x=[...initX];
+    let T=Ti;
+    let current_step = step;
+    const min_step = 1e-5;
+    const max_step = 0.05;
+    const tol = 1e-4;
+
+    for(let i=0;i<maxSteps;i++){
+      const r_full = odeSrk(x, P, comps, p, T);
+      if (!r_full) break;
+
+      const x_full = x.map((v, j) => v + (fwd ? 1 : -1) * r_full.dxdxi[j] * current_step);
+
+      const x_half = x.map((v, j) => v + (fwd ? 1 : -1) * r_full.dxdxi[j] * (current_step / 2));
+      const r_half = odeSrk(x_half, P, comps, p, r_full.T);
+      if (!r_half) break;
+
+      const x_new_half = x_half.map((v, j) => v + (fwd ? 1 : -1) * r_half.dxdxi[j] * (current_step / 2));
+      
+      const error = Math.sqrt(x_new_half.reduce((sum, v, j) => sum + (v - x_full[j])**2, 0));
+
+      if (error < tol) {
+        T = r_half.T;
+        x = x_new_half;
+        curve.push({x: normX_srk(x), T_K:T, step:(fwd?1:-1)*i*current_step});
+        if(x.some(v=>v<MIN_X_SRK||v>1-MIN_X_SRK)) break;
+        current_step = Math.min(max_step, current_step * Math.sqrt(tol / error));
+      } else {
+        current_step = Math.max(min_step, current_step * Math.sqrt(tol / error));
+        i--; // Redo this step
+      }
+    }
+    return curve;
+  }
+  const fwd=await runDir(true);
+  const bwd=await runDir(false);
+  return [...bwd.reverse(),{x:normX_srk(initX),T_K:Ti},...fwd];
+}
 
 // =========================================================================
 //  U N I Q U A C   (trimmed)
