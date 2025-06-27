@@ -37,6 +37,8 @@ import {
 import {
   R_gas_const_J_molK,
   calculatePsat_Pa,
+  calculateSaturationTemperaturePurePr,
+  calculateSaturationTemperaturePureSrk,
   fetchWilsonInteractionParams,
   fetchUnifacInteractionParams,
   fetchNrtlParameters,
@@ -173,6 +175,17 @@ export default function TernaryResidueMapPage() {
     const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>('dark'); // Default to dark
     const [plotContainerRef, setPlotContainerRef] = React.useState<HTMLDivElement | null>(null); // State to hold the div element
     const [directAzeotropes, setDirectAzeotropes] = useState<AzeotropeDisplayInfo[]>([]); // Use common display info
+
+    // Trigger re-generation automatically when the fluid-package selection changes
+    const didMountFluidPkg = useRef(false);
+    useEffect(() => {
+        if (didMountFluidPkg.current) {
+            handleGenerateMap();
+        } else {
+            didMountFluidPkg.current = true;
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fluidPackage]);
 
     useEffect(() => {
         // Function to check and set theme
@@ -536,14 +549,42 @@ export default function TernaryResidueMapPage() {
             const processedComponents: ProcessedComponentData[] = componentsInput.map((input, index) => {
                 const thermData = fetchedThermDataArray[index];
                 let bp_at_Psys_K_val: number | null = null;
-                if (thermData.antoine) {
+
+                // Prefer EOS-based single-component saturation when model uses EOS
+                if (fluidPackage === 'pr' && thermData.criticalProperties) {
+                    const compObj: CompoundData = {
+                        name: input.name,
+                        antoine: thermData.antoine,
+                        prParams: thermData.criticalProperties as PrPureComponentParams,
+                        srkParams: null,
+                        unifacGroups: null,
+                        uniquacParams: null,
+                        wilsonParams: null,
+                    } as unknown as CompoundData;
+                    bp_at_Psys_K_val = calculateSaturationTemperaturePurePr(compObj, P_system_Pa);
+                    console.log(`EOS-PR BP debug → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
+                } else if (fluidPackage === 'srk' && thermData.criticalProperties) {
+                    const compObj: CompoundData = {
+                        name: input.name,
+                        antoine: thermData.antoine,
+                        prParams: null,
+                        srkParams: thermData.criticalProperties as SrkPureComponentParams,
+                        unifacGroups: null,
+                        uniquacParams: null,
+                        wilsonParams: null,
+                    } as unknown as CompoundData;
+                    bp_at_Psys_K_val = calculateSaturationTemperaturePureSrk(compObj, P_system_Pa);
+                    console.log(`EOS-SRK BP debug → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
+                } else if (thermData.antoine) {
+                    // Fallback to Antoine
                     bp_at_Psys_K_val = calculateBoilingPointAtPressureSecant(
                         thermData.antoine,
                         P_system_Pa,
-                        thermData.nbp_K || DEFAULT_INITIAL_T_K, // Use NBP as initial guess, or default
-                        calculatePsat_Pa // Pass the imported Psat function
+                        thermData.nbp_K || DEFAULT_INITIAL_T_K,
+                        calculatePsat_Pa
                     );
                 }
+
                 return {
                     name: input.name,
                     casNumber: fetchedCasNumbers[index],
@@ -745,13 +786,7 @@ export default function TernaryResidueMapPage() {
             
             const validCurves = allCurvesResults.filter(curve => curve !== null && curve.length > 1) as ResidueCurve[];
 
-            console.log(`Residue Curve Generation (${fluidPackage}): Total starting points: ${startingCompositions.length}. Resolved curves (pre-filter): ${allCurvesResults.length}. Null/Short curves: ${allCurvesResults.filter(c => c === null || c.length <=1).length}. Valid curves (length > 1): ${validCurves.length}`);
-            if (validCurves.length > 0) {
-                console.log(`First valid curve (first 5 points): `, validCurves[0].slice(0, 5).map(p => ({x: p.x.map(val => val.toFixed(4)), T: p.T_K.toFixed(2)})));
-                 if (validCurves[0].length > 5) {
-                    console.log(`First valid curve (last 5 points): `, validCurves[0].slice(-5).map(p => ({x: p.x.map(val => val.toFixed(4)), T: p.T_K.toFixed(2)})));
-                }
-            }
+            // Debug logs trimmed – comment out verbose residue-curve generation details.
 
             setResidueCurves(validCurves);
 
@@ -910,7 +945,7 @@ export default function TernaryResidueMapPage() {
             if (foundAzeotropes.length > 0) {
                 console.log(`Directly found ${foundAzeotropes.length} potential azeotrope(s) using ${generatingFluidPackage}:`, foundAzeotropes.map(az => ({x: az.x, T_K: az.T_K, err: az.errorNorm})));
             } else {
-                console.log(`No azeotropes found directly using ${generatingFluidPackage} with the given initial guesses.`);
+                // console.log(`No azeotropes found directly using ${generatingFluidPackage} with the given initial guesses.`);
             }
             // --- End Direct Azeotrope Solver Call ---
 
@@ -933,7 +968,7 @@ export default function TernaryResidueMapPage() {
     useEffect(() => {
         if (!residueCurves || residueCurves.length === 0) {
             setCleanedResidueCurves([]);
-            console.log(`Plotting useEffect: No residueCurves or empty. Setting cleanedResidueCurves to [].`);
+            // console.log(`Plotting useEffect: No residueCurves or empty. Setting cleanedResidueCurves to [].`);
             return;
         }
 
@@ -965,13 +1000,12 @@ export default function TernaryResidueMapPage() {
         };
 
         const filteredForPlotting = filterCurves(residueCurves);
-        console.log(`Plotting useEffect: residueCurves length: ${residueCurves.length}. Filtered for plotting (${moleFractionThreshold.toExponential()} threshold for ${fluidPackage}): ${filteredForPlotting.length}`);
+        // Verbose plotting logs removed for production.
+
         if (residueCurves.length > 0 && filteredForPlotting.length === 0) {
             console.warn(`Plotting useEffect: All curves were filtered out by the ${moleFractionThreshold.toExponential()} threshold. Original curves might be too short or stagnant.`);
         }
-        if (filteredForPlotting.length > 0 && filteredForPlotting[0].length > 0) { // Added check for filteredForPlotting[0].length
-            console.log(`Plotting useEffect: First filtered curve for plotting (first 5 points): `, filteredForPlotting[0].slice(0,5).map(p => ({x: p.x.map(val => typeof val === 'number' ? val.toFixed(4) : 'N/A'), T_K: typeof p.T_K === 'number' ? p.T_K.toFixed(2) : 'N/A'})));
-        }
+        // Removed verbose curve preview log.
 
         setCleanedResidueCurves(filteredForPlotting);
     }, [residueCurves, fluidPackage]); // Ensure fluidPackage is a dependency
@@ -1278,11 +1312,7 @@ export default function TernaryResidueMapPage() {
                         placedArrowCountOverall++;
 
                         if (!firstArrowLogged && curveIndex === 0) { 
-                            console.log(`First arrow MARKER (curve ${curveIndex}, arrow ${placedArrowCountOverall}): 
-                                CentroidIndex: ${headIndex}, P1_tern: ${point1_for_direction_ternary.map(v => v.toFixed(3)).join(',')}, P2_tern: ${point2_for_direction_ternary.map(v => v.toFixed(3)).join(',')}
-                                Ideal dx=${dx_ideal_CALCULATED.toFixed(3)}, dy=${dy_ideal_CALCULATED.toFixed(3)}
-                                Pixel dx=${pixel_dx.toFixed(3)}, dy=${pixel_dy.toFixed(3)}, Angle=${final_angle_deg.toFixed(1)}`);
-                            firstArrowLogged = true; 
+                            // Arrow marker debug disabled.
                         }
                     } // Closes if (shouldCheckThisPointForArrow)
                 } // Closes for (let headIndex ...) loop
@@ -1464,8 +1494,14 @@ export default function TernaryResidueMapPage() {
                                         type="number"
                                         value={systemPressure}
                                         onChange={e => setSystemPressure(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                handleGenerateClick();
+                                            }
+                                        }}
                                         placeholder="1.0"
-                                        className="flex-grow" // Make input take available space
+                                        className="flex-grow"
                                     />
                                     <span className="ml-2 text-muted-foreground">bar</span> {/* Unit display */}
                                 </div>

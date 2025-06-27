@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------------------
 import type { AntoineParams, CompoundData, BubbleDewResult, UnifacGroupComposition } from './vle-types';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAndConvertThermData } from './antoine-utils';
 
 // =============================
 //  1. SHARED CONSTANTS/UTILS
@@ -1150,14 +1151,20 @@ export async function fetchNrtlParameters(
   const { data, error } = await supabase
     .from('nrtl parameters')
     .select('"A12", "A21", "alpha12", "CASN1", "CASN2"')
-    .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
+    .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN1.eq.${casn1})`)
     .limit(1);
-  if (error) throw new Error(`Supabase NRTL query error: ${error.message}`);
-  if (!data || data.length === 0) throw new Error(`NRTL parameters missing for ${casn1}/${casn2}`);
+  if (error) console.warn(`Supabase NRTL query error: ${error.message}`);
+  if (data && data.length > 0) {
   const row = data[0];
   return row.CASN1 === casn1
-    ? { A12: row.A12, A21: row.A21, alpha: row.alpha12 }
-    : { A12: row.A21, A21: row.A12, alpha: row.alpha12 };
+      ? { A12: row.A12, A21: row.A21, alpha: row.alpha12 ?? 0.3 }
+      : { A12: row.A21, A21: row.A12, alpha: row.alpha12 ?? 0.3 };
+  }
+  // Fallback to UNIFAC-based estimate
+  const est = await estimateNrtlFromUnifac(supabase, casn1, casn2);
+  if (est) return est;
+  // Default if all fails
+  return { A12: 0, A21: 0, alpha: 0.3 };
 }
 
 // --- Wilson ---
@@ -1194,11 +1201,17 @@ export async function fetchPrInteractionParams(
     .or(`and("CASN1".eq.${casn1},"CASN2".eq.${casn2}),and("CASN1".eq.${casn2},"CASN2".eq.${casn1})`)
     .limit(1);
     
-  if (error) throw new Error(`PR fetch error: ${error.message}`);
-  if (!data || data.length === 0) return { k_ij: 0, k_ji: 0 };
-  
-  const k_value = typeof data[0].k12 === 'number' ? data[0].k12 : 0;
-  return { k_ij: k_value, k_ji: k_value };
+  if (error) console.warn(`PR fetch error: ${error.message}`);
+  let k_val: number | null = null;
+  if (data && data.length > 0 && typeof data[0].k12 === 'number') {
+    k_val = data[0].k12;
+  }
+  if (k_val === null) {
+    // Fallback: estimate from critical volumes
+    const est = await estimateKijFromCriticalVolumes(supabase, casn1, casn2);
+    k_val = est ?? 0;
+  }
+  return { k_ij: k_val, k_ji: k_val };
 }
 
 // --- SRK ---
@@ -1215,11 +1228,16 @@ export async function fetchSrkInteractionParams(
     .or(`and("CASN1".eq.${casn1},"CASN2".eq.${casn2}),and("CASN1".eq.${casn2},"CASN2".eq.${casn1})`)
     .limit(1);
     
-  if (error) throw new Error(`SRK fetch error: ${error.message}`);
-  if (!data || data.length === 0) return { k_ij: 0, k_ji: 0 };
-  
-  const k_value = typeof data[0].k12 === 'number' ? data[0].k12 : 0;
-  return { k_ij: k_value, k_ji: k_value };
+  if (error) console.warn(`SRK fetch error: ${error.message}`);
+  let k_val: number | null = null;
+  if (data && data.length > 0 && typeof data[0].k12 === 'number') {
+    k_val = data[0].k12;
+  }
+  if (k_val === null) {
+    const est = await estimateKijFromCriticalVolumes(supabase, casn1, casn2);
+    k_val = est ?? 0;
+  }
+  return { k_ij: k_val, k_ji: k_val };
 }
 
 // --- UNIQUAC ---
@@ -1232,15 +1250,301 @@ export async function fetchUniquacInteractionParams(
   const { data, error } = await supabase
     .from('uniquac parameters')
     .select('A12, A21, CASN1, CASN2')
-    .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
+    .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN1.eq.${casn1})`)
     .limit(1);
-  if (error || !data || data.length === 0) return { A12: 0, A21: 0 };
-  const row = data[0];
-  return row.CASN1 === casn1 ? { A12: row.A12, A21: row.A21 } : { A12: row.A21, A21: row.A12 };
+  if (!error && data && data.length > 0) {
+    const row = data[0];
+    return row.CASN1 === casn1 ? { A12: row.A12, A21: row.A21 } : { A12: row.A21, A21: row.A12 };
+  }
+  if (error) console.warn(`UNIQUAC fetch error: ${error.message}`);
+  // Fallback using UNIFAC
+  const est = await estimateUniquacFromUnifac(supabase, casn1, casn2);
+  if (est) return est;
+  return { A12: 0, A21: 0 };
 }
 
 // =============================
 //  8. Re-export fetch helpers (Wilson, PR, SRK, UNIQUAC) – restored
-// =============================
+// ============================= 
 
 // All legacy functions have been inlined - no more placeholders needed 
+
+// --------------------------------------------------------
+//  Helpers: Estimate cubic EOS binary interaction parameter (kij)
+//           from critical volumes (ChemSep1/2 only)
+// --------------------------------------------------------
+
+/** Convert a critical volume value to cm^3/mol, handling units */
+async function _fetchCriticalVolume_cm3_per_mol(supabase: SupabaseClient, casn: string): Promise<number | null> {
+  // 1. Get compound id
+  const { data: compIdData, error: compIdErr } = await supabase
+    .from('compounds')
+    .select('id')
+    .eq('cas_number', casn)
+    .single();
+  if (compIdErr || !compIdData) return null;
+  const compound_id = compIdData.id;
+
+  // 2. Query compound_properties limited to chemsep sources
+  const { data: propsRows, error: propsErr } = await supabase
+    .from('compound_properties')
+    .select('properties, source')
+    .eq('compound_id', compound_id)
+    .in('source', ['chemsep1', 'chemsep2']);
+  if (propsErr || !propsRows || propsRows.length === 0) return null;
+
+  for (const row of propsRows) {
+    const props = row.properties as any;
+    if (!props || !props["Critical volume"]) continue;
+    const cvObj = props["Critical volume"];
+    const val = cvObj?.value;
+    const units = (cvObj?.units || '').toLowerCase();
+    if (typeof val !== 'number') continue;
+    if (units === 'cm3/mol' || units === 'cm³/mol') return val;
+    if (units === 'm3/kmol' || units === 'm³/kmol') return val * 1000; // 1 m3/kmol = 1000 cm3/mol
+    if (units === 'l/mol' || units === 'l\x2Fmol') return val * 1000;  // 1 L/mol = 1000 cm3/mol
+    // Attempt to parse unitless or unknown units assuming cm3/mol
+    return val;
+  }
+  return null;
+}
+
+/**
+ * Estimate the symmetric kij parameter using the given correlation based on critical volumes.
+ * Returns null if critical volumes for either component cannot be found.
+ */
+async function estimateKijFromCriticalVolumes(
+  supabase: SupabaseClient,
+  casn1: string,
+  casn2: string
+): Promise<number | null> {
+  if (!casn1 || !casn2 || casn1 === casn2) return 0;
+  const Vc1 = await _fetchCriticalVolume_cm3_per_mol(supabase, casn1);
+  const Vc2 = await _fetchCriticalVolume_cm3_per_mol(supabase, casn2);
+  if (Vc1 === null || Vc2 === null) return null;
+  const kij = 1 - 8 * Math.sqrt(Vc1 * Vc2) / Math.pow(Math.pow(Vc1, 1 / 3) + Math.pow(Vc2, 1 / 3), 3);
+  return kij;
+} 
+
+// --------------------------------------------------------
+//  Helpers: Estimate NRTL / UNIQUAC binary parameters via UNIFAC
+// --------------------------------------------------------
+
+async function _buildUnifacComponent(supabase: SupabaseClient, casn: string): Promise<CompoundData | null> {
+  const therm = await fetchAndConvertThermData(supabase, casn).catch(() => null);
+  if (!therm || !therm.unifacGroups) return null;
+  return {
+    name: casn,
+    cas_number: casn,
+    antoine: null,
+    unifacGroups: therm.unifacGroups,
+    prParams: null,
+    srkParams: null,
+    uniquacParams: null,
+    wilsonParams: null,
+  } as CompoundData;
+}
+
+async function estimateNrtlFromUnifac(
+  supabase: SupabaseClient,
+  casn1: string,
+  casn2: string,
+  T_ref_K: number = 350
+): Promise<NrtlInteractionParams | null> {
+  const comp1 = await _buildUnifacComponent(supabase, casn1);
+  const comp2 = await _buildUnifacComponent(supabase, casn2);
+  if (!comp1 || !comp2) return null;
+  const subgroupIds = Array.from(new Set([
+    ...Object.keys(comp1.unifacGroups || {}).map(Number),
+    ...Object.keys(comp2.unifacGroups || {}).map(Number),
+  ]));
+  if (subgroupIds.length === 0) return null;
+  const unifacParams = await fetchUnifacInteractionParams(supabase, subgroupIds).catch(() => null);
+  if (!unifacParams) return null;
+
+  // Compute gamma at equimolar composition
+  const gammas = calculateUnifacGamma([comp1, comp2], [0.5, 0.5], T_ref_K, unifacParams);
+  if (!gammas) return null;
+  const lnGamma1 = Math.log(gammas[0]);
+  const lnGamma2 = Math.log(gammas[1]);
+  const A12 = R_gas_const_J_molK * T_ref_K * lnGamma2; // Cross-assignment heuristic
+  const A21 = R_gas_const_J_molK * T_ref_K * lnGamma1;
+  const alpha = 0.3;
+  return { A12, A21, alpha };
+}
+
+async function estimateUniquacFromUnifac(
+  supabase: SupabaseClient,
+  casn1: string,
+  casn2: string,
+  T_ref_K: number = 350
+): Promise<UniquacInteractionParams | null> {
+  const comp1 = await _buildUnifacComponent(supabase, casn1);
+  const comp2 = await _buildUnifacComponent(supabase, casn2);
+  if (!comp1 || !comp2) return null;
+
+  const subgroupIds = Array.from(new Set([
+    ...Object.keys(comp1.unifacGroups || {}).map(Number),
+    ...Object.keys(comp2.unifacGroups || {}).map(Number),
+  ]));
+  if (subgroupIds.length === 0) return null;
+
+  const unifacParams = await fetchUnifacInteractionParams(supabase, subgroupIds).catch(() => null);
+  if (!unifacParams) return null;
+
+  const gammas = calculateUnifacGamma([comp1, comp2], [0.5, 0.5], T_ref_K, unifacParams);
+  if (!gammas) return null;
+  const lnGamma1 = Math.log(gammas[0]);
+  const lnGamma2 = Math.log(gammas[1]);
+  // Simple heuristic similar to DWSIM: energy parameters ~ RT * ln gamma (cross)
+  const A12 = R_gas_const_J_molK * T_ref_K * lnGamma2;
+  const A21 = R_gas_const_J_molK * T_ref_K * lnGamma1;
+  return { A12, A21 };
+}
+
+// ==========================================================
+//  9. Pure-component saturation temperature (PR & SRK EOS)
+// ==========================================================
+
+/**
+ * Estimate the saturation (boiling) temperature of a pure component at a
+ * specified pressure using the Peng–Robinson equation of state.
+ *
+ * Returns `null` if the calculation fails (e.g. outside two-phase region).
+ */
+export function calculateSaturationTemperaturePurePr(
+  component: CompoundData,
+  P_Pa: number,
+  tol: number = 1e-5,
+  maxIter: number = 60
+): number | null {
+  // Ensure the pure-component PR parameters are available
+  if (!component?.prParams) return null;
+  const { Tc_K, Pc_Pa, omega } = component.prParams;
+  if (P_Pa >= Pc_Pa) return null; // No phase change above critical pressure
+
+  // Initial bracketing – empirical but robust for most fluids
+  let T_low = 0.4 * Tc_K;
+  let T_high = 0.99 * Tc_K;
+
+  /** Peng–Robinson ln(phi) difference between liquid and vapour roots */
+  const objective = (T: number): number => {
+    const R = R_gas_const_J_molK;
+    const Tr = T / Tc_K;
+    const kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
+    const alpha = Math.pow(1 + kappa * (1 - Math.sqrt(Tr)), 2);
+    const a = 0.45723553 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha;
+    const b = 0.07779607 * R * Tc_K / Pc_Pa;
+
+    const A = a * P_Pa / Math.pow(R * T, 2);
+    const B = b * P_Pa / (R * T);
+
+    // Roots of the PR cubic (same helper as mixture case)
+    const roots = solveCubicEOS(1, -(1 - B), A - 3 * B * B - 2 * B, -(A * B - B * B - B * B * B));
+    if (!roots || roots.length < 2) return Number.NaN;
+    const Z_L = Math.min(...roots);
+    const Z_V = Math.max(...roots);
+
+    const sqrt2 = Math.SQRT2;
+    const lnPhi = (Z: number): number => {
+      const term1 = Z - 1 - Math.log(Z - B);
+      const term2 = (A / (2 * sqrt2 * B)) * Math.log((Z + (1 + sqrt2) * B) / (Z + (1 - sqrt2) * B));
+      return term1 - term2;
+    };
+    return lnPhi(Z_L) - lnPhi(Z_V);
+  };
+
+  let f_low = objective(T_low);
+  let f_high = objective(T_high);
+
+  // Attempt to expand the bracket if necessary
+  for (let expand = 0; expand < 10 && f_low * f_high > 0; expand++) {
+    T_low *= 0.9;   // move down
+    T_high = 0.5 * (T_high + Tc_K); // move up towards Tc
+    f_low = objective(T_low);
+    f_high = objective(T_high);
+  }
+  if (f_low * f_high > 0 || !isFinite(f_low) || !isFinite(f_high)) return null;
+
+  // Bisection loop
+  for (let iter = 0; iter < maxIter; iter++) {
+    const T_mid = 0.5 * (T_low + T_high);
+    const f_mid = objective(T_mid);
+    if (!isFinite(f_mid)) return null;
+    if (Math.abs(f_mid) < tol) return T_mid;
+
+    if (f_low * f_mid < 0) {
+      T_high = T_mid;
+      f_high = f_mid;
+    } else {
+      T_low = T_mid;
+      f_low = f_mid;
+    }
+  }
+  return null;
+}
+
+/**
+ * Estimate saturation temperature using the Soave–Redlich–Kwong EOS.
+ */
+export function calculateSaturationTemperaturePureSrk(
+  component: CompoundData,
+  P_Pa: number,
+  tol: number = 1e-5,
+  maxIter: number = 60
+): number | null {
+  if (!component?.srkParams) return null;
+  const { Tc_K, Pc_Pa, omega } = component.srkParams;
+  if (P_Pa >= Pc_Pa) return null;
+
+  let T_low = 0.4 * Tc_K;
+  let T_high = 0.99 * Tc_K;
+  const R = R_gas_const_J_molK;
+
+  const objective = (T: number): number => {
+    const Tr = T / Tc_K;
+    const m = 0.480 + 1.574 * omega - 0.176 * omega * omega;
+    const alpha = Math.pow(1 + m * (1 - Math.sqrt(Tr)), 2);
+    const a = 0.42748 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha;
+    const b = 0.08664 * R * Tc_K / Pc_Pa;
+
+    const A = a * P_Pa / Math.pow(R * T, 2);
+    const B = b * P_Pa / (R * T);
+
+    // SRK cubic: Z³ - Z² + (A - B - B²)Z - A B = 0
+    const roots = solveCubicEOS(1, -1, A - B - B * B, -A * B);
+    if (!roots || roots.length < 2) return Number.NaN;
+    const Z_L = Math.min(...roots);
+    const Z_V = Math.max(...roots);
+
+    const lnPhi = (Z: number): number => {
+      return (Z - 1) - Math.log(Z - B) - (A / B) * Math.log(1 + B / Z);
+    };
+    return lnPhi(Z_L) - lnPhi(Z_V);
+  };
+
+  let f_low = objective(T_low);
+  let f_high = objective(T_high);
+  for (let expand = 0; expand < 10 && f_low * f_high > 0; expand++) {
+    T_low *= 0.9;
+    T_high = 0.5 * (T_high + Tc_K);
+    f_low = objective(T_low);
+    f_high = objective(T_high);
+  }
+  if (f_low * f_high > 0 || !isFinite(f_low) || !isFinite(f_high)) return null;
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    const T_mid = 0.5 * (T_low + T_high);
+    const f_mid = objective(T_mid);
+    if (!isFinite(f_mid)) return null;
+    if (Math.abs(f_mid) < tol) return T_mid;
+    if (f_low * f_mid < 0) {
+      T_high = T_mid;
+      f_high = f_mid;
+    } else {
+      T_low = T_mid;
+      f_low = f_mid;
+    }
+  }
+  return null;
+}
