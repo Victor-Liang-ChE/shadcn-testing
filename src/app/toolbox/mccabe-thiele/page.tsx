@@ -392,8 +392,6 @@ export default function McCabeThielePage() {
     }
   }, [supabase]);
 
-  const debouncedFetchSuggestions = useCallback(debounce(fetchSuggestions, 300), [fetchSuggestions]);
-
   const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp1Name(newValue);
@@ -402,7 +400,7 @@ export default function McCabeThielePage() {
       setShowComp1Suggestions(false);
       setComp1Suggestions([]);
     } else {
-      debouncedFetchSuggestions(newValue, 'comp1');
+      fetchSuggestions(newValue, 'comp1');
     }
   };
 
@@ -414,7 +412,7 @@ export default function McCabeThielePage() {
       setShowComp2Suggestions(false);
       setComp2Suggestions([]);
     } else {
-      debouncedFetchSuggestions(newValue, 'comp2');
+      fetchSuggestions(newValue, 'comp2');
     }
   };
 
@@ -553,10 +551,11 @@ export default function McCabeThielePage() {
 
         const stepSize = 1 / (pointsCount - 1);
         const x_feed_values = Array.from({ length: pointsCount }, (_, i) => parseFloat((i * stepSize).toFixed(4)));
-        const calculated_x_values: number[] = [];
-        const calculated_y_values: number[] = [];
+        const calculated_x_values: number[] = [0.0];
+        const calculated_y_values: number[] = [0.0];
 
-        for (const x1_val of x_feed_values) {
+        // Loop over interior points only to avoid issues at pure component conditions
+        for (const x1_val of x_feed_values.slice(1, -1)) {
             let resultPoint: BubbleDewResult | null = null;
             if (useTemperature) {
                 const currentFixedTempK = temperatureC! + 273.15;
@@ -602,8 +601,9 @@ export default function McCabeThielePage() {
             }
         }
         
-        if (!calculated_x_values.includes(0.0)) { calculated_x_values.unshift(0.0); calculated_y_values.unshift(0.0); }
-        if (!calculated_x_values.includes(1.0)) { calculated_x_values.push(1.0); calculated_y_values.push(1.0); }
+        calculated_x_values.push(1.0);
+        calculated_y_values.push(1.0);
+
         const sortedPairs = calculated_x_values.map((x_val, i) => ({x: x_val, y: calculated_y_values[i]}))
             .sort((a,b) => a.x - b.x);
 
@@ -1176,7 +1176,7 @@ export default function McCabeThielePage() {
                         onFocus={() => {
                             setActiveSuggestionInput('comp1');
                             if (comp1Name.trim() !== "" && comp1Suggestions.length > 0) setShowComp1Suggestions(true);
-                            else if (comp1Name.trim() !== "") debouncedFetchSuggestions(comp1Name, 'comp1');
+                            else if (comp1Name.trim() !== "") fetchSuggestions(comp1Name, 'comp1');
                         }}
                         placeholder="Methanol"
                         required
@@ -1210,7 +1210,7 @@ export default function McCabeThielePage() {
                         onFocus={() => {
                             setActiveSuggestionInput('comp2');
                             if (comp2Name.trim() !== "" && comp2Suggestions.length > 0) setShowComp2Suggestions(true);
-                            else if (comp2Name.trim() !== "") debouncedFetchSuggestions(comp2Name, 'comp2');
+                            else if (comp2Name.trim() !== "") fetchSuggestions(comp2Name, 'comp2');
                         }}
                         placeholder="Water"
                         required
