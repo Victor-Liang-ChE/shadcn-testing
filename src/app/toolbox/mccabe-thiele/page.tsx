@@ -186,6 +186,11 @@ export default function McCabeThielePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // --- NEW: Caching states for component data and parameters ---
+  const [comp1Data, setComp1Data] = useState<CompoundData | null>(null);
+  const [comp2Data, setComp2Data] = useState<CompoundData | null>(null);
+  const [interactionParams, setInteractionParams] = useState<any>(null);
+
   // Result States
   const [stages, setStages] = useState<number | null>(null);
   const [feedStage, setFeedStage] = useState<number | null>(null);
@@ -487,52 +492,73 @@ export default function McCabeThielePage() {
     }
 
     try {
-        const [data1, data2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
-        if (!data1 || !data2) {
-            // Error state already set by fetchCompoundDataLocal
-            setLoading(false);
-            return;
+        let data1 = comp1Data;
+        let data2 = comp2Data;
+        let activityParameters = interactionParams;
+
+        // Check if we need to re-fetch data
+        const needsFetching = !data1 || !data2 || !activityParameters || data1.name !== comp1Name || data2.name !== comp2Name || displayedFluidPackage !== fluidPackage;
+
+        if (needsFetching) {
+            console.log("McCabe: Cache miss or inputs changed. Fetching new data...");
+            const [fetchedData1, fetchedData2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
+            if (!fetchedData1 || !fetchedData2) {
+                setLoading(false);
+                return;
+            }
+            
+            const fetchedComponents: CompoundData[] = [fetchedData1, fetchedData2];
+            let fetchedActivityParameters: any;
+
+            if (fluidPackage === 'unifac') {
+                if (!fetchedData1.unifacGroups || !fetchedData2.unifacGroups) throw new Error("UNIFAC groups missing.");
+                const allSubgroupIds = new Set<number>();
+                fetchedComponents.forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
+                fetchedActivityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
+            } else if (fluidPackage === 'nrtl') {
+                if (!fetchedData1.cas_number || !fetchedData2.cas_number) throw new Error("CAS numbers required for NRTL.");
+                fetchedActivityParameters = await fetchNrtlParameters(supabase, fetchedData1.cas_number, fetchedData2.cas_number);
+            } else if (fluidPackage === 'pr') {
+                if (!fetchedData1.prParams || !fetchedData2.prParams) throw new Error("PR pure component params missing.");
+                fetchedActivityParameters = await fetchPrInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+            } else if (fluidPackage === 'srk') {
+                if (!fetchedData1.srkParams || !fetchedData2.srkParams) throw new Error("SRK pure component params missing.");
+                fetchedActivityParameters = await fetchSrkInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+            } else if (fluidPackage === 'uniquac') {
+                if (!fetchedData1.uniquacParams || !fetchedData2.uniquacParams) throw new Error("UNIQUAC pure component params missing.");
+                fetchedActivityParameters = await fetchUniquacInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+            } else if (fluidPackage === 'wilson') {
+                if (!fetchedData1.wilsonParams || !fetchedData2.wilsonParams) throw new Error("Wilson pure component params missing.");
+                fetchedActivityParameters = await fetchWilsonInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+            } else {
+                throw new Error(`Unsupported fluid package: ${fluidPackage}`);
+            }
+            
+            // Update cache and use the new data for this run
+            setComp1Data(fetchedData1);
+            setComp2Data(fetchedData2);
+            setInteractionParams(fetchedActivityParameters);
+            data1 = fetchedData1;
+            data2 = fetchedData2;
+            activityParameters = fetchedActivityParameters;
         }
-        
+
+        if (!data1 || !data2 || !activityParameters) {
+             setError("Component data or parameters not available for calculation.");
+             if (showLoading) setLoading(false);
+             return;
+        }
+
         const components: CompoundData[] = [data1, data2];
-        let activityParameters: any; // To hold UnifacParameters, NrtlInteractionParams, etc.
 
-        // Fetch interaction parameters based on fluidPackage
-        if (fluidPackage === 'unifac') {
-            if (!data1.unifacGroups || !data2.unifacGroups) throw new Error("UNIFAC groups missing.");
-            const allSubgroupIds = new Set<number>();
-            components.forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
-            activityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
-        } else if (fluidPackage === 'nrtl') {
-            if (!data1.cas_number || !data2.cas_number) throw new Error("CAS numbers required for NRTL.");
-            activityParameters = await fetchNrtlParameters(supabase, data1.cas_number, data2.cas_number);
-        } else if (fluidPackage === 'pr') {
-            if (!data1.prParams || !data2.prParams) throw new Error("PR pure component params missing.");
-            activityParameters = await fetchPrInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
-        } else if (fluidPackage === 'srk') {
-            if (!data1.srkParams || !data2.srkParams) throw new Error("SRK pure component params missing.");
-            activityParameters = await fetchSrkInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
-        } else if (fluidPackage === 'uniquac') {
-            if (!data1.uniquacParams || !data2.uniquacParams) throw new Error("UNIQUAC pure component params missing.");
-            activityParameters = await fetchUniquacInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
-        } else if (fluidPackage === 'wilson') {
-            if (!data1.wilsonParams || !data2.wilsonParams) throw new Error("Wilson pure component params missing.");
-            activityParameters = await fetchWilsonInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
-        } else {
-            throw new Error(`Unsupported fluid package: ${fluidPackage}`);
-        }
-
-        const stepSize = 1 / (pointsCount - 1); // Dynamic step based on desired resolution
-        const x_feed_values = Array.from({ length: pointsCount }, (_, i) => parseFloat((i * stepSize).toFixed(4))); // Variable resolution
+        const stepSize = 1 / (pointsCount - 1);
+        const x_feed_values = Array.from({ length: pointsCount }, (_, i) => parseFloat((i * stepSize).toFixed(4)));
         const calculated_x_values: number[] = [];
         const calculated_y_values: number[] = [];
 
-        // No top-level let fixedTempK, fixedPressurePa needed for the loop itself
-
         for (const x1_val of x_feed_values) {
             let resultPoint: BubbleDewResult | null = null;
-            if (useTemperature) { // Constant Temperature, calculate P_bubble and y1
-                // temperatureC is guaranteed not null here due to the check above
+            if (useTemperature) {
                 const currentFixedTempK = temperatureC! + 273.15;
                 const initialPressureGuess = (libCalculatePsat_Pa(data1.antoine!, currentFixedTempK) + libCalculatePsat_Pa(data2.antoine!, currentFixedTempK)) / 2 || 101325;
                 
@@ -542,14 +568,13 @@ export default function McCabeThielePage() {
                 else if (fluidPackage === 'srk') resultPoint = calculateBubblePressureSrk(components, x1_val, currentFixedTempK, activityParameters as SrkInteractionParams, initialPressureGuess);
                 else if (fluidPackage === 'uniquac') resultPoint = calculateBubblePressureUniquac(components, x1_val, currentFixedTempK, activityParameters as LibUniquacInteractionParams);
                 else if (fluidPackage === 'wilson') resultPoint = calculateBubblePressureWilson(components, x1_val, currentFixedTempK, activityParameters as LibWilsonInteractionParams);
-            } else { // Constant Pressure, calculate T_bubble and y1
-                // pressureBar is guaranteed not null here
+            } else {
                 const currentFixedPressurePa = pressureBar! * 1e5;
 
                 const Tbp1 = antoineBoilingPointSolverLocal(data1.antoine, currentFixedPressurePa);
                 const Tbp2 = antoineBoilingPointSolverLocal(data2.antoine, currentFixedPressurePa);
                 
-                let initialTempGuess: number; // For the Newton solver
+                let initialTempGuess: number;
                 if (Tbp1 !== null && Tbp2 !== null) {
                     initialTempGuess = x1_val * Tbp1 + (1 - x1_val) * Tbp2;
                 } else if (Tbp1 !== null) {
@@ -557,9 +582,9 @@ export default function McCabeThielePage() {
                 } else if (Tbp2 !== null) {
                     initialTempGuess = Tbp2;
                 } else {
-                    initialTempGuess = 373.15; // Default if Antoine fails for both
+                    initialTempGuess = 373.15;
                 }
-                initialTempGuess = Math.max(150, Math.min(initialTempGuess, 700)); // Bound it
+                initialTempGuess = Math.max(150, Math.min(initialTempGuess, 700));
 
                 if (fluidPackage === 'unifac') resultPoint = calculateBubbleTemperatureUnifac(components, x1_val, currentFixedPressurePa, activityParameters as UnifacParameters, initialTempGuess);
                 else if (fluidPackage === 'nrtl') resultPoint = calculateBubbleTemperatureNrtl(components, x1_val, currentFixedPressurePa, activityParameters as NrtlInteractionParams, initialTempGuess);
@@ -574,14 +599,11 @@ export default function McCabeThielePage() {
                 calculated_y_values.push(resultPoint.comp1_equilibrium);
             } else {
                 console.warn(`McCabe: Calculation failed for x1=${x1_val} with ${fluidPackage}. Error: ${resultPoint?.error}`);
-                // Optionally push NaN or skip point
             }
         }
         
-        // Add pure component points if not already perfectly covered
         if (!calculated_x_values.includes(0.0)) { calculated_x_values.unshift(0.0); calculated_y_values.unshift(0.0); }
         if (!calculated_x_values.includes(1.0)) { calculated_x_values.push(1.0); calculated_y_values.push(1.0); }
-        // Sort just in case
         const sortedPairs = calculated_x_values.map((x_val, i) => ({x: x_val, y: calculated_y_values[i]}))
             .sort((a,b) => a.x - b.x);
 
@@ -601,7 +623,7 @@ export default function McCabeThielePage() {
     } finally {
         if (showLoading) setLoading(false);
     }
-  }, [comp1Name, comp2Name, useTemperature, temperatureC, pressureBar, fluidPackage]);
+  }, [comp1Name, comp2Name, useTemperature, temperatureC, pressureBar, fluidPackage, comp1Data, comp2Data, interactionParams, displayedFluidPackage]);
 
   // REMOVED: useEffect that automatically called calculateEquilibriumCurve
   // useEffect(() => {
