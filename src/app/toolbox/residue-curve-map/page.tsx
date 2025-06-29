@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -256,6 +256,8 @@ export default function TernaryResidueMapPage() {
     const [backendComps, setBackendComps] = useState<CompoundData[]>([]);
     const [backendPkgParams, setBackendPkgParams] = useState<any>(null);
     const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
+
+    const debouncedSetHighlightedAzeoIdx = useCallback(debounce(setHighlightedAzeoIdx, 50), []);
 
     // Trigger re-generation automatically when the fluid-package selection changes
     const didMountFluidPkg = useRef(false);
@@ -1389,7 +1391,7 @@ export default function TernaryResidueMapPage() {
         setCleanedResidueCurves(filteredForPlotting);
     }, [residueCurves, fluidPackage]); // Ensure fluidPackage is a dependency
 
-    useEffect(() => {
+    const memoizedPlotData = useMemo(() => {
         const modelName = displayedFluidPackage.charAt(0).toUpperCase() + displayedFluidPackage.slice(1); // Use displayedFluidPackage
 
         let traces: Data[] = []; 
@@ -1491,7 +1493,6 @@ export default function TernaryResidueMapPage() {
         }
 
         if (cleanedResidueCurves.length === 0 || plotSortedComponents.length !== 3) { // Use cleanedResidueCurves
-            setPlotlyData([]); 
             const layoutUpdate: Partial<Layout> = {
                 ...baseLayout, 
                 title: {
@@ -1509,8 +1510,7 @@ export default function TernaryResidueMapPage() {
                 }],
                 shapes: [] 
             };
-            setPlotlyLayout(layoutUpdate);
-            return;
+            return { baseTraces: [], baseLayout: layoutUpdate, minAz: [], maxAz: [], sadAz: [] };
         }
 
         traces = cleanedResidueCurves.map((curve, index) => {
@@ -1704,31 +1704,13 @@ export default function TernaryResidueMapPage() {
             } as Data);
         }
 
+        const minAz: AzeotropeDisplayInfo[] = [];
+        const maxAz: AzeotropeDisplayInfo[] = [];
+        const sadAz: AzeotropeDisplayInfo[] = [];
+
         // --- Directly Found Azeotropes to Plot (Two-Trace Method for Animation) ---
         if (directAzeotropes.length > 0 && plotSortedComponents.length === 3) {
             // --- Robust Classification Logic ---
-            let compBPs: number[] = [];
-            // Try to get all BPs at system pressure first.
-            const bpAtSys = plotSortedComponents
-                .map(pc => pc.bp_at_Psys_K)
-                .filter(v => v !== null && v !== undefined && isFinite(v as number)) as number[];
-
-            // Only use this set if it's complete (i.e., all BP calculations at Psys succeeded).
-            if (bpAtSys.length === plotSortedComponents.length) {
-                compBPs = bpAtSys;
-            } else {
-                // If Psys BPs are incomplete, fall back to using NBP for ALL components
-                // to avoid mixing BPs from different pressures.
-                const nbp_K_values = plotSortedComponents
-                    .map(pc => pc.thermData.nbp_K)
-                    .filter(v => v !== null && v !== undefined && isFinite(v as number)) as number[];
-                
-                // Only use this NBP set if it's also complete.
-                if (nbp_K_values.length === plotSortedComponents.length) {
-                    compBPs = nbp_K_values;
-                }
-            }
-
             const classifyEigen = (az:AzeotropeDisplayInfo):'min'|'max'|'saddle'|'unknown' => {
                const h = 1e-4;
                if(backendComps.length!==3 || !backendPkgParams) return 'unknown';
@@ -1757,10 +1739,6 @@ export default function TernaryResidueMapPage() {
                return 'saddle';
             };
 
-            const minAz: AzeotropeDisplayInfo[] = [];
-            const maxAz: AzeotropeDisplayInfo[] = [];
-            const sadAz: AzeotropeDisplayInfo[] = [];
-
             for(const az of directAzeotropes){
                const cls=classifyEigen(az);
                switch(cls){
@@ -1786,14 +1764,6 @@ export default function TernaryResidueMapPage() {
                 `${displayedComponentNames[2] || 'Comp 3'}: ${fmt3(az.x[2])}<br>`+
                 `${displayedComponentNames[0] || 'Comp 1'}: ${fmt3(az.x[0])}<br>`+
                 `T: ${fmt3(az.T_K-273.15)}°C`;
-            const mkTextWithBPs = (az:AzeotropeDisplayInfo, bps: number[]) => {
-                const baseText = mkText(az);
-                if (bps.length > 0) {
-                    const bpStrings = bps.map(t => (t - 273.15).toFixed(1)).join(', ');
-                    return `${baseText}<br>BPs (°C): [${bpStrings}]`;
-                }
-                return baseText;
-            }
 
             const pushAzeoTrace = (dataArr:typeof minAz, color:string, name:string) => {
                 if (dataArr.length === 0) return;
@@ -1822,35 +1792,6 @@ export default function TernaryResidueMapPage() {
             pushAzeoTrace(minAz, '#00C000', 'Min-boiling'); // brighter green
             pushAzeoTrace(maxAz, '#9900FF', 'Max-boiling'); // saturated purple
             pushAzeoTrace(sadAz, 'red', 'Saddle');
-
-            // Legacy combined-azeotrope trace removed – now we rely solely on category traces.
-
-            // Highlight trace reinstated (only when row hovered)
-            if (highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length) {
-                const highlightedAzeo = directAzeotropes[highlightedAzeoIdx];
-
-                // --- Determine color based on classification ---
-                const cls = classifyEigen(highlightedAzeo);
-                let highlightColor = 'red'; // Default to saddle color
-                if (cls === 'min') {
-                    highlightColor = '#00C000';
-                } else if (cls === 'max') {
-                    highlightColor = '#9900FF';
-                }
-
-                allTraces.push({
-                    type: 'scatterternary',
-                    mode: 'markers',
-                    a: [highlightedAzeo.x[1]],
-                    b: [highlightedAzeo.x[2]],
-                    c: [highlightedAzeo.x[0]],
-                    cliponaxis:false,
-                    hoverinfo:'skip',
-                    marker:{symbol:'star',size:28,color:highlightColor,opacity:1,line:{color: currentTheme==='dark'? '#fff':'#000', width:2}},
-                    showlegend:false,
-                    legendgroup:'azeotropes'
-                } as Data);
-            }
         }
         // --- End Add Directly Found Azeotropes to Plot ---
 
@@ -1876,10 +1817,45 @@ export default function TernaryResidueMapPage() {
             // Removed transition to eliminate marker animation
         };
 
-        setPlotlyData(allTraces);
-        setPlotlyLayout(finalLayout);
+        return { baseTraces: allTraces, baseLayout: finalLayout, minAz, maxAz, sadAz };
 
-    }, [cleanedResidueCurves, componentsInput, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, highlightedAzeoIdx, backendComps, backendPkgParams, backendPressurePa]); // Depend on highlight
+    }, [cleanedResidueCurves, componentsInput, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa]);
+
+    useEffect(() => {
+        const { baseTraces, baseLayout, minAz, maxAz, sadAz } = memoizedPlotData;
+
+        const finalTraces = [...baseTraces];
+
+        // Highlight trace reinstated (only when row hovered)
+        if (highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length) {
+            const highlightedAzeo = directAzeotropes[highlightedAzeoIdx];
+
+            // --- Determine color based on earlier classification ---
+            let highlightColor = 'red'; // default to saddle color
+            if (minAz.includes(highlightedAzeo)) {
+                highlightColor = '#00C000';
+            } else if (maxAz.includes(highlightedAzeo)) {
+                highlightColor = '#9900FF';
+            }
+
+            finalTraces.push({
+                type: 'scatterternary',
+                mode: 'markers',
+                a: [highlightedAzeo.x[1]],
+                b: [highlightedAzeo.x[2]],
+                c: [highlightedAzeo.x[0]],
+                cliponaxis:false,
+                hoverinfo:'skip',
+                marker:{symbol:'star',size:28,color:highlightColor,opacity:1,line:{color: currentTheme==='dark'? '#fff':'#000', width:2}},
+                showlegend:false,
+                legendgroup:'azeotropes'
+            } as Data);
+        }
+        
+        setPlotlyData(finalTraces);
+        setPlotlyLayout(baseLayout);
+
+    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme]);
 
     const handleGenerateClick = () => {
         handleGenerateMap();
@@ -2017,8 +1993,8 @@ export default function TernaryResidueMapPage() {
                                             return (
                                                 <TableRow
                                                     key={index}
-                                                    onMouseEnter={() => setHighlightedAzeoIdx(index)}
-                                                    onMouseLeave={() => setHighlightedAzeoIdx(null)}
+                                                    onMouseEnter={() => debouncedSetHighlightedAzeoIdx(index)}
+                                                    onMouseLeave={() => debouncedSetHighlightedAzeoIdx(null)}
                                                 >
                                                  <TableCell className="px-2 text-center">{az.x[0].toFixed(3)}</TableCell>
                                                  <TableCell className="px-2 text-center">{az.x[1].toFixed(3)}</TableCell>
