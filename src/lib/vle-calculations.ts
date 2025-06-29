@@ -1064,8 +1064,8 @@ export function calculateUniquacGamma(
   const s1 = Theta_res[0] + Theta_res[1] * tau21;
   const s2 = Theta_res[1] + Theta_res[0] * tau12;
 
-  const lnGammaR0 = q[0] * (1 - Math.log(s1) - (Theta_res[0] + Theta_res[1] * tau21) / s1 - (Theta_res[1] * tau12) / s2);
-  const lnGammaR1 = q[1] * (1 - Math.log(s2) - (Theta_res[1] + Theta_res[0] * tau12) / s2 - (Theta_res[0] * tau21) / s1);
+  const lnGammaR0 = q[0] * (1 - Math.log(s1) - (Theta_res[0] / s1 + (Theta_res[1] * tau12) / s2));
+  const lnGammaR1 = q[1] * (1 - Math.log(s2) - (Theta_res[1] / s2 + (Theta_res[0] * tau21) / s1));
 
   return [Math.exp(lnGammaC[0] + lnGammaR0), Math.exp(lnGammaC[1] + lnGammaR1)];
 }
