@@ -31,9 +31,13 @@ import {
     findAzeotropePr,
     findAzeotropeSrk,
     findAzeotropeUniquac,
+    findAzeotropeWilson,
+    findAzeotropeUnifac,
+    systematicBinaryAzeotropeSearch,
+    estimateTernaryGuessFromBinary,
+    systematicTernaryAzeotropeSearch,
     type AzeotropeResult
 } from '@/lib/residue-curves-ode';
-
 import {
   R_gas_const_J_molK,
   calculatePsat_Pa,
@@ -55,6 +59,10 @@ import {
 import { fetchAndConvertThermData, FetchedCompoundThermData } from '@/lib/antoine-utils'; 
 import type { Data, Layout } from 'plotly.js'; 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"; 
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  evaluateResidueODE
+} from '@/lib/residue-curves-ode';
 
 // Dynamically import Plotly to avoid SSR issues
 const Plot = dynamic(
@@ -145,6 +153,68 @@ interface AzeotropeDisplayInfo {
     // but are not strictly needed for basic plotting.
 }
 
+/**
+ * Analyzes residue curves to find approximate azeotrope locations.
+ * Azeotropes are the start/end points of curves that are not pure components.
+ * @param curves The array of residue curves from the ODE simulation.
+ * @returns An array of unique, approximate azeotrope compositions.
+ */
+function findApproximateAzeotropesFromCurves(
+  curves: ResidueCurve[],
+): number[][] {
+  const potentialAzeotropes: number[][] = [];
+  const PURE_COMPONENT_THRESHOLD = 0.999; 
+
+  for (const curve of curves) {
+    if (curve.length < 2) continue;
+
+    const startPoint = curve[0].x;
+    const endPoint = curve[curve.length - 1].x;
+
+    if (!startPoint.some(frac => frac > PURE_COMPONENT_THRESHOLD)) {
+      potentialAzeotropes.push(startPoint);
+    }
+    if (!endPoint.some(frac => frac > PURE_COMPONENT_THRESHOLD)) {
+      potentialAzeotropes.push(endPoint);
+    }
+  }
+
+  // --- REVISED DE-DUPLICATION LOGIC ---
+  const uniqueAzeotropes: number[][] = [];
+  const binaryAzeotropes: number[][] = [];
+  const ternaryAzeotropes: number[][] = [];
+  
+  const BINARY_THRESHOLD = 0.015; // Mole fraction below this is considered 'on the edge'
+  const MIN_SQ_DIST_TERNARY = 0.02 * 0.02; // Wider tolerance for ternary azeotropes
+  const MIN_SQ_DIST_BINARY = 0.02 * 0.02;  // Separate tolerance for binary azeotropes
+
+  for (const p of potentialAzeotropes) {
+    if (p.some(frac => frac < BINARY_THRESHOLD)) {
+      binaryAzeotropes.push(p);
+    } else {
+      ternaryAzeotropes.push(p);
+    }
+  }
+
+  // De-duplicate ternary points
+  const uniqueTernary: number[][] = [];
+  for (const p of ternaryAzeotropes) {
+    if (!uniqueTernary.some(up => ((p[0]-up[0])**2 + (p[1]-up[1])**2 + (p[2]-up[2])**2) < MIN_SQ_DIST_TERNARY)) {
+      uniqueTernary.push(p);
+    }
+  }
+
+  // De-duplicate binary points
+  const uniqueBinary: number[][] = [];
+  for (const p of binaryAzeotropes) {
+    if (!uniqueBinary.some(up => ((p[0]-up[0])**2 + (p[1]-up[1])**2 + (p[2]-up[2])**2) < MIN_SQ_DIST_BINARY)) {
+      uniqueBinary.push(p);
+    }
+  }
+
+  return [...uniqueTernary, ...uniqueBinary];
+}
+
 // Map per-model azeotrope result names to unified interface
 type NrtlAzeotropeResult = AzeotropeResult;
 type PrAzeotropeResult = AzeotropeResult;
@@ -154,8 +224,8 @@ type UniquacAzeotropeResult = AzeotropeResult;
 export default function TernaryResidueMapPage() {
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
         { name: 'Acetone' },
+        { name: 'Chloroform' },
         { name: 'Methanol' },
-        { name: 'Water' },
     ]);
     const [componentSuggestions, setComponentSuggestions] = useState<string[][]>([[], [], []]); // Suggestions for each component
     const [showSuggestions, setShowSuggestions] = useState<boolean[]>([false, false, false]); // Control dropdown visibility
@@ -172,11 +242,20 @@ export default function TernaryResidueMapPage() {
     const [plotlyData, setPlotlyData] = useState<Data[]>([]);
     const [plotlyLayout, setPlotlyLayout] = useState<Partial<Layout>>({});
     const [plotSortedComponents, setPlotSortedComponents] = useState<ProcessedComponentData[]>([]);
+    const [plotAxisTitles, setPlotAxisTitles] = useState({ a: 'Comp 2 (M)', b: 'Comp 3 (H)', c: 'Comp 1 (L)' });
     const initialMapGenerated = useRef(false); // Ref to track initial generation
     const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>('dark'); // Default to dark
     const [plotContainerRef, setPlotContainerRef] = React.useState<HTMLDivElement | null>(null); // State to hold the div element
     const [directAzeotropes, setDirectAzeotropes] = useState<AzeotropeDisplayInfo[]>([]); // Use common display info
     const [scfMessage, setScfMessage] = useState<string | null>(null);
+    const [displayedPressure, setDisplayedPressure] = useState<string>(systemPressure);
+    // Names frozen after last successful generation to prevent flicker while typing
+    const [displayedComponentNames, setDisplayedComponentNames] = useState<string[]>(componentsInput.map(c=>c.name));
+    // Track which azeotrope (if any) is being hovered so we can highlight it on the plot
+    const [highlightedAzeoIdx, setHighlightedAzeoIdx] = useState<number | null>(null);
+    const [backendComps, setBackendComps] = useState<CompoundData[]>([]);
+    const [backendPkgParams, setBackendPkgParams] = useState<any>(null);
+    const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
 
     // Trigger re-generation automatically when the fluid-package selection changes
     const didMountFluidPkg = useRef(false);
@@ -530,7 +609,6 @@ export default function TernaryResidueMapPage() {
         const generatingFluidPackage = fluidPackage; // Capture fluid package for this generation run
         setIsLoading(true);
         setError(null);
-        setDirectAzeotropes([]); // Clear previous direct azeotropes
 
         try {
             const P_system_Pa = parseFloat(systemPressure) * 100000; // Convert bar to Pa
@@ -552,9 +630,9 @@ export default function TernaryResidueMapPage() {
                 const thermData = fetchedThermDataArray[index];
                 if (thermData.criticalProperties) {
                     const { Tc_K, Pc_Pa, omega } = thermData.criticalProperties;
-                    console.log(`EOS BP attempt → ${input.name}: Tc=${Tc_K.toFixed(2)} K, Pc=${(Pc_Pa/1e5).toFixed(2)} bar, ω=${omega.toFixed(3)}`);
+                    // console.log(`EOS BP attempt → ${input.name}: Tc=${Tc_K.toFixed(2)} K, Pc=${(Pc_Pa/1e5).toFixed(2)} bar, ω=${omega.toFixed(3)}`);
                 } else {
-                    console.log(`EOS BP attempt → ${input.name}: critical properties NOT found`);
+                    // console.log(`EOS BP attempt → ${input.name}: critical properties NOT found`);
                 }
                 let bp_at_Psys_K_val: number | null = null;
 
@@ -571,16 +649,16 @@ export default function TernaryResidueMapPage() {
                     } as unknown as CompoundData;
                     bp_at_Psys_K_val = calculateSaturationTemperaturePurePr(compObj, P_system_Pa);
                     if (bp_at_Psys_K_val !== null && !isNaN(bp_at_Psys_K_val)) {
-                        console.log(`EOS-PR BP → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val.toFixed(2)} K`);
+                        // console.log(`EOS-PR BP → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val.toFixed(2)} K`);
                     } else {
-                        console.warn(`EOS-PR BP failed for ${input.name}`);
+                        // console.warn(`EOS-PR BP failed for ${input.name}`);
                     }
 
                     const { Tc_K, Pc_Pa } = thermData.criticalProperties;
                     // If operating above BOTH Pc and Tc – treat as supercritical fluid
                     const isSCF = (P_system_Pa > Pc_Pa) && (bp_at_Psys_K_val !== null ? bp_at_Psys_K_val > Tc_K : true);
                     if (isSCF) {
-                        console.log(`Supercritical conditions detected for ${input.name} (Pc=${(Pc_Pa/1e5).toFixed(2)} bar, Tc=${Tc_K.toFixed(1)} K). Marking as SCF.`);
+                        // console.log(`Supercritical conditions detected for ${input.name} (Pc=${(Pc_Pa/1e5).toFixed(2)} bar, Tc=${Tc_K.toFixed(1)} K). Marking as SCF.`);
                         bp_at_Psys_K_val = Number.NaN; // Sentinel for SCF
                     }
                 } else if (thermData.antoine) {
@@ -591,7 +669,7 @@ export default function TernaryResidueMapPage() {
                         thermData.nbp_K || DEFAULT_INITIAL_T_K,
                         calculatePsat_Pa
                     );
-                    console.log(`Antoine BP fallback → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
+                    // console.log(`Antoine BP fallback → ${input.name}: T_sat@${(P_system_Pa/1e5).toFixed(2)} bar = ${bp_at_Psys_K_val?.toFixed(2) ?? 'NaN'} K`);
                 }
 
                 return {
@@ -621,31 +699,73 @@ export default function TernaryResidueMapPage() {
                 throw new Error("Antoine parameters missing for one or more components.");
             }
 
-            const sortedForPlot = [...processedComponents].sort((a, b) => {
-                // Sorting for plot axes (L, M, H) should still be based on NBP @ 1atm for consistency
-                if (a.thermData.nbp_K === null && b.thermData.nbp_K === null) return 0;
-                if (a.thermData.nbp_K === null) return 1;
-                if (b.thermData.nbp_K === null) return -1;
-                return a.thermData.nbp_K - b.thermData.nbp_K;
+            // Log calculated BPs for components before sorting
+            processedComponents.forEach(pc=>{
+                // console.log('[BP] Component', pc.name, 'bp_at_Psys_K=', pc.bp_at_Psys_K?.toFixed(2), 'nbp_K=', pc.thermData.nbp_K?.toFixed(2));
             });
-            setPlotSortedComponents(sortedForPlot);
 
-            // If any component is super-critical under the selected conditions, abort plotting
-            const scfComponents = processedComponents.filter(pc => pc.isSCF);
+            const sortedComponents = [...processedComponents].sort((a, b) => {
+                const bpA = a.bp_at_Psys_K ?? a.thermData.nbp_K ?? Infinity;
+                const bpB = b.bp_at_Psys_K ?? b.thermData.nbp_K ?? Infinity;
+                return bpA - bpB;
+            });
+
+            // console.log('[SORT] L/M/H order names:', sortedComponents.map(c=>c.name));
+
+            setPlotSortedComponents(sortedComponents);
+
+            // --- NEW: Directly compute and set axis titles here ---
+            const formatBp = (bp_K: number | null | undefined) => 
+                (bp_K && !Number.isNaN(bp_K) ? `${(bp_K - 273.15).toFixed(1)}°C` : 'N/A');
+
+            const labelByOrig: Record<number,string> = {};
+            if (sortedComponents.length === 3){
+                labelByOrig[sortedComponents[0].originalIndex] = 'L';
+                labelByOrig[sortedComponents[1].originalIndex] = 'M';
+                labelByOrig[sortedComponents[2].originalIndex] = 'H';
+            }
+            const getBp = (orig:number)=> sortedComponents.find(c=>c.originalIndex===orig)?.bp_at_Psys_K ?? sortedComponents.find(c=>c.originalIndex===orig)?.thermData.nbp_K;
+
+            setPlotAxisTitles({
+                c: `${componentsInput[0]?.name || 'Comp 1'} (${labelByOrig[0] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(0))}`:''})`,
+                a: `${componentsInput[1]?.name || 'Comp 2'} (${labelByOrig[1] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(1))}`:''})`,
+                b: `${componentsInput[2]?.name || 'Comp 3'} (${labelByOrig[2] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(2))}`:''})`
+            });
+
+            // Supercritical component check
+            const scfComponents = sortedComponents.filter(pc => pc.isSCF);
+
             if (scfComponents.length > 0) {
-                const scfNamesWithValues = scfComponents.map(c => {
-                    const Pc = c.thermData.criticalProperties?.Pc_Pa ?? NaN;
-                    return `${c.name} (Pc=${isNaN(Pc)?'N/A':(Pc/1e5).toFixed(2)} bar)`;
-                }).join(', ');
-                setScfMessage(`${scfNamesWithValues} is above its Pc at ${systemPressure} bar.\nA ternary residue-curve diagram cannot be generated under super-critical conditions.`);
-                setPlotlyData([]);
+                const numScf = scfComponents.length;
+                let scfNamesWithValues = '';
+                if (numScf === 1) {
+                    const comp = scfComponents[0];
+                    const pcBar = comp.thermData.criticalProperties ? (comp.thermData.criticalProperties.Pc_Pa / 1e5).toFixed(2) : 'N/A';
+                    scfNamesWithValues = `${comp.name} (Pc=${pcBar} bar)`;
+                    setScfMessage(`${scfNamesWithValues} is above its Pc at ${systemPressure} bar.\nA ternary residue-curve diagram cannot be generated under super-critical conditions.`);
+                } else {
+                    scfNamesWithValues = scfComponents.map((comp, index) => {
+                        const pcBar = comp.thermData.criticalProperties ? (comp.thermData.criticalProperties.Pc_Pa / 1e5).toFixed(2) : 'N/A';
+                        let nameStr = `${comp.name} (Pc=${pcBar} bar)`;
+                        if (numScf > 1 && index === numScf - 1) {
+                            nameStr = `and ${nameStr}`;
+                        }
+                        return nameStr;
+                    }).join(numScf > 2 ? ', ' : ' ');
+                    
+                    setScfMessage(`${scfNamesWithValues} are above their Pc at ${systemPressure} bar.\nA ternary residue-curve diagram cannot be generated under super-critical conditions.`);
+                }
                 setIsLoading(false);
+                setError("Supercritical component detected.");
+                setResidueCurves([]);
+                setDirectAzeotropes([]);
                 return;
             } else {
-                setScfMessage(null); // clear previous message
+                setScfMessage(null);
             }
 
-            const compoundsForBackend: CompoundData[] = processedComponents
+            // Important: create a shallow copy before sorting by originalIndex so we don't mutate `sortedComponents`.
+            const compoundsForBackend: CompoundData[] = [...sortedComponents]
                 .sort((a,b) => a.originalIndex - b.originalIndex)
                 .map(pc => ({
                     name: pc.name,
@@ -662,13 +782,42 @@ export default function TernaryResidueMapPage() {
             let activityModelParams: any;
 
             if (fluidPackage === 'wilson') {
-                const params01 = await fetchWilsonInteractionParams(supabase, cas[0], cas[1]);
-                const params02 = await fetchWilsonInteractionParams(supabase, cas[0], cas[2]);
-                const params12 = await fetchWilsonInteractionParams(supabase, cas[1], cas[2]);
+                const fetchWilsonBothWays = async (c1:string,c2:string) => {
+                    let p = await fetchWilsonInteractionParams(supabase, c1, c2);
+                    if ((p.a12_J_mol === 0 && p.a21_J_mol === 0)) {
+                        // Try the opposite orientation – many tables are asymmetric.
+                        const pRev = await fetchWilsonInteractionParams(supabase, c2, c1);
+                        if (pRev.a12_J_mol !== 0 || pRev.a21_J_mol !== 0) {
+                            p = { a12_J_mol: pRev.a21_J_mol, a21_J_mol: pRev.a12_J_mol };
+                        }
+                    }
+                    return p;
+                };
+
+                const params01 = await fetchWilsonBothWays(cas[0], cas[1]);
+                const params02 = await fetchWilsonBothWays(cas[0], cas[2]);
+                const params12 = await fetchWilsonBothWays(cas[1], cas[2]);
+
+                const symmetric = (a_forward:number|undefined, a_reverse:number|undefined):[number,number] => {
+                    const f = (a_forward !== undefined && !Number.isNaN(a_forward)) ? a_forward : undefined;
+                    const r = (a_reverse !== undefined && !Number.isNaN(a_reverse)) ? a_reverse : undefined;
+                    if (f !== undefined && r !== undefined) return [f,r];
+                    if (f !== undefined) return [f,f];
+                    if (r !== undefined) return [r,r];
+                    return [0,0];
+                };
+
+                const [a01,a10] = symmetric(params01.a12_J_mol, params01.a21_J_mol);
+                const [a02,a20] = symmetric(params02.a12_J_mol, params02.a21_J_mol);
+                const [a12,a21] = symmetric(params12.a12_J_mol, params12.a21_J_mol);
+
                 activityModelParams = {
-                    a01_J_mol: params01.a12_J_mol, a10_J_mol: params01.a21_J_mol,
-                    a02_J_mol: params02.a12_J_mol, a20_J_mol: params02.a21_J_mol,
-                    a12_J_mol: params12.a12_J_mol, a21_J_mol: params12.a21_J_mol,
+                    a01_J_mol: a01,
+                    a10_J_mol: a10,
+                    a02_J_mol: a02,
+                    a20_J_mol: a20,
+                    a12_J_mol: a12,
+                    a21_J_mol: a21,
                 } as TernaryWilsonParams;
             } else if (fluidPackage === 'unifac') {
                 const allSubgroupIds = new Set<number>();
@@ -730,166 +879,264 @@ export default function TernaryResidueMapPage() {
                 throw new Error(`Unsupported fluid package: ${fluidPackage}`);
             }
             
-            const avgNBP_at_Psys = processedComponents
+            const avgNBP_at_Psys = sortedComponents
                 .map(p => p.bp_at_Psys_K) // Use BP at system pressure
                 .filter(bp => bp !== null && bp !== undefined) as number[];
             
             const initialTempGuess_K = avgNBP_at_Psys.length > 0 
                 ? avgNBP_at_Psys.reduce((sum, val) => sum + val, 0) / avgNBP_at_Psys.length 
-                : (processedComponents
+                : (sortedComponents
                     .map(p => p.thermData.nbp_K)
                     .filter(nbp => nbp !== null) as number[]
                   ).length > 0 
-                    ? (processedComponents
+                    ? (sortedComponents
                         .map(p => p.thermData.nbp_K)
                         .filter(nbp => nbp !== null) as number[]
-                      ).reduce((sum, val) => sum + val, 0) / (processedComponents
+                      ).reduce((sum, val) => sum + val, 0) / (sortedComponents
                         .map(p => p.thermData.nbp_K)
                         .filter(nbp => nbp !== null) as number[]
                       ).length
                     : DEFAULT_INITIAL_T_K;
 
-            // Determine parameters for starting point generation
-            // Use different (potentially fewer) points for UNIFAC if it's much slower
-            const numPerEdgeUnifac = 6; // Reduced for UNIFAC
-            const numInternalDivisionsUnifac = 7; // Reduced for UNIFAC
+            // -------------------------------------------------------------
+            // Helper: convert a composition expressed in Light/Medium/Heavy
+            // (i.e. sortedComponents order) back to the user-input order that
+            // `compoundsForBackend` and all thermodynamic routines expect.
+            // -------------------------------------------------------------
+            const toInputOrder = (xSorted: number[]): number[] => {
+                const xInput = [0, 0, 0];
+                sortedComponents.forEach((comp, sIdx) => {
+                    xInput[comp.originalIndex] = xSorted[sIdx] ?? 0;
+                });
+                // console.debug('[toInputOrder] L/M/H -> input order:', xSorted.map(v=>v.toFixed(3)), '=>', xInput.map(v=>v.toFixed(3)));
+                return xInput;
+            };
 
-            const numPerEdge = (fluidPackage === 'unifac') ? numPerEdgeUnifac : 
-                               (fluidPackage === 'pr' || fluidPackage === 'srk') ? 10 : 8; // Adjusted non-UNIFAC from 6 to 8
-            const numInternalDivisions = (fluidPackage === 'unifac') ? numInternalDivisionsUnifac :
-                                         (fluidPackage === 'pr' || fluidPackage === 'srk') ? 10 : 8; // Adjusted non-UNIFAC from 7 to 8
-            
-            // Call the modified generateStartingPoints function
-            let startingCompositions = generateStartingPoints(numPerEdge, numInternalDivisions, fluidPackage);
-            
-            const allCurvesPromises: Promise<ResidueCurve | null>[] = [];
+            // Placeholder – will be populated later after identifying unstable nodes
+            let startingCompositions: number[][] = [];
 
-            // Adjust d_xi_step for each model
-            // --- FIX APPLIED HERE ---
-            // Drastically reduce the step size for EOS models for stability.
-            // A simple Euler integrator needs small steps for these complex equations.
-            const base_d_xi_step_activity = 0.03;    // Wilson, NRTL, UNIQUAC, UNIFAC
-            const base_d_xi_step_eos = 0.002;        // A much smaller, more stable step for PR/SRK.
+            // --- Integrate residue curves from each seed ---
+            const curvePromises: Promise<ResidueCurve | null>[] = [];
 
             const d_xi_step_for_model =
-                (fluidPackage === 'pr' || fluidPackage === 'srk') ? base_d_xi_step_eos
-                : base_d_xi_step_activity;
+                (fluidPackage === 'pr' || fluidPackage === 'srk') ? 0.002 : 0.03;
+            const max_steps = (fluidPackage === 'unifac') ? 600 :
+                              (fluidPackage === 'pr' || fluidPackage === 'srk') ? 1200 : 800;
 
-            const max_steps_unifac = 600; // Reduced max steps for UNIFAC
-            // Adjust max_steps for EOS to be larger to cover the diagram with the smaller step size.
-            const max_steps = (fluidPackage === 'unifac') ? max_steps_unifac :
-                              (fluidPackage === 'pr' || fluidPackage === 'srk') ? 1200 : 800; // e.g., 1200 * 0.002 = 2.4 integration length
-
-            for (const start_x_3comp of startingCompositions) {
-                let promise: Promise<ResidueCurve | null>;
+            for (const start_x of startingCompositions) {
                 switch (fluidPackage) {
                     case 'wilson':
-                        promise = simulateResidueCurveODE('wilson', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryWilsonParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        curvePromises.push(simulateResidueCurveODE('wilson', start_x, P_system_Pa, compoundsForBackend, activityModelParams as TernaryWilsonParams, d_xi_step_for_model, max_steps, initialTempGuess_K));
                         break;
                     case 'unifac':
-                        promise = simulateResidueCurveODE('unifac', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as UnifacParameters, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        curvePromises.push(simulateResidueCurveODE('unifac', start_x, P_system_Pa, compoundsForBackend, activityModelParams as UnifacParameters, d_xi_step_for_model, max_steps, initialTempGuess_K));
                         break;
                     case 'nrtl':
-                        promise = simulateResidueCurveODE('nrtl', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryNrtlParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        curvePromises.push(simulateResidueCurveODE('nrtl', start_x, P_system_Pa, compoundsForBackend, activityModelParams as TernaryNrtlParams, d_xi_step_for_model, max_steps, initialTempGuess_K));
                         break;
                     case 'pr':
-                        promise = simulateResidueCurveODE('pr', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryPrParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        curvePromises.push(simulateResidueCurveODE('pr', start_x, P_system_Pa, compoundsForBackend, activityModelParams as TernaryPrParams, d_xi_step_for_model, max_steps, initialTempGuess_K));
                         break;
                     case 'srk':
-                        promise = simulateResidueCurveODE('srk', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernarySrkParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        curvePromises.push(simulateResidueCurveODE('srk', start_x, P_system_Pa, compoundsForBackend, activityModelParams as TernarySrkParams, d_xi_step_for_model, max_steps, initialTempGuess_K));
                         break;
                     case 'uniquac':
-                        promise = simulateResidueCurveODE('uniquac', start_x_3comp, P_system_Pa, compoundsForBackend, activityModelParams as TernaryUniquacParams, d_xi_step_for_model, max_steps, initialTempGuess_K);
+                        curvePromises.push(simulateResidueCurveODE('uniquac', start_x, P_system_Pa, compoundsForBackend, activityModelParams as TernaryUniquacParams, d_xi_step_for_model, max_steps, initialTempGuess_K));
                         break;
                     default:
-                        throw new Error(`Simulation function not implemented for ${fluidPackage}`);
+                        break;
                 }
-                allCurvesPromises.push(promise);
             }
 
-            const allCurvesResults = await Promise.all(allCurvesPromises);
-            
-            const validCurves = allCurvesResults.filter(curve => curve !== null && curve.length > 1) as ResidueCurve[];
-
-            // Debug logs trimmed – comment out verbose residue-curve generation details.
-
+            const curveResults = await Promise.all(curvePromises);
+            const validCurves = curveResults.filter(c => c && c.length > 1) as ResidueCurve[];
             setResidueCurves(validCurves);
 
-            // --- Call Direct Azeotrope Solver ---
+            // --- Call Direct Azeotrope Solver using Hybrid RCM Approach ---
             let foundAzeotropes: AzeotropeDisplayInfo[] = [];
+            let binaryHits: AzeotropeResult[] = [];
+            const BINARY_ERR_TOL = 0.01; // global threshold for binary acceptance
 
-            if (compoundsForBackend.length === 3) { // Ensure this uses compoundsForBackend
-                const initialGuessesRaw: { x: number[], T_K: number }[] = [ // Added type for initialGuessesRaw elements
-                    { x: [0.333, 0.333, 0.334], T_K: initialTempGuess_K }, // Center
+            if (compoundsForBackend.length === 3) {
+                // --- STEP 1: Generate a diverse set of initial guesses ---
+
+                // a) Start with the original hardcoded guesses for broad coverage
+                const initialGuessPool: { x: number[], T_K: number }[] = [
+                    { x: [0.333, 0.333, 0.334], T_K: initialTempGuess_K }, // Center guess
                 ];
-                if (plotSortedComponents.length === 3) {
-                    initialGuessesRaw.push({ x: [0.9, 0.05, 0.05], T_K: plotSortedComponents[0].bp_at_Psys_K || plotSortedComponents[0].thermData.nbp_K || initialTempGuess_K });
-                    initialGuessesRaw.push({ x: [0.05, 0.9, 0.05], T_K: plotSortedComponents[1].bp_at_Psys_K || plotSortedComponents[1].thermData.nbp_K || initialTempGuess_K });
-                    initialGuessesRaw.push({ x: [0.05, 0.05, 0.9], T_K: plotSortedComponents[2].bp_at_Psys_K || plotSortedComponents[2].thermData.nbp_K || initialTempGuess_K });
+                
+                // Add other binary/vertex guesses from the original code
+                if (sortedComponents.length === 3) {
+                    initialGuessPool.push({ x: toInputOrder([0.9, 0.05, 0.05]), T_K: sortedComponents[0].bp_at_Psys_K || sortedComponents[0].thermData.nbp_K || initialTempGuess_K });
+                    initialGuessPool.push({ x: toInputOrder([0.05, 0.9, 0.05]), T_K: sortedComponents[1].bp_at_Psys_K || sortedComponents[1].thermData.nbp_K || initialTempGuess_K });
+                    initialGuessPool.push({ x: toInputOrder([0.05, 0.05, 0.9]), T_K: sortedComponents[2].bp_at_Psys_K || sortedComponents[2].thermData.nbp_K || initialTempGuess_K });
                 }
-                if (compoundsForBackend.length === 3) { // Ensure this uses compoundsForBackend
-                    const T0 = plotSortedComponents.find(c => c.originalIndex === 0)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 0)?.thermData.nbp_K || initialTempGuess_K;
-                    const T1 = plotSortedComponents.find(c => c.originalIndex === 1)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 1)?.thermData.nbp_K || initialTempGuess_K;
-                    const T2 = plotSortedComponents.find(c => c.originalIndex === 2)?.bp_at_Psys_K || plotSortedComponents.find(c => c.originalIndex === 2)?.thermData.nbp_K || initialTempGuess_K;
-                    initialGuessesRaw.push({ x: [0.5, 0.5, 0.001], T_K: (T0+T1)/2 });
-                    initialGuessesRaw.push({ x: [0.5, 0.001, 0.5], T_K: (T0+T2)/2 });
-                    initialGuessesRaw.push({ x: [0.001, 0.5, 0.5], T_K: (T1+T2)/2 });
+                if (compoundsForBackend.length === 3) {
+                    const T0 = sortedComponents.find(c => c.originalIndex === 0)?.bp_at_Psys_K || sortedComponents.find(c => c.originalIndex === 0)?.thermData.nbp_K || initialTempGuess_K;
+                    const T1 = sortedComponents.find(c => c.originalIndex === 1)?.bp_at_Psys_K || sortedComponents.find(c => c.originalIndex === 1)?.thermData.nbp_K || initialTempGuess_K;
+                    const T2 = sortedComponents.find(c => c.originalIndex === 2)?.bp_at_Psys_K || sortedComponents.find(c => c.originalIndex === 2)?.thermData.nbp_K || initialTempGuess_K;
+                    initialGuessPool.push({ x: toInputOrder([0.5, 0.5, 0.001]), T_K: (T0+T1)/2 });
+                    initialGuessPool.push({ x: toInputOrder([0.5, 0.001, 0.5]), T_K: (T0+T2)/2 });
+                    initialGuessPool.push({ x: toInputOrder([0.001, 0.5, 0.5]), T_K: (T1+T2)/2 });
                 }
 
-                let results: (NrtlAzeotropeResult | PrAzeotropeResult | SrkAzeotropeResult | UniquacAzeotropeResult | null)[] = [];
+                // d) Systematic Binary Search – derive additional initial guesses
+                try {
+                  // Run binary search in Light/Medium/Heavy order to make results
+                  // independent of user input order, then map compositions back to
+                  // the original order with `toInputOrder`.
+                  const compsForBinary = [...sortedComponents]
+                        .map((sc, idx) => {
+                            const found = compoundsForBackend.find(c => c.cas_number === sc.casNumber)!;
+                            // console.log(`[MapLBH->Binary] idx ${idx} LBH=${sc.name} maps to backend pos=${compoundsForBackend.indexOf(found)} name=${found.name}`);
+                            return found;
+                        }) as CompoundData[];
 
-                if (generatingFluidPackage === 'nrtl') {
-                    const foundAzeotropesPromises = initialGuessesRaw.map(guess => // 'guess' type is inferred from initialGuessesRaw
-                        findAzeotropeNRTL(
-                            P_system_Pa,
-                            compoundsForBackend,
-                            activityModelParams as TernaryNrtlParams,
-                            guess.x,
-                            guess.T_K,
-                            150, 1e-7
-                        )
-                    );
-                    results = await Promise.all(foundAzeotropesPromises);
-                } else if (generatingFluidPackage === 'pr') {
-                    results = initialGuessesRaw.map(guess => // 'guess' type is inferred
-                        findAzeotropePr(
-                            P_system_Pa,
-                            compoundsForBackend,
-                            activityModelParams as TernaryPrParams,
-                            guess.x,
-                            guess.T_K,
-                            150, 1e-7
-                        )
-                    );
-                } else if (generatingFluidPackage === 'srk') {
-                    results = initialGuessesRaw.map(guess => // 'guess' type is inferred
-                        findAzeotropeSrk(
-                            guess.x, 
-                            P_system_Pa,
-                            compoundsForBackend,
-                            activityModelParams as TernarySrkParams,
-                            [1, 1, 1] 
-                        )
-                    );
-                } else if (generatingFluidPackage === 'uniquac') {
-                    // Assuming findAzeotropeUniquac and UniquacAzeotropeResult are properly defined and imported
-                    // from '@/lib/residue-curves-ode-uniquac'
-                    if (typeof findAzeotropeUniquac === 'function') {
-                        results = initialGuessesRaw.map(guess =>
-                            findAzeotropeUniquac(
-                                P_system_Pa,
-                                compoundsForBackend,
-                                activityModelParams as TernaryUniquacParams,
-                                guess.x, 
-                                guess.T_K,
-                                150, 1e-7 // Assuming similar parameters to NRTL/PR
-                            )
-                        );
-                    } else {
-                        console.warn("UNIQUAC direct azeotrope solver (findAzeotropeUniquac) is not available. Skipping.");
-                        results = [];
+                  // Re-map Wilson interaction parameters to match L/M/H order so they
+                  // stay consistent with `compsForBinary`.
+                  let paramsForBinary = activityModelParams;
+                  if (fluidPackage === 'wilson') {
+                      const perm: number[] = sortedComponents.map(sc => sc.originalIndex); // newIndex -> origIndex
+                      const a = (i:number,j:number) => {
+                        const pair = `${i}${j}`;
+                        switch(pair){
+                          case '01': return activityModelParams.a01_J_mol;
+                          case '10': return activityModelParams.a10_J_mol;
+                          case '02': return activityModelParams.a02_J_mol;
+                          case '20': return activityModelParams.a20_J_mol;
+                          case '12': return activityModelParams.a12_J_mol;
+                          case '21': return activityModelParams.a21_J_mol;
+                          default: return 0;
+                        }
+                      };
+                      // If a specific orientation value is missing (0), fall back to the reverse
+                      const aSafe = (i:number,j:number):number => {
+                        const val = a(i,j);
+                        if (val !== 0 && !Number.isNaN(val)) return val;
+                        const rev = a(j,i);
+                        return (rev !== 0 && !Number.isNaN(rev)) ? rev : 0;
+                      };
+                      const aLM = (i:number,j:number)=> aSafe(perm[i],perm[j]);
+                      paramsForBinary = {
+                        a01_J_mol: aLM(0,1), a10_J_mol: aLM(1,0),
+                        a02_J_mol: aLM(0,2), a20_J_mol: aLM(2,0),
+                        a12_J_mol: aLM(1,2), a21_J_mol: aLM(2,1)
+                      } as TernaryWilsonParams;
+                      // console.log('[ParamReorder] Wilson params remapped for L/M/H order');
+                  }
+
+                  const binaryHitsSorted = systematicBinaryAzeotropeSearch(
+                        generatingFluidPackage as FluidPackageResidue, P_system_Pa, compsForBinary, paramsForBinary, initialTempGuess_K);
+
+                  binaryHits = binaryHitsSorted.map(h => ({ ...h, x: toInputOrder(h.x) }));
+
+                  // console.log(`[BinarySearch] ${binaryHits.length} binary azeotrope candidates found (order-independent).`);
+                  // console.log('[BinarySearch] compsForBinary order (names):', compsForBinary.map(c=>c.name));
+                  for (const hit of binaryHits) {
+                    if (hit.converged && hit.errorNorm !== undefined && hit.errorNorm < BINARY_ERR_TOL) {
+                      // add as starting guess
+                      initialGuessPool.push({ x: hit.x, T_K: hit.T_K });
+                      // also record directly for display so that even if the
+                      // subsequent ternary solver fails we still list the
+                      // binary azeotrope detected on the edge.
+                      foundAzeotropes.push({ x: [...hit.x], T_K: hit.T_K, errorNorm: hit.errorNorm });
+                    }
+                    // console.log(`[BinaryHit ${binaryHits.indexOf(hit)}] x(input order)=`, hit.x.map(v=>v.toFixed(3)), 'errorNorm=', hit.errorNorm?.toExponential(2));
+                  }
+                  const ternarySeed = estimateTernaryGuessFromBinary(binaryHits);
+                  if (ternarySeed) {
+                    initialGuessPool.push({ x: ternarySeed.x, T_K: ternarySeed.T_K }); // ternarySeed.x already in input order
+                    // console.log('[BinarySearch] Added averaged ternary seed.');
+                  }
+                } catch (err) {
+                  console.warn('[BinarySearch] Error during systematic scan:', err);
+                }
+
+                // --- NEW systematic interior ternary scan ---
+                try {
+                  const ternaryHits = systematicTernaryAzeotropeSearch(generatingFluidPackage as FluidPackageResidue, P_system_Pa, compoundsForBackend, activityModelParams, initialTempGuess_K);
+                  // console.log(`[TernarySearch] ${ternaryHits.length} interior ternary azeotrope candidates found.`);
+                  for (const th of ternaryHits) {
+                    if (th.converged) {
+                      initialGuessPool.push({ x: th.x, T_K: th.T_K });
+                    }
+                  }
+                } catch (err) {
+                  console.warn('[TernarySearch] Error during interior scan:', err);
+                }
+
+                // b) **NEW**: Use RCM topology to find high-quality, targeted guesses
+                const approxAzeotropesFromRCM = findApproximateAzeotropesFromCurves(validCurves);
+                // console.log(`[Azeotrope Solver] Found ${approxAzeotropesFromRCM.length} potential azeotropes from RCM topology.`);
+
+                for (const approx_x of approxAzeotropesFromRCM) {
+                    // Use the temperature from the curve start/end point as the initial T guess
+                    let T_guess_for_x = initialTempGuess_K;
+                    let found_T_guess = false;
+                    for (const curve of validCurves) {
+                        const firstPoint = curve[0];
+                        const lastPoint = curve[curve.length - 1];
+                        
+                        // Check if the guess matches the start point (potential min-boiling azeotrope)
+                        if (firstPoint && !found_T_guess && firstPoint.x.every((val, i) => Math.abs(val - approx_x[i]) < 1e-4)) {
+                            T_guess_for_x = firstPoint.T_K;
+                            found_T_guess = true;
+                        }
+                        
+                        // Check if the guess matches the end point (potential max-boiling azeotrope)
+                        if (lastPoint && !found_T_guess && lastPoint.x.every((val, i) => Math.abs(val - approx_x[i]) < 1e-4)) {
+                            T_guess_for_x = lastPoint.T_K;
+                            found_T_guess = true;
+                        }
+
+                        if (found_T_guess) break; // Found a good T, move to next azeotrope guess
+                    }
+                    initialGuessPool.push({ x: approx_x, T_K: T_guess_for_x });
+                }
+
+                // c) De-duplicate the final list of guesses to avoid redundant solver calls
+                const uniqueGuesses: { x: number[], T_K: number }[] = [];
+                const MIN_SQ_DIST_GUESSES = 0.005 * 0.005;
+
+                for (const guess of initialGuessPool) {
+                    if (!uniqueGuesses.some(uniqueGuess => {
+                        const distSq = (guess.x[0] - uniqueGuess.x[0])**2 + (guess.x[1] - uniqueGuess.x[1])**2 + (guess.x[2] - uniqueGuess.x[2])**2;
+                        return distSq < MIN_SQ_DIST_GUESSES;
+                    })) {
+                        uniqueGuesses.push(guess);
                     }
                 }
+                // console.log(`[Azeotrope Solver] Refining ${uniqueGuesses.length} unique initial guesses.`);
+                // uniqueGuesses.forEach((g,idx)=>console.log(`[UniqueGuess ${idx}] x=`, g.x.map(v=>v.toFixed(3)), 'T=', (g.T_K-273.15).toFixed(1)));
+
+                // --- STEP 2: Run the local solver with the improved guess list ---
+                let results: (AzeotropeResult | null)[] = [];
+
+                // --- Debugging: validate parameter completeness ---
+                // --- End Debugging validation block ---
+
+                const solverPromises = uniqueGuesses.map(guess => { // Use the enhanced 'uniqueGuesses' list
+                    switch (generatingFluidPackage) {
+                        case 'wilson':
+                            return findAzeotropeWilson(P_system_Pa, compoundsForBackend, activityModelParams as TernaryWilsonParams, guess.x, guess.T_K);
+                        case 'nrtl':
+                            return findAzeotropeNRTL(P_system_Pa, compoundsForBackend, activityModelParams as TernaryNrtlParams, guess.x, guess.T_K);
+                        case 'unifac':
+                             return findAzeotropeUnifac(P_system_Pa, compoundsForBackend, activityModelParams as UnifacParameters, guess.x, guess.T_K);
+                        case 'pr':
+                            return findAzeotropePr(P_system_Pa, compoundsForBackend, activityModelParams as TernaryPrParams, guess.x, guess.T_K);
+                        case 'srk':
+                            return findAzeotropeSrk(P_system_Pa, compoundsForBackend, activityModelParams as TernarySrkParams, guess.x, guess.T_K);
+                        case 'uniquac':
+                            return findAzeotropeUniquac(P_system_Pa, compoundsForBackend, activityModelParams as TernaryUniquacParams, guess.x, guess.T_K);
+                        default:
+                            return Promise.resolve(null);
+                    }
+                });
+                
+                results = await Promise.all(solverPromises);
+                
+                // console.log(`[Azeotrope Solver] Raw results for ${generatingFluidPackage}:`, JSON.parse(JSON.stringify(results)));
 
                 const convergedResults = results.filter(r => {
                     if (!r) return false;
@@ -897,7 +1144,7 @@ export default function TernaryResidueMapPage() {
                         const srkRes = r as SrkAzeotropeResult;
                         // Ensure y exists and is an array of 3 numbers for SRK
                         if (!srkRes.y || srkRes.y.length !== 3 || !srkRes.x || srkRes.x.length !== 3) {
-                            console.warn("SRK Azeotrope result is missing x or y, or they are not 3-component arrays. Skipping.", srkRes);
+                            // console.warn("SRK Azeotrope result is missing x or y, or they are not 3-component arrays. Skipping.", srkRes);
                             return false;
                         }
                         const errorNormYX = Math.sqrt(
@@ -908,19 +1155,30 @@ export default function TernaryResidueMapPage() {
                         (r as any).calculatedErrorNormYX = errorNormYX;
                         return errorNormYX < 0.01; // Threshold for considering SRK result an azeotrope
                     }
-                    // For PR, NRTL, and now UNIQUAC, they should have a 'converged' property
-                    return (r as NrtlAzeotropeResult | PrAzeotropeResult | UniquacAzeotropeResult).converged;
-                }) as Array<NrtlAzeotropeResult | PrAzeotropeResult | UniquacAzeotropeResult | (SrkAzeotropeResult & { calculatedErrorNormYX?: number })>;
+                    // For all other models, they should have a 'converged' property
+                    const convFlag = (r as any).converged === true;
+                    const errVal: number | undefined = (r as any).errorNorm;
+                    return convFlag || (errVal !== undefined && errVal < BINARY_ERR_TOL);
+                }) as Array<AzeotropeResult & { calculatedErrorNormYX?: number }>;
 
+                // console.log(`[Azeotrope Solver] Converged results:`, JSON.parse(JSON.stringify(convergedResults)));
 
                 const uniqueDirectAzeotropes: AzeotropeDisplayInfo[] = [];
-                const minSqDistAzeo = 0.02 * 0.02;
+                // Increase tolerance to merge near-identical solutions (binary vs ternary duplicates)
+                const minSqDistAzeo = 0.09 * 0.09;
 
                 for (const res of convergedResults) {
                     // Ensure x is a 3-component array. SRK result should already be.
                     if (!res.x || res.x.length !== 3) {
-                        console.warn("Azeotrope result 'x' is not a 3-component array. Skipping.", res);
+                        // console.warn("Azeotrope result 'x' is not a 3-component array. Skipping.", res);
                         continue;
+                    }
+
+                    // --- NEW: Filter out azeotropes too close to a pure component corner ---
+                    const PURE_COMPONENT_CORNER_THRESHOLD = 0.98;
+                    if (res.x.some(xi => xi > PURE_COMPONENT_CORNER_THRESHOLD)) {
+                        // console.log(`[Azeotrope Filter] Rejecting azeotrope near corner: x=[${res.x.map(v=>v.toFixed(3)).join(',')}]`);
+                        continue; // Skip this result as it's essentially a pure component
                     }
 
                     let displayErrorNorm: number | undefined;
@@ -931,12 +1189,12 @@ export default function TernaryResidueMapPage() {
                         // If T_K from SRK result is 0 or invalid, use initialTempGuess_K as a fallback.
                         // This is a workaround; findAzeotropeSrk should ideally return a correct T_K.
                         if (!res_T_K || res_T_K <= 0) {
-                            console.warn(`SRK Azeotrope result has T_K = ${res_T_K}. Using initialTempGuess_K (${initialTempGuess_K.toFixed(2)} K) as fallback.`);
+                            // console.warn(`SRK Azeotrope result has T_K = ${res_T_K}. Using initialTempGuess_K (${initialTempGuess_K.toFixed(2)} K) as fallback.`);
                             res_T_K = initialTempGuess_K; 
                         }
                     } else {
-                        // For PR/NRTL/UNIQUAC
-                        displayErrorNorm = (res as NrtlAzeotropeResult | PrAzeotropeResult | UniquacAzeotropeResult).errorNorm;
+                        // For all other models
+                        displayErrorNorm = (res as AzeotropeResult).errorNorm;
                     }
                     
                     let isTooClose = false;
@@ -963,16 +1221,110 @@ export default function TernaryResidueMapPage() {
                         });
                     }
                 }
-                foundAzeotropes = uniqueDirectAzeotropes;
+                // console.log(`[Azeotrope Solver] Unique azeotropes for state:`, JSON.parse(JSON.stringify(uniqueDirectAzeotropes)));
+
+                // --- NEW: Merge original binary hits that may have been lost if the
+                //     local ternary solver did not re-converge on the edge.
+                const mergedAzeos: AzeotropeDisplayInfo[] = [...uniqueDirectAzeotropes];
+                // Use same tolerance for merging edge hits to avoid duplicates
+                const EDGE_MIN_DIST_SQ = minSqDistAzeo;
+
+                for(const bh of binaryHits){
+                    if(!bh.converged) continue;
+                    if(bh.errorNorm === undefined || bh.errorNorm >= BINARY_ERR_TOL) continue; // skip if not precise enough
+                    // skip if third component exceeds 0.02 (should already be small)
+                    if(bh.x[0] < 0.02 && bh.x[1] < 0.02 && bh.x[2] < 0.02) continue; // safety
+                    const exists = mergedAzeos.some(az=>{
+                        const dSq = (az.x[0]-bh.x[0])**2 + (az.x[1]-bh.x[1])**2 + (az.x[2]-bh.x[2])**2;
+                        return dSq < EDGE_MIN_DIST_SQ;
+                    });
+                    if(!exists){
+                        mergedAzeos.push({ x:[...bh.x], T_K: bh.T_K, errorNorm: bh.errorNorm });
+                    }
+                }
+
+                foundAzeotropes = mergedAzeos;
             }
             
             setDirectAzeotropes(foundAzeotropes);
             if (foundAzeotropes.length > 0) {
-                console.log(`Directly found ${foundAzeotropes.length} potential azeotrope(s) using ${generatingFluidPackage}:`, foundAzeotropes.map(az => ({x: az.x, T_K: az.T_K, err: az.errorNorm})));
+                // console.log(`Directly found ${foundAzeotropes.length} potential azeotrope(s) using ${generatingFluidPackage}:`, foundAzeotropes.map(az => ({x: az.x, T_K: az.T_K, err: az.errorNorm})));
             } else {
                 // console.log(`No azeotropes found directly using ${generatingFluidPackage} with the given initial guesses.`);
             }
             // --- End Direct Azeotrope Solver Call ---
+
+            // store backend info for eigenvalue classification
+            setBackendComps(compoundsForBackend);
+            setBackendPkgParams(activityModelParams);
+            setBackendPressurePa(P_system_Pa);
+
+            // --- NEW OCCUPANCY GRID FILL LOGIC ---
+
+            // 1. Generate a very dense, shuffled grid of candidate seeds
+            const candidateSeeds = generateStartingPoints(10, 12).map(toInputOrder);
+            shuffleArray(candidateSeeds);
+
+            const allCurves: ResidueCurve[] = [];
+            const GRID_SIZE = 120; // Finer grid for more precise checking
+            const occupancyGrid = Array(GRID_SIZE + 1).fill(0).map(() => Array(GRID_SIZE + 1).fill(false));
+            const Y_SCALE = 1 / (Math.sqrt(3) / 2); // Pre-calculate for normalization
+
+            const d_xi_step = (fluidPackage === 'pr' || fluidPackage === 'srk') ? 0.002 : 0.03;
+            const m_steps = (fluidPackage === 'unifac') ? 600 : (fluidPackage === 'pr' || fluidPackage === 'srk') ? 1200 : 800;
+
+            const getGridCoords = (ternaryPoint: number[]): { j: number, i: number } | null => {
+                if (sortedComponents.length !== 3) return null;
+                const x_light = ternaryPoint[sortedComponents[0].originalIndex];
+                const x_intermediate = ternaryPoint[sortedComponents[1].originalIndex];
+                
+                const x_paper = x_light + x_intermediate * 0.5;
+                const y_paper = x_intermediate * (Math.sqrt(3) / 2);
+
+                const j = Math.floor(x_paper * GRID_SIZE);
+                const i = Math.floor(y_paper * Y_SCALE * GRID_SIZE);
+
+                if (i >= 0 && i <= GRID_SIZE && j >= 0 && j <= GRID_SIZE) {
+                    return { j, i };
+                }
+                return null;
+            }
+
+            // 2. Iteratively process shuffled seeds, adding curves to empty grid cells
+            for (const seed of candidateSeeds) {
+                const coords = getGridCoords(seed);
+                if (!coords || occupancyGrid[coords.i][coords.j]) {
+                    continue; // Skip if outside grid or cell is occupied
+                }
+
+                const newCurve = await simulateResidueCurveODE(
+                    generatingFluidPackage,
+                    seed,
+                    P_system_Pa,
+                    compoundsForBackend,
+                    activityModelParams,
+                    d_xi_step,
+                    m_steps,
+                    initialTempGuess_K
+                );
+
+                if (newCurve && newCurve.length > 1) {
+                    allCurves.push(newCurve);
+                    // Mark all cells this new curve passes through as occupied
+                    for (const p of newCurve) {
+                        const curveCoords = getGridCoords(p.x);
+                        if (curveCoords) {
+                            occupancyGrid[curveCoords.i][curveCoords.j] = true;
+                        }
+                    }
+                }
+            }
+            setResidueCurves(allCurves);
+
+            // store backend info for eigenvalue classification
+            setBackendComps(compoundsForBackend);
+            setBackendPkgParams(activityModelParams);
+            setBackendPressurePa(P_system_Pa);
 
         } catch (err: any) {
             console.error("Error generating map:", err);
@@ -980,8 +1332,10 @@ export default function TernaryResidueMapPage() {
         } finally {
             setIsLoading(false);
             setDisplayedFluidPackage(generatingFluidPackage); // Update displayed fluid package when generation finishes
+            setDisplayedPressure(systemPressure);
+            setDisplayedComponentNames(componentsInput.map(ci=>ci.name));
         }
-    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage, plotSortedComponents]); // Removed initialTempGuess_K
+    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage]); // Removed initialTempGuess_K
 
     useEffect(() => {
         if (supabase && !initialMapGenerated.current) {
@@ -1036,8 +1390,6 @@ export default function TernaryResidueMapPage() {
     }, [residueCurves, fluidPackage]); // Ensure fluidPackage is a dependency
 
     useEffect(() => {
-        const pressureInUnits = parseFloat(systemPressure); 
-        const pressureDisplay = isNaN(pressureInUnits) ? systemPressure : pressureInUnits.toFixed(3);
         const modelName = displayedFluidPackage.charAt(0).toUpperCase() + displayedFluidPackage.slice(1); // Use displayedFluidPackage
 
         let traces: Data[] = []; 
@@ -1046,28 +1398,8 @@ export default function TernaryResidueMapPage() {
         // User's desired visual: Right=Lightest, Top=Intermediate, Left=Heaviest
         // User's interpretation of Plotly axes: a=Top, b=Left, c=Right
 
-        // Titles for Plotly's a, b, c axes based on user's interpretation to achieve desired visual
-        let titleA = componentsInput[1]?.name || 'Comp 2 (M)'; // a-axis (Top) = Intermediate
-        let titleB = componentsInput[2]?.name || 'Comp 3 (H)'; // b-axis (Left) = Heaviest
-        let titleC = componentsInput[0]?.name || 'Comp 1 (L)'; // c-axis (Right) = Lightest
-
-        if (plotSortedComponents.length === 3) {
-            const formatBp = (bp_K: number | null | undefined, isSCF?:boolean) => 
-                isSCF ? 'SCF' : (bp_K && !Number.isNaN(bp_K) ? `${(bp_K - 273.15).toFixed(1)}°C` : 'N/A');
-
-            // a-axis (Top) = Intermediate component (plotSortedComponents[1])
-            // Display BP at system pressure if available, else NBP
-            const bpA = plotSortedComponents[1].bp_at_Psys_K ?? plotSortedComponents[1].thermData.nbp_K;
-            titleA = `${plotSortedComponents[1].name} (M, ${formatBp(bpA, plotSortedComponents[1].isSCF)})`;
-            
-            // b-axis (Left) = Heaviest component (plotSortedComponents[2])
-            const bpB = plotSortedComponents[2].bp_at_Psys_K ?? plotSortedComponents[2].thermData.nbp_K;
-            titleB = `${plotSortedComponents[2].name} (H, ${formatBp(bpB, plotSortedComponents[2].isSCF)})`;
-
-            // c-axis (Right) = Lightest component (plotSortedComponents[0])
-            const bpC = plotSortedComponents[0].bp_at_Psys_K ?? plotSortedComponents[0].thermData.nbp_K;
-            titleC = `${plotSortedComponents[0].name} (L, ${formatBp(bpC, plotSortedComponents[0].isSCF)})`;
-        }
+        // Titles now come directly from state
+        const { a: titleA, b: titleB, c: titleC } = plotAxisTitles;
         
         const plotTitleColor = currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'; 
         // Define font family string and color for consistent use
@@ -1082,14 +1414,14 @@ export default function TernaryResidueMapPage() {
 
         const baseLayout: Partial<Layout> = {
             title: {
-                text: `Ternary Residue Curve Map (${modelName} Model, ODE Simulation)`,
+                text: `Ternary Residue Curve Map (ODE Simulation)`,
                 font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor }, 
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: titleA, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Top (Intermediate)
-                baxis: { title: { text: titleB, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Left (Heaviest)
-                caxis: { title: { text: titleC, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: currentTheme === 'dark' ? '#2d3748' : '#cbd5e1' }, // Right (Lightest)
+                aaxis: { title: { text: titleA, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Top (Intermediate)
+                baxis: { title: { text: titleB, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Left (Heaviest)
+                caxis: { title: { text: titleC, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Right (Lightest)
                 bgcolor: 'transparent',
             },
             margin: { l: 90, r: 90, b: 90, t: 110, pad: 10 }, // Increased margins for better text display
@@ -1182,34 +1514,30 @@ export default function TernaryResidueMapPage() {
         }
 
         traces = cleanedResidueCurves.map((curve, index) => {
-            const compNameA = plotSortedComponents[1]?.name || 'Comp A';
-            const compNameB = plotSortedComponents[2]?.name || 'Comp B';
-            const compNameC = plotSortedComponents[0]?.name || 'Comp C';
-            // Convert T_K to Celsius directly for customdata for hovertemplate
-            const tempsCelsius = curve.map(p => (p.T_K - 273.15).toFixed(1));
+            const compNameA = componentsInput[1]?.name || 'Comp 2'; // top axis
+            const compNameB = componentsInput[2]?.name || 'Comp 3'; // left axis
+            const compNameC = componentsInput[0]?.name || 'Comp 1'; // right axis
+
+            const labelByOrig: Record<number,string> = {};
+            if(plotSortedComponents.length===3){
+                labelByOrig[plotSortedComponents[0].originalIndex] = 'L';
+                labelByOrig[plotSortedComponents[1].originalIndex] = 'M';
+                labelByOrig[plotSortedComponents[2].originalIndex] = 'H';
+            }
+            const labelA = labelByOrig[1] ?? '';
+            const labelB = labelByOrig[2] ?? '';
+            const labelC = labelByOrig[0] ?? '';
 
             return {
                 type: 'scatterternary',
                 mode: curve.length > 1 ? 'lines' : 'markers',
-                a: curve.map(p => p.x[plotSortedComponents[1].originalIndex]), 
-                b: curve.map(p => p.x[plotSortedComponents[2].originalIndex]), 
-                c: curve.map(p => p.x[plotSortedComponents[0].originalIndex]), 
+                a: curve.map(p => p.x[1]), // component 2
+                b: curve.map(p => p.x[2]), // component 3
+                c: curve.map(p => p.x[0]), // component 1
                 name: `Curve ${index + 1}`,
                 showlegend: false,
                 line: { width: 1.5, color: '#60a5fa' }, // Example color
-                customdata: tempsCelsius, // Store Celsius strings for hover
-                hovertemplate:
-                    `<b>${compNameA} (M)</b>: %{a:.3f}<br>` + 
-                    `<b>${compNameB} (H)</b>: %{b:.3f}<br>` + 
-                    `<b>${compNameC} (L)</b>: %{c:.3f}<br>` + 
-                    `<b>T</b>: %{customdata} °C<extra></extra>`, // Use customdata directly
-                hoverlabel: {
-                    font: {
-                        family: merriweatherFamilyString, // Explicitly set family
-                        size: 14,
-                        color: plotFontColor // Use defined color
-                    }
-                }
+                hoverinfo: 'skip'
             };
         });
 
@@ -1233,7 +1561,7 @@ export default function TernaryResidueMapPage() {
         const arrowMarkerColor = currentTheme === 'dark' ? '#FFFFFF' : '#333333'; // Adjusted for theme
 
         const plotAreaPxWidth = containerWidthPx - (baseLayout.margin?.l ?? 70) - (baseLayout.margin?.r ?? 70);
-        const plotAreaPxHeight = containerHeightPx - (baseLayout.margin?.t ?? 90) - (baseLayout.margin?.b ?? 90);
+        const plotAreaPxHeight = containerHeightPx - (baseLayout.margin?.t ?? 90) - (baseLayout.margin?.b ?? 70);
 
         if (plotSortedComponents.length === 3 && plotContainerRef && actualRenderedTriangleBase_paper > 0 && actualRenderedTriangleHeight_paper > 0 && plotAreaPxWidth > 0 && plotAreaPxHeight > 0) { // Check plotContainerRef
             cleanedResidueCurves.forEach((curve, curveIndex) => { 
@@ -1321,17 +1649,18 @@ export default function TernaryResidueMapPage() {
                             continue; 
                         }
                             
+                        // Calculate arrow rotation so that the triangle symbol points along the flow direction.
+                        // The base 'triangle-up' in Plotly points along +Y (upward). To align it with the
+                        // vector (dx,dy) in screen space, rotate the symbol by (raw_angle − 90°).
+                        const raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
+                        const final_angle_deg = raw_screen_angle_deg + 90;
 
-                        let raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
-                        let final_angle_deg = raw_screen_angle_deg + 90; 
-
-                        // Convert T_K to Celsius for display in hover text
-                        const temp_C = centroidPointData.T_K - 273.15;
-                        arrowMarkerTraceData.a.push(centroidPointData.x[plotSortedComponents[1].originalIndex]);
-                        arrowMarkerTraceData.b.push(centroidPointData.x[plotSortedComponents[2].originalIndex]);
-                        arrowMarkerTraceData.c.push(centroidPointData.x[plotSortedComponents[0].originalIndex]);
+                        arrowMarkerTraceData.a.push(centroidPointData.x[1]);
+                        arrowMarkerTraceData.b.push(centroidPointData.x[2]);
+                        arrowMarkerTraceData.c.push(centroidPointData.x[0]);
                         arrowMarkerTraceData.angles.push(final_angle_deg);
-                        arrowMarkerTraceData.text.push(`Arrow on Curve ${curveIndex + 1}<br>T=${temp_C.toFixed(1)}°C`);
+                        // No tooltip text for arrow markers
+                        arrowMarkerTraceData.text.push('');
                         
                         allPlacedArrowIdealCoords.push(currentPointIdealCoords); 
                         placedArrowCountOverall++;
@@ -1353,7 +1682,7 @@ export default function TernaryResidueMapPage() {
                 b: arrowMarkerTraceData.b,
                 c: arrowMarkerTraceData.c,
                 text: arrowMarkerTraceData.text,
-                hoverinfo: 'text',
+                hoverinfo: 'skip',
                 hoverlabel: {
                     bgcolor: currentTheme === 'dark' ? 'rgba(50,50,50,0.85)' : 'rgba(250,250,250,0.85)', // Adjusted for theme
                     font: {
@@ -1370,84 +1699,187 @@ export default function TernaryResidueMapPage() {
                     angle: arrowMarkerTraceData.angles,
                     standoff: 5,
                 } as any,
+                cliponaxis: false,
                 showlegend: false,
             } as Data);
         }
 
-        // --- Directly Found Azeotropes to Plot ---
+        // --- Directly Found Azeotropes to Plot (Two-Trace Method for Animation) ---
         if (directAzeotropes.length > 0 && plotSortedComponents.length === 3) {
-            const directAzeotropePointsData = {
-                a: [] as number[],
-                b: [] as number[],
-                c: [] as number[],
-                text: [] as string[],
+            // --- Robust Classification Logic ---
+            let compBPs: number[] = [];
+            // Try to get all BPs at system pressure first.
+            const bpAtSys = plotSortedComponents
+                .map(pc => pc.bp_at_Psys_K)
+                .filter(v => v !== null && v !== undefined && isFinite(v as number)) as number[];
+
+            // Only use this set if it's complete (i.e., all BP calculations at Psys succeeded).
+            if (bpAtSys.length === plotSortedComponents.length) {
+                compBPs = bpAtSys;
+            } else {
+                // If Psys BPs are incomplete, fall back to using NBP for ALL components
+                // to avoid mixing BPs from different pressures.
+                const nbp_K_values = plotSortedComponents
+                    .map(pc => pc.thermData.nbp_K)
+                    .filter(v => v !== null && v !== undefined && isFinite(v as number)) as number[];
+                
+                // Only use this NBP set if it's also complete.
+                if (nbp_K_values.length === plotSortedComponents.length) {
+                    compBPs = nbp_K_values;
+                }
+            }
+
+            const classifyEigen = (az:AzeotropeDisplayInfo):'min'|'max'|'saddle'|'unknown' => {
+               const h = 1e-4;
+               if(backendComps.length!==3 || !backendPkgParams) return 'unknown';
+               const base = evaluateResidueODE(displayedFluidPackage, az.x, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
+               if(!base) return 'unknown';
+               const J:number[][]=[ [0,0,0],[0,0,0],[0,0,0] ];
+               for(let j=0;j<3;j++){
+                  const xPert=[...az.x]; xPert[j]+=h; 
+                  const r = evaluateResidueODE(displayedFluidPackage, xPert, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
+                  if(!r) return 'unknown';
+                  for(let i=0;i<3;i++) J[i][j]=(r.d[i]-base.d[i])/h;
+               }
+               const A=[
+                 [J[0][0]-J[2][0], J[0][1]-J[2][1]],
+                 [J[1][0]-J[2][0], J[1][1]-J[2][1]]
+               ];
+               const tr=A[0][0]+A[1][1];
+               const det=A[0][0]*A[1][1]-A[0][1]*A[1][0];
+               const disc=tr*tr-4*det;
+               if(disc<0) return 'saddle';
+               const sqrtDisc=Math.sqrt(disc);
+               const l1=0.5*(tr+sqrtDisc);
+               const l2=0.5*(tr-sqrtDisc);
+               if(l1<0 && l2<0) return 'max';
+               if(l1>0 && l2>0) return 'min';
+               return 'saddle';
             };
 
-            directAzeotropes.forEach(az => {
-                if (!az.x || az.x.length !== 3) return;
-                directAzeotropePointsData.a.push(az.x[plotSortedComponents[1].originalIndex]);
-                directAzeotropePointsData.b.push(az.x[plotSortedComponents[2].originalIndex]);
-                directAzeotropePointsData.c.push(az.x[plotSortedComponents[0].originalIndex]);
-                directAzeotropePointsData.text.push(
-                    `<b>Azeotrope</b><br>` +
-                    `${plotSortedComponents[1].name}: ${az.x[plotSortedComponents[1].originalIndex].toFixed(4)}<br>` +
-                    `${plotSortedComponents[2].name}: ${az.x[plotSortedComponents[2].originalIndex].toFixed(4)}<br>` +
-                    `${plotSortedComponents[0].name}: ${az.x[plotSortedComponents[0].originalIndex].toFixed(4)}<br>` +
-                    `T: ${(az.T_K - 273.15).toFixed(2)}°C<br>` +
-                    `||y-x||: ${az.errorNorm ? az.errorNorm.toExponential(2) : 'N/A'}`
-                );
-            });
+            const minAz: AzeotropeDisplayInfo[] = [];
+            const maxAz: AzeotropeDisplayInfo[] = [];
+            const sadAz: AzeotropeDisplayInfo[] = [];
 
-            if (directAzeotropePointsData.a.length > 0) {
+            for(const az of directAzeotropes){
+               const cls=classifyEigen(az);
+               switch(cls){
+                   case 'min': minAz.push(az); break;
+                   case 'max': maxAz.push(az); break;
+                   case 'saddle': default: sadAz.push(az); break;
+               }
+            }
+
+            const fmt3 = (v:number)=>{
+                if(Math.abs(v) < 0.0005) return '0'; // treat very small values as zero
+                const s = Number(v).toPrecision(3);
+                // Convert to number then back to string to avoid exponential notation if possible
+                const num = parseFloat(s);
+                // For values that are still in exponential form after parseFloat (e.g., 1e-5), force fixed
+                if(num.toString().includes('e')){
+                    return num.toFixed(3).replace(/\.0+$/,'');
+                }
+                return num.toString();
+            };
+            const mkText = (az:AzeotropeDisplayInfo)=>
+                `${displayedComponentNames[1] || 'Comp 2'}: ${fmt3(az.x[1])}<br>`+
+                `${displayedComponentNames[2] || 'Comp 3'}: ${fmt3(az.x[2])}<br>`+
+                `${displayedComponentNames[0] || 'Comp 1'}: ${fmt3(az.x[0])}<br>`+
+                `T: ${fmt3(az.T_K-273.15)}°C`;
+            const mkTextWithBPs = (az:AzeotropeDisplayInfo, bps: number[]) => {
+                const baseText = mkText(az);
+                if (bps.length > 0) {
+                    const bpStrings = bps.map(t => (t - 273.15).toFixed(1)).join(', ');
+                    return `${baseText}<br>BPs (°C): [${bpStrings}]`;
+                }
+                return baseText;
+            }
+
+            const pushAzeoTrace = (dataArr:typeof minAz, color:string, name:string) => {
+                if (dataArr.length === 0) return;
                 allTraces.push({
                     type: 'scatterternary',
                     mode: 'markers',
-                    a: directAzeotropePointsData.a,
-                    b: directAzeotropePointsData.b,
-                    c: directAzeotropePointsData.c,
-                    text: directAzeotropePointsData.text,
-                    hoverinfo: 'text',
-                    marker: {
-                        symbol: 'star', // Different symbol
-                        size: 14,
-                        color: '#FFD700', // Gold color
-                        line: { color: currentTheme === 'dark' ? '#FFFFFF' : '#000000', width: 1.5 }
-                    },
-                    name: 'Azeotropes', 
-                    showlegend: true,
-                    legendgroup: 'azeotropes', // Use a common group name
-                    hoverlabel: { 
-                        font: { family: merriweatherFamilyString, size: 12, color: plotFontColor}, // Explicitly set family and color
-                        bgcolor: currentTheme === 'dark' ? 'rgba(40,40,40,0.9)' : 'rgba(240,240,240,0.9)',
-                        bordercolor: currentTheme === 'dark' ? '#e5e7eb' : '#1f2937'
+                    a: dataArr.map(az=>az.x[1]),
+                    b: dataArr.map(az=>az.x[2]),
+                    c: dataArr.map(az=>az.x[0]),
+                    cliponaxis:false,
+                    text: dataArr.map(az=>mkText(az)),
+                    hoverinfo:'text',
+                    marker:{symbol:'star',size:14,color:color,opacity:1,line:{color: color, width:1.5}},
+                    name:name,
+                    legendgroup:'azeotropes',
+                    hoverlabel: {
+                        font: {
+                            family: merriweatherFamilyString,
+                            size: 14,
+                            color: plotFontColor
+                        }
                     }
+                } as Data);
+            };
+
+            pushAzeoTrace(minAz, '#00C000', 'Min-boiling'); // brighter green
+            pushAzeoTrace(maxAz, '#9900FF', 'Max-boiling'); // saturated purple
+            pushAzeoTrace(sadAz, 'red', 'Saddle');
+
+            // Legacy combined-azeotrope trace removed – now we rely solely on category traces.
+
+            // Highlight trace reinstated (only when row hovered)
+            if (highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length) {
+                const highlightedAzeo = directAzeotropes[highlightedAzeoIdx];
+
+                // --- Determine color based on classification ---
+                const cls = classifyEigen(highlightedAzeo);
+                let highlightColor = 'red'; // Default to saddle color
+                if (cls === 'min') {
+                    highlightColor = '#00C000';
+                } else if (cls === 'max') {
+                    highlightColor = '#9900FF';
+                }
+
+                allTraces.push({
+                    type: 'scatterternary',
+                    mode: 'markers',
+                    a: [highlightedAzeo.x[1]],
+                    b: [highlightedAzeo.x[2]],
+                    c: [highlightedAzeo.x[0]],
+                    cliponaxis:false,
+                    hoverinfo:'skip',
+                    marker:{symbol:'star',size:28,color:highlightColor,opacity:1,line:{color: currentTheme==='dark'? '#fff':'#000', width:2}},
+                    showlegend:false,
+                    legendgroup:'azeotropes'
                 } as Data);
             }
         }
         // --- End Add Directly Found Azeotropes to Plot ---
 
 
-        const finalLayout = {
+        const finalLayout: Partial<Layout> = {
             ...baseLayout,
             shapes: [], // Clear old shapes if any, or manage them if other shapes are needed
             annotations: [...(baseLayout.annotations || [])], 
             title: { 
                 ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor} } ), 
-                text: `Ternary Residue Curve Map @ ${pressureDisplay} bar (${modelName} Model)` 
+                text: `Ternary Residue Curve Map @ ${displayedPressure} bar` 
             },
-            legend: { // Ensure legend is configured
-                font: basePlotFontObject, // Use defined base font object for legend
-                bgcolor: currentTheme === 'dark' ? 'rgba(8, 48, 107, 0.8)' : 'rgba(220, 230, 240, 0.8)', // Semi-transparent background
+            legend: {
+                x: 0.8,
+                xanchor: 'left' as const,
+                y: 1,
+                font: basePlotFontObject,
+                bgcolor: currentTheme === 'dark' ? 'rgba(8, 48, 107, 0.8)' : 'rgba(220, 230, 240, 0.8)',
                 bordercolor: currentTheme === 'dark' ? '#4b5563' : '#9ca3af',
                 borderwidth: 1,
-                tracegroupgap: 5, // Gap between legend groups
-            }
+                tracegroupgap: 5,
+            },
+            // Removed transition to eliminate marker animation
         };
 
         setPlotlyData(allTraces);
         setPlotlyLayout(finalLayout);
 
-    }, [cleanedResidueCurves, componentsInput, systemPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes]); // Depend on directAzeotropes
+    }, [cleanedResidueCurves, componentsInput, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, highlightedAzeoIdx, backendComps, backendPkgParams, backendPressurePa]); // Depend on highlight
 
     const handleGenerateClick = () => {
         handleGenerateMap();
@@ -1564,6 +1996,42 @@ export default function TernaryResidueMapPage() {
                             </Button>
                         </CardContent>
                     </Card>
+
+                    {directAzeotropes.length > 0 && (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle>Azeotropic Composition and Temperature</CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                                <Table>
+                                    <TableHeader>
+                                        <TableRow className="hover:bg-transparent">
+                                            <TableHead className="px-2 text-center">{displayedComponentNames[0] || 'Comp 1'}</TableHead>
+                                            <TableHead className="px-2 text-center">{displayedComponentNames[1] || 'Comp 2'}</TableHead>
+                                            <TableHead className="px-2 text-center">{displayedComponentNames[2] || 'Comp 3'}</TableHead>
+                                            <TableHead className="px-2 text-center">T(°C)</TableHead>
+                                        </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                        {directAzeotropes.map((az, index) => {
+                                            return (
+                                                <TableRow
+                                                    key={index}
+                                                    onMouseEnter={() => setHighlightedAzeoIdx(index)}
+                                                    onMouseLeave={() => setHighlightedAzeoIdx(null)}
+                                                >
+                                                 <TableCell className="px-2 text-center">{az.x[0].toFixed(3)}</TableCell>
+                                                 <TableCell className="px-2 text-center">{az.x[1].toFixed(3)}</TableCell>
+                                                 <TableCell className="px-2 text-center">{az.x[2].toFixed(3)}</TableCell>
+                                                 <TableCell className="px-2 text-center">{(az.T_K - 273.15).toFixed(1)}</TableCell>
+                                                 </TableRow>
+                                            );
+                                        })}
+                                    </TableBody>
+                                </Table>
+                            </CardContent>
+                        </Card>
+                    )}
                 </div>
 
                 {/* Right panel: Plot */}
@@ -1572,18 +2040,30 @@ export default function TernaryResidueMapPage() {
                         <CardContent className="p-2">
                             <div 
                                 className="relative w-full h-[600px] md:h-[700px]" 
-                                ref={setPlotContainerRef} // Assign the state setter to the ref prop
+                                ref={setPlotContainerRef}
                             >
-                                {scfMessage ? (
+                                {scfMessage && !isLoading ? (
                                     <div className="flex items-center justify-center w-full h-full text-center px-4">
                                         <p className="text-lg md:text-2xl font-semibold whitespace-pre-line">{scfMessage}</p>
                                     </div>
+                                ) : error && !isLoading ? (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+                                        <Card className="border-destructive">
+                                            <CardHeader>
+                                                <CardTitle>Error</CardTitle>
+                                            </CardHeader>
+                                            <CardContent>
+                                                <p>{error}</p>
+                                            </CardContent>
+                                        </Card>
+                                    </div>
                                 ) : (
-                                    <Plot 
-                                        data={plotlyData} 
-                                        layout={plotlyLayout} 
-                                        useResizeHandler 
-                                        style={{ width: '100%', height: '100%' }} 
+                                    <Plot
+                                        data={plotlyData}
+                                        layout={plotlyLayout}
+                                        style={{ width: '100%', height: '100%' }}
+                                        config={{ displayModeBar: false }}
+                                        useResizeHandler
                                     />
                                 )}
                             </div>
@@ -1593,5 +2073,117 @@ export default function TernaryResidueMapPage() {
             </div>
         </div>
     );
+}
+
+/**
+ * Shuffles an array in-place using the Fisher-Yates algorithm.
+ * @param array The array to shuffle.
+ */
+function shuffleArray<T>(array: T[]): void {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+}
+
+/**
+ * Filters a set of residue curves to remove ones that are too close to each other
+ * in the central region of the ternary diagram, preventing visual clutter.
+ * @param curves The raw array of residue curves.
+ * @param distanceThreshold The minimum mole fraction distance between curves in the central area.
+ * @returns A filtered array of residue curves.
+ */
+function filterOverlappingCurves(curves: ResidueCurve[], distanceThreshold: number): ResidueCurve[] {
+    if (curves.length === 0) return [];
+
+    const centralRegionMin = 0.05; // Not on an edge
+    const centralRegionMax = 0.95; // Not in a corner
+
+    const isCentral = (x: number[]) => {
+        return x.every(xi => xi > centralRegionMin && xi < centralRegionMax);
+    };
+
+    // Pre-filter points in the central region for each curve to optimize.
+    const centralPointsByCurve = curves.map(curve => curve.filter(p => isCentral(p.x)));
+
+    const acceptedCurvesIndices: number[] = [];
+    if (curves.length > 0) {
+        acceptedCurvesIndices.push(0); // Always accept the first curve.
+    }
+
+    for (let i = 1; i < curves.length; i++) {
+        const candidateCentralPoints = centralPointsByCurve[i];
+        if (candidateCentralPoints.length === 0) {
+            // If curve has no central points, it doesn't contribute to central clutter, so accept.
+            acceptedCurvesIndices.push(i);
+            continue;
+        }
+
+        let isTooClose = false;
+        for (const acceptedIndex of acceptedCurvesIndices) {
+            const acceptedCentralPoints = centralPointsByCurve[acceptedIndex];
+            if (acceptedCentralPoints.length === 0) continue;
+
+            // Check for proximity
+            for (const p_candidate of candidateCentralPoints) {
+                for (const p_accepted of acceptedCentralPoints) {
+                    const distSq =
+                        (p_candidate.x[0] - p_accepted.x[0]) ** 2 +
+                        (p_candidate.x[1] - p_accepted.x[1]) ** 2 +
+                        (p_candidate.x[2] - p_accepted.x[2]) ** 2;
+
+                    if (distSq < distanceThreshold ** 2) {
+                        isTooClose = true;
+                        break;
+                    }
+                }
+                if (isTooClose) break;
+            }
+            if (isTooClose) break;
+        }
+
+        if (!isTooClose) {
+            acceptedCurvesIndices.push(i);
+        }
+    }
+    return acceptedCurvesIndices.map(i => curves[i]);
+}
+
+// Classify an azeotrope using the Jacobian eigenvalues of the residue-curve ODE
+function classifyAzeotropeEigen(
+    az: AzeotropeDisplayInfo,
+    pkg: FluidPackageTypeResidue,
+    P_Pa: number,
+    comps: CompoundData[],
+    pkgParams: any,
+): 'min' | 'max' | 'saddle' | 'unknown' {
+    const h = 1e-4;
+    const base = evaluateResidueODE(pkg, az.x, az.T_K, P_Pa, comps, pkgParams);
+    if (!base) return 'unknown';
+    const J: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let j = 0; j < 3; j++) {
+        const xPert = [...az.x];
+        xPert[j] += h;
+        const r = evaluateResidueODE(pkg, xPert, az.T_K, P_Pa, comps, pkgParams);
+        if (!r) return 'unknown';
+        for (let i = 0; i < 3; i++) {
+            J[i][j] = (r.d[i] - base.d[i]) / h;
+        }
+    }
+    // Project 3×3 Jacobian onto 2D tangent plane to assess stability
+    const A = [
+        [J[0][0] - J[2][0], J[0][1] - J[2][1]],
+        [J[1][0] - J[2][0], J[1][1] - J[2][1]],
+    ];
+    const tr = A[0][0] + A[1][1];
+    const det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
+    const disc = tr * tr - 4 * det;
+    if (disc < 0) return 'saddle';
+    const sqrtDisc = Math.sqrt(disc);
+    const l1 = 0.5 * (tr + sqrtDisc);
+    const l2 = 0.5 * (tr - sqrtDisc);
+    if (l1 < 0 && l2 < 0) return 'max';
+    if (l1 > 0 && l2 > 0) return 'min';
+    return 'saddle';
 }
 
