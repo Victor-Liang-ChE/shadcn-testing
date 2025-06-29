@@ -1861,7 +1861,7 @@ export default function TernaryResidueMapPage() {
             annotations: [...(baseLayout.annotations || [])], 
             title: { 
                 ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor} } ), 
-                text: `Ternary Residue Curve Map @ ${displayedPressure} bar` 
+                text: `Ternary Residue Curve Map at ${displayedPressure} bar` 
             },
             legend: {
                 x: 0.8,
