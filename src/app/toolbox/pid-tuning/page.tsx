@@ -251,7 +251,7 @@ export default function PidTuningPage() {
     return {
       backgroundColor: 'transparent',
       title: { text: 'Combined Simulation View', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, left: 'center', top: '2%' },
-      grid: { left: '8%', right: '8%', bottom: '15%', top: '12%', containLabel: true },
+      grid: { left: '5%', right: '5%', bottom: '15%', top: '8%', containLabel: true },
       tooltip: {
         trigger: 'axis',
         backgroundColor: tooltipBg,
@@ -308,7 +308,7 @@ export default function PidTuningPage() {
         min: 0,
         max: 30,
         nameLocation: 'middle',
-        nameGap: 25,
+        nameGap: 35,
         nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
         axisLine: { lineStyle: { color: textColor } },
         axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
@@ -327,7 +327,7 @@ export default function PidTuningPage() {
         min: -0.5,
         max: 2.5,
         nameLocation: 'middle',
-        nameGap: 50,
+        nameGap: 40,
         axisLine: { lineStyle: { color: textColor } },
         axisLabel: {
           color: textColor,
@@ -2813,9 +2813,9 @@ export default function PidTuningPage() {
                   </Card>
                 </div>
                 <div className="lg:col-span-3">
-                  <Card>
-                    <CardContent className="py-2">
-                      <div className="relative aspect-square rounded-md pt-0 px-2 pb-0">
+                  <Card className="h-full">
+                    <CardContent className="py-2 h-full">
+                      <div className="relative w-full h-full rounded-md pt-0 px-2 pb-0">
                         <ReactECharts
                           ref={overlappedChartRef}
                           echarts={echarts}
@@ -3100,9 +3100,9 @@ export default function PidTuningPage() {
 
               {/* Column 2: Graph */}
               <div className="lg:col-span-3">
-                <Card>
-                  <CardContent className="py-2">
-                    <div className="relative aspect-square rounded-md pt-0 px-2 pb-0">
+                <Card className="h-full">
+                  <CardContent className="py-2 h-full">
+                    <div className="relative w-full h-full rounded-md pt-0 px-2 pb-0">
                       <ReactECharts
                         ref={echartsRef}
                         echarts={echarts}
