@@ -316,6 +316,8 @@ export default function CompoundPropertiesPage() {
   };
   const [manualTempPointsData, setManualTempPointsData] = useState<ManualTempPoint[]>([]);
 
+  // State to control when auto-updates should happen
+  const [shouldAutoUpdate, setShouldAutoUpdate] = useState(true);
 
   // useEffect for initial data fetching (e.g., for 'Water')
   useEffect(() => {
@@ -1234,6 +1236,8 @@ export default function CompoundPropertiesPage() {
     setOverallError(null);
     setManualTempInput(''); // Clear manual input
     setManualTempPointsData([]); // Clear manual points
+    // Re-enable auto-updates when fetch button is pressed
+    setShouldAutoUpdate(true);
     console.log("handleFetchAndPlot: Starting fetch and plot process.");
     const fetchedCompoundStates = await Promise.all(compounds.map(async (compound) => {
         if (!compound.name.trim()) {
@@ -1483,6 +1487,8 @@ export default function CompoundPropertiesPage() {
 
   const handleCompoundNameChange = (id: string, value: string) => {
     setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, data: null, error: null } : c)); 
+    // Disable auto-updates when user is typing compound names
+    setShouldAutoUpdate(false);
     if (value.trim() === "") { 
       setCompounds(prev => prev.map(c => c.id === id ? { ...c, suggestions: [], showSuggestions: false } : c));
     } else {
@@ -1531,11 +1537,11 @@ export default function CompoundPropertiesPage() {
   }, [compounds]);
 
   useEffect(() => {
-    if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading) {
+    if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading && shouldAutoUpdate) {
       handleFetchAndPlot();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, compounds[0]?.name, compounds[0]?.data]);
+  }, [supabase, compounds[0]?.name, compounds[0]?.data, shouldAutoUpdate]);
 
   useEffect(() => {
     if (plotMode === 'constants' || plotMode === 'tempDependent') {
@@ -1543,6 +1549,8 @@ export default function CompoundPropertiesPage() {
         // Clear manual temp data when plot mode changes or initial fetch for mode
         setManualTempInput('');
         setManualTempPointsData([]);
+        // Enable auto-updates when plot mode changes
+        setShouldAutoUpdate(true);
         handleFetchAndPlot();
       }
     }
@@ -1551,7 +1559,7 @@ export default function CompoundPropertiesPage() {
 
 
   useEffect(() => {
-    if (loading) return; 
+    if (loading || !shouldAutoUpdate) return; 
 
     const currentKey = plotMode === 'tempDependent' ? selectedPropertyKey : selectedConstantKey;
     const currentUnit = plotMode === 'tempDependent' ? selectedUnit : selectedConstantUnit;
@@ -1574,7 +1582,7 @@ export default function CompoundPropertiesPage() {
         }
        } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
     }
-  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData, resolvedTheme]); 
+  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData, resolvedTheme, shouldAutoUpdate]); 
 
   const canExportCSV = echartsOptions && 
                        echartsOptions.series && 
@@ -1583,7 +1591,9 @@ export default function CompoundPropertiesPage() {
 
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
-      event.preventDefault(); 
+      event.preventDefault();
+      // Re-enable auto-updates when Enter is pressed
+      setShouldAutoUpdate(true); 
       handleFetchAndPlot();
     }
   };
@@ -1813,7 +1823,11 @@ export default function CompoundPropertiesPage() {
             <Card>
               <CardContent className="space-y-4 pt-6">
                 <div className="flex items-center space-x-2 mb-4">
-                  <Tabs value={plotMode} onValueChange={(value) => setPlotMode(value as 'tempDependent' | 'constants')} className="w-full">
+                  <Tabs value={plotMode} onValueChange={(value) => {
+                    setPlotMode(value as 'tempDependent' | 'constants');
+                    // Enable auto-updates when switching plot modes
+                    setShouldAutoUpdate(true);
+                  }} className="w-full">
                     <TabsList className="grid w-full grid-cols-2">
                       <TabsTrigger value="tempDependent">Temp. Dependent</TabsTrigger>
                       <TabsTrigger value="constants">Constants</TabsTrigger>
@@ -1874,6 +1888,8 @@ export default function CompoundPropertiesPage() {
                               const newPropDef = availablePropertiesForSelection.find(p => p.displayName === value); // Find by displayName
                               const newUnit = newPropDef?.availableUnits?.[0]?.unit || newPropDef?.targetUnitName || '';
                               setSelectedUnit(newUnit);
+                              // Enable auto-updates when changing properties
+                              setShouldAutoUpdate(true);
                           }}
                           disabled={availablePropertiesForSelection.length === 0}
                         >
@@ -1896,10 +1912,14 @@ export default function CompoundPropertiesPage() {
                         if (unitsForCurrentProp && unitsForCurrentProp.length > 1) {
                           return (
                             <div className="flex-grow space-y-2 max-w-[224px]"> 
-                              <Select
-                                value={selectedUnit}
-                                onValueChange={(value) => setSelectedUnit(value)}
-                              >
+                                                              <Select
+                                  value={selectedUnit}
+                                  onValueChange={(value) => {
+                                    setSelectedUnit(value);
+                                    // Enable auto-updates when changing units
+                                    setShouldAutoUpdate(true);
+                                  }}
+                                >
                                 <SelectTrigger id="unitSelect" className="w-full">
                                   <SelectValue placeholder="Unit" />
                                 </SelectTrigger>
@@ -1928,6 +1948,8 @@ export default function CompoundPropertiesPage() {
                               const newConstDef = availableConstantsForSelection.find(c => c.jsonKey === value);
                               const newUnit = newConstDef?.availableUnits?.[0]?.unit || newConstDef?.targetUnitName || '';
                               setSelectedConstantUnit(newUnit);
+                              // Enable auto-updates when changing constants
+                              setShouldAutoUpdate(true);
                           }}
                           disabled={availableConstantsForSelection.length === 0}
                         >
@@ -1950,10 +1972,14 @@ export default function CompoundPropertiesPage() {
                         if (unitsForCurrentConst && (unitsForCurrentConst.length > 1 || (unitsForCurrentConst.length === 1 && unitsForCurrentConst[0].unit !== "-"))) {
                           return (
                             <div className="flex-grow space-y-2 max-w-[224px]"> 
-                              <Select
-                                value={selectedConstantUnit}
-                                onValueChange={(value) => setSelectedConstantUnit(value)}
-                              >
+                                                              <Select
+                                  value={selectedConstantUnit}
+                                  onValueChange={(value) => {
+                                    setSelectedConstantUnit(value);
+                                    // Enable auto-updates when changing constant units
+                                    setShouldAutoUpdate(true);
+                                  }}
+                                >
                                 <SelectTrigger id="constantUnitSelect" className="w-full">
                                   <SelectValue placeholder="Unit" />
                                 </SelectTrigger>
