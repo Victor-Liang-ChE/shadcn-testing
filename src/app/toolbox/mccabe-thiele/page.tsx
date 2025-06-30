@@ -131,8 +131,6 @@ const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string
         return null;
     }
     const trimmedName = name.trim();
-    console.log(`fetchCasNumberByName (McCabe-Thiele): Fetching CAS for name: "${trimmedName}"`);
-
     const { data, error } = await supabaseClient
         .from('compounds')
         .select('cas_number, name')
@@ -150,7 +148,6 @@ const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string
         return null;
     }
 
-    console.log(`fetchCasNumberByName (McCabe-Thiele): Found CAS: ${data.cas_number} for DB name: "${data.name}" (queried as "${trimmedName}")`);
     return data.cas_number;
 };
 
@@ -219,12 +216,13 @@ export default function McCabeThielePage() {
   const suggestions1Ref = useRef<HTMLDivElement>(null);
   const suggestions2Ref = useRef<HTMLDivElement>(null);
 
+  // Flag to trigger automatic graph regeneration after UI actions like swap, toggle, or fluid-package change
+  const [autoGeneratePending, setAutoGeneratePending] = useState(false);
 
   // --- useEffect for initial graph load ---
   useEffect(() => {
     // Automatically calculate and display the graph on initial component mount
     // with the default states (Methanol/Water, 60C, UNIQUAC).
-    console.log("McCabe: Initial load effect triggered.");
     if (supabase) { // Ensure supabase is initialized before first calculation
         calculateEquilibriumCurve();
     }
@@ -234,8 +232,6 @@ export default function McCabeThielePage() {
   // --- Data Fetching (Adapted from test/page.tsx) ---
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
     if (!supabase) { throw new Error("Supabase client not initialized."); }
-    console.log(`McCabe: Fetching data for ${compoundName}...`);
-
     try {
         const { data: compoundDbData, error: compoundError } = await supabase
             .from('compounds')
@@ -308,7 +304,15 @@ export default function McCabeThielePage() {
             const Tc_K_val = parseFloat(tcPropObj.value);
             const pcValue = parseFloat(pcPropObj.value);
             const pcUnits = String(pcPropObj.units).toLowerCase();
-            const Pc_Pa_val = pcValue * (pcUnits === 'kpa' ? 1000 : pcUnits === 'bar' ? 100000 : 1);
+            let Pc_Pa_val: number;
+            if (pcUnits === 'pa') Pc_Pa_val = pcValue;
+            else if (pcUnits === 'kpa') Pc_Pa_val = pcValue * 1e3;
+            else if (pcUnits === 'mpa') Pc_Pa_val = pcValue * 1e6;
+            else if (pcUnits === 'bar') Pc_Pa_val = pcValue * 1e5;
+            else {
+                Pc_Pa_val = pcValue; // Assume Pa if unknown; log once
+                console.warn(`Unknown Pc units ('${pcUnits}') for ${foundName}. Assuming Pa.`);
+            }
             const omega_val = parseFloat(omegaPropObj.value);
             if (!isNaN(Tc_K_val) && !isNaN(Pc_Pa_val) && !isNaN(omega_val)) {
                 prParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
@@ -462,7 +466,7 @@ export default function McCabeThielePage() {
   const calculateEquilibriumCurve = useCallback(async (showLoading: boolean = true, pointsCount: number = 51) => {
     if (showLoading) {
       setLoading(true);
-      setEquilibriumData(null);
+      // setEquilibriumData(null); // This line is removed to keep the old graph visible.
     }
     setError(null);
 
@@ -498,7 +502,6 @@ export default function McCabeThielePage() {
         const needsFetching = !data1 || !data2 || !activityParameters || data1.name !== comp1Name || data2.name !== comp2Name || displayedFluidPackage !== fluidPackage;
 
         if (needsFetching) {
-            console.log("McCabe: Cache miss or inputs changed. Fetching new data...");
             const [fetchedData1, fetchedData2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
             if (!fetchedData1 || !fetchedData2) {
                 setLoading(false);
@@ -619,7 +622,7 @@ export default function McCabeThielePage() {
     } catch (err: any) {
         console.error("McCabe: Error calculating equilibrium curve:", err);
         setError(`Calculation failed: ${err.message}`);
-        if (showLoading) setEquilibriumData(null);
+        // if (showLoading) setEquilibriumData(null); // This line is removed to keep the graph visible on error.
     } finally {
         if (showLoading) setLoading(false);
     }
@@ -1074,6 +1077,7 @@ export default function McCabeThielePage() {
     const tempName = comp1Name;
     setComp1Name(comp2Name);
     setComp2Name(tempName);
+    setAutoGeneratePending(true); // trigger auto regenerate after swap
   };
 
   const updateCompositions = (type: 'xd' | 'xf' | 'xb', value: number) => {
@@ -1146,6 +1150,15 @@ export default function McCabeThielePage() {
       calculateEquilibriumCurve(false, 21);
   }, [temperatureC, pressureBar]);
 
+  // When autoGeneratePending is set, wait for the relevant state to update (next render) then regenerate the graph
+  useEffect(() => {
+    if (autoGeneratePending) {
+      handleUpdateGraphClick();
+      setAutoGeneratePending(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comp1Name, comp2Name, useTemperature, fluidPackage, autoGeneratePending]);
+
   return (
     <TooltipProvider>
       <div className="container mx-auto p-4 md:p-8 px-4 md:px-16">
@@ -1156,7 +1169,10 @@ export default function McCabeThielePage() {
                 <div className="space-y-4">
                   {/* Temperature/Pressure Toggle and Input */}
                   <div>
-                    <Tabs value={useTemperature ? "temperature" : "pressure"} onValueChange={(value) => setUseTemperature(value === "temperature")}>
+                    <Tabs value={useTemperature ? "temperature" : "pressure"} onValueChange={(value) => { 
+                        setUseTemperature(value === "temperature");
+                        setAutoGeneratePending(true); // trigger auto regenerate after mode change
+                    }}>
                       <TabsList className="flex w-full">
                         <TabsTrigger value="temperature" className="flex-1 text-center">Temperature</TabsTrigger>
                         <TabsTrigger value="pressure" className="flex-1 text-center">Pressure</TabsTrigger>
@@ -1235,7 +1251,10 @@ export default function McCabeThielePage() {
                   {/* Fluid Package Selector - Label side-by-side, reordered */}
                   <div className="flex items-center gap-2">
                       <Label htmlFor="fluidPackageMcCabe" className="text-sm font-medium whitespace-nowrap">Fluid Package:</Label>
-                      <Select value={fluidPackage} onValueChange={(value) => setFluidPackage(value as FluidPackageTypeMcCabe)}>
+                      <Select value={fluidPackage} onValueChange={(value) => {
+                          setFluidPackage(value as FluidPackageTypeMcCabe);
+                          setAutoGeneratePending(true); // trigger auto regenerate after fluid package change
+                      }}>
                           <SelectTrigger id="fluidPackageMcCabe" className="flex-1"><SelectValue placeholder="Select fluid package" /></SelectTrigger>
                           <SelectContent>
                               <SelectItem value="uniquac">UNIQUAC</SelectItem>
@@ -1353,10 +1372,15 @@ export default function McCabeThielePage() {
             <Card>
               <CardContent className="py-2">
                 <div className="relative aspect-square rounded-md">
-                   {loading && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Loading & Calculating XY Data...</div><div className="text-sm text-muted-foreground/70">Using { fluidPackage.toUpperCase()} model.</div></div></div> )}
-                   {!loading && !equilibriumData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and update graph.</div> )}
-                   {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div> )}
-                  {!loading && equilibriumData && Object.keys(echartsOptions).length > 0 && (
+                   {/* The loading overlay has been removed. The button shows "Calculating..." instead. */}
+
+                   {!equilibriumData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and update graph.</div> )}
+                   
+                   {/* The error message will now overlay the graph if a calculation fails. */}
+                   {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center bg-background/80 text-red-400 p-4 text-center rounded-md">{error}</div> )}
+
+                  {/* The graph is shown as long as equilibriumData exists, even during reloads. */}
+                  {equilibriumData && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} notMerge={false} lazyUpdate={false} />
                   )}
                 </div>

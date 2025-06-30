@@ -377,13 +377,13 @@ export function calculateBubblePressureUnifac(
   unifacParams: UnifacParameters
 ): BubbleDewResult | null {
   const x = [x1_feed, 1 - x1_feed];
-  const P_sat = [calculatePsat_Pa(components[0].antoine, T_K), calculatePsat_Pa(components[1].antoine, T_K)];
-  if (P_sat.some(p => isNaN(p))) return null;
+  const Psat = [calculatePsat_Pa(components[0].antoine, T_K), calculatePsat_Pa(components[1].antoine, T_K)];
+  if (Psat.some(p => isNaN(p))) return null;
   const gamma = calculateUnifacGamma(components, x, T_K, unifacParams);
   if (!gamma) return null;
-  const P_calc = x[0] * gamma[0] * P_sat[0] + x[1] * gamma[1] * P_sat[1];
-  const y1 = (x[0] * gamma[0] * P_sat[0]) / P_calc;
-  return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K, P_Pa: P_calc };
+  const Pcalc = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
+  const y1 = (x[0] * gamma[0] * Psat[0]) / Pcalc;
+  return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K, P_Pa: Pcalc };
 }
 
 // Minimal inline variants for dew calculations (binary only)
@@ -521,7 +521,7 @@ export function calculatePrFugacityCoefficients(
   if (!roots || roots.length === 0) return null;
 
   const Z = phase === 'liquid' ? Math.min(...roots) : Math.max(...roots);
-  if (Z <= 0) return null;
+  if (Z <= B) return null; // Robustness check
 
   const termCommon = (A / (2 * Math.sqrt(2) * B)) * Math.log((Z + (1 + Math.sqrt(2)) * B) / (Z + (1 - Math.sqrt(2)) * B));
 
@@ -782,17 +782,24 @@ export function calculateSrkFugacityCoefficients(
   if (!roots || roots.length === 0) return null;
 
   const Z = phase === 'liquid' ? Math.min(...roots) : Math.max(...roots);
+  if (Z <= B_mix) return null; // Robustness check, Z must be > B for log(Z-B) to be real
 
   // Fugacity coefficients
+  const term_ln = (A_mix / B_mix) * Math.log(1 + B_mix / Z);
+
+  const d_a_mix_by_n = [
+      2 * (x1 * srkPure[0].ac_i + x2 * a12), // for component 1
+      2 * (x2 * srkPure[1].ac_i + x1 * a12)  // for component 2
+  ];
+
   const phi = [0, 1].map(i => {
-    const bi_over_bmix = (i === 0 ? srkPure[0].b_i : srkPure[1].b_i) / b_mix;
-    const sum_term = x1 * (i === 0 ? 2*srkPure[0].ac_i : 2*a12) + 
-                     x2 * (i === 0 ? 2*a12 : 2*srkPure[1].ac_i);
-    const ai_term = sum_term / a_mix;
+    const b_i = srkPure[i].b_i;
+    const b_i_over_b_mix = b_i / b_mix;
+
+    const term1 = b_i_over_b_mix * (Z - 1) - Math.log(Z - B_mix);
+    const term2 = term_ln * (d_a_mix_by_n[i] / a_mix - b_i_over_b_mix);
     
-    const ln_phi = bi_over_bmix * (Z - 1) - Math.log(Z - B_mix) - 
-                   (A_mix / B_mix) * (ai_term - bi_over_bmix) * Math.log(1 + B_mix/Z);
-    return Math.exp(ln_phi);
+    return Math.exp(term1 - term2);
   });
 
   return [phi[0], phi[1]];
@@ -804,62 +811,61 @@ export function calculateBubbleTemperatureSrk(
   P_system_Pa: number,
   srkInteractionParams: SrkInteractionParams,
   initialTempGuess_K: number = 350,
-  maxIter: number = 100,
-  tolerance_f: number = 1e-6,
-  tolerance_T_step: number = 1e-4
+  maxIter: number = 50,
+  tolerance: number = 1e-5
 ): BubbleDewResult | null {
-  let T_current_K = initialTempGuess_K;
+  let T = initialTempGuess_K;
   const x = [x1_feed, 1 - x1_feed];
+  let y = [...x]; // Initial guess for vapor composition
+  let K = [1.0, 1.0];
 
-  const objectiveFunction = (T_K: number): number => {
-    const Psat = components.map(c => calculatePsat_Pa(c.antoine, T_K));
-    if (Psat.some(p => isNaN(p) || p <= 0)) return NaN;
-    
-    const phi_L = calculateSrkFugacityCoefficients(components, x, T_K, P_system_Pa, srkInteractionParams, 'liquid');
-    if (!phi_L) return NaN;
+  for (let i = 0; i < maxIter; i++) {
+    // Inner loop to converge y for the current T
+    const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
+    if (!phiL) { T *= 0.98; continue; } // Nudge T if it fails
 
-    // Initial vapor composition guess
-    let y = x.map((xi, i) => xi * phi_L[i] * Psat[i] / P_system_Pa);
-    const y_sum = y.reduce((s, yi) => s + yi, 0);
-    y = y.map(yi => yi / y_sum);
+    for (let j = 0; j < 10; j++) {
+        const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
+        if (!phiV) { y = [...x]; continue; } // Reset guess on failure
+        
+        const K_new = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+        const y_new = [x[0] * K_new[0], x[1] * K_new[1]];
+        const sum_y = y_new[0] + y_new[1];
+        y_new[0] /= sum_y;
+        y_new[1] /= sum_y;
 
-    const phi_V = calculateSrkFugacityCoefficients(components, y, T_K, P_system_Pa, srkInteractionParams, 'vapor');
-    if (!phi_V) return NaN;
-
-    // Calculate K-values and objective
-    const K = phi_L.map((phiL, i) => phiL * Psat[i] / (phi_V[i] * P_system_Pa));
-    return x.reduce((sum, xi, i) => sum + xi * K[i], 0) - 1;
-  };
-
-  for (let iter = 0; iter < maxIter; iter++) {
-    const f_current = objectiveFunction(T_current_K);
-    if (isNaN(f_current)) return null;
-    if (Math.abs(f_current) < tolerance_f) {
-      // Calculate final vapor composition
-      const Psat = components.map(c => calculatePsat_Pa(c.antoine, T_current_K));
-      const phi_L = calculateSrkFugacityCoefficients(components, x, T_current_K, P_system_Pa, srkInteractionParams, 'liquid');
-      if (!phi_L) return null;
-      
-      let y = x.map((xi, i) => xi * phi_L[i] * Psat[i] / P_system_Pa);
-      const y_sum = y.reduce((s, yi) => s + yi, 0);
-      y = y.map(yi => yi / y_sum);
-
-      return {
-        comp1_feed: x1_feed,
-        comp1_equilibrium: y[0],
-        T_K: T_current_K,
-        P_Pa: P_system_Pa,
-        iterations: iter + 1,
-        calculationType: 'bubbleT'
-      };
+        if (Math.abs(y_new[0] - y[0]) < 1e-7) {
+            y = y_new; K = K_new; break;
+        }
+        y = y_new; K = K_new;
     }
 
-    const df_dT = _numDerivSrk(objectiveFunction, T_current_K);
-    if (Math.abs(df_dT) < 1e-12) return null;
+    const f = x[0] * K[0] + x[1] * K[1] - 1;
+    
+    if (Math.abs(f) < tolerance) {
+      return { comp1_feed: x1_feed, comp1_equilibrium: y[0], T_K: T, P_Pa: P_system_Pa, iterations: i + 1, calculationType: 'bubbleT' };
+    }
 
-    const T_new_K = T_current_K - f_current / df_dT;
-    if (Math.abs(T_new_K - T_current_K) < tolerance_T_step) break;
-    T_current_K = Math.max(100, Math.min(1000, T_new_K));
+    // Newton's method step for Temperature
+    const T_step = Math.max(1e-3 * T, 0.1);
+    const T_p = T + T_step;
+    const phiL_p = calculateSrkFugacityCoefficients(components, x, T_p, P_system_Pa, srkInteractionParams, 'liquid');
+    const phiV_p = calculateSrkFugacityCoefficients(components, y, T_p, P_system_Pa, srkInteractionParams, 'vapor');
+    if (!phiL_p || !phiV_p) { T -= f*5; continue; }
+
+    const K_p = [phiL_p[0] / phiV_p[0], phiL_p[1] / phiV_p[1]];
+    const f_p = x[0] * K_p[0] + x[1] * K_p[1] - 1;
+    
+    const df_dT = (f_p - f) / T_step;
+
+    if (Math.abs(df_dT) < 1e-8) { T -= f*5; continue; }
+    
+    let dT = -f / df_dT;
+    if (Math.abs(dT) > 15) dT = 15 * Math.sign(dT);
+    
+    T += dT;
+
+    if (T < 100 || T > 1000) return null;
   }
   return null;
 }
@@ -870,39 +876,46 @@ export function calculateBubblePressureSrk(
   T_system_K: number,
   srkInteractionParams: SrkInteractionParams,
   initialPressureGuess_Pa: number = 101325,
-  maxIter: number = 100,
+  maxIter: number = 40,
   tolerance: number = 1e-5
 ): BubbleDewResult | null {
-  let P_current_Pa = initialPressureGuess_Pa;
+  let P = initialPressureGuess_Pa;
   const x = [x1_feed, 1 - x1_feed];
+  let y = [...x]; 
+  let K = [1.0, 1.0];
 
-  for (let iter = 0; iter < maxIter; iter++) {
-    const Psat = components.map(c => calculatePsat_Pa(c.antoine, T_system_K));
-    if (Psat.some(p => isNaN(p) || p <= 0)) return null;
+  for (let i = 0; i < maxIter; i++) {
+    const phiL = calculateSrkFugacityCoefficients(components, x, T_system_K, P, srkInteractionParams, 'liquid');
+    if (!phiL) { P *= 0.8; continue; } // Nudge P on failure
 
-    const phi_L = calculateSrkFugacityCoefficients(components, x, T_system_K, P_current_Pa, srkInteractionParams, 'liquid');
-    if (!phi_L) return null;
+    // Inner loop to converge y for the current P
+    for (let j = 0; j < 10; j++) {
+        const phiV = calculateSrkFugacityCoefficients(components, y, T_system_K, P, srkInteractionParams, 'vapor');
+        if (!phiV) { y = [...x]; continue; }
+        
+        K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+        
+        const y_new = [x[0] * K[0], x[1] * K[1]];
+        const sum_y_new = y_new[0] + y_new[1];
+        if (sum_y_new === 0) return null;
+        y_new[0] /= sum_y_new;
+        y_new[1] /= sum_y_new;
 
-    let y = x.map((xi, i) => xi * phi_L[i] * Psat[i] / P_current_Pa);
-    const y_sum = y.reduce((s, yi) => s + yi, 0);
-    y = y.map(yi => yi / y_sum);
-
-    const phi_V = calculateSrkFugacityCoefficients(components, y, T_system_K, P_current_Pa, srkInteractionParams, 'vapor');
-    if (!phi_V) return null;
-
-    const P_new_Pa = x.reduce((sum, xi, i) => sum + xi * phi_L[i] * Psat[i] / phi_V[i], 0);
-    
-    if (Math.abs(P_new_Pa - P_current_Pa) < tolerance * P_current_Pa) {
-      return {
-        comp1_feed: x1_feed,
-        comp1_equilibrium: y[0],
-        T_K: T_system_K,
-        P_Pa: P_new_Pa,
-        iterations: iter + 1,
-        calculationType: 'bubbleP'
-      };
+        if (Math.abs(y_new[0] - y[0]) < 1e-7) {
+            y = y_new; break;
+        }
+        y = y_new;
     }
-    P_current_Pa = P_new_Pa;
+    
+    const sum_Kx = x[0] * K[0] + x[1] * K[1];
+    const P_new = P * sum_Kx;
+
+    if (Math.abs(P_new - P) < tolerance * P) {
+      return { comp1_feed: x1_feed, comp1_equilibrium: y[0], T_K: T_system_K, P_Pa: P_new, iterations: i + 1, calculationType: 'bubbleP' };
+    }
+
+    P = P_new;
+    if (P <= 0 || !isFinite(P)) return null;
   }
   return null;
 }
@@ -916,52 +929,42 @@ export function calculateDewTemperatureSrk(
   maxIter: number = 50,
   tolerance: number = 1e-5
 ): BubbleDewResult | null {
-  let T_current_K = initialTempGuess_K;
+  let T = initialTempGuess_K;
   const y = [y1_feed, 1 - y1_feed];
+  let x = [...y];
+  let K = [1.0, 1.0];
 
-  for (let iter = 0; iter < maxIter; iter++) {
-    const Psat = components.map(c => calculatePsat_Pa(c.antoine, T_current_K));
-    if (Psat.some(p => isNaN(p) || p <= 0)) return null;
+  for (let i = 0; i < maxIter; i++) {
+    const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
+    if (!phiV) { T *= 1.02; continue; }
 
-    const phi_V = calculateSrkFugacityCoefficients(components, y, T_current_K, P_system_Pa, srkInteractionParams, 'vapor');
-    if (!phi_V) return null;
+    for (let j = 0; j < 10; j++) {
+        const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
+        if (!phiL) { x = [...y]; continue; }
+        
+        K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+        
+        const x_new = [y[0] / K[0], y[1] / K[1]];
+        const sum_x_new = x_new[0] + x_new[1];
+        if(sum_x_new === 0) return null;
+        x_new[0] /= sum_x_new;
+        x_new[1] /= sum_x_new;
 
-    let x = y.map((yi, i) => yi * phi_V[i] * P_system_Pa / (Psat[i]));
-    const x_sum = x.reduce((s, xi) => s + xi, 0);
-    x = x.map(xi => xi / x_sum);
-
-    const phi_L = calculateSrkFugacityCoefficients(components, x, T_current_K, P_system_Pa, srkInteractionParams, 'liquid');
-    if (!phi_L) return null;
-
-    const obj = y.reduce((sum, yi, i) => sum + yi / (phi_L[i] * Psat[i] / (phi_V[i] * P_system_Pa)), 0) - 1;
-    
-    if (Math.abs(obj) < tolerance) {
-      return {
-        comp1_feed: y1_feed,
-        comp1_equilibrium: x[0],
-        T_K: T_current_K,
-        P_Pa: P_system_Pa,
-        iterations: iter + 1,
-        calculationType: 'dewT'
-      };
+        if (Math.abs(x_new[0] - x[0]) < 1e-7) {
+            x = x_new; break;
+        }
+        x = x_new;
     }
 
-    const dobj_dT = _numDerivSrk((T: number) => {
-      const Psat_T = components.map(c => calculatePsat_Pa(c.antoine, T));
-      if (Psat_T.some(p => isNaN(p))) return NaN;
-      let x_T = y.map((yi, i) => yi * phi_V[i] * P_system_Pa / Psat_T[i]);
-      const x_sum_T = x_T.reduce((s, xi) => s + xi, 0);
-      x_T = x_T.map(xi => xi / x_sum_T);
-      const phi_V_T = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
-      if (!phi_V_T) return NaN;
-      const phi_L_T = calculateSrkFugacityCoefficients(components, x_T, T, P_system_Pa, srkInteractionParams, 'liquid');
-      if (!phi_L_T) return NaN;
-      const K_T = phi_L_T.map((phiL, i) => phiL * Psat_T[i] / (phi_V_T[i] * P_system_Pa));
-      return y.reduce((sum, yi, i) => sum + yi / K_T[i], 0) - 1;
-    }, T_current_K);
+    const f = y[0] / K[0] + y[1] / K[1] - 1;
 
-    if (Math.abs(dobj_dT) < 1e-12) return null;
-    T_current_K = Math.max(100, Math.min(1000, T_current_K - obj / dobj_dT));
+    if (Math.abs(f) < tolerance) {
+      return { comp1_feed: y1_feed, comp1_equilibrium: x[0], T_K: T, P_Pa: P_system_Pa, iterations: i + 1, calculationType: 'dewT' };
+    }
+    
+    // Simplified Wegstein-like step for stability
+    T += f * 5; 
+    if (T < 100 || T > 1000) return null;
   }
   return null;
 }
@@ -972,39 +975,45 @@ export function calculateDewPressureSrk(
   T_system_K: number,
   srkInteractionParams: SrkInteractionParams,
   initialPressureGuess_Pa: number = 101325,
-  maxIter: number = 10,
+  maxIter: number = 40,
   tolerance: number = 1e-5
 ): BubbleDewResult | null {
-  let P_current_Pa = initialPressureGuess_Pa;
+  let P = initialPressureGuess_Pa;
   const y = [y1_feed, 1 - y1_feed];
+  let x = [...y];
+  let K = [1.0, 1.0];
 
-  for (let iter = 0; iter < maxIter; iter++) {
-    const Psat = components.map(c => calculatePsat_Pa(c.antoine, T_system_K));
-    if (Psat.some(p => isNaN(p) || p <= 0)) return null;
+  for (let i = 0; i < maxIter; i++) {
+    const phiV = calculateSrkFugacityCoefficients(components, y, T_system_K, P, srkInteractionParams, 'vapor');
+    if (!phiV) { P *= 1.2; continue; }
 
-    const phi_V = calculateSrkFugacityCoefficients(components, y, T_system_K, P_current_Pa, srkInteractionParams, 'vapor');
-    if (!phi_V) return null;
+    for (let j = 0; j < 10; j++) {
+        const phiL = calculateSrkFugacityCoefficients(components, x, T_system_K, P, srkInteractionParams, 'liquid');
+        if (!phiL) { x = [...y]; continue; }
 
-    let x = y.map((yi, i) => yi * phi_V[i] * P_current_Pa / Psat[i]);
-    const x_sum = x.reduce((s, xi) => s + xi, 0);
-    x = x.map(xi => xi / x_sum);
-
-    const phi_L = calculateSrkFugacityCoefficients(components, x, T_system_K, P_current_Pa, srkInteractionParams, 'liquid');
-    if (!phi_L) return null;
-
-    const P_new_Pa = 1 / y.reduce((sum, yi, i) => sum + yi / (phi_L[i] * Psat[i] / phi_V[i]), 0);
-    
-    if (Math.abs(P_new_Pa - P_current_Pa) < tolerance * P_current_Pa) {
-      return {
-        comp1_feed: y1_feed,
-        comp1_equilibrium: x[0],
-        T_K: T_system_K,
-        P_Pa: P_new_Pa,
-        iterations: iter + 1,
-        calculationType: 'dewP'
-      };
+        K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+        
+        const x_new = [y[0] / K[0], y[1] / K[1]];
+        const sum_x_new = x_new[0] + x_new[1];
+        if (sum_x_new === 0) return null;
+        x_new[0] /= sum_x_new;
+        x_new[1] /= sum_x_new;
+        
+        if (Math.abs(x_new[0] - x[0]) < 1e-7) {
+            x = x_new; break;
+        }
+        x = x_new;
     }
-    P_current_Pa = P_new_Pa;
+
+    const sum_y_over_K = y[0] / K[0] + y[1] / K[1];
+    const P_new = P / sum_y_over_K;
+
+    if (Math.abs(P_new - P) < tolerance * P) {
+      return { comp1_feed: y1_feed, comp1_equilibrium: x[0], T_K: T_system_K, P_Pa: P_new, iterations: i + 1, calculationType: 'dewP' };
+    }
+
+    P = P_new;
+    if (P <= 0 || !isFinite(P)) return null;
   }
   return null;
 }
@@ -1264,7 +1273,7 @@ export async function fetchUniquacInteractionParams(
   const { data, error } = await supabase
     .from('uniquac parameters')
     .select('A12, A21, CASN1, CASN2')
-    .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN1.eq.${casn1})`)
+    .or(`and(CASN1.eq.${casn1},CASN2.eq.${casn2}),and(CASN1.eq.${casn2},CASN2.eq.${casn1})`)
     .limit(1);
   if (!error && data && data.length > 0) {
     const row = data[0];

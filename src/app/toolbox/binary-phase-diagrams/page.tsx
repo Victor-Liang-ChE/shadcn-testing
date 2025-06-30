@@ -654,7 +654,10 @@ export default function VleDiagramPage() {
                     <div className="space-y-2">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                                <Tabs value={useTemperatureForXY ? "temperature" : "pressure"} onValueChange={v => setUseTemperatureForXY(v === "temperature")}>
+                                <Tabs value={useTemperatureForXY ? "temperature" : "pressure"} onValueChange={v => {
+                                    setUseTemperatureForXY(v === "temperature");
+                                    generateDiagram();
+                                }}>
                                     <TabsList><TabsTrigger value="temperature">T</TabsTrigger><TabsTrigger value="pressure">P</TabsTrigger></TabsList>
                                 </Tabs>
                                 <span className="text-sm">
@@ -771,7 +774,13 @@ export default function VleDiagramPage() {
                                             </div>
                                         )}
                                     </div>
-                                    <Button variant="ghost" size="icon" onClick={() => { const temp = comp1Name; setComp1Name(comp2Name); setComp2Name(temp); setAutoGenerateOnCompChange(true); }} title="Swap Components"><ArrowLeftRight className="h-4 w-4" /></Button>
+                                    <Button variant="ghost" size="icon" onClick={() => {
+                                        const temp = comp1Name;
+                                        setComp1Name(comp2Name);
+                                        setComp2Name(temp);
+                                        setAutoGenerateOnCompChange(true);
+                                        generateDiagram();
+                                    }} title="Swap Components"><ArrowLeftRight className="h-4 w-4" /></Button>
                                     <div className="relative flex-1">
                                         <Input
                                             ref={input2Ref} id="comp2Name" value={comp2Name} onChange={handleComp2NameChange} onKeyDown={handleKeyDown}
@@ -792,7 +801,10 @@ export default function VleDiagramPage() {
                                 {renderConditionalInput()}
                                 <div className="flex items-center gap-2">
                                     <Label htmlFor="fluidPackage" className="text-sm font-medium whitespace-nowrap">Fluid Package:</Label>
-                                    <Select value={fluidPackage} onValueChange={(v) => setFluidPackage(v as FluidPackageType)}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="srk">SRK</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem></SelectContent></Select>
+                                    <Select value={fluidPackage} onValueChange={(v) => {
+                                        setFluidPackage(v as FluidPackageType);
+                                        generateDiagram();
+                                    }}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="srk">SRK</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem></SelectContent></Select>
                                 </div>
                             </div>
                             <Button onClick={() => generateDiagram()} disabled={loading} className="w-full">{loading ? 'Calculating...' : 'Generate Diagram'}</Button>
