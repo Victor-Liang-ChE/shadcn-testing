@@ -1452,7 +1452,7 @@ export default function ReactorDesignPage() {
                   <div className="overflow-x-auto">
                     {operationMode === 'SinglePass' && calculationResults ? (
                       // Single Pass Results Table
-                      <table className="w-full border-collapse border border-border">
+                      (<table className="w-full border-collapse border border-border">
                         <thead>
                           <tr className="bg-muted/50">
                             <th className="border border-border px-3 py-2 text-center font-medium">Comp.</th>
@@ -1540,10 +1540,10 @@ export default function ReactorDesignPage() {
                             );
                           })}
                         </tbody>
-                      </table>
+                      </table>)
                     ) : operationMode === 'Recycle' && recycleResults ? (
                       // Recycle Results Table
-                      <div className="space-y-4">
+                      (<div className="space-y-4">
                         {/* Summary Information */}
                         <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
                           <div className="text-center">
@@ -1565,7 +1565,6 @@ export default function ReactorDesignPage() {
                             </div>
                           </div>
                         </div>
-
                         {/* Convergence Issues Warning */}
                         {!recycleResults.converged && (
                           <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
@@ -1591,7 +1590,6 @@ export default function ReactorDesignPage() {
                             </div>
                           </div>
                         )}
-
                         {/* Detailed Results Table */}
                         <table className="w-full border-collapse border border-border">
                           <thead>
@@ -1700,7 +1698,6 @@ export default function ReactorDesignPage() {
                             })}
                           </tbody>
                         </table>
-
                         {/* System Performance Analysis - Moved below the table */}
                         <div className="p-4 bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-800 rounded-lg">
                           <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">System Performance Analysis</h4>
@@ -1740,9 +1737,7 @@ export default function ReactorDesignPage() {
                             </div>
                           </div>
                         </div>
-
-
-                      </div>
+                      </div>)
                     ) : null}
                   </div>
                 </CardContent>
@@ -1751,7 +1746,7 @@ export default function ReactorDesignPage() {
               </>
             ) : (
               /* Graph Display - Replaces visualization and results */
-              <Card>
+              (<Card>
                 <CardContent>
                   <div className="relative w-full aspect-square rounded-md">
                     {/* PFR/CSTR Switch on top-left corner of graph */}
@@ -1809,7 +1804,7 @@ export default function ReactorDesignPage() {
                     )}
                   </div>
                 </CardContent>
-              </Card>
+              </Card>)
             )}
 
             {/* Graph Visualization Button */}

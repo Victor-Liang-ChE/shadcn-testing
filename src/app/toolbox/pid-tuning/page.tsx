@@ -2580,7 +2580,7 @@ export default function PidTuningPage() {
       <div className="container mx-auto p-4 sm:p-6 lg:p-8">
         {isMultiView && (multiViewData.length > 0 || simulationDataRef.current.length > 0) ? (
           // --- NEW: MULTI-GRAPH VIEW ---
-          <div className="space-y-4">
+          (<div className="space-y-4">
             <div className="flex justify-between items-center">
               <Button variant="outline" onClick={() => setIsMultiView(false)}>
                 ← Back to Single Graph View
@@ -2589,10 +2589,9 @@ export default function PidTuningPage() {
                 {isOverlappedView ? 'Separate Graphs' : 'Overlap Graphs'}
               </Button>
             </div>
-
             {isOverlappedView ? (
               // --- Overlapped View (Corrected) ---
-              <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+              (<div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
                 <div className="lg:col-span-2 space-y-6">
                   {/* PID Tuning Parameters Card */}
                   <Card>
@@ -2813,7 +2812,6 @@ export default function PidTuningPage() {
                     </CardContent>
                   </Card>
                 </div>
-
                 <div className="lg:col-span-3">
                   <Card>
                     <CardContent className="py-2">
@@ -2828,10 +2826,10 @@ export default function PidTuningPage() {
                     </CardContent>
                   </Card>
                 </div>
-              </div>
+              </div>)
             ) : (
               // --- Separated View ---
-              <>
+              (<>
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   {/* Process Chart */}
                   <Card>
@@ -2875,7 +2873,6 @@ export default function PidTuningPage() {
                     </CardContent>
                   </Card>
                 </div>
-                
                 {/* Shared Simulation Controls */}
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -2907,12 +2904,12 @@ export default function PidTuningPage() {
                     </div>
                   </CardContent>
                 </Card>
-              </>
+              </>)
             )}
-          </div>
+          </div>)
         ) : (
           // --- NEW SINGLE GRAPH VIEW STRUCTURE ---
-          <div className="space-y-4">
+          (<div className="space-y-4">
             {/* 1. Consistent header bar */}
             <div className="flex justify-between items-center">
               <div></div>
@@ -2920,7 +2917,6 @@ export default function PidTuningPage() {
                 View All Dynamic Graphs
               </Button>
             </div>
-
             {/* 2. Main grid layout */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
               {/* Column 1: Controls */}
@@ -3118,7 +3114,7 @@ export default function PidTuningPage() {
                 </Card>
               </div>
             </div>
-          </div>
+          </div>)
         )}
       </div>
     </TooltipProvider>

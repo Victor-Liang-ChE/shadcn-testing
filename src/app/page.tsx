@@ -1,6 +1,6 @@
 'use client';
 
-import Image from "next/image";
+import Image from "next/legacy/image";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
