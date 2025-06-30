@@ -46,11 +46,11 @@ export default function Page() {
       thumbnailLightPath: reactorDesignThumbnailLightPath
     },
     {
-      name: "Binary Phase Diagram",
-      path: "/toolbox/binary-phase-diagrams",
-      description: "Generate and visualize binary phase diagrams using various thermodynamic models.",
-      thumbnailPath: binaryPhaseThumbnailPath,
-      thumbnailLightPath: binaryPhaseThumbnailLightPath
+      name: "Residue Curve Map",
+      path: "/toolbox/residue-curve-map",
+      description: "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
+      thumbnailPath: residueCurveMapThumbnailPath,
+      thumbnailLightPath: residueCurveMapThumbnailLightPath
     },
     {
       name: "PID Tuning",
@@ -81,11 +81,11 @@ export default function Page() {
       thumbnailLightPath: dynamicsThumbnailLightPath
     },
     {
-      name: "Residue Curve Map",
-      path: "/toolbox/residue-curve-map",
-      description: "Visualize and analyze residue curve maps for ternary mixtures, aiding in distillation sequence design.",
-      thumbnailPath: residueCurveMapThumbnailPath,
-      thumbnailLightPath: residueCurveMapThumbnailLightPath
+      name: "Binary Phase Diagram",
+      path: "/toolbox/binary-phase-diagrams",
+      description: "Generate and visualize binary phase diagrams using various thermodynamic models.",
+      thumbnailPath: binaryPhaseThumbnailPath,
+      thumbnailLightPath: binaryPhaseThumbnailLightPath
     },
     {
       name: "Azeotrope Finder",
