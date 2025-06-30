@@ -85,15 +85,7 @@ if (SUPABASE_URL !== "your_supabase_url" && SUPABASE_ANON_KEY !== "your_supabase
     console.warn("Supabase client not initialized. Please provide NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY environment variables.");
 }
 
-// Debounce function
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<F>) => {
-    if (timeout !== null) { clearTimeout(timeout); timeout = null; }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
-  return debounced as (...args: Parameters<F>) => void;
-}
+// Debounce function removed for instantaneous suggestions
 
 interface ComponentInputState {
     name: string; 
@@ -222,6 +214,9 @@ type SrkAzeotropeResult = AzeotropeResult & { y: number[] };
 type UniquacAzeotropeResult = AzeotropeResult;
 
 export default function TernaryResidueMapPage() {
+    // Add cache reference for efficient data handling
+    const componentDataCache = useRef(new Map<string, { casNumber: string, thermData: FetchedCompoundThermData } | null>());
+    
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
         { name: 'Acetone' },
         { name: 'Chloroform' },
@@ -257,7 +252,8 @@ export default function TernaryResidueMapPage() {
     const [backendPkgParams, setBackendPkgParams] = useState<any>(null);
     const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
 
-    const debouncedSetHighlightedAzeoIdx = useCallback(debounce(setHighlightedAzeoIdx, 50), []);
+    // Removed debounced version for direct calls
+    const setHighlightedAzeoIdxDirect = setHighlightedAzeoIdx;
 
     // Trigger re-generation automatically when the fluid-package selection changes
     const didMountFluidPkg = useRef(false);
@@ -360,7 +356,7 @@ export default function TernaryResidueMapPage() {
         }
     };
     
-    const debouncedFetchComponentSuggestions = useCallback(debounce(fetchComponentSuggestions, 300), [supabase]);
+    // Removed debounced version for instantaneous suggestions
 
     const handleComponentInputChange = (index: number, field: keyof ComponentInputState, value: string) => {
         const newInputs = [...componentsInput];
@@ -381,7 +377,8 @@ export default function TernaryResidueMapPage() {
                     return updated;
                 });
             } else {
-                debouncedFetchComponentSuggestions(value, index);
+                // Direct call instead of debounced call
+                fetchComponentSuggestions(value, index);
             }
         }
     };
@@ -510,6 +507,46 @@ export default function TernaryResidueMapPage() {
         return points;
     };
 
+    // Cached component data fetching function
+    async function fetchComponentData(compoundName: string): Promise<{ casNumber: string, thermData: FetchedCompoundThermData } | null> {
+        const cacheKey = compoundName.toLowerCase();
+        
+        // 1. Check the cache first
+        if (componentDataCache.current.has(cacheKey)) {
+            console.log(`ResidueCurveMap: Cache HIT for ${compoundName}.`);
+            const cachedData = componentDataCache.current.get(cacheKey);
+            if (cachedData === null) {
+                setError(`Data fetch previously failed for ${compoundName}. Please check the name.`);
+            }
+            return cachedData || null;
+        }
+
+        console.log(`ResidueCurveMap: Cache MISS for ${compoundName}. Fetching from DB.`);
+        if (!supabase) throw new Error("Supabase client is not available.");
+
+        try {
+            // 2. Fetch CAS number
+            const casNumber = await fetchCasNumberByName(supabase, compoundName);
+            
+            // 3. Fetch thermodynamic data
+            const thermData = await fetchAndConvertThermData(supabase, casNumber);
+            
+            const finalComponentData = { casNumber, thermData };
+
+            // 4. Store the successful result in the cache
+            componentDataCache.current.set(cacheKey, finalComponentData);
+            return finalComponentData;
+
+        } catch (err: any) {
+            console.error(`Error fetching data for ${compoundName} in ResidueCurveMap:`, err.message);
+            setError(err.message);
+            
+            // 5. Store failure in the cache to prevent re-fetching invalid names
+            componentDataCache.current.set(cacheKey, null);
+            return null;
+        }
+    }
+
     const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string): Promise<string> => {
         if (!name.trim()) {
             console.error("fetchCasNumberByName: Name is empty.");
@@ -618,18 +655,21 @@ export default function TernaryResidueMapPage() {
                 throw new Error("Invalid system pressure input.");
             }
 
-            const casNumbersPromises = componentsInput.map(input => 
-                fetchCasNumberByName(supabase!, input.name)
+            // Use cached data fetching
+            const componentDataPromises = componentsInput.map(input => 
+                fetchComponentData(input.name)
             );
-            const fetchedCasNumbers = await Promise.all(casNumbersPromises);
-
-            const thermoDataPromises = fetchedCasNumbers.map(casn => 
-                fetchAndConvertThermData(supabase!, casn)
-            );
-            const fetchedThermDataArray = await Promise.all(thermoDataPromises);
+            const fetchedComponentDataArray = await Promise.all(componentDataPromises);
+            
+            // Extract cas numbers and therm data from cached results
+            const fetchedCasNumbers = fetchedComponentDataArray.map(data => data?.casNumber || '');
+            const fetchedThermDataArray = fetchedComponentDataArray.map(data => data?.thermData || null);
 
             const processedComponents: ProcessedComponentData[] = componentsInput.map((input, index) => {
                 const thermData = fetchedThermDataArray[index];
+                if (!thermData) {
+                    throw new Error(`Failed to fetch thermodynamic data for ${input.name}`);
+                }
                 if (thermData.criticalProperties) {
                     const { Tc_K, Pc_Pa, omega } = thermData.criticalProperties;
                     // console.log(`EOS BP attempt → ${input.name}: Tc=${Tc_K.toFixed(2)} K, Pc=${(Pc_Pa/1e5).toFixed(2)} bar, ω=${omega.toFixed(3)}`);
@@ -1893,7 +1933,7 @@ export default function TernaryResidueMapPage() {
                                                 onFocus={() => {
                                                     setActiveSuggestionIndex(index);
                                                     if (componentsInput[index].name.trim()) {
-                                                        debouncedFetchComponentSuggestions(componentsInput[index].name, index);
+                                                        fetchComponentSuggestions(componentsInput[index].name, index);
                                                     }
                                                 }}
                                             />
@@ -1952,7 +1992,11 @@ export default function TernaryResidueMapPage() {
                                 </Label>
                                 <Select
                                     value={fluidPackage}
-                                    onValueChange={v => setFluidPackage(v as FluidPackageTypeResidue)}
+                                    onValueChange={v => {
+                                        setFluidPackage(v as FluidPackageTypeResidue);
+                                        // Auto-trigger map generation after fluid package change
+                                        setTimeout(() => handleGenerateMap(), 100);
+                                    }}
                                 >
                                     <SelectTrigger id="fluidPackage">
                                         <SelectValue placeholder="Select model" />
@@ -1993,8 +2037,8 @@ export default function TernaryResidueMapPage() {
                                             return (
                                                 <TableRow
                                                     key={index}
-                                                    onMouseEnter={() => debouncedSetHighlightedAzeoIdx(index)}
-                                                    onMouseLeave={() => debouncedSetHighlightedAzeoIdx(null)}
+                                                    onMouseEnter={() => setHighlightedAzeoIdx(index)}
+                                                    onMouseLeave={() => setHighlightedAzeoIdx(null)}
                                                 >
                                                  <TableCell className="px-2 text-center">{az.x[0].toFixed(3)}</TableCell>
                                                  <TableCell className="px-2 text-center">{az.x[1].toFixed(3)}</TableCell>

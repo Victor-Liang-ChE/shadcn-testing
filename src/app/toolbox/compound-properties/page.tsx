@@ -120,15 +120,7 @@ interface CompoundInputState {
     suggestionsRef: React.RefObject<HTMLDivElement | null>;  // <-- allow null here
 }
 
-// Debounce function
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<F>) => {
-    if (timeout !== null) { clearTimeout(timeout); timeout = null; }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
-  return debounced as (...args: Parameters<F>) => void;
-}
+// Debounce function removed for instantaneous suggestions
 
 // Helper function to render property name with optional symbol and subscripts/superscripts
 const renderPropertyName = (displayName: string, symbol?: string): React.ReactNode => {
@@ -269,6 +261,9 @@ interface AppLineSeriesOption extends LineSeriesOption {
 export default function CompoundPropertiesPage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
   
+  // Add cache reference for efficient data handling
+  const propertiesCache = useRef(new Map<string, FetchedCompoundData | null>());
+  
   const nextCompoundId = useRef(0); 
 
   const createNewCompoundState = (name: string = ''): CompoundInputState => {
@@ -378,7 +373,20 @@ export default function CompoundPropertiesPage() {
         throw new Error("Compound name cannot be empty.");
     }
 
-    console.log(`CompoundProperties: Fetching data for "${trimmedCompoundName}"...`); // Use trimmed name in log
+    const cacheKey = trimmedCompoundName.toLowerCase();
+    
+    // 1. Check cache before fetching
+    if (propertiesCache.current.has(cacheKey)) {
+        console.log(`CompoundProperties: Cache HIT for ${trimmedCompoundName}.`);
+        const cachedData = propertiesCache.current.get(cacheKey);
+        // Handle the case where a previous fetch for this name failed
+        if (cachedData === null) {
+            throw new Error(`Previously failed to fetch data for ${trimmedCompoundName}.`);
+        }
+        return cachedData || null;
+    }
+
+    console.log(`CompoundProperties: Cache MISS for ${trimmedCompoundName}. Fetching from DB.`); // Use trimmed name in log
 
     try {
       const { data: compoundDbData, error: compoundError } = await supabase
@@ -426,9 +434,16 @@ export default function CompoundPropertiesPage() {
       const criticalTemp = parseCoefficient(properties["Critical temperature"]?.value ?? properties["Critical temperature"]);
       console.log(`DEBUG_FETCH_MW: Final molarWeight for "${foundName}" being returned: ${molarWeight}, CriticalTemp: ${criticalTemp}`);
 
-      return { properties, molarWeight, criticalTemp, name: foundName }; // Return canonical name
+      const finalData = { properties, molarWeight, criticalTemp, name: foundName }; // Return canonical name
+      
+      // 3. Store the successful result in the cache
+      propertiesCache.current.set(cacheKey, finalData);
+      return finalData;
     } catch (err: any) {
       console.error(`Error fetching data for "${trimmedCompoundName}":`, err.message); // Use trimmed name
+      
+      // 4. Cache the failure to avoid repeated invalid requests
+      propertiesCache.current.set(cacheKey, null);
       throw err; // Re-throw to be caught by caller
     }
   };
@@ -1448,7 +1463,7 @@ export default function CompoundPropertiesPage() {
     }
   }, [echartsOptions, plotMode, selectedPropertyKey, selectedConstantKey]); // adjust deps accordingly
 
-  const fetchSuggestionsForCompound = useCallback(debounce(async (compoundId: string, inputValue: string) => {
+  const fetchSuggestionsForCompound = useCallback(async (compoundId: string, inputValue: string) => {
     const trimmedInputValue = inputValue.trim(); 
     if (!trimmedInputValue || trimmedInputValue.length < 2 || !supabase) {
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: [], showSuggestions: false } : c));
@@ -1464,7 +1479,7 @@ export default function CompoundPropertiesPage() {
       if (fetchError) { console.error("Supabase suggestion fetch error:", fetchError); return; }
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: data ? data.map(item => item.name) : [], showSuggestions: data && data.length > 0 } : c));
     } catch (err) { console.error("Error fetching suggestions:", err); }
-  }, 300), [supabase]); 
+  }, [supabase]); 
 
   const handleCompoundNameChange = (id: string, value: string) => {
     setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, data: null, error: null } : c)); 
