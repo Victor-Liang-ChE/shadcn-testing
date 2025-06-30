@@ -251,6 +251,7 @@ export default function TernaryResidueMapPage() {
     const [backendComps, setBackendComps] = useState<CompoundData[]>([]);
     const [backendPkgParams, setBackendPkgParams] = useState<any>(null);
     const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
+    const [useRightTriangle, setUseRightTriangle] = useState(false);
 
     // Removed debounced version for direct calls
     const setHighlightedAzeoIdxDirect = setHighlightedAzeoIdx;
@@ -513,7 +514,6 @@ export default function TernaryResidueMapPage() {
         
         // 1. Check the cache first
         if (componentDataCache.current.has(cacheKey)) {
-            console.log(`ResidueCurveMap: Cache HIT for ${compoundName}.`);
             const cachedData = componentDataCache.current.get(cacheKey);
             if (cachedData === null) {
                 setError(`Data fetch previously failed for ${compoundName}. Please check the name.`);
@@ -521,7 +521,6 @@ export default function TernaryResidueMapPage() {
             return cachedData || null;
         }
 
-        console.log(`ResidueCurveMap: Cache MISS for ${compoundName}. Fetching from DB.`);
         if (!supabase) throw new Error("Supabase client is not available.");
 
         try {
@@ -1892,10 +1891,40 @@ export default function TernaryResidueMapPage() {
             } as Data);
         }
         
-        setPlotlyData(finalTraces);
-        setPlotlyLayout(baseLayout);
-
-    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme]);
+        if (useRightTriangle) {
+            const convertTrace = (t: any): any => {
+                if (t.type !== 'scatterternary') return t;
+                const newT: any = { ...t, type: 'scatter' };
+                newT.x = t.c;
+                newT.y = t.a;
+                delete newT.a; delete newT.b; delete newT.c; delete newT.subplot;
+                return newT;
+            };
+            const newTraces = finalTraces.map(convertTrace);
+            const cartLayout: Partial<Layout> = {
+                ...baseLayout,
+                ternary: undefined,
+                xaxis: { range: [0,1], showgrid:false, zeroline:false, constrain:'domain', ticks:'outside' },
+                yaxis: { range: [0,1], showgrid:false, zeroline:false, scaleanchor:'x', ticks:'outside' },
+                shapes: [
+                    { type:'line', x0:0, y0:0, x1:1, y1:0, line:{color:'#999',width:1}},
+                    { type:'line', x0:0, y0:0, x1:0, y1:1, line:{color:'#999',width:1}},
+                    { type:'line', x0:1, y0:0, x1:0, y1:1, line:{color:'#999',width:1}},
+                ],
+                margin:{l:60,r:20,t:40,b:60},
+                annotations: [
+                    { x:1, y:0, xref:'x', yref:'y', text: plotAxisTitles.c, showarrow:false, xanchor:'right', yanchor:'top', font:{ size:12 } },
+                    { x:0, y:1, xref:'x', yref:'y', text: plotAxisTitles.a, showarrow:false, xanchor:'left', yanchor:'bottom', font:{ size:12 } },
+                    { x:0, y:0, xref:'x', yref:'y', text: plotAxisTitles.b, showarrow:false, xanchor:'left', yanchor:'top', font:{ size:12 } },
+                ],
+            };
+            setPlotlyData(newTraces);
+            setPlotlyLayout(cartLayout);
+        } else {
+            setPlotlyData(finalTraces);
+            setPlotlyLayout(baseLayout);
+        }
+    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle]);
 
     const handleGenerateClick = () => {
         handleGenerateMap();
@@ -2078,13 +2107,35 @@ export default function TernaryResidueMapPage() {
                                         </Card>
                                     </div>
                                 ) : (
-                                    <Plot
+                                    <>
+                                      <div className="absolute top-2 right-2 z-20">
+                                        <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
+                                          <Button
+                                            variant={!useRightTriangle ? 'default' : 'ghost'}
+                                            size="sm"
+                                            onClick={() => setUseRightTriangle(false)}
+                                            className="h-8 px-3"
+                                          >
+                                            Ternary
+                                          </Button>
+                                          <Button
+                                            variant={useRightTriangle ? 'default' : 'ghost'}
+                                            size="sm"
+                                            onClick={() => setUseRightTriangle(true)}
+                                            className="h-8 px-3"
+                                          >
+                                            Right Triangle
+                                          </Button>
+                                        </div>
+                                      </div>
+                                      <Plot
                                         data={plotlyData}
                                         layout={plotlyLayout}
                                         style={{ width: '100%', height: '100%' }}
                                         config={{ displayModeBar: false }}
                                         useResizeHandler
-                                    />
+                                      />
+                                    </>
                                 )}
                             </div>
                         </CardContent>
