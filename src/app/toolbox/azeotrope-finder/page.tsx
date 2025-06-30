@@ -94,15 +94,7 @@ if (supabaseUrl && supabaseAnonKey) {
     console.error("Supabase URL or Anon Key is missing for Azeotrope Finder.");
 }
 
-// Debounce function (copy from mccabe-thiele or test page)
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<F>) => {
-    if (timeout !== null) { clearTimeout(timeout); timeout = null; }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
-  return debounced as (...args: Parameters<F>) => void;
-}
+// Debounce function removed for instantaneous suggestions
 
 // formatNumberToPrecision function (copy from mccabe-thiele)
 const formatNumberToPrecision = (num: any, precision: number = 3): string => {
@@ -118,6 +110,7 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 
 export default function AzeotropeFinderPage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  const compoundDataCache = useRef(new Map<string, CompoundData | null>()); // Cache for compound data
   
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
@@ -169,8 +162,20 @@ export default function AzeotropeFinderPage() {
   // --- Data Fetching (fetchCompoundDataLocal - adapt from mccabe-thiele/test page) ---
   // This function needs to be robust to fetch all params for all models.
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
+    const cacheKey = compoundName.toLowerCase();
+    if (compoundDataCache.current.has(cacheKey)) {
+        console.log(`AzeotropeFinder: Cache HIT for ${compoundName}.`);
+        const cachedData = compoundDataCache.current.get(cacheKey);
+        // If cached data is null, it means a previous fetch failed.
+        // Set error state again to inform the user.
+        if (cachedData === null) {
+          setError(`Data fetch previously failed for ${compoundName}.`);
+        }
+        return cachedData || null;
+    }
+    console.log(`AzeotropeFinder: Cache MISS for ${compoundName}. Fetching from DB...`);
+
     if (!supabase) { throw new Error("Supabase client not initialized."); }
-    console.log(`AzeotropeFinder: Fetching data for ${compoundName}...`);
     try {
         const { data: compoundDbData, error: compoundError } = await supabase.from('compounds').select('id, name, cas_number').ilike('name', compoundName).limit(1).single();
         if (compoundError || !compoundDbData) throw new Error(compoundError?.message || `Compound '${compoundName}' not found.`);
@@ -259,10 +264,13 @@ export default function AzeotropeFinderPage() {
         }
         // Validation for Wilson params will be done in handleAzeotropeScan
 
-        return { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+        const result: CompoundData = { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+        compoundDataCache.current.set(cacheKey, result); // Cache success
+        return result;
     } catch (err: any) {
         console.error(`Error fetching data for ${compoundName} in AzeotropeFinder:`, err.message);
         setError(`Data fetch failed for ${compoundName}: ${err.message}`);
+        compoundDataCache.current.set(cacheKey, null); // Cache failure
         return null;
     }
   }
@@ -287,14 +295,14 @@ export default function AzeotropeFinderPage() {
     } catch (err) { console.error("Azeo: Error fetching suggestions:", err); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); }
   }, [supabase]);
 
-  const debouncedFetchSuggestions = useCallback(debounce(fetchSuggestions, 300), [fetchSuggestions]);
+  // Removed debouncedFetchSuggestions for instantaneous suggestions
 
   const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp1Name(newValue);
     setActiveSuggestionInput('comp1');
     if (newValue.trim() === "") { setShowComp1Suggestions(false); setComp1Suggestions([]); }
-    else { debouncedFetchSuggestions(newValue, 'comp1'); }
+    else { fetchSuggestions(newValue, 'comp1'); }
   };
 
   const handleComp2NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -302,7 +310,7 @@ export default function AzeotropeFinderPage() {
     setComp2Name(newValue);
     setActiveSuggestionInput('comp2');
     if (newValue.trim() === "") { setShowComp2Suggestions(false); setComp2Suggestions([]); }
-    else { debouncedFetchSuggestions(newValue, 'comp2'); }
+    else { fetchSuggestions(newValue, 'comp2'); }
   };
 
   const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
@@ -327,7 +335,13 @@ export default function AzeotropeFinderPage() {
     return () => { document.removeEventListener("mousedown", handleClickOutside); };
   }, [activeSuggestionInput]);
 
-  const handleSwapComponents = () => { const temp = comp1Name; setComp1Name(comp2Name); setComp2Name(temp); };
+  const handleSwapComponents = () => { 
+    const temp = comp1Name; 
+    setComp1Name(comp2Name); 
+    setComp2Name(temp); 
+    // Auto-trigger azeotrope scan after swap
+    setTimeout(() => handleAzeotropeScan(), 100);
+  };
 
 
   // --- CSV Export Function ---
@@ -443,6 +457,13 @@ export default function AzeotropeFinderPage() {
     try {
         const [data1, data2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
         if (!data1 || !data2) { setLoading(false); return; } // Error set in fetchCompoundDataLocal
+
+        // Check for pure component system
+        if (data1.cas_number && data2.cas_number && data1.cas_number === data2.cas_number) {
+            setError("Cannot find an azeotrope for a pure component. Please select two different compounds.");
+            setLoading(false);
+            return;
+        }
 
         // Validate required parameters based on fluidPackage
         if (fluidPackage === 'unifac' && (!data1.unifacGroups || !data2.unifacGroups)) throw new Error("UNIFAC groups missing.");
@@ -734,7 +755,11 @@ export default function AzeotropeFinderPage() {
             <Card>
               {/* <CardHeader>{/* <CardTitle>Azeotrope Finder Inputs</CardTitle> * /}</CardHeader> */} {/* Removed CardHeader */}
               <CardContent className="p-4 space-y-4"> {/* Added p-4 for consistent padding */}
-                <Tabs value={azeotropeScanType} onValueChange={(value) => setAzeotropeScanType(value as AzeotropeScanType)} className="mb-4">
+                <Tabs value={azeotropeScanType} onValueChange={(value) => {
+                    setAzeotropeScanType(value as AzeotropeScanType);
+                    // Auto-trigger azeotrope scan after scan type change
+                    setTimeout(() => handleAzeotropeScan(), 100);
+                }} className="mb-4">
                     <TabsList className="grid w-full grid-cols-2">
                         <TabsTrigger value="vs_P_find_T">Scan Pressure</TabsTrigger>
                         <TabsTrigger value="vs_T_find_P">Scan Temperature</TabsTrigger>
@@ -745,7 +770,7 @@ export default function AzeotropeFinderPage() {
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp1NameAzeo">Component 1</Label> */}
                         <Input ref={input1Ref} id="comp1NameAzeo" value={comp1Name} onChange={handleComp1NameChange} 
-                               onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1Name.trim()) debouncedFetchSuggestions(comp1Name, 'comp1');}}
+                               onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1Name.trim()) fetchSuggestions(comp1Name, 'comp1');}}
                                placeholder="e.g., Ethanol" autoComplete="off" />
                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
                             <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
@@ -757,7 +782,7 @@ export default function AzeotropeFinderPage() {
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp2NameAzeo">Component 2</Label> */}
                         <Input ref={input2Ref} id="comp2NameAzeo" value={comp2Name} onChange={handleComp2NameChange} 
-                               onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2Name.trim()) debouncedFetchSuggestions(comp2Name, 'comp2');}}
+                               onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2Name.trim()) fetchSuggestions(comp2Name, 'comp2');}}
                                placeholder="e.g., Water" autoComplete="off" />
                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
                             <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
@@ -769,7 +794,11 @@ export default function AzeotropeFinderPage() {
 
                 <div className="flex items-center gap-2">
                   <Label htmlFor="fluidPackageAzeo" className="whitespace-nowrap">Fluid Package:</Label>
-                  <Select value={fluidPackage} onValueChange={(value) => setFluidPackage(value as FluidPackageTypeAzeotrope)}>
+                  <Select value={fluidPackage} onValueChange={(value) => {
+                    setFluidPackage(value as FluidPackageTypeAzeotrope);
+                    // Auto-trigger azeotrope scan after fluid package change
+                    setTimeout(() => handleAzeotropeScan(), 100);
+                  }}>
                     <SelectTrigger id="fluidPackageAzeo" className="flex-1"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="uniquac">UNIQUAC</SelectItem>
