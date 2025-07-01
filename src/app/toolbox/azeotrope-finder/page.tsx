@@ -151,6 +151,16 @@ export default function AzeotropeFinderPage() {
   // Concurrency guard so stale scans don't overwrite newer results
   const scanGenerationRef = useRef(0);
 
+  // This new useEffect will handle re-scanning when the fluid package changes.
+  const didMountFluidPkg = useRef(false);
+  useEffect(() => {
+    if (didMountFluidPkg.current) {
+      handleAzeotropeScan();
+    } else {
+      didMountFluidPkg.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fluidPackage]);
 
   // --- Logging Hook (copy from test/page.tsx or mccabe-thiele) ---
   // Removed logging useEffect and related state
@@ -793,8 +803,6 @@ export default function AzeotropeFinderPage() {
                   <Label htmlFor="fluidPackageAzeo" className="whitespace-nowrap">Fluid Package:</Label>
                   <Select value={fluidPackage} onValueChange={(value) => {
                     setFluidPackage(value as FluidPackageTypeAzeotrope);
-                    // Auto-trigger azeotrope scan after fluid package change
-                    setTimeout(() => handleAzeotropeScan(), 100);
                   }}>
                     <SelectTrigger id="fluidPackageAzeo" className="flex-1"><SelectValue /></SelectTrigger>
                     <SelectContent>
