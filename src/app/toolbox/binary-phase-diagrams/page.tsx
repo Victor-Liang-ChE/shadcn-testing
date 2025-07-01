@@ -765,7 +765,7 @@ export default function VleDiagramPage() {
                                             placeholder="Methanol" required className="w-full" autoComplete="off"
                                         />
                                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
-                                            <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                                            <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                                                 {comp1Suggestions.map((suggestion, index) => (
                                                     <div key={index} onClick={() => handleSuggestionClick(suggestion, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
                                                         {suggestion}
@@ -788,7 +788,7 @@ export default function VleDiagramPage() {
                                             placeholder="Water" required className="w-full" autoComplete="off"
                                         />
                                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
-                                            <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                                            <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                                                 {comp2Suggestions.map((suggestion, index) => (
                                                     <div key={index} onClick={() => handleSuggestionClick(suggestion, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
                                                         {suggestion}

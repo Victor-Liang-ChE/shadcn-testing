@@ -2044,7 +2044,7 @@ export default function TernaryResidueMapPage() {
                                             {showSuggestions[index] && componentSuggestions[index].length > 0 && (
                                                 <ul
                                                     ref={el => { suggestionsContainerRefs.current[index] = el; }}
-                                                    className={`absolute z-10 mt-1 w-full max-h-40 overflow-y-auto rounded-md shadow-md
+                                                    className={`absolute z-10 mt-1 w-full rounded-md shadow-md
                                                       ${currentTheme === 'dark'
                                                         ? 'bg-gray-800 border border-gray-700 text-gray-200'
                                                         : 'bg-white border border-gray-300 text-gray-900'}`}

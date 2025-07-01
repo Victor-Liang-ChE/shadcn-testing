@@ -1859,7 +1859,7 @@ export default function CompoundPropertiesPage() {
                                     </Button>
                                 )}
                                 {compound.showSuggestions && compound.suggestions.length > 0 && (
-                                    <div ref={compound.suggestionsRef} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 top-full max-h-48 overflow-y-auto">
+                                    <div ref={compound.suggestionsRef} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 top-full">
                                     {compound.suggestions.map((s, i) => <div key={i} onClick={() => handleSuggestionClick(compound.id, s)} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>)}
                                     </div>
                                 )}
