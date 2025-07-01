@@ -2952,22 +2952,6 @@ export default function PidTuningPage() {
                   <Card className="h-full">
                     <CardContent className="py-2 h-full">
                       <div className="relative w-full h-full rounded-md pt-0 px-2 pb-0">
-                        {/* Graph-mode selector (top-right of graph) */}
-                        <div className="absolute top-2 right-2 z-10">
-                          <Select value={graphMode} onValueChange={(v) => setGraphMode(v as typeof graphMode)}>
-                            <SelectTrigger className="w-[160px] h-8 text-sm">
-                              <SelectValue placeholder="Graph Mode" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-none">
-                              <SelectItem value="process">Process</SelectItem>
-                              <SelectItem value="error">Control Error</SelectItem>
-                              <SelectItem value="power">Controller Output</SelectItem>
-                              <SelectItem value="bode">Bode</SelectItem>
-                              <SelectItem value="nyquist">Nyquist</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-
                         <ReactECharts
                           ref={overlappedChartRef}
                           echarts={echarts}
