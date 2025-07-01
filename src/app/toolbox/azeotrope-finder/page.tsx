@@ -561,6 +561,15 @@ export default function AzeotropeFinderPage() {
             x_az_found = bisectionSolve(objectiveFunction, 0.0001, 0.9999, 1e-4, 30);
 
             if (x_az_found !== null) {
+                // NEW: Filter out solutions that are too close to pure components to be azeotropes.
+                const PURE_COMP_THRESHOLD = 0.001; // Corresponds to 0.1% mole fraction
+                if (x_az_found < PURE_COMP_THRESHOLD || x_az_found > (1.0 - PURE_COMP_THRESHOLD)) {
+                    // This is not a true azeotrope, but a numerical artifact near the boundary.
+                    x_az_found = null;
+                }
+            }
+
+            if (x_az_found !== null) {
                 // Recalculate the dependent variable at the found x_az
                 let finalBubbleResult: BubbleDewResult | null = null;
                  if (azeotropeScanType === 'vs_P_find_T') {
