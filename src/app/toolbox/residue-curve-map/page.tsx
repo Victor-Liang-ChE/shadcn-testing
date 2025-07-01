@@ -768,9 +768,9 @@ export default function TernaryResidueMapPage() {
             const getBp = (orig:number)=> sortedComponents.find(c=>c.originalIndex===orig)?.bp_at_Psys_K ?? sortedComponents.find(c=>c.originalIndex===orig)?.thermData.nbp_K;
 
             setPlotAxisTitles({
-                c: `${componentsInput[0]?.name || 'Comp 1'} (${labelByOrig[0] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(0))}`:''})`,
-                a: `${componentsInput[1]?.name || 'Comp 2'} (${labelByOrig[1] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(1))}`:''})`,
-                b: `${componentsInput[2]?.name || 'Comp 3'} (${labelByOrig[2] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(2))}`:''})`
+                c: `<b>${componentsInput[0]?.name || 'Comp 1'}</b><br>(${labelByOrig[0] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(0))}`:''})`,
+                a: `<b>${componentsInput[1]?.name || 'Comp 2'}</b><br>(${labelByOrig[1] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(1))}`:''})`,
+                b: `<b>${componentsInput[2]?.name || 'Comp 3'}</b><br>(${labelByOrig[2] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(2))}`:''})`
             });
 
             // Supercritical component check
@@ -1460,9 +1460,9 @@ export default function TernaryResidueMapPage() {
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: titleA, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Top (Intermediate)
-                baxis: { title: { text: titleB, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Left (Heaviest)
-                caxis: { title: { text: titleC, font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Right (Lightest)
+                aaxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Top (Intermediate) - title removed, will use annotation
+                baxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Left (Heaviest) - title removed, will use annotation
+                caxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Right (Lightest) - title removed, will use annotation
                 bgcolor: 'transparent',
             },
             margin: { l: 90, r: 90, b: 90, t: 110, pad: 10 }, // Increased margins for better text display
@@ -1838,7 +1838,49 @@ export default function TernaryResidueMapPage() {
         const finalLayout: Partial<Layout> = {
             ...baseLayout,
             shapes: [], // Clear old shapes if any, or manage them if other shapes are needed
-            annotations: [...(baseLayout.annotations || [])], 
+            annotations: [
+                ...(baseLayout.annotations || []),
+                // Custom corner labels for ternary diagram
+                // Top corner (a-axis)
+                { 
+                    text: titleA, 
+                    showarrow: false, 
+                    xref: 'paper' as const, 
+                    yref: 'paper' as const, 
+                    x: 0.535, 
+                    y: 1.025, 
+                    font: axisTitleFont, 
+                    xanchor: 'center' as const, 
+                    yanchor: 'bottom' as const,
+                    xshift: -20, // Move left
+                },
+                // Bottom left corner (b-axis)
+                { 
+                    text: titleB, 
+                    showarrow: false, 
+                    xref: 'paper' as const, 
+                    yref: 'paper' as const, 
+                    x: -0.025, 
+                    y: -0.025, 
+                    font: axisTitleFont, 
+                    xanchor: 'center' as const, 
+                    yanchor: 'top' as const,
+                    xshift: -15, // Move left
+                },
+                // Bottom right corner (c-axis)
+                { 
+                    text: titleC, 
+                    showarrow: false, 
+                    xref: 'paper' as const, 
+                    yref: 'paper' as const, 
+                    x: 1.025, 
+                    y: -0.025, 
+                    font: axisTitleFont, 
+                    xanchor: 'center' as const, 
+                    yanchor: 'top' as const,
+                    xshift: 15, // Move right
+                },
+            ], 
             title: { 
                 ...(typeof baseLayout.title === 'object' ? baseLayout.title : { text: '', font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor} } ), 
                 text: `Ternary Residue Curve Map at ${displayedPressure} bar` 
@@ -1846,7 +1888,7 @@ export default function TernaryResidueMapPage() {
             legend: {
                 x: 0.8,
                 xanchor: 'left' as const,
-                y: 1,
+                y: useRightTriangle ? 0.95 : 1,
                 font: basePlotFontObject,
                 bgcolor: currentTheme === 'dark' ? 'rgba(8, 48, 107, 0.8)' : 'rgba(220, 230, 240, 0.8)',
                 bordercolor: currentTheme === 'dark' ? '#4b5563' : '#9ca3af',
@@ -1865,18 +1907,14 @@ export default function TernaryResidueMapPage() {
 
         const finalTraces = [...baseTraces];
 
-        // Highlight trace reinstated (only when row hovered)
         if (highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length) {
             const highlightedAzeo = directAzeotropes[highlightedAzeoIdx];
-
-            // --- Determine color based on earlier classification ---
-            let highlightColor = 'red'; // default to saddle color
+            let highlightColor = 'red';
             if (minAz.includes(highlightedAzeo)) {
                 highlightColor = '#00C000';
             } else if (maxAz.includes(highlightedAzeo)) {
                 highlightColor = '#9900FF';
             }
-
             finalTraces.push({
                 type: 'scatterternary',
                 mode: 'markers',
@@ -1901,21 +1939,58 @@ export default function TernaryResidueMapPage() {
                 return newT;
             };
             const newTraces = finalTraces.map(convertTrace);
+            const highContrastColor = currentTheme === 'dark' ? '#FFFFFF' : '#000000';
+
+            const hypotenuseAnnotations = [];
+            for (let i = 1; i < 10; i++) {
+                const y_val = i / 10.0;
+                const x_val = 1.0 - y_val;
+                hypotenuseAnnotations.push({
+                    x: x_val, y: y_val, xref: 'x' as const, yref: 'y' as const,
+                    text: y_val.toFixed(1),
+                    showarrow: false,
+                    font: { size: 14, color: highContrastColor },
+                    xanchor: 'left' as const, yanchor: 'bottom' as const,
+                    xshift: 2, yshift: 2,
+                });
+            }
+
             const cartLayout: Partial<Layout> = {
-                ...baseLayout,
-                ternary: undefined,
-                xaxis: { range: [0,1], showgrid:false, zeroline:false, constrain:'domain', ticks:'outside' },
-                yaxis: { range: [0,1], showgrid:false, zeroline:false, scaleanchor:'x', ticks:'outside' },
+                font: baseLayout.font,
+                paper_bgcolor: 'transparent',
+                plot_bgcolor: 'transparent',
+                title: {
+                    ...(typeof baseLayout.title === 'object' ? baseLayout.title : {}),
+                    text: `Right-Triangle Residue Curve Map at ${displayedPressure} bar`,
+                },
+                legend: {
+                    ...(typeof baseLayout.legend === 'object' ? baseLayout.legend : {}),
+                    x: 0.98,
+                    y: 0.98,
+                    xanchor: 'right',
+                    yanchor: 'top',
+                },
+                xaxis: { range: [0, 1], showgrid: false, zeroline: false, constrain: 'domain', showline: false, showticklabels: false, ticks: '' },
+                yaxis: { range: [0, 1], showgrid: false, zeroline: false, scaleanchor: 'x', showline: false, showticklabels: false, ticks: '' },
                 shapes: [
-                    { type:'line', x0:0, y0:0, x1:1, y1:0, line:{color:'#999',width:1}},
-                    { type:'line', x0:0, y0:0, x1:0, y1:1, line:{color:'#999',width:1}},
-                    { type:'line', x0:1, y0:0, x1:0, y1:1, line:{color:'#999',width:1}},
+                    { type: 'line', x0: 0, y0: 0, x1: 1, y1: 0, line: { color: highContrastColor, width: 1.5 } },
+                    { type: 'line', x0: 0, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
+                    { type: 'line', x0: 1, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
                 ],
-                margin:{l:60,r:20,t:40,b:60},
+                margin: { l: 80, r: 60, t: 80, b: 80 },
                 annotations: [
-                    { x:1, y:0, xref:'x', yref:'y', text: plotAxisTitles.c, showarrow:false, xanchor:'right', yanchor:'top', font:{ size:12 } },
-                    { x:0, y:1, xref:'x', yref:'y', text: plotAxisTitles.a, showarrow:false, xanchor:'left', yanchor:'bottom', font:{ size:12 } },
-                    { x:0, y:0, xref:'x', yref:'y', text: plotAxisTitles.b, showarrow:false, xanchor:'left', yanchor:'top', font:{ size:12 } },
+                    // --- Correctly positioned corner labels using pixel shifts ---
+                    // Corner 'c' (bottom-right): Anchor to (1,0) and shift right/down
+                    { x: 0.95, y: 0, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.c.includes(' (') ? `<b>${plotAxisTitles.c.split(' (')[0]}</b><br>(${plotAxisTitles.c.split(' (')[1]}` : `<b>${plotAxisTitles.c}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'left' as const, yanchor: 'top' as const, xshift: 10, yshift: -10 },
+                    // Corner 'a' (top-left): Anchor to (0,1) and shift left/up
+                    { x: 0.1, y: 1, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.a.includes(' (') ? `<b>${plotAxisTitles.a.split(' (')[0]}</b><br>(${plotAxisTitles.a.split(' (')[1]}` : `<b>${plotAxisTitles.a}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'bottom' as const, xshift: -10, yshift: 10 },
+                    // Corner 'b' (bottom-left): Anchor to (0,0) and shift left/down
+                    { x: 0.05, y: 0, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.b.includes(' (') ? `<b>${plotAxisTitles.b.split(' (')[0]}</b><br>(${plotAxisTitles.b.split(' (')[1]}` : `<b>${plotAxisTitles.b}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'top' as const, xshift: -10, yshift: -10 },
+                    
+                    // The tick mark annotations
+                    ...Array.from({ length: 9 }, (_, i) => ({ x: (i + 1) / 10.0, y: 0, xref: 'x' as const, yref: 'y' as const, text: ((i + 1) / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'center' as const, yanchor: 'top' as const, yshift: -4 })),
+                    ...Array.from({ length: 9 }, (_, i) => ({ x: 0, y: (i + 1) / 10.0, xref: 'x' as const, yref: 'y' as const, text: ((i + 1) / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'middle' as const, xshift: -4 })),
+                    ...hypotenuseAnnotations,
                 ],
             };
             setPlotlyData(newTraces);
@@ -1924,7 +1999,7 @@ export default function TernaryResidueMapPage() {
             setPlotlyData(finalTraces);
             setPlotlyLayout(baseLayout);
         }
-    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle]);
+    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle, plotAxisTitles]);
 
     const handleGenerateClick = () => {
         handleGenerateMap();
@@ -2108,7 +2183,7 @@ export default function TernaryResidueMapPage() {
                                     </div>
                                 ) : (
                                     <>
-                                      <div className="absolute top-2 right-2 z-20">
+                                      <div className="absolute top-1 right-4 z-20">
                                         <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
                                           <Button
                                             variant={!useRightTriangle ? 'default' : 'ghost'}
