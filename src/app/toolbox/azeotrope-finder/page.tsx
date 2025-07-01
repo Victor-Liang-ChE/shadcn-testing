@@ -110,7 +110,10 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 
 export default function AzeotropeFinderPage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
-  const compoundDataCache = useRef(new Map<string, CompoundData | null>()); // Cache for compound data
+  // NOTE: Caching is disabled to avoid stale data carrying over between
+  // fluid-package switches.  The ref is kept only to prevent type ripples,
+  // but it is no longer read from or written to.
+  const compoundDataCache = useRef(new Map<string, CompoundData | null>());
   
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
@@ -145,6 +148,8 @@ export default function AzeotropeFinderPage() {
   const [displayedComp2, setDisplayedComp2] = useState('');
   const [displayedFluidPackage, setDisplayedFluidPackage] = useState<FluidPackageTypeAzeotrope | ''>('');
   const [displayedScanType, setDisplayedScanType] = useState<AzeotropeScanType | ''>('');
+  // Concurrency guard so stale scans don't overwrite newer results
+  const scanGenerationRef = useRef(0);
 
 
   // --- Logging Hook (copy from test/page.tsx or mccabe-thiele) ---
@@ -162,18 +167,8 @@ export default function AzeotropeFinderPage() {
   // --- Data Fetching (fetchCompoundDataLocal - adapt from mccabe-thiele/test page) ---
   // This function needs to be robust to fetch all params for all models.
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
-    const cacheKey = compoundName.toLowerCase();
-    if (compoundDataCache.current.has(cacheKey)) {
-        console.log(`AzeotropeFinder: Cache HIT for ${compoundName}.`);
-        const cachedData = compoundDataCache.current.get(cacheKey);
-        // If cached data is null, it means a previous fetch failed.
-        // Set error state again to inform the user.
-        if (cachedData === null) {
-          setError(`Data fetch previously failed for ${compoundName}.`);
-        }
-        return cachedData || null;
-    }
-    console.log(`AzeotropeFinder: Cache MISS for ${compoundName}. Fetching from DB...`);
+    // Always hit the DB so that each scan starts with fresh parameters.
+    console.log(`AzeotropeFinder: Fetching data for ${compoundName} from DB...`);
 
     if (!supabase) { throw new Error("Supabase client not initialized."); }
     try {
@@ -265,12 +260,10 @@ export default function AzeotropeFinderPage() {
         // Validation for Wilson params will be done in handleAzeotropeScan
 
         const result: CompoundData = { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
-        compoundDataCache.current.set(cacheKey, result); // Cache success
         return result;
     } catch (err: any) {
         console.error(`Error fetching data for ${compoundName} in AzeotropeFinder:`, err.message);
         setError(`Data fetch failed for ${compoundName}: ${err.message}`);
-        compoundDataCache.current.set(cacheKey, null); // Cache failure
         return null;
     }
   }
@@ -448,8 +441,8 @@ export default function AzeotropeFinderPage() {
 
   // --- Main Azeotrope Scan Logic ---
   const handleAzeotropeScan = useCallback(async () => {
-    setLoading(true); setError(null); setAzeotropeScanData([]); 
-    // setLogMessages(prev => ["--- Starting Azeotrope Scan ---", ...prev]); // Logging removed
+    const myScanId = ++scanGenerationRef.current;
+    setLoading(true); setError(null); setAzeotropeScanData([]);
 
     if (!comp1Name || !comp2Name) { setError("Please enter compound names."); setLoading(false); return; }
     if (!supabase) { setError("Supabase not initialized."); setLoading(false); return; }
@@ -604,18 +597,22 @@ export default function AzeotropeFinderPage() {
                 // console.log(`Azeotrope found: ScanVal=${currentScanVal.toFixed(2)}, x_az=${x_az_found.toFixed(4)}, DependentVal=${dependentValFormatted} ${dependentUnit}`); // Logging removed
             }
         }
-        setAzeotropeScanData(scanResultsArray);
-        setDisplayedComp1(comp1Name);
-        setDisplayedComp2(comp2Name);
-        setDisplayedFluidPackage(fluidPackage);
-        setDisplayedScanType(azeotropeScanType);
+        if (myScanId === scanGenerationRef.current) {
+            setAzeotropeScanData(scanResultsArray);
+            setDisplayedComp1(comp1Name);
+            setDisplayedComp2(comp2Name);
+            setDisplayedFluidPackage(fluidPackage);
+            setDisplayedScanType(azeotropeScanType);
+        }
 
     } catch (err: any) {
         console.error("Azeotrope Scan failed:", err);
         setError(`Scan failed: ${err.message}`);
     } finally {
-        setLoading(false);
-        // setLogMessages(prev => ["--- Azeotrope Scan Complete ---", ...prev]); // Logging removed
+        if (myScanId === scanGenerationRef.current) {
+            setLoading(false);
+            // setLogMessages(prev => ["--- Azeotrope Scan Complete ---", ...prev]); // Logging removed
+        }
     }
   }, [comp1Name, comp2Name, fluidPackage, azeotropeScanType, supabase]);
 

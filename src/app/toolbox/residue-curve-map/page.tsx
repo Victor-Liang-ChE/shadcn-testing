@@ -214,7 +214,10 @@ type SrkAzeotropeResult = AzeotropeResult & { y: number[] };
 type UniquacAzeotropeResult = AzeotropeResult;
 
 export default function TernaryResidueMapPage() {
-    // Add cache reference for efficient data handling
+    // NOTE: A cache was previously used to store compound property look-ups, but
+    // it caused stale data to bleed across fluid-package switches.  We keep the
+    // ref here only to avoid rippling type changes elsewhere, but we will NO
+    // LONGER read from or write to it.
     const componentDataCache = useRef(new Map<string, { casNumber: string, thermData: FetchedCompoundThermData } | null>());
     
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
@@ -243,6 +246,8 @@ export default function TernaryResidueMapPage() {
     const [plotContainerRef, setPlotContainerRef] = React.useState<HTMLDivElement | null>(null); // State to hold the div element
     const [directAzeotropes, setDirectAzeotropes] = useState<AzeotropeDisplayInfo[]>([]); // Use common display info
     const [scfMessage, setScfMessage] = useState<string | null>(null);
+    // Generation counter to identify the latest generate-map request
+    const generationIdRef = useRef(0);
     const [displayedPressure, setDisplayedPressure] = useState<string>(systemPressure);
     // Names frozen after last successful generation to prevent flicker while typing
     const [displayedComponentNames, setDisplayedComponentNames] = useState<string[]>(componentsInput.map(c=>c.name));
@@ -508,40 +513,18 @@ export default function TernaryResidueMapPage() {
         return points;
     };
 
-    // Cached component data fetching function
+    // Component-data fetching WITHOUT caching (always hits Supabase so that any
+    // fluid-package-specific logic downstream starts from a clean slate).
     async function fetchComponentData(compoundName: string): Promise<{ casNumber: string, thermData: FetchedCompoundThermData } | null> {
-        const cacheKey = compoundName.toLowerCase();
-        
-        // 1. Check the cache first
-        if (componentDataCache.current.has(cacheKey)) {
-            const cachedData = componentDataCache.current.get(cacheKey);
-            if (cachedData === null) {
-                setError(`Data fetch previously failed for ${compoundName}. Please check the name.`);
-            }
-            return cachedData || null;
-        }
-
         if (!supabase) throw new Error("Supabase client is not available.");
 
         try {
-            // 2. Fetch CAS number
             const casNumber = await fetchCasNumberByName(supabase, compoundName);
-            
-            // 3. Fetch thermodynamic data
             const thermData = await fetchAndConvertThermData(supabase, casNumber);
-            
-            const finalComponentData = { casNumber, thermData };
-
-            // 4. Store the successful result in the cache
-            componentDataCache.current.set(cacheKey, finalComponentData);
-            return finalComponentData;
-
+            return { casNumber, thermData };
         } catch (err: any) {
             console.error(`Error fetching data for ${compoundName} in ResidueCurveMap:`, err.message);
             setError(err.message);
-            
-            // 5. Store failure in the cache to prevent re-fetching invalid names
-            componentDataCache.current.set(cacheKey, null);
             return null;
         }
     }
@@ -644,7 +627,13 @@ export default function TernaryResidueMapPage() {
             setError("Supabase client is not initialized. Cannot fetch parameters.");
             return;
         }
+        // Bump generation counter and capture this run's ID.
+        const myGenerationId = ++generationIdRef.current;
         const generatingFluidPackage = fluidPackage; // Capture fluid package for this generation run
+        // Clear previous run's visual data right away so stale results never
+        // linger while the new calculation is running.
+        setDirectAzeotropes([]);
+        setResidueCurves([]);
         setIsLoading(true);
         setError(null);
 
@@ -1371,10 +1360,13 @@ export default function TernaryResidueMapPage() {
             console.error("Error generating map:", err);
             setError(err.message || "An unknown error occurred.");
         } finally {
-            setIsLoading(false);
-            setDisplayedFluidPackage(generatingFluidPackage); // Update displayed fluid package when generation finishes
-            setDisplayedPressure(systemPressure);
-            setDisplayedComponentNames(componentsInput.map(ci=>ci.name));
+            // Only commit results if this run is still the latest.
+            if (myGenerationId === generationIdRef.current) {
+                setIsLoading(false);
+                setDisplayedFluidPackage(generatingFluidPackage);
+                setDisplayedPressure(systemPressure);
+                setDisplayedComponentNames(componentsInput.map(ci=>ci.name));
+            }
         }
     }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage]); // Removed initialTempGuess_K
 
@@ -1847,7 +1839,7 @@ export default function TernaryResidueMapPage() {
                     showarrow: false, 
                     xref: 'paper' as const, 
                     yref: 'paper' as const, 
-                    x: 0.535, 
+                    x: 0.525, 
                     y: 1.025, 
                     font: axisTitleFont, 
                     xanchor: 'center' as const, 
@@ -1860,7 +1852,7 @@ export default function TernaryResidueMapPage() {
                     showarrow: false, 
                     xref: 'paper' as const, 
                     yref: 'paper' as const, 
-                    x: -0.025, 
+                    x: 0.075, 
                     y: -0.025, 
                     font: axisTitleFont, 
                     xanchor: 'center' as const, 
@@ -1873,7 +1865,7 @@ export default function TernaryResidueMapPage() {
                     showarrow: false, 
                     xref: 'paper' as const, 
                     yref: 'paper' as const, 
-                    x: 1.025, 
+                    x: 0.925, 
                     y: -0.025, 
                     font: axisTitleFont, 
                     xanchor: 'center' as const, 
@@ -2098,8 +2090,6 @@ export default function TernaryResidueMapPage() {
                                     value={fluidPackage}
                                     onValueChange={v => {
                                         setFluidPackage(v as FluidPackageTypeResidue);
-                                        // Auto-trigger map generation after fluid package change
-                                        setTimeout(() => handleGenerateMap(), 100);
                                     }}
                                 >
                                     <SelectTrigger id="fluidPackage">
