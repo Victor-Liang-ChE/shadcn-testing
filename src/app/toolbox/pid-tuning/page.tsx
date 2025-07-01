@@ -1682,7 +1682,80 @@ export default function PidTuningPage() {
 
     // --- BODE PLOT CONFIGURATION ---
     if (graphMode === 'bode') {
-      if (!frequencyResponseData) return {};
+      // If the frequency response has not been calculated yet, return a
+      // *skeleton* Bode-plot option containing the axis definitions that the
+      // forthcoming series will reference.  This prevents ECharts from
+      // throwing the runtime error "xAxis "0" not found" that occurred when
+      // we tried to add the series before any x-axes were registered.
+      if (!frequencyResponseData) {
+        return {
+          backgroundColor: 'transparent',
+          animation: false,
+          title: {
+            text: `${controllerType} Controller Bode Plot`,
+            left: 'center',
+            top: '0%',
+            textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
+          },
+          axisPointer: { link: [{ xAxisIndex: 'all' }] },
+          grid: [
+            { left: '8%', right: '5%', top: '15%', height: '35%', containLabel: true },
+            { left: '8%', right: '5%', bottom: '12%', height: '35%', containLabel: true }
+          ],
+          xAxis: [
+            {
+              type: 'log',
+              gridIndex: 0,
+              axisLine: { lineStyle: { color: textColor } },
+              axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+              axisLabel: { show: false },
+              splitLine: { show: false }
+            },
+            {
+              type: 'log',
+              gridIndex: 1,
+              name: 'Frequency (rad/s)',
+              nameLocation: 'middle',
+              nameGap: 30,
+              nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+              axisLine: { lineStyle: { color: textColor } },
+              axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+              axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+              splitLine: { show: false }
+            }
+          ],
+          yAxis: [
+            {
+              type: 'value',
+              gridIndex: 0,
+              name: 'Magnitude (dB)',
+              nameLocation: 'middle',
+              nameGap: 50,
+              nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+              axisLine: { lineStyle: { color: textColor } },
+              axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+              axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+              splitLine: { show: false }
+            },
+            {
+              type: 'value',
+              gridIndex: 1,
+              name: 'Phase (deg)',
+              nameLocation: 'middle',
+              nameGap: 50,
+              nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+              axisLine: { lineStyle: { color: textColor } },
+              axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+              axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+              splitLine: { show: false }
+            }
+          ],
+          series: [
+            { name: 'Magnitude', type: 'line', xAxisIndex: 0, yAxisIndex: 0, showSymbol: false, data: [] },
+            { name: 'Phase',    type: 'line', xAxisIndex: 1, yAxisIndex: 1, showSymbol: false, data: [] }
+          ]
+        } as EChartsOption;
+      }
       return {
         backgroundColor: 'transparent',
         animation: false,
@@ -1828,7 +1901,54 @@ export default function PidTuningPage() {
     
     // --- NYQUIST PLOT CONFIGURATION ---
     if (graphMode === 'nyquist') {
-      if (!frequencyResponseData) return {};
+      // Provide a minimal Nyquist-plot configuration when the frequency
+      // response has not been computed yet so that any forthcoming series
+      // referencing the default cartesian axes have something to attach to.
+      if (!frequencyResponseData) {
+        return {
+          backgroundColor: 'transparent',
+          animation: false,
+          title: {
+            text: `${controllerType} Controller Nyquist Plot`,
+            left: 'center',
+            top: '0%',
+            textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
+          },
+          grid: { left: '5%', right: '5%', bottom: '12%', top: '8%', containLabel: true },
+          xAxis: {
+            type: 'value',
+            name: 'Real Axis',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            scale: true,
+            axisLine: { lineStyle: { color: textColor } },
+            axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+            splitLine: { show: false }
+          },
+          yAxis: {
+            type: 'value',
+            name: 'Imaginary Axis',
+            nameLocation: 'middle',
+            nameGap: 50,
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            scale: true,
+            axisLine: { lineStyle: { color: textColor } },
+            axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
+            axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans' },
+            splitLine: { show: false }
+          },
+          series: [
+            {
+              name: 'Open Loop Response',
+              type: 'line',
+              showSymbol: false,
+              data: []
+            }
+          ]
+        } as EChartsOption;
+      }
       return {
         backgroundColor: 'transparent',
         animation: false,
@@ -1978,8 +2098,14 @@ export default function PidTuningPage() {
     // --- EXISTING PROCESS & ERROR PLOT CONFIGURATION ---
     // Only initialize chart if we have calculated results
     if (!result) {
-      console.log('Graph not showing - no results:', { result });
-      return {};
+      return {
+        backgroundColor: 'transparent',
+        animation: false,
+        grid: { left: '5%', right: '5%', bottom: '15%', top: '8%', containLabel: true },
+        xAxis: { type: 'value', min: 0, max: 30 },
+        yAxis: { type: 'value', min: -1, max: 2 },
+        series: []
+      } as EChartsOption;
     }
 
     // Mark graph as initialized once we have results
@@ -2467,8 +2593,16 @@ export default function PidTuningPage() {
       const echartsInstance = echartsRef.current?.getEchartsInstance();
       if (echartsInstance) {
         if (graphMode === 'bode') {
-          // Complete series configuration for Bode plot
+          // Re-send axes along with series so they are guaranteed to exist.
           echartsInstance.setOption({
+            xAxis: [
+              { type: 'log', gridIndex: 0 },
+              { type: 'log', gridIndex: 1 }
+            ],
+            yAxis: [
+              { type: 'value', gridIndex: 0 },
+              { type: 'value', gridIndex: 1 }
+            ],
             series: [
               {
                 name: 'Magnitude',
@@ -2491,11 +2625,13 @@ export default function PidTuningPage() {
             ]
           });
         } else if (graphMode === 'nyquist') {
-          // Complete series configuration for Nyquist plot
+          // Re-send axes along with series so they are guaranteed to exist.
           const isDark = resolvedTheme === 'dark';
           const textColor = isDark ? 'white' : '#000000';
 
           echartsInstance.setOption({
+            xAxis: { type: 'value' },
+            yAxis: { type: 'value' },
             series: [
               {
                 name: 'Open Loop Response',
