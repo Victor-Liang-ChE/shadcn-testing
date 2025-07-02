@@ -57,6 +57,8 @@ const isothermsThumbnailPath = "/thumbnails/isotherms-thumbnail.png";
 const isothermsThumbnailLightPath = "/thumbnails/isotherms-thumbnail-light.png";
 const binaryPhaseThumbnailPath = "/thumbnails/binary-phase-diagrams-thumbnail.png";
 const binaryPhaseThumbnailLightPath = "/thumbnails/binary-phase-diagrams-thumbnail-light.png";
+const heatTransferThumbnailPath = "/thumbnails/1d-heat-transfer-thumbnail.png";
+const heatTransferThumbnailLightPath = "/thumbnails/1d-heat-transfer-thumbnail-light.png";
 
 export default function Home() {
   const { resolvedTheme } = useTheme();
@@ -146,6 +148,14 @@ export default function Home() {
         "Explore and visualize adsorption isotherms including Langmuir, Freundlich, and Temkin models for surface chemistry analysis.",
       thumbnailPath: isothermsThumbnailPath,
       thumbnailLightPath: isothermsThumbnailLightPath
+    },
+    {
+      name: "1D Heat Transfer",
+      path: "/toolbox/1d-heat-transfer",
+      description:
+        "Interactive heat transfer visualization through multiple layers with temperature controls.",
+      thumbnailPath: heatTransferThumbnailPath,
+      thumbnailLightPath: heatTransferThumbnailLightPath
     }
   ];
 

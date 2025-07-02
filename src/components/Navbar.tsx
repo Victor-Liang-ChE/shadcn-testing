@@ -61,6 +61,9 @@ function Navbar() {
       case "/toolbox/binary-phase-diagrams":
         return "Binary Phase Diagrams";
 
+      case "/toolbox/1d-heat-transfer":
+        return "1D Heat Transfer";
+
       case "/misc":
           return "Miscellaneous Projects";
   
