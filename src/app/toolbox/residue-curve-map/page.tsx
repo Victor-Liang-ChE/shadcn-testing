@@ -868,7 +868,14 @@ export default function TernaryResidueMapPage() {
                      throw new Error("UNIFAC selected, but no UNIFAC subgroup IDs found for any component after fetching data.");
                 }
                 activityModelParams = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds)) as UnifacParameters;
-                console.log('Fetched UNIFAC Interaction Params (first 5):', JSON.stringify((activityModelParams as any)?.interactionParams?.slice?.(0,5), null, 2));
+                
+                // --- CORRECTED UNIFAC DEBUGGING ---
+                // Convert the 'a_mk' Map to an object for easy logging
+                const interactionsObject = activityModelParams ? Object.fromEntries(activityModelParams.a_mk) : {};
+                console.log('Fetched UNIFAC Rk values:', JSON.stringify(activityModelParams?.Rk, null, 2));
+                console.log('Fetched UNIFAC a_mk interaction params:', JSON.stringify(interactionsObject, null, 2));
+                // --- END DEBUGGING ---
+                
                 if (!activityModelParams) {
                     throw new Error("Failed to fetch UNIFAC interaction parameters. The parameters object is null.");
                 }

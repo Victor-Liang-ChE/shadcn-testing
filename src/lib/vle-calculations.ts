@@ -276,6 +276,7 @@ export function calculateUnifacGamma(
   const r = componentData.map(c => c.r_i!);
   const q = componentData.map(c => c.q_i!);
 
+  // -------- Combinatorial part (ln γ^C) --------
   const sum_xr = x.reduce((s, xi, i) => s + xi * r[i], 0);
   const sum_xq = x.reduce((s, xi, i) => s + xi * q[i], 0);
   if (sum_xr === 0 || sum_xq === 0) return null;
@@ -289,51 +290,60 @@ export function calculateUnifacGamma(
     Math.log(phi[i] / xi) + (Z / 2) * q[i] * Math.log(theta[i] / phi[i]) + L[i] - (phi[i] / xi) * sum_xL
   );
 
-  // -------- Residual part --------
+  // -------- Residual part (ln γ^R) --------
   const subgroupIds = Array.from(new Set(componentData.flatMap(c => Object.keys(c.unifacGroups || {}).map(Number))));
   if (subgroupIds.length === 0) return ln_gamma_C.map(Math.exp);
 
-  // v_ki matrix (components × subgroups)
-  const v_ki: number[][] = componentData.map(c => subgroupIds.map(id => c.unifacGroups?.[id] || 0));
-
-  // X_m (group mole fractions)
+  const v_ki = componentData.map(c => subgroupIds.map(id => c.unifacGroups?.[id] || 0));
+  
+  // --- Calculate ln Γ_k for the MIXTURE ---
   const sum_x_vk_total = subgroupIds.reduce((sum, _, kIdx) => sum + componentData.reduce((s, _, i) => s + x[i] * v_ki[i][kIdx], 0), 0);
   if (sum_x_vk_total === 0) return ln_gamma_C.map(Math.exp);
-  const X_m = subgroupIds.map((_, kIdx) => componentData.reduce((s, _, i) => s + x[i] * v_ki[i][kIdx], 0) / sum_x_vk_total);
 
+  const X_m = subgroupIds.map((_, kIdx) => componentData.reduce((s, _, i) => s + x[i] * v_ki[i][kIdx], 0) / sum_x_vk_total);
   const sum_XQ = subgroupIds.reduce((s, id, idx) => s + X_m[idx] * params.Qk[id], 0);
   if (sum_XQ === 0) return ln_gamma_C.map(Math.exp);
+  
   const theta_m = subgroupIds.map((id, idx) => (X_m[idx] * params.Qk[id]) / sum_XQ);
-
-  // psi matrix (m × k)
-  const psi: number[][] = subgroupIds.map(() => new Array(subgroupIds.length).fill(0));
-  subgroupIds.forEach((id_m, mIdx) => {
-    subgroupIds.forEach((id_k, kIdx) => {
+  const psi = subgroupIds.map((id_m, mIdx) => subgroupIds.map((id_k, kIdx) => {
       const key = `${params.mainGroupMap[id_m]}-${params.mainGroupMap[id_k]}`;
       const a_mk = params.a_mk.get(key) ?? 0;
-      psi[mIdx][kIdx] = Math.exp(-a_mk / T_kelvin);
-    });
-  });
+      return Math.exp(-a_mk / T_kelvin);
+  }));
 
-  // ln Γ_k for each subgroup k
-  const ln_Gamma_k = subgroupIds.map((_, kIdx) => {
-    const numerator = subgroupIds.reduce((s, _, mIdx) => s + theta_m[mIdx] * psi[mIdx][kIdx], 0);
-    if (numerator === 0) return 0;
-    const term1 = Math.log(numerator);
-    const term2 = subgroupIds.reduce((s, _, mIdx) => {
-      const denom = subgroupIds.reduce((sd, _, nIdx) => sd + theta_m[nIdx] * psi[nIdx][mIdx], 0);
-      return s + (theta_m[mIdx] * psi[kIdx][mIdx]) / denom;
-    }, 0);
-    return params.Qk[subgroupIds[kIdx]] * (1 - term1 - term2);
-  });
+  const calculate_ln_Gamma = (current_theta_m: number[]): number[] => {
+      return subgroupIds.map((_, kIdx) => {
+          const term1_sum = subgroupIds.reduce((s, _, mIdx) => s + current_theta_m[mIdx] * psi[mIdx][kIdx], 0);
+          if (term1_sum === 0) return 0;
+          const term1 = Math.log(term1_sum);
+          const term2_sum = subgroupIds.reduce((s, _, mIdx) => {
+              const denom = subgroupIds.reduce((sd, _, nIdx) => sd + current_theta_m[nIdx] * psi[nIdx][mIdx], 0);
+              return s + (current_theta_m[mIdx] * psi[kIdx][mIdx]) / (denom || 1);
+          }, 0);
+          return params.Qk[subgroupIds[kIdx]] * (1 - term1 - term2_sum);
+      });
+  };
+  
+  const ln_Gamma_k_mixture = calculate_ln_Gamma(theta_m);
 
-  // ln γ_R for each component
+  // --- Calculate ln Γ_k for each PURE component i ---
+  const ln_Gamma_k_pure: number[][] = [];
+  for (let i = 0; i < componentData.length; i++) {
+      const v_k = subgroupIds.map((id) => componentData[i].unifacGroups?.[id] || 0);
+      const sum_vQ = subgroupIds.reduce((s, id, idx) => s + v_k[idx] * params.Qk[id], 0);
+      if (sum_vQ === 0) {
+          ln_Gamma_k_pure.push(new Array(subgroupIds.length).fill(0));
+          continue;
+      }
+      const theta_k_pure = subgroupIds.map((id, idx) => (v_k[idx] * params.Qk[id]) / sum_vQ);
+      ln_Gamma_k_pure.push(calculate_ln_Gamma(theta_k_pure));
+  }
+  
+  // --- CORRECTED Final summation for ln γ^R ---
   const ln_gamma_R = componentData.map((_, i) => {
-    let sum = 0;
-    subgroupIds.forEach((_, kIdx) => {
-      sum += v_ki[i][kIdx] * (ln_Gamma_k[kIdx] - ln_Gamma_k[kIdx]); // Note: ln_Gamma_k(pure k)≈0
-    });
-    return sum;
+    return subgroupIds.reduce((sum, _, kIdx) => {
+        return sum + v_ki[i][kIdx] * (ln_Gamma_k_mixture[kIdx] - ln_Gamma_k_pure[i][kIdx]);
+    }, 0);
   });
 
   return ln_gamma_C.map((lnC, i) => {
@@ -1134,7 +1144,7 @@ export async function fetchUnifacInteractionParams(
 ): Promise<UnifacParameters> {
   const { data, error } = await supabase
     .from('UNIFAC - Rk and Qk')
-    .select('"Subgroup #", "Main Group #", Rk, Qk')
+    .select('"Subgroup #", "Main Group #", "Rk", "Qk"')
     .in('"Subgroup #"', subgroupIds);
   if (error) throw error;
   if (!data || data.length === 0) throw new Error('UNIFAC Rk/Qk data missing');
@@ -1145,8 +1155,8 @@ export async function fetchUnifacInteractionParams(
   const mainIds = new Set<number>();
   data.forEach(row => {
     const sg = row["Subgroup #"];
-    Rk[sg] = row.Rk;
-    Qk[sg] = row.Qk;
+    Rk[sg] = row["Rk"];
+    Qk[sg] = row["Qk"];
     mainMap[sg] = row["Main Group #"];
     mainIds.add(row["Main Group #"]);
   });
