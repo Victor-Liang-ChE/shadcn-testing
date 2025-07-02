@@ -832,6 +832,13 @@ export default function TernaryResidueMapPage() {
                 const params02 = await fetchWilsonBothWays(cas[0], cas[2]);
                 const params12 = await fetchWilsonBothWays(cas[1], cas[2]);
 
+                // --- WILSON DEBUGGING ---------------------------------------------------
+                console.log('--- Wilson Debug Info ---');
+                console.log('Fetched Params (0-1):', JSON.stringify(params01, null, 2));
+                console.log('Fetched Params (0-2):', JSON.stringify(params02, null, 2));
+                console.log('Fetched Params (1-2):', JSON.stringify(params12, null, 2));
+                // ---------------------------------------------------------------------
+
                 const symmetric = (a_forward:number|undefined, a_reverse:number|undefined):[number,number] => {
                     const f = (a_forward !== undefined && !Number.isNaN(a_forward)) ? a_forward : undefined;
                     const r = (a_reverse !== undefined && !Number.isNaN(a_reverse)) ? a_reverse : undefined;
@@ -853,6 +860,8 @@ export default function TernaryResidueMapPage() {
                     a12_J_mol: a12,
                     a21_J_mol: a21,
                 } as TernaryWilsonParams;
+                console.log('Processed Wilson Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
+                console.log('------------------------');
             } else if (fluidPackage === 'unifac') {
                 // --- UNIFAC DEBUGGING -------------------------------------------------
                 console.log('--- UNIFAC Debug Info ---');
