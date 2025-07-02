@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import { ChevronsUpDown } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -627,10 +628,8 @@ export default function TernaryResidueMapPage() {
         // Bump generation counter and capture this run's ID.
         const myGenerationId = ++generationIdRef.current;
         const generatingFluidPackage = fluidPackage; // Capture fluid package for this generation run
-        // Clear previous run's visual data right away so stale results never
-        // linger while the new calculation is running.
-        setDirectAzeotropes([]);
-        setResidueCurves([]);
+        // Don't clear visual data during generation - let previous plot stay visible
+        // for seamless transition. Data will be replaced when new calculation completes.
         setIsLoading(true);
         setError(null);
 
@@ -1577,22 +1576,15 @@ export default function TernaryResidueMapPage() {
             finalTriOriginY_paper = plotAreaPaperOriginY + triangleOffsetY_paper;
         }
 
-        if (cleanedResidueCurves.length === 0 || plotSortedComponents.length !== 3) { // Use cleanedResidueCurves
+        // Only show empty plot if not currently loading - this ensures seamless transitions
+        if (!isLoading && (cleanedResidueCurves.length === 0 || plotSortedComponents.length !== 3)) { // Use cleanedResidueCurves
             const layoutUpdate: Partial<Layout> = {
                 ...baseLayout, 
                 title: {
                     ...(typeof baseLayout.title === 'object' ? baseLayout.title : {}), // Keep base title properties
-                    text: `Ternary Residue Curve Map (${modelName} - No data or NBP info pending)` // Specific title for this case
+                    text: `Ternary Residue Curve Map (${modelName})` // Clean title without status text
                 },
-                annotations: [{ 
-                    text: isLoading ? "Generating initial map..." : "Enter component data and click 'Generate Residue Map'.",
-                    showarrow: false,
-                    xref: 'paper',
-                    yref: 'paper',
-                    x: 0.5,
-                    y: 0.5,
-                    font: basePlotFontObject, // Use defined base font object
-                }],
+                annotations: [], // No loading text annotations
                 shapes: [] 
             };
             return { baseTraces: [], baseLayout: layoutUpdate, minAz: [], maxAz: [], sadAz: [] };
@@ -2051,6 +2043,53 @@ export default function TernaryResidueMapPage() {
         handleGenerateMap();
     };
 
+    // --- Helper to classify azeotrope type for table coloring ---
+    const classifyAzeoType = (az:AzeotropeDisplayInfo):'min'|'max'|'saddle'|'unknown' => {
+        if(backendComps.length!==3 || !backendPkgParams || plotSortedComponents.length !== 3) return 'unknown';
+        const permutation = plotSortedComponents.map(c=>c.originalIndex);
+        const p = backendPkgParams;
+        let params_sorted:any = p;
+        switch(displayedFluidPackage){
+            case 'wilson': {
+                const [p0,p1,p2]=permutation;
+                params_sorted={a01_J_mol:p[`a${p0}${p1}_J_mol`],a10_J_mol:p[`a${p1}${p0}_J_mol`],a02_J_mol:p[`a${p0}${p2}_J_mol`],a20_J_mol:p[`a${p2}${p0}_J_mol`],a12_J_mol:p[`a${p1}${p2}_J_mol`],a21_J_mol:p[`a${p2}${p1}_J_mol`]};
+                break;
+            }
+            case 'nrtl': {
+                const [p0,p1,p2]=permutation;
+                params_sorted={g01_J_mol:p[`g${p0}${p1}_J_mol`],g10_J_mol:p[`g${p1}${p0}_J_mol`],g02_J_mol:p[`g${p0}${p2}_J_mol`],g20_J_mol:p[`g${p2}${p0}_J_mol`],g12_J_mol:p[`g${p1}${p2}_J_mol`],g21_J_mol:p[`g${p2}${p1}_J_mol`],alpha01:p[`alpha${Math.min(p0,p1)}${Math.max(p0,p1)}`],alpha02:p[`alpha${Math.min(p0,p2)}${Math.max(p0,p2)}`],alpha12:p[`alpha${Math.min(p1,p2)}${Math.max(p1,p2)}`]};
+                break;
+            }
+            case 'uniquac': {
+                const [p0,p1,p2]=permutation;
+                params_sorted={a01_J_mol:p[`a${p0}${p1}_J_mol`],a10_J_mol:p[`a${p1}${p0}_J_mol`],a02_J_mol:p[`a${p0}${p2}_J_mol`],a20_J_mol:p[`a${p2}${p0}_J_mol`],a12_J_mol:p[`a${p1}${p2}_J_mol`],a21_J_mol:p[`a${p2}${p1}_J_mol`]};
+                break;
+            }
+            case 'pr':
+            case 'srk': {
+                const getK=(i:number,j:number)=>p[`k${Math.min(i,j)}${Math.max(i,j)}`]??0;
+                params_sorted={k01:getK(permutation[0],permutation[1]),k02:getK(permutation[0],permutation[2]),k12:getK(permutation[1],permutation[2])};
+                break;
+            }
+        }
+        const x_sorted=[az.x[permutation[0]],az.x[permutation[1]],az.x[permutation[2]]];
+        const comps_sorted=[backendComps[permutation[0]],backendComps[permutation[1]],backendComps[permutation[2]]];
+        const h=1e-5;
+        const base=evaluateResidueODE(displayedFluidPackage,x_sorted,az.T_K,backendPressurePa,comps_sorted,params_sorted);
+        if(!base) return 'unknown';
+        const J:[[number,number,number],[number,number,number],[number,number,number]]=[[0,0,0],[0,0,0],[0,0,0]];
+        for(let j=0;j<3;j++){
+            const xPert=[...x_sorted];xPert[j]+=h;const sum=xPert.reduce((a,b)=>a+b,0);const xPertNorm=xPert.map(v=>v/sum);
+            const r=evaluateResidueODE(displayedFluidPackage,xPertNorm,az.T_K,backendPressurePa,comps_sorted,params_sorted);
+            if(!r) return 'unknown';
+            for(let i=0;i<3;i++) J[i][j]=(r.d[i]-base.d[i])/h;
+        }
+        const A=[[J[0][0]-J[2][0],J[0][1]-J[2][1]],[J[1][0]-J[2][0],J[1][1]-J[2][1]]];
+        const tr=A[0][0]+A[1][1];const det=A[0][0]*A[1][1]-A[0][1]*A[1][0];const disc=tr*tr-4*det;
+        if(disc<0) return 'saddle';const sqrtDisc=Math.sqrt(disc);const l1=0.5*(tr+sqrtDisc);const l2=0.5*(tr-sqrtDisc);
+        if(l1>0&&l2>0) return 'min';if(l1<0&&l2<0) return 'max';return 'saddle';
+    };
+
     return (
         <div className="container mx-auto p-4">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2062,56 +2101,75 @@ export default function TernaryResidueMapPage() {
                         </CardHeader>
                         <CardContent className="space-y-4">
                             {/* Component names */}
-                            <div className="space-y-3"> {/* Grouping div for component inputs */}
+                            <div className="space-y-1">
                                 {componentsInput.map((component, index) => (
-                                    <div className="flex items-center space-x-2" key={index}> {/* Flex container for label and input */}
-                                        <Label htmlFor={`name-${index}`} className="whitespace-nowrap">{`Component ${index + 1}:`}</Label>
-                                        <div className="relative w-full"> {/* Relative container for input and suggestions */}
-                                            <Input
-                                                id={`name-${index}`}
-                                                ref={el => { inputRefs.current[index] = el; }}
-                                                value={component.name}
-                                                onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
-                                                placeholder={`e.g. Acetone`}
-                                                autoComplete="off"
-                                                onKeyDown={e => {
-                                                    if (e.key === 'Enter') {
-                                                        e.preventDefault();
-                                                        handleGenerateClick();
-                                                    }
-                                                }}
-                                                onFocus={() => {
-                                                    setActiveSuggestionIndex(index);
-                                                    if (componentsInput[index].name.trim()) {
-                                                        fetchComponentSuggestions(componentsInput[index].name, index);
-                                                    }
-                                                }}
-                                            />
-                                            {showSuggestions[index] && componentSuggestions[index].length > 0 && (
-                                                <ul
-                                                    ref={el => { suggestionsContainerRefs.current[index] = el; }}
-                                                    className={`absolute z-10 mt-1 w-full rounded-md shadow-md
-                                                      ${currentTheme === 'dark'
-                                                        ? 'bg-gray-800 border border-gray-700 text-gray-200'
-                                                        : 'bg-white border border-gray-300 text-gray-900'}`}
+                                    <React.Fragment key={index}>
+                                        <div className="flex items-center space-x-2">
+                                            <Label htmlFor={`name-${index}`} className="w-28 text-right pr-2">{`Component ${index + 1}:`}</Label>
+                                            <div className="relative flex-grow">
+                                                <Input
+                                                    id={`name-${index}`}
+                                                    ref={el => { inputRefs.current[index] = el; }}
+                                                    value={component.name}
+                                                    onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
+                                                    placeholder={`e.g. Acetone`}
+                                                    autoComplete="off"
+                                                    onKeyDown={e => {
+                                                        if (e.key === 'Enter') {
+                                                            e.preventDefault();
+                                                            handleGenerateClick();
+                                                        }
+                                                    }}
+                                                    onFocus={() => {
+                                                        setActiveSuggestionIndex(index);
+                                                        if (componentsInput[index].name.trim()) {
+                                                            fetchComponentSuggestions(componentsInput[index].name, index);
+                                                        }
+                                                    }}
+                                                />
+                                                {showSuggestions[index] && componentSuggestions[index].length > 0 && (
+                                                    <ul
+                                                        ref={el => { suggestionsContainerRefs.current[index] = el; }}
+                                                        className={`absolute z-20 mt-1 w-full rounded-md shadow-md
+                                                        ${currentTheme === 'dark'
+                                                            ? 'bg-gray-800 border border-gray-700 text-gray-200'
+                                                            : 'bg-white border border-gray-300 text-gray-900'}`}
+                                                    >
+                                                        {componentSuggestions[index].map((suggestion, si) => (
+                                                            <li
+                                                                key={si}
+                                                                className={`px-4 py-2 cursor-pointer
+                                                                ${currentTheme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
+                                                                onMouseDown={() => handleSuggestionClick(index, suggestion)}
+                                                            >
+                                                                {suggestion}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                            </div>
+                                            {/* Add a fixed-width spacer to align inputs */}
+                                            <div className="w-10 flex-shrink-0"></div>
+                                        </div>
+                                        {/* Render swap button AFTER component 1 and component 2 */}
+                                        {index < 2 && (
+                                            <div className="relative z-10 flex justify-end pr-4 -my-3">
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-6 w-6 rounded-full bg-background"
+                                                    onClick={() => {
+                                                        // Visual only for now - no functionality
+                                                    }}
+                                                    aria-label={`Swap component ${index + 1} and ${index + 2}`}
                                                 >
-                                                    {componentSuggestions[index].map((suggestion, si) => (
-                                                        <li
-                                                            key={si}
-                                                            className={`px-4 py-2 cursor-pointer
-                                                              ${currentTheme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                                                            onMouseDown={() => handleSuggestionClick(index, suggestion)}
-                                                        >
-                                                            {suggestion}
-                                                        </li>
-                                                    ))}
-                                                </ul>
-                                            )}
-                                        </div> {/* End of relative container for input and suggestions */}
-                                    </div>
+                                                    <ChevronsUpDown className="h-4 w-4 text-muted-foreground" />
+                                                </Button>
+                                            </div>
+                                        )}
+                                    </React.Fragment>
                                 ))}
-
-                            </div> {/* End of grouping div for component inputs */}
+                            </div>
                             {/* Pressure and Fluid Package on same row */}
                             <div className="grid grid-cols-2 gap-4">
                                 {/* Pressure input */}
@@ -2179,24 +2237,28 @@ export default function TernaryResidueMapPage() {
                                 <Table>
                                     <TableHeader>
                                         <TableRow className="hover:bg-transparent">
+                                            <TableHead className="px-2 text-center">Type</TableHead>
+                                            <TableHead className="px-2 text-center">T(°C)</TableHead>
                                             <TableHead className="px-2 text-center">{displayedComponentNames[0] || 'Comp 1'}</TableHead>
                                             <TableHead className="px-2 text-center">{displayedComponentNames[1] || 'Comp 2'}</TableHead>
                                             <TableHead className="px-2 text-center">{displayedComponentNames[2] || 'Comp 3'}</TableHead>
-                                            <TableHead className="px-2 text-center">T(°C)</TableHead>
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
                                         {directAzeotropes.map((az, index) => {
+                                            const type = classifyAzeoType(az);
+                                            const color = type==='min' ? '#00C000' : type==='max' ? '#9900FF' : type==='saddle' ? '#FF0000' : '#666666';
                                             return (
                                                 <TableRow
                                                     key={index}
                                                     onMouseEnter={() => setHighlightedAzeoIdx(index)}
                                                     onMouseLeave={() => setHighlightedAzeoIdx(null)}
                                                 >
+                                                 <TableCell className="px-2 text-center"><span style={{color}}>&#9733;</span></TableCell>
+                                                 <TableCell className="px-2 text-center">{(az.T_K - 273.15).toFixed(1)}</TableCell>
                                                  <TableCell className="px-2 text-center">{az.x[0].toFixed(3)}</TableCell>
                                                  <TableCell className="px-2 text-center">{az.x[1].toFixed(3)}</TableCell>
                                                  <TableCell className="px-2 text-center">{az.x[2].toFixed(3)}</TableCell>
-                                                 <TableCell className="px-2 text-center">{(az.T_K - 273.15).toFixed(1)}</TableCell>
                                                  </TableRow>
                                             );
                                         })}
