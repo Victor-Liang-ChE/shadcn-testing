@@ -214,11 +214,8 @@ type SrkAzeotropeResult = AzeotropeResult & { y: number[] };
 type UniquacAzeotropeResult = AzeotropeResult;
 
 export default function TernaryResidueMapPage() {
-    // NOTE: A cache was previously used to store compound property look-ups, but
-    // it caused stale data to bleed across fluid-package switches.  We keep the
-    // ref here only to avoid rippling type changes elsewhere, but we will NO
-    // LONGER read from or write to it.
-    const componentDataCache = useRef(new Map<string, { casNumber: string, thermData: FetchedCompoundThermData } | null>());
+    // NOTE: A previously used compound-data cache has been removed to prevent
+    // stale data from persisting across fluid-package switches.
     
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
         { name: 'Acetone' },
@@ -808,6 +805,13 @@ export default function TernaryResidueMapPage() {
                     uniquacParams: fluidPackage === 'uniquac' ? pc.thermData.uniquacParams! : undefined,
             }));
 
+            // --- UNIQUAC DEBUGGING: log pure-component r & q values ------------------
+            if (fluidPackage === 'uniquac') {
+                console.log('--- UNIQUAC Debug Info ---');
+                console.log('Pure Component r and q values:', JSON.stringify(compoundsForBackend.map(c => ({ name: c.name, ...c.uniquacParams })), null, 2));
+            }
+            // -------------------------------------------------------------------------
+
             const cas = compoundsForBackend.map(c => c.cas_number!);
             let activityModelParams: any;
 
@@ -850,16 +854,21 @@ export default function TernaryResidueMapPage() {
                     a21_J_mol: a21,
                 } as TernaryWilsonParams;
             } else if (fluidPackage === 'unifac') {
+                // --- UNIFAC DEBUGGING -------------------------------------------------
+                console.log('--- UNIFAC Debug Info ---');
                 const allSubgroupIds = new Set<number>();
                 compoundsForBackend.forEach(comp => {
                     if (comp.unifacGroups) {
                         Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id)));
                     }
                 });
+                console.log('Collected Subgroup IDs for fetching:', Array.from(allSubgroupIds));
+                // ---------------------------------------------------------------------
                 if (allSubgroupIds.size === 0 && compoundsForBackend.some(c => !c.unifacGroups || Object.keys(c.unifacGroups).length === 0)) {
                      throw new Error("UNIFAC selected, but no UNIFAC subgroup IDs found for any component after fetching data.");
                 }
                 activityModelParams = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds)) as UnifacParameters;
+                console.log('Fetched UNIFAC Interaction Params (first 5):', JSON.stringify((activityModelParams as any)?.interactionParams?.slice?.(0,5), null, 2));
                 if (!activityModelParams) {
                     throw new Error("Failed to fetch UNIFAC interaction parameters. The parameters object is null.");
                 }
@@ -867,44 +876,73 @@ export default function TernaryResidueMapPage() {
                 const params01 = await fetchNrtlParameters(supabase, cas[0], cas[1]);
                 const params02 = await fetchNrtlParameters(supabase, cas[0], cas[2]);
                 const params12 = await fetchNrtlParameters(supabase, cas[1], cas[2]);
+                // --- NRTL DEBUGGING ---------------------------------------------------
+                console.log('--- NRTL Debug Info ---');
+                console.log('Fetched Params (0-1):', JSON.stringify(params01, null, 2));
+                console.log('Fetched Params (0-2):', JSON.stringify(params02, null, 2));
+                console.log('Fetched Params (1-2):', JSON.stringify(params12, null, 2));
+                // ---------------------------------------------------------------------
                 if (!params01 || !params02 || !params12) {
                     throw new Error("NRTL parameters for one or more binary pairs could not be fetched.");
                 }
                 activityModelParams = {
-                    g01_J_mol: (params01 as any).g_ij_J_mol ?? 0, g10_J_mol: (params01 as any).g_ji_J_mol ?? 0, alpha01: (params01 as any).alpha_ij ?? 0,
-                    g02_J_mol: (params02 as any).g_ij_J_mol ?? 0, g20_J_mol: (params02 as any).g_ji_J_mol ?? 0, alpha02: (params02 as any).alpha_ij ?? 0,
-                    g12_J_mol: (params12 as any).g_ij_J_mol ?? 0, g21_J_mol: (params12 as any).g_ji_J_mol ?? 0, alpha12: (params12 as any).alpha_ij ?? 0,
+                    g01_J_mol: (params01 as any).A12 ?? 0, g10_J_mol: (params01 as any).A21 ?? 0, alpha01: (params01 as any).alpha ?? 0,
+                    g02_J_mol: (params02 as any).A12 ?? 0, g20_J_mol: (params02 as any).A21 ?? 0, alpha02: (params02 as any).alpha ?? 0,
+                    g12_J_mol: (params12 as any).A12 ?? 0, g21_J_mol: (params12 as any).A21 ?? 0, alpha12: (params12 as any).alpha ?? 0,
                 } as TernaryNrtlParams;
+                console.log('Processed NRTL Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
+                console.log('------------------------');
             } else if (fluidPackage === 'pr') {
                 const params01 = await fetchPrInteractionParams(supabase, cas[0], cas[1]); 
                 const params02 = await fetchPrInteractionParams(supabase, cas[0], cas[2]);
                 const params12 = await fetchPrInteractionParams(supabase, cas[1], cas[2]);
+                // --- PR DEBUGGING ------------------------------------------------------
+                console.log('--- Peng-Robinson Debug Info ---');
+                console.log('Fetched k_ij (0-1):', JSON.stringify(params01, null, 2));
+                console.log('Fetched k_ij (0-2):', JSON.stringify(params02, null, 2));
+                console.log('Fetched k_ij (1-2):', JSON.stringify(params12, null, 2));
+                // ----------------------------------------------------------------------
                 activityModelParams = {
                     k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
                     k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
                     k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
                 } as TernaryPrParams;
+                console.log('Processed PR Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
+                console.log('--------------------------------');
             } else if (fluidPackage === 'srk') {
                 const params01 = await fetchSrkInteractionParams(supabase, cas[0], cas[1]); 
                 const params02 = await fetchSrkInteractionParams(supabase, cas[0], cas[2]);
                 const params12 = await fetchSrkInteractionParams(supabase, cas[1], cas[2]);
+                // --- SRK DEBUGGING -----------------------------------------------------
+                console.log('--- SRK Debug Info ---');
+                console.log('Fetched k_ij (0-1):', JSON.stringify(params01, null, 2));
+                console.log('Fetched k_ij (0-2):', JSON.stringify(params02, null, 2));
+                console.log('Fetched k_ij (1-2):', JSON.stringify(params12, null, 2));
+                // ----------------------------------------------------------------------
                 activityModelParams = {
                     k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
                     k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
                     k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
                 } as TernarySrkParams;
+                console.log('Processed SRK Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
+                console.log('----------------------');
             } else if (fluidPackage === 'uniquac') {
                 const params01 = await fetchUniquacInteractionParams(supabase, cas[0], cas[1]);
                 const params02 = await fetchUniquacInteractionParams(supabase, cas[0], cas[2]);
                 const params12 = await fetchUniquacInteractionParams(supabase, cas[1], cas[2]);
+                console.log('Fetched a_ij_K (0-1):', JSON.stringify(params01, null, 2));
+                console.log('Fetched a_ij_K (0-2):', JSON.stringify(params02, null, 2));
+                console.log('Fetched a_ij_K (1-2):', JSON.stringify(params12, null, 2));
                 if (!params01 || !params02 || !params12) {
                     throw new Error("UNIQUAC parameters for one or more binary pairs could not be fetched.");
                 }
                 activityModelParams = {
-                    a01_J_mol: ((params01 as any).a_ij_K ?? 0) * R_gas_const_J_molK, a10_J_mol: ((params01 as any).a_ji_K ?? 0) * R_gas_const_J_molK,
-                    a02_J_mol: ((params02 as any).a_ij_K ?? 0) * R_gas_const_J_molK, a20_J_mol: ((params02 as any).a_ji_K ?? 0) * R_gas_const_J_molK,
-                    a12_J_mol: ((params12 as any).a_ij_K ?? 0) * R_gas_const_J_molK, a21_J_mol: ((params12 as any).a_ji_K ?? 0) * R_gas_const_J_molK,
+                    a01_J_mol: ((params01 as any).A12 ?? 0) * R_gas_const_J_molK, a10_J_mol: ((params01 as any).A21 ?? 0) * R_gas_const_J_molK,
+                    a02_J_mol: ((params02 as any).A12 ?? 0) * R_gas_const_J_molK, a20_J_mol: ((params02 as any).A21 ?? 0) * R_gas_const_J_molK,
+                    a12_J_mol: ((params12 as any).A12 ?? 0) * R_gas_const_J_molK, a21_J_mol: ((params12 as any).A21 ?? 0) * R_gas_const_J_molK,
                 } as TernaryUniquacParams;
+                console.log('Processed UNIQUAC Params (J/mol) for Simulation:', JSON.stringify(activityModelParams, null, 2));
+                console.log('--------------------------');
             } else {
                 throw new Error(`Unsupported fluid package: ${fluidPackage}`);
             }
@@ -2058,52 +2096,57 @@ export default function TernaryResidueMapPage() {
                                 ))}
 
                             </div> {/* End of grouping div for component inputs */}
-                            {/* Pressure on same line */}
-                            <div className="flex items-center space-x-2">
-                                <Label htmlFor="systemPressure" className="whitespace-nowrap">
-                                    Pressure:
-                                </Label>
-                                <div className="flex items-center w-full"> {/* Wrapper for input and unit */}
-                                    <Input
-                                        id="systemPressure"
-                                        type="number"
-                                        value={systemPressure}
-                                        onChange={e => setSystemPressure(e.target.value)}
-                                        onKeyDown={e => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault();
-                                                handleGenerateClick();
-                                            }
-                                        }}
-                                        placeholder="1.0"
-                                        className="flex-grow"
-                                    />
-                                    <span className="ml-2 text-muted-foreground">bar</span> {/* Unit display */}
+                            {/* Pressure and Fluid Package on same row */}
+                            <div className="grid grid-cols-2 gap-4">
+                                {/* Pressure input */}
+                                <div className="flex items-center space-x-2">
+                                    <Label htmlFor="systemPressure" className="whitespace-nowrap">
+                                        Pressure:
+                                    </Label>
+                                    <div className="flex items-center w-full"> {/* Wrapper for input and unit */}
+                                        <Input
+                                            id="systemPressure"
+                                            type="number"
+                                            value={systemPressure}
+                                            onChange={e => setSystemPressure(e.target.value)}
+                                            onKeyDown={e => {
+                                                if (e.key === 'Enter') {
+                                                    e.preventDefault();
+                                                    handleGenerateClick();
+                                                }
+                                            }}
+                                            placeholder="1.0"
+                                            className="flex-grow"
+                                        />
+                                        <span className="ml-2 text-muted-foreground">bar</span> {/* Unit display */}
+                                    </div>
                                 </div>
-                            </div>
-                            {/* Fluid package on same line */}
-                            <div className="flex items-center space-x-2">
-                                <Label htmlFor="fluidPackage" className="whitespace-nowrap">
-                                    Fluid Package:
-                                </Label>
-                                <Select
-                                    value={fluidPackage}
-                                    onValueChange={v => {
-                                        setFluidPackage(v as FluidPackageTypeResidue);
-                                    }}
-                                >
-                                    <SelectTrigger id="fluidPackage">
-                                        <SelectValue placeholder="Select model" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="wilson">Wilson</SelectItem>
-                                        <SelectItem value="unifac">UNIFAC</SelectItem>
-                                        <SelectItem value="nrtl">NRTL</SelectItem>
-                                        <SelectItem value="pr">Peng–Robinson</SelectItem>
-                                        <SelectItem value="srk">SRK</SelectItem>
-                                        <SelectItem value="uniquac">UNIQUAC</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                                {/* Fluid package dropdown */}
+                                <div className="flex items-center space-x-2 w-full">
+                                    <Label htmlFor="fluidPackage" className="whitespace-nowrap">
+                                        Fluid Package:
+                                    </Label>
+                                    <div className="flex-1">
+                                        <Select
+                                            value={fluidPackage}
+                                            onValueChange={v => {
+                                                setFluidPackage(v as FluidPackageTypeResidue);
+                                            }}
+                                        >
+                                            <SelectTrigger id="fluidPackage" className="w-full">
+                                                <SelectValue placeholder="Select model" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="wilson">Wilson</SelectItem>
+                                                <SelectItem value="unifac">UNIFAC</SelectItem>
+                                                <SelectItem value="nrtl">NRTL</SelectItem>
+                                                <SelectItem value="pr">Peng–Robinson</SelectItem>
+                                                <SelectItem value="srk">SRK</SelectItem>
+                                                <SelectItem value="uniquac">UNIQUAC</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
                             </div>
                             <Button onClick={handleGenerateClick} disabled={isLoading} className="w-full">
                                 {isLoading ? "Generating..." : "Generate Map"}
@@ -2220,106 +2263,5 @@ function shuffleArray<T>(array: T[]): void {
         const j = Math.floor(Math.random() * (i + 1));
         [array[i], array[j]] = [array[j], array[i]];
     }
-}
-
-/**
- * Filters a set of residue curves to remove ones that are too close to each other
- * in the central region of the ternary diagram, preventing visual clutter.
- * @param curves The raw array of residue curves.
- * @param distanceThreshold The minimum mole fraction distance between curves in the central area.
- * @returns A filtered array of residue curves.
- */
-function filterOverlappingCurves(curves: ResidueCurve[], distanceThreshold: number): ResidueCurve[] {
-    if (curves.length === 0) return [];
-
-    const centralRegionMin = 0.05; // Not on an edge
-    const centralRegionMax = 0.95; // Not in a corner
-
-    const isCentral = (x: number[]) => {
-        return x.every(xi => xi > centralRegionMin && xi < centralRegionMax);
-    };
-
-    // Pre-filter points in the central region for each curve to optimize.
-    const centralPointsByCurve = curves.map(curve => curve.filter(p => isCentral(p.x)));
-
-    const acceptedCurvesIndices: number[] = [];
-    if (curves.length > 0) {
-        acceptedCurvesIndices.push(0); // Always accept the first curve.
-    }
-
-    for (let i = 1; i < curves.length; i++) {
-        const candidateCentralPoints = centralPointsByCurve[i];
-        if (candidateCentralPoints.length === 0) {
-            // If curve has no central points, it doesn't contribute to central clutter, so accept.
-            acceptedCurvesIndices.push(i);
-            continue;
-        }
-
-        let isTooClose = false;
-        for (const acceptedIndex of acceptedCurvesIndices) {
-            const acceptedCentralPoints = centralPointsByCurve[acceptedIndex];
-            if (acceptedCentralPoints.length === 0) continue;
-
-            // Check for proximity
-            for (const p_candidate of candidateCentralPoints) {
-                for (const p_accepted of acceptedCentralPoints) {
-                    const distSq =
-                        (p_candidate.x[0] - p_accepted.x[0]) ** 2 +
-                        (p_candidate.x[1] - p_accepted.x[1]) ** 2 +
-                        (p_candidate.x[2] - p_accepted.x[2]) ** 2;
-
-                    if (distSq < distanceThreshold ** 2) {
-                        isTooClose = true;
-                        break;
-                    }
-                }
-                if (isTooClose) break;
-            }
-            if (isTooClose) break;
-        }
-
-        if (!isTooClose) {
-            acceptedCurvesIndices.push(i);
-        }
-    }
-    return acceptedCurvesIndices.map(i => curves[i]);
-}
-
-// Classify an azeotrope using the Jacobian eigenvalues of the residue-curve ODE
-function classifyAzeotropeEigen(
-    az: AzeotropeDisplayInfo,
-    pkg: FluidPackageTypeResidue,
-    P_Pa: number,
-    comps: CompoundData[],
-    pkgParams: any,
-): 'min' | 'max' | 'saddle' | 'unknown' {
-    const h = 1e-4;
-    const base = evaluateResidueODE(pkg, az.x, az.T_K, P_Pa, comps, pkgParams);
-    if (!base) return 'unknown';
-    const J: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-    for (let j = 0; j < 3; j++) {
-        const xPert = [...az.x];
-        xPert[j] += h;
-        const r = evaluateResidueODE(pkg, xPert, az.T_K, P_Pa, comps, pkgParams);
-        if (!r) return 'unknown';
-        for (let i = 0; i < 3; i++) {
-            J[i][j] = (r.d[i] - base.d[i]) / h;
-        }
-    }
-    // Project 3×3 Jacobian onto 2D tangent plane to assess stability
-    const A = [
-        [J[0][0] - J[2][0], J[0][1] - J[2][1]],
-        [J[1][0] - J[2][0], J[1][1] - J[2][1]],
-    ];
-    const tr = A[0][0] + A[1][1];
-    const det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
-    const disc = tr * tr - 4 * det;
-    if (disc < 0) return 'saddle';
-    const sqrtDisc = Math.sqrt(disc);
-    const l1 = 0.5 * (tr + sqrtDisc);
-    const l2 = 0.5 * (tr - sqrtDisc);
-    if (l1 < 0 && l2 < 0) return 'max';
-    if (l1 > 0 && l2 > 0) return 'min';
-    return 'saddle';
 }
 

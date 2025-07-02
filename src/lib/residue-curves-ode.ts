@@ -25,7 +25,6 @@ export type ResidueODEPoint = { d:number[]; T_K:number } | null;
 //  W I L S O N  (copied & trimmed from residue-curves-ode-wilson.ts)
 // ===========================================================================
 const MIN_X = 1e-9;
-const BUBBLE_T_TOL_K = 0.01;
 
 interface TernaryWilsonParams {
   a01_J_mol: number; a10_J_mol: number;
