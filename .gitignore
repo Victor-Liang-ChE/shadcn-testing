@@ -46,3 +46,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 .env.local content:
+
+test
+test2
