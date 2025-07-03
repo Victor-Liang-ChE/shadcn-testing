@@ -1447,6 +1447,9 @@ export default function TernaryResidueMapPage() {
             return 'unknown';
         }
 
+        // --- Start Debugging Group ---
+        console.group(`[Azeotrope Classifier Debug] for x=[${az.x.map(v => v.toFixed(4)).join(', ')}]`);
+
         // Use a centered finite difference method for the Jacobian
         const J: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
         for (let j = 0; j < 3; j++) {
@@ -1459,6 +1462,8 @@ export default function TernaryResidueMapPage() {
             const r_minus = evaluateResidueODE(displayedFluidPackage, x_minus, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
 
             if (!r_plus || !r_minus) {
+                console.warn('Evaluation of residue ODE failed for Jacobian calculation.');
+                console.groupEnd();
                 return 'unknown';
             }
 
@@ -1486,7 +1491,15 @@ export default function TernaryResidueMapPage() {
         const det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
         const disc = tr * tr - 4 * det;
 
+        console.log('Eigenvalue Analysis:', {
+            trace: tr.toExponential(4),
+            determinant: det.toExponential(4),
+            discriminant: disc.toExponential(4)
+        });
+
         if (disc < 0) {
+            console.log('Result: Discriminant is negative -> SADDLE');
+            console.groupEnd();
             return 'saddle';
         }
 
@@ -1494,24 +1507,34 @@ export default function TernaryResidueMapPage() {
         const l1 = 0.5 * (tr + sqrtDisc);
         const l2 = 0.5 * (tr - sqrtDisc);
         
+        console.log('Calculated Eigenvalues:', { lambda_1: l1.toExponential(4), lambda_2: l2.toExponential(4) });
+        
         const isBinary = az.x.some(xi => xi < 1e-4);
+        let finalClassification: 'min' | 'max' | 'saddle' = 'saddle';
 
         if (isBinary) {
+            console.log('Logic path: isBinary = true');
             const significantEigenvalue = Math.abs(l1) > Math.abs(l2) ? l1 : l2;
             const EIGENVALUE_TOLERANCE = 1e-4;
 
             if (significantEigenvalue > EIGENVALUE_TOLERANCE) {
-                return 'min';
+                finalClassification = 'min';
             } else if (significantEigenvalue < -EIGENVALUE_TOLERANCE) {
-                return 'max';
+                finalClassification = 'max';
             } else {
-                return 'saddle';
+                finalClassification = 'saddle';
             }
+            console.log(`Binary classification based on significant eigenvalue ${significantEigenvalue.toExponential(3)} -> ${finalClassification.toUpperCase()}`);
         } else {
-            if (l1 > 0 && l2 > 0) return 'min';
-            if (l1 < 0 && l2 < 0) return 'max';
-            return 'saddle';
+            console.log('Logic path: isBinary = false');
+            if (l1 > 0 && l2 > 0) finalClassification = 'min';
+            else if (l1 < 0 && l2 < 0) finalClassification = 'max';
+            else finalClassification = 'saddle';
+            console.log(`Ternary classification based on eigenvalue signs -> ${finalClassification.toUpperCase()}`);
         }
+
+        console.groupEnd();
+        return finalClassification;
 
     }, [backendComps, backendPkgParams, backendPressurePa, displayedFluidPackage]);
 
