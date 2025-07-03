@@ -1712,127 +1712,95 @@ export default function TernaryResidueMapPage() {
         // --- Globals for arrow placement ---
         const allPlacedArrowIdealCoords: { x: number; y: number }[] = [];
         // ADJUST THESE:
-        const minSqDistBetweenPlacedArrows_ideal = (0.025) * (0.025); // Smaller value for denser arrows
-        const maxTotalArrowsOnPlot = 500;                             // Allow more arrows overall
+        const minSqDistBetweenPlacedArrows_ideal = (0.03) * (0.03); // Increased spacing slightly
+        const maxTotalArrowsOnPlot = 500;
         let placedArrowCountOverall = 0;
 
 
         let firstArrowLogged = false; 
-        const targetArrowPixelSize = 10; 
-        const arrowMarkerColor = currentTheme === 'dark' ? '#FFFFFF' : '#333333'; // Adjusted for theme
+        const targetArrowPixelSize = 8; // Reduced size for better visual fit on curves
+        const arrowMarkerColor = currentTheme === 'dark' ? '#FFFFFF' : '#333333';
 
         const plotAreaPxWidth = containerWidthPx - (baseLayout.margin?.l ?? 70) - (baseLayout.margin?.r ?? 70);
         const plotAreaPxHeight = containerHeightPx - (baseLayout.margin?.t ?? 90) - (baseLayout.margin?.b ?? 70);
 
-        if (plotSortedComponents.length === 3 && plotContainerRef && actualRenderedTriangleBase_paper > 0 && actualRenderedTriangleHeight_paper > 0 && plotAreaPxWidth > 0 && plotAreaPxHeight > 0) { // Check plotContainerRef
-            cleanedResidueCurves.forEach((curve, curveIndex) => { 
-                if (curve.length < 2) return;
-                if (placedArrowCountOverall >= maxTotalArrowsOnPlot) return;
+        if (plotSortedComponents.length === 3 && plotContainerRef && actualRenderedTriangleBase_paper > 0 && actualRenderedTriangleHeight_paper > 0 && plotAreaPxWidth > 0 && plotAreaPxHeight > 0) {
+            // ---- START: New arrowhead placement logic ----
 
-                let lastCheckedPointIdealCoords: { x: number; y: number } | null = null;
-                const minIdealDistSqForCheckingNextPointOnCurve = (0.02) * (0.02); 
+            // 1. Collect all possible arrow positions from all curves.
+            // Each candidate contains the point before, the anchor, and the point after for angle calculation.
+            const candidateArrows: { anchor: ResidueCurvePoint; before: ResidueCurvePoint; after: ResidueCurvePoint }[] = [];
+            cleanedResidueCurves.forEach(curve => {
+                if (curve.length < 3) return;
+                for (let i = 1; i < curve.length - 1; i++) {
+                    candidateArrows.push({
+                        anchor: curve[i],
+                        before: curve[i - 1],
+                        after: curve[i + 1],
+                    });
+                }
+            });
 
-                for (let headIndex = 0; headIndex < curve.length; headIndex++) {
-                    if (placedArrowCountOverall >= maxTotalArrowsOnPlot) break;
+            // 2. Shuffle candidates to randomize placement order.
+            shuffleArray(candidateArrows);
 
-                    const currentPointTernary = curve[headIndex].x;
-                    const currentPointIdealCoords = convertTernaryToPaperCoordinates(currentPointTernary, plotSortedComponents);
+            // 3. Iteratively place arrows, ensuring they are not too close to each other globally.
+            const placedArrowsPaperCoords: { x: number; y: number }[] = [];
+            const MIN_ARROW_SPACING_SQ_GLOBAL = (0.045)**2; // Controls global arrow density.
 
-                    if (!currentPointIdealCoords) continue;
+            for (const candidate of candidateArrows) {
+                // Limit the total number of arrows to avoid over-cluttering the plot.
+                if (placedArrowCountOverall >= maxTotalArrowsOnPlot) {
+                    break;
+                }
 
-                    let shouldCheckThisPointForArrow = false;
-                    if (!lastCheckedPointIdealCoords) {
-                        if (headIndex >= Math.floor(curve.length * 0.05) && curve.length > 1) { 
-                            shouldCheckThisPointForArrow = true;
-                        }
-                    } else {
-                        const distSqFromLastCheck =
-                            (currentPointIdealCoords.x - lastCheckedPointIdealCoords.x)**2 +
-                            (currentPointIdealCoords.y - lastCheckedPointIdealCoords.y)**2;
-                        if (distSqFromLastCheck >= minIdealDistSqForCheckingNextPointOnCurve) {
-                            shouldCheckThisPointForArrow = true;
-                        }
-                    }
+                const { anchor, before, after } = candidate;
 
-                    if (shouldCheckThisPointForArrow) {
-                        lastCheckedPointIdealCoords = currentPointIdealCoords; 
+                // Convert anchor point to paper coordinates for the proximity check.
+                const currentPaperCoords = convertTernaryToPaperCoordinates(anchor.x, plotSortedComponents);
+                if (!currentPaperCoords) continue;
 
-                        let tooCloseToExistingArrow = false;
-                        for (const placedCoord of allPlacedArrowIdealCoords) {
-                            const distSqToPlaced = (currentPointIdealCoords.x - placedCoord.x)**2 +
-                                                   (currentPointIdealCoords.y - placedCoord.y)**2;
-                            if (distSqToPlaced < minSqDistBetweenPlacedArrows_ideal) {
-                                tooCloseToExistingArrow = true;
-                                break;
-                            }
-                        }
+                // Check for proximity against all previously placed arrows.
+                const isTooClose = placedArrowsPaperCoords.some(placedCoord => {
+                    const distSq = (currentPaperCoords.x - placedCoord.x)**2 + (currentPaperCoords.y - placedCoord.y)**2;
+                    return distSq < MIN_ARROW_SPACING_SQ_GLOBAL;
+                });
 
-                        if (tooCloseToExistingArrow) continue;
+                if (isTooClose) {
+                    continue; // Skip this candidate; it's too close to an existing arrow.
+                }
 
-                        const centroidPointData = curve[headIndex]; // currentPoint is the centroid for this arrow
-                        let point1_for_direction_ternary: number[], point2_for_direction_ternary: number[];
-                        
-                        if (headIndex + 1 < curve.length) {
-                            point1_for_direction_ternary = curve[headIndex].x;
-                            point2_for_direction_ternary = curve[headIndex + 1].x;
-                        } else if (headIndex > 0) {
-                            point1_for_direction_ternary = curve[headIndex - 1].x;
-                                                       point2_for_direction_ternary = curve[headIndex].x;
-                        } else {
-                            continue; 
-                        }
-                        
-                        const arePointsEffectivelyIdentical =
-                            Math.abs(point1_for_direction_ternary[0] - point2_for_direction_ternary[0]) < 1e-7 &&
-                            Math.abs(point1_for_direction_ternary[1] - point2_for_direction_ternary[1]) < 1e-7 &&
+                // If the spot is free, place the arrow and record its position.
+                placedArrowsPaperCoords.push(currentPaperCoords);
+                placedArrowCountOverall++;
 
-                            Math.abs(point1_for_direction_ternary[2] - point2_for_direction_ternary[2]) < 1e-7;
+                // Calculate the arrow's angle based on the curve's local direction.
+                const p_before_coords = convertTernaryToPaperCoordinates(before.x, plotSortedComponents);
+                const p_after_coords = convertTernaryToPaperCoordinates(after.x, plotSortedComponents);
+                if (!p_before_coords || !p_after_coords) continue;
 
-                        if (arePointsEffectivelyIdentical) continue;
-                        
-                        const localPrevDirCoords = convertTernaryToPaperCoordinates(point1_for_direction_ternary, plotSortedComponents);
-                        const localNextDirCoords = convertTernaryToPaperCoordinates(point2_for_direction_ternary, plotSortedComponents);
+                const dx_ideal_CALCULATED = p_after_coords.x - p_before_coords.x;
+                const dy_ideal_CALCULATED = p_after_coords.y - p_before_coords.y;
 
-                        if (!localPrevDirCoords || !localNextDirCoords) continue;
+                if (Math.abs(dx_ideal_CALCULATED) < 1e-9 && Math.abs(dy_ideal_CALCULATED) < 1e-9) continue;
 
-                        const dx_ideal_CALCULATED = localNextDirCoords.x - localPrevDirCoords.x;
-                        const dy_ideal_CALCULATED = localNextDirCoords.y - localPrevDirCoords.y;
+                const triangleActualPixelBase = actualRenderedTriangleBase_paper * containerWidthPx;
+                const pixel_dx = dx_ideal_CALCULATED * triangleActualPixelBase;
+                const pixel_dy = dy_ideal_CALCULATED * triangleActualPixelBase;
+                if (Math.abs(pixel_dx) < 1e-6 && Math.abs(pixel_dy) < 1e-6) continue;
 
-                        if (Math.abs(dx_ideal_CALCULATED) < 1e-9 && Math.abs(dy_ideal_CALCULATED) < 1e-9) {
-                            continue;
-                        }
-                        
-                        const triangleActualPixelBase = actualRenderedTriangleBase_paper * containerWidthPx;
-                        const pixel_dx = dx_ideal_CALCULATED * triangleActualPixelBase;
-                        const pixel_dy = dy_ideal_CALCULATED * triangleActualPixelBase;
-                        
-                        if (Math.abs(pixel_dx) < 1e-6 && Math.abs(pixel_dy) < 1e-6) {
-                            continue; 
-                        }
-                            
-                        // Calculate arrow rotation so that the triangle symbol points along the flow direction.
-                        // The base 'triangle-up' in Plotly points along +Y (upward). To align it with the
-                        // vector (dx,dy) in screen space, rotate the symbol by (raw_angle − 90°).
-                        const raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
-                        const final_angle_deg = raw_screen_angle_deg + 90;
+                const raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
+                const final_angle_deg = raw_screen_angle_deg + 90;
 
-                        arrowMarkerTraceData.a.push(centroidPointData.x[1]);
-                        arrowMarkerTraceData.b.push(centroidPointData.x[2]);
-                        arrowMarkerTraceData.c.push(centroidPointData.x[0]);
-                        arrowMarkerTraceData.angles.push(final_angle_deg);
-                        // No tooltip text for arrow markers
-                        arrowMarkerTraceData.text.push('');
-                        
-                        allPlacedArrowIdealCoords.push(currentPointIdealCoords); 
-                        placedArrowCountOverall++;
-
-                        if (!firstArrowLogged && curveIndex === 0) { 
-                            // Arrow marker debug disabled.
-                        }
-                    } // Closes if (shouldCheckThisPointForArrow)
-                } // Closes for (let headIndex ...) loop
-            }); // Closes cleanedResidueCurves.forEach
-        } // Closes if (plotSortedComponents.length === 3 && plotContainerRef && ...)
+                // Add the arrow data to the trace.
+                arrowMarkerTraceData.a.push(anchor.x[1]);
+                arrowMarkerTraceData.b.push(anchor.x[2]);
+                arrowMarkerTraceData.c.push(anchor.x[0]);
+                arrowMarkerTraceData.angles.push(final_angle_deg);
+                arrowMarkerTraceData.text.push('');
+            }
+            // ---- END: New arrowhead placement logic ----
+        }
         
         const allTraces = [...traces];
         if (arrowMarkerTraceData.a.length > 0) {
@@ -1855,10 +1823,10 @@ export default function TernaryResidueMapPage() {
                 },
                 marker: {
                     symbol: 'triangle-up',
-                    size: targetArrowPixelSize,
-                    color: arrowMarkerColor, // Theme-aware
+                    size: 8, // Using the smaller size from a previous fix
+                    color: arrowMarkerColor,
                     angle: arrowMarkerTraceData.angles,
-                    standoff: 5,
+                    // standoff: 5, // DELETE OR COMMENT OUT THIS LINE
                 } as any,
                 cliponaxis: false,
                 showlegend: false,
