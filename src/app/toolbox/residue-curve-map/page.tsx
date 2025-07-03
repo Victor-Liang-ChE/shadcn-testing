@@ -2035,11 +2035,12 @@ export default function TernaryResidueMapPage() {
                 },
                 xaxis: { range: [0, 1], showgrid: false, zeroline: false, constrain: 'domain', showline: false, showticklabels: false, ticks: '' },
                 yaxis: { range: [0, 1], showgrid: false, zeroline: false, scaleanchor: 'x', showline: false, showticklabels: false, ticks: '' },
-                shapes: [
-                    { type: 'line', x0: 0, y0: 0, x1: 1, y1: 0, line: { color: highContrastColor, width: 1.5 } },
-                    { type: 'line', x0: 0, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
-                    { type: 'line', x0: 1, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
-                ],
+                // The 'shapes' property below should be removed.
+                // shapes: [
+                //     { type: 'line', x0: 0, y0: 0, x1: 1, y1: 0, line: { color: highContrastColor, width: 1.5 } },
+                //     { type: 'line', x0: 0, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
+                //     { type: 'line', x0: 1, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
+                // ],
                 margin: { l: 80, r: 60, t: 80, b: 80 },
                 annotations: [
                     // --- Correctly positioned corner labels using pixel shifts ---
