@@ -256,6 +256,9 @@ export default function TernaryResidueMapPage() {
     const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
     const [useRightTriangle, setUseRightTriangle] = useState(false);
 
+    // ... other useState/useRef hooks
+    const isSwapping = useRef(false);
+
     // Removed debounced version for direct calls
     const setHighlightedAzeoIdxDirect = setHighlightedAzeoIdx;
 
@@ -1431,6 +1434,13 @@ export default function TernaryResidueMapPage() {
     }, [supabase, handleGenerateMap]);
 
     useEffect(() => {
+        if (isSwapping.current) {
+            handleGenerateMap();
+            isSwapping.current = false; // Reset the flag after generation
+        }
+    }, [componentsInput, handleGenerateMap]);
+
+    useEffect(() => {
         if (!residueCurves || residueCurves.length === 0) {
             setCleanedResidueCurves([]);
             // console.log(`Plotting useEffect: No residueCurves or empty. Setting cleanedResidueCurves to [].`);
@@ -1474,6 +1484,80 @@ export default function TernaryResidueMapPage() {
 
         setCleanedResidueCurves(filteredForPlotting);
     }, [residueCurves, fluidPackage]); // Ensure fluidPackage is a dependency
+
+    const classifyAzeotrope = useCallback((az: AzeotropeDisplayInfo): 'min' | 'max' | 'saddle' | 'unknown' => {
+        const h = 1e-5;
+        if (!backendComps || backendComps.length !== 3 || !backendPkgParams) {
+            return 'unknown';
+        }
+
+        // Use a centered finite difference method for the Jacobian
+        const J: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+        for (let j = 0; j < 3; j++) {
+            const x_plus = [...az.x];
+            x_plus[j] += h;
+            const r_plus = evaluateResidueODE(displayedFluidPackage, x_plus, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
+
+            const x_minus = [...az.x];
+            x_minus[j] -= h;
+            const r_minus = evaluateResidueODE(displayedFluidPackage, x_minus, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
+
+            if (!r_plus || !r_minus) {
+                return 'unknown';
+            }
+
+            for (let i = 0; i < 3; i++) {
+                J[i][j] = (r_plus.d[i] - r_minus.d[i]) / (2 * h);
+            }
+        }
+
+        // Dynamically select the component with the smallest mole fraction to eliminate
+        let elim_idx = 0;
+        if (az.x[1] < az.x[0]) elim_idx = 1;
+        if (az.x[2] < az.x[elim_idx]) elim_idx = 2;
+        
+        const ind_indices = [0, 1, 2].filter(i => i !== elim_idx);
+        const idx1 = ind_indices[0];
+        const idx2 = ind_indices[1];
+
+        // Form the 2x2 reduced Jacobian 'A'
+        const A = [
+            [J[idx1][idx1] - J[idx1][elim_idx], J[idx1][idx2] - J[idx1][elim_idx]],
+            [J[idx2][idx1] - J[idx2][elim_idx], J[idx2][idx2] - J[idx2][elim_idx]],
+        ];
+
+        const tr = A[0][0] + A[1][1];
+        const det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
+        const disc = tr * tr - 4 * det;
+
+        if (disc < 0) {
+            return 'saddle';
+        }
+
+        const sqrtDisc = Math.sqrt(disc);
+        const l1 = 0.5 * (tr + sqrtDisc);
+        const l2 = 0.5 * (tr - sqrtDisc);
+        
+        const isBinary = az.x.some(xi => xi < 1e-4);
+
+        if (isBinary) {
+            const significantEigenvalue = Math.abs(l1) > Math.abs(l2) ? l1 : l2;
+            const EIGENVALUE_TOLERANCE = 1e-4;
+
+            if (significantEigenvalue > EIGENVALUE_TOLERANCE) {
+                return 'min';
+            } else if (significantEigenvalue < -EIGENVALUE_TOLERANCE) {
+                return 'max';
+            } else {
+                return 'saddle';
+            }
+        } else {
+            if (l1 > 0 && l2 > 0) return 'min';
+            if (l1 < 0 && l2 < 0) return 'max';
+            return 'saddle';
+        }
+
+    }, [backendComps, backendPkgParams, backendPressurePa, displayedFluidPackage]);
 
     const memoizedPlotData = useMemo(() => {
         const modelName = displayedFluidPackage.charAt(0).toUpperCase() + displayedFluidPackage.slice(1); // Use displayedFluidPackage
@@ -1787,37 +1871,10 @@ export default function TernaryResidueMapPage() {
 
         // --- Directly Found Azeotropes to Plot (Two-Trace Method for Animation) ---
         if (directAzeotropes.length > 0 && plotSortedComponents.length === 3) {
-            // --- Robust Classification Logic ---
-            const classifyEigen = (az:AzeotropeDisplayInfo):'min'|'max'|'saddle'|'unknown' => {
-               const h = 1e-4;
-               if(backendComps.length!==3 || !backendPkgParams) return 'unknown';
-               const base = evaluateResidueODE(displayedFluidPackage, az.x, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
-               if(!base) return 'unknown';
-               const J:number[][]=[ [0,0,0],[0,0,0],[0,0,0] ];
-               for(let j=0;j<3;j++){
-                  const xPert=[...az.x]; xPert[j]+=h; 
-                  const r = evaluateResidueODE(displayedFluidPackage, xPert, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
-                  if(!r) return 'unknown';
-                  for(let i=0;i<3;i++) J[i][j]=(r.d[i]-base.d[i])/h;
-               }
-               const A=[
-                 [J[0][0]-J[2][0], J[0][1]-J[2][1]],
-                 [J[1][0]-J[2][0], J[1][1]-J[2][1]]
-               ];
-               const tr=A[0][0]+A[1][1];
-               const det=A[0][0]*A[1][1]-A[0][1]*A[1][0];
-               const disc=tr*tr-4*det;
-               if(disc<0) return 'saddle';
-               const sqrtDisc=Math.sqrt(disc);
-               const l1=0.5*(tr+sqrtDisc);
-               const l2=0.5*(tr-sqrtDisc);
-               if(l1<0 && l2<0) return 'max';
-               if(l1>0 && l2>0) return 'min';
-               return 'saddle';
-            };
+
 
             for(const az of directAzeotropes){
-               const cls=classifyEigen(az);
+               const cls = classifyAzeotrope(az); // Use the correct, unified function here
                switch(cls){
                    case 'min': minAz.push(az); break;
                    case 'max': maxAz.push(az); break;
@@ -1938,7 +1995,7 @@ export default function TernaryResidueMapPage() {
 
         return { baseTraces: allTraces, baseLayout: finalLayout, minAz, maxAz, sadAz };
 
-    }, [cleanedResidueCurves, componentsInput, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa]);
+    }, [cleanedResidueCurves, componentsInput, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope]);
 
     useEffect(() => {
         const { baseTraces, baseLayout, minAz, maxAz, sadAz } = memoizedPlotData;
@@ -2043,54 +2100,22 @@ export default function TernaryResidueMapPage() {
         handleGenerateMap();
     };
 
-    // --- Helper to classify azeotrope type for table coloring ---
-    const classifyAzeoType = (az:AzeotropeDisplayInfo):'min'|'max'|'saddle'|'unknown' => {
-        if(backendComps.length!==3 || !backendPkgParams || plotSortedComponents.length !== 3) return 'unknown';
-        const permutation = plotSortedComponents.map(c=>c.originalIndex);
-        const p = backendPkgParams;
-        let params_sorted:any = p;
-        switch(displayedFluidPackage){
-            case 'wilson': {
-                const [p0,p1,p2]=permutation;
-                params_sorted={a01_J_mol:p[`a${p0}${p1}_J_mol`],a10_J_mol:p[`a${p1}${p0}_J_mol`],a02_J_mol:p[`a${p0}${p2}_J_mol`],a20_J_mol:p[`a${p2}${p0}_J_mol`],a12_J_mol:p[`a${p1}${p2}_J_mol`],a21_J_mol:p[`a${p2}${p1}_J_mol`]};
-                break;
+    const handleSwapComponents = (index: number) => {
+        isSwapping.current = true;
+        
+        setComponentsInput(currentInputs => {
+            const newInputs = [...currentInputs];
+            // Swap the component at the given index with the one below it
+            if (index + 1 < newInputs.length) {
+                const temp = newInputs[index];
+                newInputs[index] = newInputs[index + 1];
+                newInputs[index + 1] = temp;
             }
-            case 'nrtl': {
-                const [p0,p1,p2]=permutation;
-                params_sorted={g01_J_mol:p[`g${p0}${p1}_J_mol`],g10_J_mol:p[`g${p1}${p0}_J_mol`],g02_J_mol:p[`g${p0}${p2}_J_mol`],g20_J_mol:p[`g${p2}${p0}_J_mol`],g12_J_mol:p[`g${p1}${p2}_J_mol`],g21_J_mol:p[`g${p2}${p1}_J_mol`],alpha01:p[`alpha${Math.min(p0,p1)}${Math.max(p0,p1)}`],alpha02:p[`alpha${Math.min(p0,p2)}${Math.max(p0,p2)}`],alpha12:p[`alpha${Math.min(p1,p2)}${Math.max(p1,p2)}`]};
-                break;
-            }
-            case 'uniquac': {
-                const [p0,p1,p2]=permutation;
-                params_sorted={a01_J_mol:p[`a${p0}${p1}_J_mol`],a10_J_mol:p[`a${p1}${p0}_J_mol`],a02_J_mol:p[`a${p0}${p2}_J_mol`],a20_J_mol:p[`a${p2}${p0}_J_mol`],a12_J_mol:p[`a${p1}${p2}_J_mol`],a21_J_mol:p[`a${p2}${p1}_J_mol`]};
-                break;
-            }
-            case 'pr':
-            case 'srk': {
-                const getK=(i:number,j:number)=>p[`k${Math.min(i,j)}${Math.max(i,j)}`]??0;
-                params_sorted={k01:getK(permutation[0],permutation[1]),k02:getK(permutation[0],permutation[2]),k12:getK(permutation[1],permutation[2])};
-                break;
-            }
-        }
-        const x_sorted=[az.x[permutation[0]],az.x[permutation[1]],az.x[permutation[2]]];
-        const comps_sorted=[backendComps[permutation[0]],backendComps[permutation[1]],backendComps[permutation[2]]];
-        const h=1e-5;
-        const base=evaluateResidueODE(displayedFluidPackage,x_sorted,az.T_K,backendPressurePa,comps_sorted,params_sorted);
-        if(!base) return 'unknown';
-        const J:[[number,number,number],[number,number,number],[number,number,number]]=[[0,0,0],[0,0,0],[0,0,0]];
-        for(let j=0;j<3;j++){
-            const xPert=[...x_sorted];xPert[j]+=h;const sum=xPert.reduce((a,b)=>a+b,0);const xPertNorm=xPert.map(v=>v/sum);
-            const r=evaluateResidueODE(displayedFluidPackage,xPertNorm,az.T_K,backendPressurePa,comps_sorted,params_sorted);
-            if(!r) return 'unknown';
-            for(let i=0;i<3;i++) J[i][j]=(r.d[i]-base.d[i])/h;
-        }
-        const A=[[J[0][0]-J[2][0],J[0][1]-J[2][1]],[J[1][0]-J[2][0],J[1][1]-J[2][1]]];
-        const tr=A[0][0]+A[1][1];const det=A[0][0]*A[1][1]-A[0][1]*A[1][0];const disc=tr*tr-4*det;
-        if(disc<0) return 'saddle';const sqrtDisc=Math.sqrt(disc);const l1=0.5*(tr+sqrtDisc);const l2=0.5*(tr-sqrtDisc);
-        if(l1>0&&l2>0) return 'min';if(l1<0&&l2<0) return 'max';return 'saddle';
+            return newInputs;
+        });
     };
 
-    return (
+     return (
         <div className="container mx-auto p-4">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Left panel: Inputs */}
@@ -2158,9 +2183,7 @@ export default function TernaryResidueMapPage() {
                                                     variant="ghost"
                                                     size="icon"
                                                     className="h-6 w-6 rounded-full bg-background"
-                                                    onClick={() => {
-                                                        // Visual only for now - no functionality
-                                                    }}
+                                                    onClick={() => handleSwapComponents(index)}
                                                     aria-label={`Swap component ${index + 1} and ${index + 2}`}
                                                 >
                                                     <ChevronsUpDown className="h-4 w-4 text-muted-foreground" />
@@ -2245,9 +2268,14 @@ export default function TernaryResidueMapPage() {
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
-                                        {directAzeotropes.map((az, index) => {
-                                            const type = classifyAzeoType(az);
-                                            const color = type==='min' ? '#00C000' : type==='max' ? '#9900FF' : type==='saddle' ? '#FF0000' : '#666666';
+                                        {[...directAzeotropes]
+                                            .sort((a, b) => b.T_K - a.T_K) // Sort by temperature descending (highest first)
+                                            .map((az, index) => {
+                                            const type = classifyAzeotrope(az); // Use the new, unified function
+                                            const color = type === 'min' ? '#00C000' 
+                                                        : type === 'max' ? '#9900FF' 
+                                                        : type === 'saddle' ? '#FF0000' 
+                                                        : '#666666';
                                             return (
                                                 <TableRow
                                                     key={index}
