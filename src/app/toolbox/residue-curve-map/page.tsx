@@ -2238,9 +2238,10 @@ export default function TernaryResidueMapPage() {
                                     </TableHeader>
                                     <TableBody>
                                         {[...directAzeotropes]
-                                            .sort((a, b) => b.T_K - a.T_K) // Sort by temperature descending (highest first)
+                                            .sort((a, b) => b.T_K - a.T_K) // Sort by temperature descending
                                             .map((az, index) => {
                                             const type = classifyAzeotrope(az); // Use the new, unified function
+                                            const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az);
                                             const color = type === 'min' ? '#00C000' 
                                                         : type === 'max' ? '#9900FF' 
                                                         : type === 'saddle' ? '#FF0000' 
@@ -2248,7 +2249,7 @@ export default function TernaryResidueMapPage() {
                                             return (
                                                 <TableRow
                                                     key={index}
-                                                    onMouseEnter={() => setHighlightedAzeoIdx(index)}
+                                                    onMouseEnter={() => setHighlightedAzeoIdx(originalIndex)}
                                                     onMouseLeave={() => setHighlightedAzeoIdx(null)}
                                                 >
                                                  <TableCell className="px-2 text-center"><span style={{color}}>&#9733;</span></TableCell>
