@@ -536,7 +536,6 @@ export default function TernaryResidueMapPage() {
             throw new Error("Component name cannot be empty.");
         }
         const trimmedName = name.trim();
-        console.log(`fetchCasNumberByName: Fetching CAS for name: "${trimmedName}"`); // Added log
         const { data, error } = await supabaseClient
             .from('compounds')
             .select('cas_number, name') // Also select name for logging
@@ -552,7 +551,6 @@ export default function TernaryResidueMapPage() {
             console.error(`fetchCasNumberByName: No CAS number found for "${trimmedName}". Data received:`, data);
             throw new Error(`No CAS number found for ${trimmedName}.`);
         }
-        console.log(`fetchCasNumberByName: Found CAS: ${data.cas_number} for DB name: "${data.name}" (queried as "${trimmedName}")`); // Added log
         return data.cas_number;
     };
 
@@ -807,12 +805,7 @@ export default function TernaryResidueMapPage() {
                     uniquacParams: fluidPackage === 'uniquac' ? pc.thermData.uniquacParams! : undefined,
             }));
 
-            // --- UNIQUAC DEBUGGING: log pure-component r & q values ------------------
-            if (fluidPackage === 'uniquac') {
-                console.log('--- UNIQUAC Debug Info ---');
-                console.log('Pure Component r and q values:', JSON.stringify(compoundsForBackend.map(c => ({ name: c.name, ...c.uniquacParams })), null, 2));
-            }
-            // -------------------------------------------------------------------------
+
 
             const cas = compoundsForBackend.map(c => c.cas_number!);
             let activityModelParams: any;
@@ -834,12 +827,7 @@ export default function TernaryResidueMapPage() {
                 const params02 = await fetchWilsonBothWays(cas[0], cas[2]);
                 const params12 = await fetchWilsonBothWays(cas[1], cas[2]);
 
-                // --- WILSON DEBUGGING ---------------------------------------------------
-                console.log('--- Wilson Debug Info ---');
-                console.log('Fetched Params (0-1):', JSON.stringify(params01, null, 2));
-                console.log('Fetched Params (0-2):', JSON.stringify(params02, null, 2));
-                console.log('Fetched Params (1-2):', JSON.stringify(params12, null, 2));
-                // ---------------------------------------------------------------------
+
 
                 const symmetric = (a_forward:number|undefined, a_reverse:number|undefined):[number,number] => {
                     const f = (a_forward !== undefined && !Number.isNaN(a_forward)) ? a_forward : undefined;
@@ -862,30 +850,19 @@ export default function TernaryResidueMapPage() {
                     a12_J_mol: a12,
                     a21_J_mol: a21,
                 } as TernaryWilsonParams;
-                console.log('Processed Wilson Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
-                console.log('------------------------');
+
             } else if (fluidPackage === 'unifac') {
-                // --- UNIFAC DEBUGGING -------------------------------------------------
-                console.log('--- UNIFAC Debug Info ---');
                 const allSubgroupIds = new Set<number>();
                 compoundsForBackend.forEach(comp => {
                     if (comp.unifacGroups) {
                         Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id)));
                     }
                 });
-                console.log('Collected Subgroup IDs for fetching:', Array.from(allSubgroupIds));
-                // ---------------------------------------------------------------------
                 if (allSubgroupIds.size === 0 && compoundsForBackend.some(c => !c.unifacGroups || Object.keys(c.unifacGroups).length === 0)) {
                      throw new Error("UNIFAC selected, but no UNIFAC subgroup IDs found for any component after fetching data.");
                 }
                 activityModelParams = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds)) as UnifacParameters;
-                
-                // --- CORRECTED UNIFAC DEBUGGING ---
-                // Convert the 'a_mk' Map to an object for easy logging
-                const interactionsObject = activityModelParams ? Object.fromEntries(activityModelParams.a_mk) : {};
-                console.log('Fetched UNIFAC Rk values:', JSON.stringify(activityModelParams?.Rk, null, 2));
-                console.log('Fetched UNIFAC a_mk interaction params:', JSON.stringify(interactionsObject, null, 2));
-                // --- END DEBUGGING ---
+
                 
                 if (!activityModelParams) {
                     throw new Error("Failed to fetch UNIFAC interaction parameters. The parameters object is null.");
@@ -894,12 +871,7 @@ export default function TernaryResidueMapPage() {
                 const params01 = await fetchNrtlParameters(supabase, cas[0], cas[1]);
                 const params02 = await fetchNrtlParameters(supabase, cas[0], cas[2]);
                 const params12 = await fetchNrtlParameters(supabase, cas[1], cas[2]);
-                // --- NRTL DEBUGGING ---------------------------------------------------
-                console.log('--- NRTL Debug Info ---');
-                console.log('Fetched Params (0-1):', JSON.stringify(params01, null, 2));
-                console.log('Fetched Params (0-2):', JSON.stringify(params02, null, 2));
-                console.log('Fetched Params (1-2):', JSON.stringify(params12, null, 2));
-                // ---------------------------------------------------------------------
+
                 if (!params01 || !params02 || !params12) {
                     throw new Error("NRTL parameters for one or more binary pairs could not be fetched.");
                 }
@@ -908,49 +880,34 @@ export default function TernaryResidueMapPage() {
                     g02_J_mol: (params02 as any).A12 ?? 0, g20_J_mol: (params02 as any).A21 ?? 0, alpha02: (params02 as any).alpha ?? 0,
                     g12_J_mol: (params12 as any).A12 ?? 0, g21_J_mol: (params12 as any).A21 ?? 0, alpha12: (params12 as any).alpha ?? 0,
                 } as TernaryNrtlParams;
-                console.log('Processed NRTL Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
-                console.log('------------------------');
+
             } else if (fluidPackage === 'pr') {
                 const params01 = await fetchPrInteractionParams(supabase, cas[0], cas[1]); 
                 const params02 = await fetchPrInteractionParams(supabase, cas[0], cas[2]);
                 const params12 = await fetchPrInteractionParams(supabase, cas[1], cas[2]);
-                // --- PR DEBUGGING ------------------------------------------------------
-                console.log('--- Peng-Robinson Debug Info ---');
-                console.log('Fetched k_ij (0-1):', JSON.stringify(params01, null, 2));
-                console.log('Fetched k_ij (0-2):', JSON.stringify(params02, null, 2));
-                console.log('Fetched k_ij (1-2):', JSON.stringify(params12, null, 2));
-                // ----------------------------------------------------------------------
+
                 activityModelParams = {
                     k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
                     k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
                     k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
                 } as TernaryPrParams;
-                console.log('Processed PR Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
-                console.log('--------------------------------');
+
             } else if (fluidPackage === 'srk') {
                 const params01 = await fetchSrkInteractionParams(supabase, cas[0], cas[1]); 
                 const params02 = await fetchSrkInteractionParams(supabase, cas[0], cas[2]);
                 const params12 = await fetchSrkInteractionParams(supabase, cas[1], cas[2]);
-                // --- SRK DEBUGGING -----------------------------------------------------
-                console.log('--- SRK Debug Info ---');
-                console.log('Fetched k_ij (0-1):', JSON.stringify(params01, null, 2));
-                console.log('Fetched k_ij (0-2):', JSON.stringify(params02, null, 2));
-                console.log('Fetched k_ij (1-2):', JSON.stringify(params12, null, 2));
-                // ----------------------------------------------------------------------
+
                 activityModelParams = {
                     k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
                     k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
                     k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
                 } as TernarySrkParams;
-                console.log('Processed SRK Params for Simulation:', JSON.stringify(activityModelParams, null, 2));
-                console.log('----------------------');
+
             } else if (fluidPackage === 'uniquac') {
                 const params01 = await fetchUniquacInteractionParams(supabase, cas[0], cas[1]);
                 const params02 = await fetchUniquacInteractionParams(supabase, cas[0], cas[2]);
                 const params12 = await fetchUniquacInteractionParams(supabase, cas[1], cas[2]);
-                console.log('Fetched a_ij_K (0-1):', JSON.stringify(params01, null, 2));
-                console.log('Fetched a_ij_K (0-2):', JSON.stringify(params02, null, 2));
-                console.log('Fetched a_ij_K (1-2):', JSON.stringify(params12, null, 2));
+
                 if (!params01 || !params02 || !params12) {
                     throw new Error("UNIQUAC parameters for one or more binary pairs could not be fetched.");
                 }
@@ -959,8 +916,7 @@ export default function TernaryResidueMapPage() {
                     a02_J_mol: ((params02 as any).A12 ?? 0) * R_gas_const_J_molK, a20_J_mol: ((params02 as any).A21 ?? 0) * R_gas_const_J_molK,
                     a12_J_mol: ((params12 as any).A12 ?? 0) * R_gas_const_J_molK, a21_J_mol: ((params12 as any).A21 ?? 0) * R_gas_const_J_molK,
                 } as TernaryUniquacParams;
-                console.log('Processed UNIQUAC Params (J/mol) for Simulation:', JSON.stringify(activityModelParams, null, 2));
-                console.log('--------------------------');
+
             } else {
                 throw new Error(`Unsupported fluid package: ${fluidPackage}`);
             }
