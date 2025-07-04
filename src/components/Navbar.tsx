@@ -114,8 +114,12 @@ function Navbar() {
     >
       {/* Left: Brand */}
       <div>
-        <Link href="/" className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
-            Victor Liang
+        <Link href="/" className={`${brandLinkHoverStyle} inline-block`}>
+          <img 
+            src="/favicon.ico" 
+            alt="Victor Liang" 
+            className="w-8 h-8"
+          />
         </Link>
       </div>
       {/* Center: Page Title */}
