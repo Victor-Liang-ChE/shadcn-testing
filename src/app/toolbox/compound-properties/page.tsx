@@ -386,7 +386,7 @@ export default function CompoundPropertiesPage() {
         const cachedData = propertiesCache.current.get(cacheKey);
         // Handle the case where a previous fetch for this name failed
         if (cachedData === null) {
-            throw new Error(`Previously failed to fetch data for ${trimmedCompoundName}.`);
+            throw new Error(`Compound '${trimmedCompoundName}' not found in the database.`);
         }
         return cachedData || null;
     }
@@ -716,10 +716,7 @@ export default function CompoundPropertiesPage() {
                 const loopEndCelsius = (finalPlotTmaxKelvin !== undefined) ? (finalPlotTmaxKelvin - 273.15) : (Tmax_compound_K - 273.15);
                 
                 const numDataPointsForLoop = 200; // Desired number of points over the range
-                let dataPointCelsiusStep = (loopEndCelsius - loopStartCelsius) / numDataPointsForLoop;
-                
-                if (dataPointCelsiusStep <= 0) dataPointCelsiusStep = 0.5; // Fallback if range is zero or negative
-                dataPointCelsiusStep = Math.max(dataPointCelsiusStep, 0.01); // Minimum step
+                let dataPointCelsiusStep = 1; // Fixed 1°C increment for data points
 
                 for (let currentC = loopStartCelsius; currentC <= loopEndCelsius + 1e-9; currentC += dataPointCelsiusStep) {
                     const T = currentC + 273.15; // T is in Kelvin for calculations
@@ -909,6 +906,7 @@ export default function CompoundPropertiesPage() {
           nameGap: calculatedNameGap, 
           position: 'left' as const,
           axisLine: { show: true, lineStyle: { color: 'white', width: 2 } },
+          axisTick: { show: true, lineStyle: { color: 'white' }, length: 12 },
           axisLabel: { 
             formatter: yAxisTickFormatter, 
             color: 'white', 
@@ -951,6 +949,7 @@ export default function CompoundPropertiesPage() {
             },
             nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: textColor, width: 2 } },
+            axisTick: { show: true, lineStyle: { color: textColor }, length: 12 },
             splitLine: { show: false },
             // Apply calculated range and interval for Boiling Point X-axis
             scale: isBoilingPointPlot ? false : (finalPlotTminKelvin !== undefined ? false : true),
@@ -1020,11 +1019,18 @@ export default function CompoundPropertiesPage() {
             formatter: (params: any) => {
                 if (!Array.isArray(params) || params.length === 0) return '';
                 
+                // Sort params by property value in descending order (highest to lowest)
+                const sortedParams = [...params].sort((a: any, b: any) => {
+                    const valueA = isBoilingPointPlot ? a.value[1] : a.value[1]; // For both cases, value[1] is the property value
+                    const valueB = isBoilingPointPlot ? b.value[1] : b.value[1];
+                    return valueB - valueA; // Descending order
+                });
+                
                 let tooltipHtml = '';
                 if (isBoilingPointPlot) {
                     const pressureVal = params[0].axisValue; // Pressure from X-axis
                     tooltipHtml = `Pressure: <b>${formatNumberToPrecision(pressureVal, 3)} ${displayUnit}</b><br/>`;
-                    params.forEach((param: any) => {
+                    sortedParams.forEach((param: any) => {
                         const seriesFullname = param.seriesName;
                         // param.value is [Pressure_DisplayUnit, TempC]
                         tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 3)} °C</b></span><br/>`;
@@ -1032,7 +1038,7 @@ export default function CompoundPropertiesPage() {
                 } else {
                     const tempInCelsius = params[0].axisValue - 273.15; // TempK from X-axis
                     tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
-                    params.forEach((param: any) => {
+                    sortedParams.forEach((param: any) => {
                         const seriesFullname = param.seriesName;
                         // param.value is [TempK, Value]
                         tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b></span><br/>`;
@@ -1044,7 +1050,7 @@ export default function CompoundPropertiesPage() {
           legend: {
             data: finalSeriesToPlot.map(s => s.name as string), // Use filtered series for legend data
             bottom: 40, // Closer to x-axis
-            textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 11 },
+            textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 },
             inactiveColor: '#4b5563',
             type: 'scroll',
             itemWidth: 25,
@@ -1167,7 +1173,7 @@ export default function CompoundPropertiesPage() {
             nameLocation: 'middle' as const,
             nameGap: calculatedNameGap, 
             axisLine: { show: true, lineStyle: { color: 'white', width: 2 } },
-            axisTick: { show: true, lineStyle: { color: 'white' } }, // Added Y-axis tick marks
+            axisTick: { show: true, lineStyle: { color: 'white' }, length: 12 },
             axisLabel: { 
               formatter: (val: number) => formatNumberToPrecision(val, 4), 
               color: 'white', 
@@ -1190,13 +1196,7 @@ export default function CompoundPropertiesPage() {
                 textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' },
             },
             tooltip: {
-                trigger: 'item', 
-                formatter: (params: any) => {
-                    return `${params.name}<br/>${constDef.displayName}: <b>${formatNumberToPrecision(params.value, 4)}${displayUnit !== '-' ? ' ' + displayUnit : ''}</b>`;
-                },
-                backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff',
-                borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
-                textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
+                show: false,
             },
             legend: { show: false }, 
             grid: { left: '5%', right: '5%', bottom: '12%', top: '10%', containLabel: true }, 
@@ -1205,6 +1205,7 @@ export default function CompoundPropertiesPage() {
                 data: compoundNames,
                 axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, 
                 axisLine: { lineStyle: { color: textColor, width: 2 } },
+                axisTick: { show: true, lineStyle: { color: textColor }, length: 12 },
             },
             yAxis: yAxisConfig,
             series: [{
@@ -1217,8 +1218,9 @@ export default function CompoundPropertiesPage() {
                 label: {
                     show: true,
                     position: 'top',
-                    formatter: (params: any) => formatNumberToPrecision(params.value, 3),
+                    formatter: (params: any) => `${formatNumberToPrecision(params.value, 3)}${displayUnit !== '-' ? ' ' + displayUnit : ''}`,
                     color: textColor,
+                    fontSize: Math.max(12, 30 - compoundNames.length * 4),
                     fontFamily: 'Merriweather Sans' // Added font family for bar labels
                 }
             }] as any, // Use type assertion here for consistency
@@ -2074,16 +2076,22 @@ export default function CompoundPropertiesPage() {
                   </div>
                   {manualTempPointsData.length > 0 && (
                     <div className="space-y-1 text-sm mt-2">
-                      {manualTempPointsData.map((point, idx) => (
-                        <div key={idx} className={`pl-2 ${point.isValid ? '' : 'text-red-500'}`}>
-                          <strong>{point.compoundName}:</strong>{' '}
-                          {point.isValid && point.value !== null
-                            ? (propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
-                                ? `${formatNumberToPrecision(point.value, 2)} °C (at ${formatNumberToPrecision(point.tempCelsius, 3)} ${point.unit})` // value is Temp C, tempCelsius is Pressure, unit is Pressure unit
-                                : `${formatNumberToPrecision(point.value, 3)} ${point.unit} (at ${formatNumberToPrecision(point.tempCelsius, 2)} °C)`) // value is Prop Val, unit is Prop unit, tempCelsius is Temp C
-                            : (point.message || "N/A")}
-                        </div>
-                      ))}
+                      {manualTempPointsData.map((point, idx) => {
+                        // Find the compound index to get the matching color
+                        const compoundIndex = compounds.findIndex(c => c.data?.name === point.compoundName);
+                        const compoundColor = compoundIndex >= 0 ? compoundColors[compoundIndex % compoundColors.length] : '#666';
+                        
+                        return (
+                          <div key={idx} className={`pl-2 ${point.isValid ? '' : 'text-red-500'}`} style={{ color: point.isValid ? compoundColor : undefined }}>
+                            <strong>{point.compoundName}:</strong>{' '}
+                            {point.isValid && point.value !== null
+                              ? (propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
+                                  ? `${formatNumberToPrecision(point.value, 2)} °C (at ${formatNumberToPrecision(point.tempCelsius, 3)} ${point.unit})` // value is Temp C, tempCelsius is Pressure, unit is Pressure unit
+                                  : `${formatNumberToPrecision(point.value, 3)} ${point.unit} (at ${formatNumberToPrecision(point.tempCelsius, 2)} °C)`) // value is Prop Val, unit is Prop unit, tempCelsius is Temp C
+                              : (point.message || "N/A")}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
