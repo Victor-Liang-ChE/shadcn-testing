@@ -162,6 +162,18 @@ export default function AzeotropeFinderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fluidPackage]);
 
+  // ADD THIS NEW EFFECT
+  // This new useEffect will handle re-scanning when the scan type changes.
+  const didMountScanType = useRef(false);
+  useEffect(() => {
+    if (didMountScanType.current) {
+        handleAzeotropeScan();
+    } else {
+        didMountScanType.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [azeotropeScanType]);
+
   // --- Logging Hook (copy from test/page.tsx or mccabe-thiele) ---
   // Removed logging useEffect and related state
 
@@ -773,8 +785,8 @@ export default function AzeotropeFinderPage() {
               <CardContent className="p-4 space-y-4"> {/* Added p-4 for consistent padding */}
                 <Tabs value={azeotropeScanType} onValueChange={(value) => {
                     setAzeotropeScanType(value as AzeotropeScanType);
-                    // Auto-trigger azeotrope scan after scan type change
-                    setTimeout(() => handleAzeotropeScan(), 100);
+                    // The direct call to handleAzeotropeScan has been removed.
+                    // The new useEffect will trigger the scan.
                 }} className="mb-4">
                     <TabsList className="grid w-full grid-cols-2">
                         <TabsTrigger value="vs_P_find_T">Scan Pressure</TabsTrigger>
