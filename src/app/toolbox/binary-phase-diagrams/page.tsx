@@ -803,7 +803,9 @@ export default function VleDiagramPage() {
                                     <Label htmlFor="fluidPackage" className="text-sm font-medium whitespace-nowrap">Fluid Package:</Label>
                                     <Select value={fluidPackage} onValueChange={(v) => {
                                         setFluidPackage(v as FluidPackageType);
-                                        generateDiagram();
+                                        // The generateDiagram() call is removed from here.
+                                        // The useEffect hook will handle the regeneration
+                                        // when the fluidPackage state changes.
                                     }}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="srk">SRK</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem></SelectContent></Select>
                                 </div>
                             </div>
