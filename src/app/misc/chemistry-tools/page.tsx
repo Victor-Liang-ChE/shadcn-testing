@@ -119,8 +119,10 @@ const StoichiometryCalculator: React.FC = () => {
       
       try {
         const parsed = parseReactionEquation(fullEquation);
+        
         if (!parsed) {
-          throw new Error('Failed to parse default reaction');
+          console.warn('Failed to parse default reaction:', fullEquation);
+          return; // Silently fail for default reaction
         }
         
         const compoundsList = [...parsed.reactants, ...parsed.products];
@@ -136,7 +138,7 @@ const StoichiometryCalculator: React.FC = () => {
             initialModes[compound.compound] = 'moles';
           } catch (error) {
             console.error(`Molar mass calculation error for ${compound.compound}:`, error);
-            throw new Error(`Invalid formula or unknown element in "${compound.compound}".`);
+            return; // Silently fail for default reaction
           }
         }
         
@@ -159,13 +161,19 @@ const StoichiometryCalculator: React.FC = () => {
         
         // Auto-calculate with default values
         setTimeout(() => {
-          const newResults = calculateStoichiometry(parsed, initialInputData, 100);
-          setResults(newResults);
-          setHasCalculated(true);
+          try {
+            const newResults = calculateStoichiometry(parsed, initialInputData, 100);
+            setResults(newResults);
+            setHasCalculated(true);
+          } catch (calcError) {
+            console.error('Default calculation error:', calcError);
+            // Don't show error for default calculation
+          }
         }, 100);
         
       } catch (error) {
-        setErrorMessage(`Default reaction error: ${error instanceof Error ? error.message : String(error)}`);
+        console.error('Default reaction initialization error:', error);
+        // Don't show error message for default reaction failures
       } finally {
         setIsLoading(false);
       }
