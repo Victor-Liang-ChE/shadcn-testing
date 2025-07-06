@@ -24,15 +24,21 @@ import {
     fetchUnifacInteractionParams,
     calculateBubbleTemperatureUnifac,
     calculateBubblePressureUnifac,
+    calculateDewTemperatureUnifac,
+    calculateDewPressureUnifac,
     fetchNrtlParameters,
     calculateBubbleTemperatureNrtl,
     calculateBubblePressureNrtl,
     fetchPrInteractionParams,
     calculateBubbleTemperaturePr,
     calculateBubblePressurePr,
+    calculateDewTemperaturePr,
+    calculateDewPressurePr,
     fetchSrkInteractionParams,
     calculateBubbleTemperatureSrk,
     calculateBubblePressureSrk,
+    calculateDewTemperatureSrk,
+    calculateDewPressureSrk,
     fetchUniquacInteractionParams,
     calculateBubbleTemperatureUniquac,
     calculateBubblePressureUniquac,
@@ -493,7 +499,9 @@ export default function VleDiagramPage() {
             const components: [CompoundData, CompoundData] = [d1, d2];
             
             const pointsCount = 51;
+            // THIS LINE IS RESTORED
             const x_feed = Array.from({ length: pointsCount }, (_, i) => i / (pointsCount - 1));
+            
             const results: { x: number[], y: number[], t?: number[], p?: number[] } = { x: [], y: [] };
             if (diagramType === 'txy') results.t = []; else if (diagramType === 'pxy') results.p = [];
 
@@ -511,7 +519,7 @@ export default function VleDiagramPage() {
                         resultPoint = { comp1_feed: x1, comp1_equilibrium: x1 };
                     }
                 } else {
-                    if (diagramType === 'txy') {
+                     if (diagramType === 'txy') {
                         const Tbp1 = antoineBoilingPointSolverLocal(d1.antoine, pressureBar! * 1e5);
                         const Tbp2 = antoineBoilingPointSolverLocal(d2.antoine, pressureBar! * 1e5);
                         const initialTempGuess = Tbp1 && Tbp2 ? (x1 * Tbp1 + (1 - x1) * Tbp2) : 373.15;
@@ -523,9 +531,8 @@ export default function VleDiagramPage() {
                         else if(fluidPackage==='wilson') resultPoint=calculateBubbleTemperatureWilson(components,x1,pressureBar!*1e5,params,initialTempGuess);
                     } else { // pxy or xy
                         const fixedTempK = useTemperatureForXY || diagramType === 'pxy' ? temperatureC! + 273.15 : null;
-                        const fixedPressPa = useTemperatureForXY === false && diagramType === 'xy' ? pressureBar! * 1e5 : null;
-                        
-                        if (fixedTempK) { // Px-y or T-const x-y
+                        const fixedPressPa = !useTemperatureForXY && diagramType === 'xy' ? pressureBar! * 1e5 : null;
+                        if (fixedTempK) {
                             const initialPressureGuess = (libCalculatePsat_Pa(d1.antoine!, fixedTempK) + libCalculatePsat_Pa(d2.antoine!, fixedTempK)) / 2 || 101325;
                             if(fluidPackage==='unifac') resultPoint=calculateBubblePressureUnifac(components,x1,fixedTempK,params);
                             else if(fluidPackage==='nrtl') resultPoint=calculateBubblePressureNrtl(components,x1,fixedTempK,params);
@@ -533,7 +540,7 @@ export default function VleDiagramPage() {
                             else if(fluidPackage==='srk') resultPoint=calculateBubblePressureSrk(components,x1,fixedTempK,params,initialPressureGuess);
                             else if(fluidPackage==='uniquac') resultPoint=calculateBubblePressureUniquac(components,x1,fixedTempK,params);
                             else if(fluidPackage==='wilson') resultPoint=calculateBubblePressureWilson(components,x1,fixedTempK,params);
-                        } else if (fixedPressPa) { // P-const x-y
+                        } else if (fixedPressPa) {
                             const Tbp1 = antoineBoilingPointSolverLocal(d1.antoine, fixedPressPa);
                             const Tbp2 = antoineBoilingPointSolverLocal(d2.antoine, fixedPressPa);
                             const initialTempGuess = Tbp1 && Tbp2 ? (x1 * Tbp1 + (1 - x1) * Tbp2) : 373.15;
@@ -546,8 +553,7 @@ export default function VleDiagramPage() {
                         }
                     }
                 }
-                
-                if (resultPoint && resultPoint.error === undefined && typeof resultPoint.comp1_equilibrium === 'number') {
+                if (resultPoint?.error === undefined && typeof resultPoint?.comp1_equilibrium === 'number') {
                     results.x.push(x1);
                     results.y.push(resultPoint.comp1_equilibrium);
                     if (diagramType === 'txy' && results.t && resultPoint.T_K) results.t.push(resultPoint.T_K);
@@ -570,7 +576,7 @@ export default function VleDiagramPage() {
         } finally {
             if (showLoading) setLoading(false);
         }
-    }, [comp1Name, comp2Name, diagramType, fluidPackage, pressureBar, temperatureC, useTemperatureForXY, resolvedTheme, comp1Data, comp2Data, interactionParams, displayedParams.package]);
+    }, [comp1Name, comp2Name, diagramType, fluidPackage, pressureBar, temperatureC, useTemperatureForXY, resolvedTheme, comp1Data, comp2Data, interactionParams, displayedParams.package, generateEchartsOptions]);
 
     useEffect(() => {
         if (supabase && autoGenerateOnCompChange) {

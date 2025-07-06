@@ -19,6 +19,30 @@ export const R_cal_molK = 1.987_204_258_640_83;         // cal·mol⁻¹·K⁻¹
 export const JOULES_PER_CAL = 4.184;
 
 /**
+ * Helper function to estimate boiling point temperature from Antoine equation.
+ * This is a simplified solver that provides a good initial guess for EOS calculations.
+ */
+function antoineBoilingPointSolverLocal(antoineParams: AntoineParams | null, P_target: number): number | null {
+  if (!antoineParams) return null;
+  try {
+    let logP: number;
+    const P_converted_to_antoine_units = P_target / (antoineParams.Units?.toLowerCase() === 'kpa' ? 1000 : 1);
+    
+    if (antoineParams.EquationNo === 1 || antoineParams.EquationNo === '1') {
+      logP = Math.log10(P_converted_to_antoine_units);
+    } else {
+      logP = Math.log(P_converted_to_antoine_units);
+    }
+    
+    if (antoineParams.A - logP === 0) return null; // Avoid division by zero
+    const T_K = antoineParams.B / (antoineParams.A - logP) - antoineParams.C;
+    return (T_K > 0 && T_K < 1000) ? T_K : null; // Basic validity check
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Calculates saturation pressure (Pa) from Antoine coefficients.
  * Supports both log10 and ln formulations and automatically converts kPa → Pa.
  */
@@ -555,39 +579,100 @@ function _numDeriv(func: (t: number) => number, t: number, h: number = 1e-4) {
   return (func(t + h) - func(t - h)) / (2 * h);
 }
 
+// --- Replacement for calculateBubbleTemperaturePr ---
+// --- Final Replacement for calculateBubbleTemperaturePr ---
+// --- Final Replacement for calculateBubbleTemperaturePr ---
 export function calculateBubbleTemperaturePr(
   components: CompoundData[],
   x1_feed: number,
   P_system_Pa: number,
   params: PrInteractionParams,
-  T_guess_K: number = 350,
-  maxIter = 60,
-  tol = 1e-5
+  initialTempGuess_K: number = 350,
+  maxIter: number = 100,
+  tolerance: number = 1e-6
 ): BubbleDewResult | null {
-  let T = T_guess_K;
-  const x = [x1_feed, 1 - x1_feed];
-  for (let i = 0; i < maxIter; i++) {
-    const phiL = calculatePrFugacityCoefficients(components, x, T, P_system_Pa, params, 'liquid');
-    const phiV = calculatePrFugacityCoefficients(components, x, T, P_system_Pa, params, 'vapor');
-    if (!phiL || !phiV) return null;
-    const K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
-    const f = x[0] * K[0] + x[1] * K[1] - 1;
-    if (Math.abs(f) < tol) {
-      const y1 = (x[0] * K[0]);
-      return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K: T, P_Pa: P_system_Pa };
+    const x = [x1_feed, 1 - x1_feed];
+    const T_bp1 = calculateSaturationTemperaturePurePr(components[0], P_system_Pa);
+    const T_bp2 = calculateSaturationTemperaturePurePr(components[1], P_system_Pa);
+
+    if (T_bp1 === null || T_bp2 === null) return null;
+
+    const T_low = Math.min(T_bp1, T_bp2) - 30;
+    const T_high = Math.max(T_bp1, T_bp2) + 30;
+
+    const objective = (T: number): number => {
+        let y_k = [...x];
+        let K: [number, number] = [1.0, 1.0];
+        const phiL = calculatePrFugacityCoefficients(components, x, T, P_system_Pa, params, 'liquid');
+        if (!phiL) return NaN;
+
+        let y_km1 = [...y_k];
+        let g_km1 = [...y_k];
+
+        for (let j = 0; j < 50; j++) {
+            const phiV = calculatePrFugacityCoefficients(components, y_k, T, P_system_Pa, params, 'vapor');
+            if (!phiV) return NaN;
+            K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+            if (K.some(val => isNaN(val))) return NaN;
+            const y_calc = [x[0] * K[0], x[1] * K[1]];
+            const sum_y = y_calc[0] + y_calc[1];
+            if (sum_y === 0 || !isFinite(sum_y)) return NaN;
+            const g_k: [number, number] = [y_calc[0] / sum_y, y_calc[1] / sum_y];
+
+            let y_kp1: [number, number];
+
+            if (j < 2) { // Start with damped simple iteration
+                y_kp1 = [0.5 * y_k[0] + 0.5 * g_k[0], 0.5 * y_k[1] + 0.5 * g_k[1]];
+            } else { // Switch to Wegstein's method
+                const s_num = g_k[0] - g_km1[0];
+                const s_den = y_k[0] - y_km1[0];
+                if (Math.abs(s_den) < 1e-10) {
+                    y_kp1 = g_k;
+                } else {
+                    const s = s_num / s_den;
+                    if (Math.abs(s - 1.0) > 1e-8) {
+                        let q = s / (s - 1.0);
+                        q = Math.max(-5.0, q);
+                        const y0_next = y_k[0] + (1 - q) * (g_k[0] - y_k[0]);
+                        y_kp1 = [Math.max(0, Math.min(1, y0_next)), 1.0 - Math.max(0, Math.min(1, y0_next))];
+                    } else { y_kp1 = g_k; }
+                }
+            }
+
+            if (Math.abs(y_kp1[0] - y_k[0]) < 1e-9) {
+                y_k = y_kp1;
+                break;
+            }
+            y_km1 = y_k;
+            g_km1 = g_k;
+            y_k = y_kp1;
+        }
+
+        const phiV_final = calculatePrFugacityCoefficients(components, y_k, T, P_system_Pa, params, 'vapor');
+        if (!phiV_final) return NaN;
+        K = [phiL[0] / phiV_final[0], phiL[1] / phiV_final[1]];
+        return x[0] * K[0] + x[1] * K[1] - 1.0;
+    };
+
+    const T_bubble = _brentRoot(objective, T_low, T_high, tolerance, maxIter);
+    if (T_bubble === null) return null;
+
+    let y_final = [...x];
+    const phiL_final = calculatePrFugacityCoefficients(components, x, T_bubble, P_system_Pa, params, 'liquid');
+    if (!phiL_final) return null;
+    for (let j = 0; j < 50; j++) {
+        const y_old = [...y_final];
+        const phiV_final = calculatePrFugacityCoefficients(components, y_final, T_bubble, P_system_Pa, params, 'vapor');
+        if (!phiV_final) break;
+        const K = [phiL_final[0] / phiV_final[0], phiL_final[1] / phiV_final[1]];
+        if (K.some(k => isNaN(k))) break;
+        const y_calc = [x[0] * K[0], x[1] * K[1]];
+        const sum_y = y_calc[0] + y_calc[1];
+        if (sum_y === 0 || !isFinite(sum_y)) break;
+        y_final = [y_calc[0] / sum_y, y_calc[1] / sum_y];
+        if (Math.abs(y_final[0] - y_old[0]) < 1e-8) break;
     }
-    const df_dT = _numDeriv(Tc => {
-      const phiL_ = calculatePrFugacityCoefficients(components, x, Tc, P_system_Pa, params, 'liquid');
-      const phiV_ = calculatePrFugacityCoefficients(components, x, Tc, P_system_Pa, params, 'vapor');
-      if (!phiL_ || !phiV_) return f; // fallback
-      const K_ = [phiL_[0] / phiV_[0], phiL_[1] / phiV_[1]];
-      return x[0] * K_[0] + x[1] * K_[1] - 1;
-    }, T);
-    if (!isFinite(df_dT) || Math.abs(df_dT) < 1e-8) return null;
-    T -= f / df_dT;
-    if (T < 100 || T > 1000) return null;
-  }
-  return null;
+    return { comp1_feed: x1_feed, comp1_equilibrium: y_final[0], T_K: T_bubble, P_Pa: P_system_Pa };
 }
 
 export function calculateBubblePressurePr(
@@ -617,76 +702,98 @@ export function calculateBubblePressurePr(
   return null;
 }
 
+// --- Final Replacement for calculateDewTemperaturePr ---
 export function calculateDewTemperaturePr(
   components: CompoundData[],
   y1_feed: number,
   P_system_Pa: number,
   prInteractionParams: PrInteractionParams,
   initialTempGuess_K: number = 350,
-  maxIter: number = 50,
-  tolerance: number = 1e-5
+  maxIter: number = 100,
+  tolerance: number = 1e-6
 ): BubbleDewResult | null {
-  let T_K = initialTempGuess_K;
-  const y = [y1_feed, 1 - y1_feed];
+    const y = [y1_feed, 1 - y1_feed];
+    const T_bp1 = calculateSaturationTemperaturePurePr(components[0], P_system_Pa);
+    const T_bp2 = calculateSaturationTemperaturePurePr(components[1], P_system_Pa);
 
-  if (!components[0]?.prParams || !components[1]?.prParams) return null;
-  if (!components[0]?.antoine || !components[1]?.antoine) return null;
+    if (T_bp1 === null || T_bp2 === null) return null;
 
-  for (let iter = 0; iter < maxIter; iter++) {
-    const Psat = components.map(c => calculatePsat_Pa(c.antoine, T_K));
-    if (Psat.some(p => isNaN(p) || p <= 0)) return null;
+    const T_low = Math.min(T_bp1, T_bp2) - 30;
+    const T_high = Math.max(T_bp1, T_bp2) + 30;
 
-    // Initial liquid composition guess using ideal K = Psat/P
-    let x = y.map((yi, i) => yi / (Psat[i] / P_system_Pa));
-    const x_sum = x.reduce((s, xi) => s + xi, 0);
-    x = x.map(xi => xi / x_sum);
+    const objective = (T: number): number => {
+        let x_k = [...y];
+        let K: [number, number] = [1.0, 1.0];
+        const phiV = calculatePrFugacityCoefficients(components, y, T, P_system_Pa, prInteractionParams, 'vapor');
+        if (!phiV) return NaN;
 
-    // Calculate fugacity coefficients
-    const phi_V = calculatePrFugacityCoefficients(components, y, T_K, P_system_Pa, prInteractionParams, 'vapor');
-    if (!phi_V) return null;
+        let x_km1 = [...x_k];
+        let g_km1 = [...x_k];
 
-    const phi_L = calculatePrFugacityCoefficients(components, x, T_K, P_system_Pa, prInteractionParams, 'liquid');
-    if (!phi_L) return null;
+        for (let j = 0; j < 50; j++) {
+            const phiL = calculatePrFugacityCoefficients(components, x_k, T, P_system_Pa, prInteractionParams, 'liquid');
+            if (!phiL) return NaN;
+            K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+            if (K.some(val => isNaN(val) || val <= 0)) return NaN;
+            const x_calc = [y[0] / K[0], y[1] / K[1]];
+            const sum_x = x_calc[0] + x_calc[1];
+            if (sum_x === 0 || !isFinite(sum_x)) return NaN;
+            const g_k: [number, number] = [x_calc[0] / sum_x, x_calc[1] / sum_x];
 
-    // Calculate K-values and objective function
-    const K = phi_L.map((phiL, i) => phiL * Psat[i] / (phi_V[i] * P_system_Pa));
-    const obj = y.reduce((sum, yi, i) => sum + yi / K[i], 0) - 1;
+            let x_kp1: [number, number];
+            if (j < 2) {
+                x_kp1 = [0.5 * x_k[0] + 0.5 * g_k[0], 0.5 * x_k[1] + 0.5 * g_k[1]];
+            } else {
+                const s_num = g_k[0] - g_km1[0];
+                const s_den = x_k[0] - x_km1[0];
+                if (Math.abs(s_den) < 1e-10) {
+                    x_kp1 = g_k;
+                } else {
+                    const s = s_num / s_den;
+                    if (Math.abs(s - 1.0) > 1e-8) {
+                        let q = s / (s - 1.0);
+                        q = Math.max(-5.0, q);
+                        const x0_next = x_k[0] + (1 - q) * (g_k[0] - x_k[0]);
+                        x_kp1 = [Math.max(0, Math.min(1, x0_next)), 1.0 - Math.max(0, Math.min(1, x0_next))];
+                    } else { x_kp1 = g_k; }
+                }
+            }
 
-    if (Math.abs(obj) < tolerance) {
-      // Recalculate final liquid composition
-      x = y.map((yi, i) => yi / K[i]);
-      const x_final_sum = x.reduce((s, xi) => s + xi, 0);
-      x = x.map(xi => xi / x_final_sum);
-      
-      return {
-        comp1_feed: y1_feed,
-        comp1_equilibrium: x[0],
-        T_K: T_K,
-        P_Pa: P_system_Pa,
-        iterations: iter + 1,
-        calculationType: 'dewT'
-      };
+            if (Math.abs(x_kp1[0] - x_k[0]) < 1e-9) {
+                x_k = x_kp1;
+                break;
+            }
+            x_km1 = x_k;
+            g_km1 = g_k;
+            x_k = x_kp1;
+        }
+
+        const phiL_final = calculatePrFugacityCoefficients(components, x_k, T, P_system_Pa, prInteractionParams, 'liquid');
+        if (!phiL_final) return NaN;
+        K = [phiL_final[0] / phiV[0], phiL_final[1] / phiV[1]];
+        if (K.some(val => isNaN(val) || val <= 0)) return NaN;
+        return y[0] / K[0] + y[1] / K[1] - 1.0;
+    };
+
+    const T_dew = _brentRoot(objective, T_low, T_high, tolerance, maxIter);
+    if (T_dew === null) return null;
+
+    let x_final = [...y];
+    const phiV_final = calculatePrFugacityCoefficients(components, y, T_dew, P_system_Pa, prInteractionParams, 'vapor');
+    if (!phiV_final) return null;
+    for (let j = 0; j < 50; j++) {
+        const x_old = [...x_final];
+        const phiL_final = calculatePrFugacityCoefficients(components, x_final, T_dew, P_system_Pa, prInteractionParams, 'liquid');
+        if (!phiL_final) break;
+        const K = [phiL_final[0] / phiV_final[0], phiL_final[1] / phiV_final[1]];
+        if (K.some(k => isNaN(k) || k <= 0)) break;
+        const x_calc = [y[0] / K[0], y[1] / K[1]];
+        const sum_x = x_calc[0] + x_calc[1];
+        if (sum_x === 0 || !isFinite(sum_x)) break;
+        x_final = [x_calc[0] / sum_x, x_calc[1] / sum_x];
+        if (Math.abs(x_final[0] - x_old[0]) < 1e-8) break;
     }
-
-    // Newton step for temperature
-    const dobj_dT = _numDeriv((T: number) => {
-      const Psat_T = components.map(c => calculatePsat_Pa(c.antoine, T));
-      if (Psat_T.some(p => isNaN(p))) return NaN;
-      let x_T = y.map((yi, i) => yi / (Psat_T[i] / P_system_Pa));
-      const x_sum_T = x_T.reduce((s, xi) => s + xi, 0);
-      x_T = x_T.map(xi => xi / x_sum_T);
-      const phi_V_T = calculatePrFugacityCoefficients(components, y, T, P_system_Pa, prInteractionParams, 'vapor');
-      if (!phi_V_T) return NaN;
-      const phi_L_T = calculatePrFugacityCoefficients(components, x_T, T, P_system_Pa, prInteractionParams, 'liquid');
-      if (!phi_L_T) return NaN;
-      const K_T = phi_L_T.map((phiL, i) => phiL * Psat_T[i] / (phi_V_T[i] * P_system_Pa));
-      return y.reduce((sum, yi, i) => sum + yi / K_T[i], 0) - 1;
-    }, T_K);
-
-    if (Math.abs(dobj_dT) < 1e-12) return null;
-    T_K = Math.max(100, Math.min(1000, T_K - obj / dobj_dT));
-  }
-  return null;
+    return { comp1_feed: y1_feed, comp1_equilibrium: x_final[0], T_K: T_dew, P_Pa: P_system_Pa };
 }
 
 export function calculateDewPressurePr(
@@ -762,6 +869,8 @@ export function calculateSrkFugacityCoefficients(
   interactionParams: SrkInteractionParams,
   phase: 'liquid' | 'vapor'
 ): [number, number] | null {
+  console.log(`[SRK Fugacity] Phase: ${phase}, T: ${T_K.toFixed(2)} K, x/y: [${x_or_y[0].toFixed(4)}]`);
+
   if (components.length !== 2 || x_or_y.length !== 2) return null;
   if (!components[0].srkParams || !components[1].srkParams) return null;
 
@@ -779,39 +888,45 @@ export function calculateSrkFugacityCoefficients(
     return { ac_i, b_i, sqrt_ac_i: Math.sqrt(ac_i) };
   });
 
-  // Mixing rules
   const a12 = srkPure[0].sqrt_ac_i * srkPure[1].sqrt_ac_i * (1 - k_ij);
   const a_mix = x1*x1*srkPure[0].ac_i + 2*x1*x2*a12 + x2*x2*srkPure[1].ac_i;
   const b_mix = x1*srkPure[0].b_i + x2*srkPure[1].b_i;
 
   const A_mix = a_mix * P_Pa / (R_gas_const_J_molK * T_K)**2;
   const B_mix = b_mix * P_Pa / (R_gas_const_J_molK * T_K);
+  console.log(`    A_mix: ${A_mix.toExponential(4)}, B_mix: ${B_mix.toExponential(4)}`);
 
-  // Cubic equation: Z^3 - Z^2 + (A - B - B^2)*Z - A*B = 0
   const roots = solveCubicEOS(1, -1, A_mix - B_mix - B_mix*B_mix, -A_mix*B_mix);
-  if (!roots || roots.length === 0) return null;
+  if (!roots || roots.length === 0) {
+    console.error(`    [SRK Fugacity] FAILED: No valid roots found for Z.`);
+    return null;
+  }
+  console.log(`    Z roots found: [${roots.map(r => r.toFixed(5)).join(', ')}]`);
 
   const Z = phase === 'liquid' ? Math.min(...roots) : Math.max(...roots);
-  if (Z <= B_mix) return null; // Robustness check, Z must be > B for log(Z-B) to be real
+  console.log(`    Selected Z for ${phase}: ${Z.toFixed(5)}`);
+  
+  if (Z <= B_mix) {
+    console.warn(`    [SRK Fugacity] FAILED: Z <= B_mix (${Z.toFixed(5)} <= ${B_mix.toFixed(5)})`);
+    return null;
+  }
 
-  // Fugacity coefficients
   const term_ln = (A_mix / B_mix) * Math.log(1 + B_mix / Z);
 
   const d_a_mix_by_n = [
-      2 * (x1 * srkPure[0].ac_i + x2 * a12), // for component 1
-      2 * (x2 * srkPure[1].ac_i + x1 * a12)  // for component 2
+      2 * (x1 * srkPure[0].ac_i + x2 * a12),
+      2 * (x2 * srkPure[1].ac_i + x1 * a12)
   ];
 
   const phi = [0, 1].map(i => {
     const b_i = srkPure[i].b_i;
     const b_i_over_b_mix = b_i / b_mix;
-
     const term1 = b_i_over_b_mix * (Z - 1) - Math.log(Z - B_mix);
     const term2 = term_ln * (d_a_mix_by_n[i] / a_mix - b_i_over_b_mix);
-    
     return Math.exp(term1 - term2);
   });
-
+  
+  console.log(`    ==> Fugacity Coeffs (phi): [${phi[0].toFixed(5)}, ${phi[1].toFixed(5)}]`);
   return [phi[0], phi[1]];
 }
 
@@ -821,63 +936,84 @@ export function calculateBubbleTemperatureSrk(
   P_system_Pa: number,
   srkInteractionParams: SrkInteractionParams,
   initialTempGuess_K: number = 350,
-  maxIter: number = 50,
-  tolerance: number = 1e-5
+  maxIter: number = 100,
+  tolerance: number = 1e-6
 ): BubbleDewResult | null {
-  let T = initialTempGuess_K;
-  const x = [x1_feed, 1 - x1_feed];
-  let y = [...x]; // Initial guess for vapor composition
-  let K = [1.0, 1.0];
+    console.log(`%c[SRK Bubble T] START for x1=${x1_feed}`, 'color: blue; font-weight: bold;');
+    
+    const x = [x1_feed, 1 - x1_feed];
+    const T_bp1 = calculateSaturationTemperaturePureSrk(components[0], P_system_Pa);
+    const T_bp2 = calculateSaturationTemperaturePureSrk(components[1], P_system_Pa);
 
-  for (let i = 0; i < maxIter; i++) {
-    // Inner loop to converge y for the current T
-    const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
-    if (!phiL) { T *= 0.98; continue; } // Nudge T if it fails
+    if (T_bp1 === null || T_bp2 === null) {
+        console.error("[SRK Bubble T] FAILED: Could not calculate pure component boiling points for bracketing.");
+        return null;
+    }
 
-    for (let j = 0; j < 10; j++) {
-        const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
-        if (!phiV) { y = [...x]; continue; } // Reset guess on failure
-        
-        const K_new = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
-        const y_new = [x[0] * K_new[0], x[1] * K_new[1]];
-        const sum_y = y_new[0] + y_new[1];
-        y_new[0] /= sum_y;
-        y_new[1] /= sum_y;
+    const T_low = Math.min(T_bp1, T_bp2) - 30;
+    const T_high = Math.max(T_bp1, T_bp2) + 30;
+    console.log(`[SRK Bubble T] Temp Bracket: [${T_low.toFixed(2)}, ${T_high.toFixed(2)}] K`);
 
-        if (Math.abs(y_new[0] - y[0]) < 1e-7) {
-            y = y_new; K = K_new; break;
+    const objective = (T: number): number => {
+        console.log(`%c[SRK Bubble T] > Root finder testing T = ${T.toFixed(4)} K`, 'color: gray');
+        const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
+        if (!phiL) return NaN;
+
+        let y = [...x]; // Start guess with y=x
+        console.log(`    Inner loop START, initial y: [${y[0].toFixed(4)}]`);
+        for (let i = 0; i < 50; i++) {
+            const y_old = [...y];
+            const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
+            if (!phiV) {
+                 console.warn(`    Inner loop break: phiV calculation failed.`);
+                 return NaN;
+            }
+
+            const K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+            console.log(`    Iter ${i}, K-values: [${K[0].toFixed(4)}, ${K[1].toFixed(4)}]`);
+
+            const y_new_unnorm = [x[0] * K[0], x[1] * K[1]];
+            const sumY = y_new_unnorm[0] + y_new_unnorm[1];
+
+            if (sumY === 0 || !isFinite(sumY)) {
+                console.warn(`    Inner loop break: Invalid sumY.`);
+                return NaN;
+            }
+            y = [y_new_unnorm[0] / sumY, y_new_unnorm[1] / sumY];
+            console.log(`    Iter ${i}, new y: [${y[0].toFixed(4)}]`);
+
+            if (Math.abs(y[0] - y_old[0]) < 1e-9) {
+                console.log(`    Inner loop converged after ${i+1} iterations.`);
+                break;
+            }
         }
-        y = y_new; K = K_new;
+
+        const K_final = [phiL[0] / calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor')![0], phiL[1] / calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor')![1]];
+        const objective_val = x[0] * K_final[0] + x[1] * K_final[1] - 1.0;
+        console.log(`    > Objective Function Result for T=${T.toFixed(4)} K is ${objective_val.toExponential(4)}`);
+        return objective_val;
+    };
+
+    const T_bubble = _brentRoot(objective, T_low, T_high, tolerance, maxIter);
+    if (T_bubble === null) {
+        console.error("[SRK Bubble T] FAILED: Root finder could not converge on a bubble temperature.");
+        return null;
     }
+    console.log(`%c[SRK Bubble T] Root finder SUCCESS. T_bubble = ${T_bubble.toFixed(4)} K`, 'color: green');
 
-    const f = x[0] * K[0] + x[1] * K[1] - 1;
+    // Final calculation of y at the converged temperature
+    let y_final = [...x];
+    const phiL_final = calculateSrkFugacityCoefficients(components, x, T_bubble, P_system_Pa, srkInteractionParams, 'liquid');
+    if (!phiL_final) return null;
+    const phiV_final = calculateSrkFugacityCoefficients(components, y_final, T_bubble, P_system_Pa, srkInteractionParams, 'vapor');
+    if (!phiV_final) return null;
+    const K = [phiL_final[0] / phiV_final[0], phiL_final[1] / phiV_final[1]];
+    const y_calc = [x[0] * K[0], x[1] * K[1]];
+    const sum_y = y_calc[0] + y_calc[1];
+    y_final = [y_calc[0] / sum_y, y_calc[1] / sum_y];
     
-    if (Math.abs(f) < tolerance) {
-      return { comp1_feed: x1_feed, comp1_equilibrium: y[0], T_K: T, P_Pa: P_system_Pa, iterations: i + 1, calculationType: 'bubbleT' };
-    }
-
-    // Newton's method step for Temperature
-    const T_step = Math.max(1e-3 * T, 0.1);
-    const T_p = T + T_step;
-    const phiL_p = calculateSrkFugacityCoefficients(components, x, T_p, P_system_Pa, srkInteractionParams, 'liquid');
-    const phiV_p = calculateSrkFugacityCoefficients(components, y, T_p, P_system_Pa, srkInteractionParams, 'vapor');
-    if (!phiL_p || !phiV_p) { T -= f*5; continue; }
-
-    const K_p = [phiL_p[0] / phiV_p[0], phiL_p[1] / phiV_p[1]];
-    const f_p = x[0] * K_p[0] + x[1] * K_p[1] - 1;
-    
-    const df_dT = (f_p - f) / T_step;
-
-    if (Math.abs(df_dT) < 1e-8) { T -= f*5; continue; }
-    
-    let dT = -f / df_dT;
-    if (Math.abs(dT) > 15) dT = 15 * Math.sign(dT);
-    
-    T += dT;
-
-    if (T < 100 || T > 1000) return null;
-  }
-  return null;
+    console.log(`%c[SRK Bubble T] FINAL RESULT: x1=${x1_feed}, y1=${y_final[0].toFixed(5)}, T=${T_bubble.toFixed(2)} K`, 'color: blue; font-weight: bold;');
+    return { comp1_feed: x1_feed, comp1_equilibrium: y_final[0], T_K: T_bubble, P_Pa: P_system_Pa };
 }
 
 export function calculateBubblePressureSrk(
@@ -930,53 +1066,84 @@ export function calculateBubblePressureSrk(
   return null;
 }
 
+/**
+ * Calculates the dew point temperature for a binary mixture using the SRK EOS.
+ * This function has been rewritten for improved stability and accuracy.
+ */
 export function calculateDewTemperatureSrk(
   components: CompoundData[],
   y1_feed: number,
   P_system_Pa: number,
   srkInteractionParams: SrkInteractionParams,
-  initialTempGuess_K: number = 350,
-  maxIter: number = 50,
-  tolerance: number = 1e-5
+  _initialTempGuess_K: number = 350,
+  maxIter: number = 100,
+  tolerance: number = 1e-6
 ): BubbleDewResult | null {
-  let T = initialTempGuess_K;
-  const y = [y1_feed, 1 - y1_feed];
-  let x = [...y];
-  let K = [1.0, 1.0];
+    const y = [y1_feed, 1 - y1_feed];
+    const T_bp1 = calculateSaturationTemperaturePureSrk(components[0], P_system_Pa);
+    const T_bp2 = calculateSaturationTemperaturePureSrk(components[1], P_system_Pa);
 
-  for (let i = 0; i < maxIter; i++) {
-    const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
-    if (!phiV) { T *= 1.02; continue; }
+    if (T_bp1 === null || T_bp2 === null) {
+      return { error: "Failed to find pure component boiling points for bracketing.", comp1_feed: y1_feed, comp1_equilibrium: NaN };
+    }
 
-    for (let j = 0; j < 10; j++) {
-        const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
-        if (!phiL) { x = [...y]; continue; }
-        
-        K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
-        
-        const x_new = [y[0] / K[0], y[1] / K[1]];
-        const sum_x_new = x_new[0] + x_new[1];
-        if(sum_x_new === 0) return null;
-        x_new[0] /= sum_x_new;
-        x_new[1] /= sum_x_new;
+    const T_low = Math.min(T_bp1, T_bp2) - 20;
+    const T_high = Math.max(T_bp1, T_bp2) + 20;
 
-        if (Math.abs(x_new[0] - x[0]) < 1e-7) {
-            x = x_new; break;
+    const objective = (T: number): number => {
+        const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
+        if (!phiV) return NaN;
+
+        // Stable inner loop to find liquid composition 'x'
+        let x = [...y]; // Initial guess
+        for (let i = 0; i < 20; i++) {
+            const x_old = [...x];
+            const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
+            if (!phiL) return NaN;
+            const K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
+            if (K.some(k => k <= 0 || isNaN(k))) return NaN;
+            
+            const x_new_unnorm = [y[0] / K[0], y[1] / K[1]];
+            const sumX = x_new_unnorm[0] + x_new_unnorm[1];
+            if (sumX === 0 || !isFinite(sumX)) return NaN;
+
+            // Damped update
+            x[0] = 0.7 * x[0] + 0.3 * (x_new_unnorm[0] / sumX);
+            x[1] = 1.0 - x[0];
+
+            if (Math.abs(x[0] - x_old[0]) < 1e-9) break;
         }
-        x = x_new;
-    }
 
-    const f = y[0] / K[0] + y[1] / K[1] - 1;
+        const phiL_converged = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
+        if (!phiL_converged) return NaN;
+        const K_converged = [phiL_converged[0] / phiV[0], phiL_converged[1] / phiV[1]];
+        if (K_converged.some(k => k <= 0 || isNaN(k))) return NaN;
+        return y[0] / K_converged[0] + y[1] / K_converged[1] - 1.0;
+    };
 
-    if (Math.abs(f) < tolerance) {
-      return { comp1_feed: y1_feed, comp1_equilibrium: x[0], T_K: T, P_Pa: P_system_Pa, iterations: i + 1, calculationType: 'dewT' };
+    const T_dew = _brentRoot(objective, T_low, T_high, tolerance, maxIter);
+    if (T_dew === null) return null;
+
+    // Final pass to calculate equilibrium composition accurately
+    let x_final = [...y];
+    const phiV_final = calculateSrkFugacityCoefficients(components, y, T_dew, P_system_Pa, srkInteractionParams, 'vapor');
+    if (!phiV_final) return null;
+    for (let i = 0; i < 20; i++) {
+        const phiL_final = calculateSrkFugacityCoefficients(components, x_final, T_dew, P_system_Pa, srkInteractionParams, 'liquid');
+        if (!phiL_final) break;
+        const K = [phiL_final[0] / phiV_final[0], phiL_final[1] / phiV_final[1]];
+        if (K.some(k => k <= 0 || isNaN(k))) break;
+        const x_new_unnorm = [y[0] / K[0], y[1] / K[1]];
+        const sumX = x_new_unnorm[0] + x_new_unnorm[1];
+        if (sumX === 0 || !isFinite(sumX)) break;
+        const x_new = [x_new_unnorm[0] / sumX, x_new_unnorm[1] / sumX];
+        if (Math.abs(x_final[0] - x_new[0]) < 1e-9) {
+            x_final = x_new;
+            break;
+        }
+        x_final = x_new;
     }
-    
-    // Simplified Wegstein-like step for stability
-    T += f * 5; 
-    if (T < 100 || T > 1000) return null;
-  }
-  return null;
+    return { comp1_feed: y1_feed, comp1_equilibrium: x_final[0], T_K: T_dew, P_Pa: P_system_Pa };
 }
 
 export function calculateDewPressureSrk(
@@ -1445,20 +1612,35 @@ async function estimateUniquacFromUnifac(
  *
  * Returns `null` if the calculation fails (e.g. outside two-phase region).
  */
+/**
+ * Estimate the saturation (boiling) temperature of a pure component at a
+ * specified pressure using the Peng–Robinson equation of state.
+ *
+ * THIS IS THE CORRECTED, MORE ROBUST VERSION.
+ */
 export function calculateSaturationTemperaturePurePr(
   component: CompoundData,
   P_Pa: number,
-  tol: number = 1e-5,
-  maxIter: number = 100
+  maxIter: number = 20,
+  tolerance: number = 1e-5
 ): number | null {
-  if (!component?.prParams) return null;
+  if (!component?.prParams || !component.antoine) return null;
   const { Tc_K, Pc_Pa, omega } = component.prParams;
-  if (P_Pa >= Pc_Pa) return null;
+
+  if (P_Pa >= Pc_Pa * 0.99) { // Avoid calculations too close to critical point
+      return antoineBoilingPointSolverLocal(component.antoine, P_Pa);
+  }
+
+  // Use Antoine equation for a very good initial guess
+  let T = antoineBoilingPointSolverLocal(component.antoine, P_Pa);
+  if (T === null) T = 0.7 * Tc_K; // Fallback guess if Antoine fails
 
   const R = R_gas_const_J_molK;
 
-  const obj = (T: number): number => {
+  for (let i = 0; i < maxIter; i++) {
     const Tr = T / Tc_K;
+    if (T <= 0 || Tr >= 1) break;
+
     const kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
     const alpha = Math.pow(1 + kappa * (1 - Math.sqrt(Tr)), 2);
     const a = 0.45723553 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha;
@@ -1468,60 +1650,78 @@ export function calculateSaturationTemperaturePurePr(
     const B = b * P_Pa / (R * T);
 
     const roots = solveCubicEOS(1, -(1 - B), A - 3 * B * B - 2 * B, -(A * B - B * B - B * B * B));
-    if (!roots || roots.length < 2) return NaN;
+    if (!roots || roots.length < 2) {
+        T += 1.0; // Nudge temperature up if we lose two-phase region
+        continue;
+    }
     const Z_L = Math.min(...roots);
     const Z_V = Math.max(...roots);
 
     const sqrt2 = Math.SQRT2;
-    const lnPhi = (Z: number): number => {
-      const term1 = Z - 1 - Math.log(Z - B);
-      const term2 = (A / (2 * sqrt2 * B)) * Math.log((Z + (1 + sqrt2) * B) / (Z + (1 - sqrt2) * B));
-      return term1 - term2;
-    };
-    return lnPhi(Z_L) - lnPhi(Z_V);
-  };
+    const lnPhi = (Z: number): number => (Z - 1 - Math.log(Z - B) - (A / (2 * sqrt2 * B)) * Math.log((Z + (1 + sqrt2) * B) / (Z + (1 - sqrt2) * B)));
+    
+    const f_T = lnPhi(Z_L) - lnPhi(Z_V); // Objective function
 
-  // Coarse scan then Brent root within the first sign-change bracket
-  const Tmin = 0.3 * Tc_K;
-  const Tmax = 0.999 * Tc_K;
-  const Nscan = 200;
-  let Tprev = Tmin;
-  let fprev = obj(Tprev);
-  for (let i = 1; i <= Nscan; i++) {
-    const Tcurr = Tmin + (i / Nscan) * (Tmax - Tmin);
-    const fcurr = obj(Tcurr);
-    if (!isFinite(fprev)) { Tprev = Tcurr; fprev = fcurr; continue; }
-    if (!isFinite(fcurr)) { continue; }
-    if (fprev * fcurr < 0) {
-      const root = _brentRoot(obj, Tprev, Tcurr, Number.EPSILON * Tc_K, maxIter);
-      if (root !== null) return root;
-      break; // if Brent failed continue scan? break to return null
+    if (Math.abs(f_T) < tolerance) {
+        return T; // Converged
     }
-    Tprev = Tcurr;
-    fprev = fcurr;
+
+    // Estimate derivative and update T via Newton-Raphson step
+    const dT = 0.001 * T;
+    const T_plus_dT = T + dT;
+    const Tr_plus_dT = T_plus_dT / Tc_K;
+    const alpha_plus_dT = Math.pow(1 + kappa * (1 - Math.sqrt(Tr_plus_dT)), 2);
+    const a_plus_dT = 0.45723553 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha_plus_dT;
+    const A_plus_dT = a_plus_dT * P_Pa / Math.pow(R * T_plus_dT, 2);
+    const B_plus_dT = b * P_Pa / (R * T_plus_dT);
+    const roots_plus_dT = solveCubicEOS(1, -(1 - B_plus_dT), A_plus_dT - 3 * B_plus_dT * B_plus_dT - 2 * B_plus_dT, -(A_plus_dT * B_plus_dT - B_plus_dT * B_plus_dT - B_plus_dT * B_plus_dT * B_plus_dT));
+
+    if (!roots_plus_dT || roots_plus_dT.length < 2) {
+      T -= f_T * 5; // Fallback update if derivative calculation fails
+      continue;
+    }
+    const Z_L_plus_dT = Math.min(...roots_plus_dT);
+    const Z_V_plus_dT = Math.max(...roots_plus_dT);
+    const f_T_plus_dT = lnPhi(Z_L_plus_dT) - lnPhi(Z_V_plus_dT);
+    
+    const df_dT = (f_T_plus_dT - f_T) / dT;
+    if (Math.abs(df_dT) < 1e-9) break; // Avoid division by zero
+    
+    T -= f_T / df_dT; // Newton's step
   }
-  return null;
+
+  // If EOS solver fails, return Antoine result as a reliable fallback
+  return antoineBoilingPointSolverLocal(component.antoine, P_Pa);
 }
 
 /**
  * Estimate saturation temperature using the Soave–Redlich–Kwong EOS.
+ *
+ * THIS IS THE CORRECTED, MORE ROBUST VERSION.
  */
 export function calculateSaturationTemperaturePureSrk(
   component: CompoundData,
   P_Pa: number,
-  tol: number = 1e-5,
-  maxIter: number = 60
+  maxIter: number = 20,
+  tolerance: number = 1e-5
 ): number | null {
-  if (!component?.srkParams) return null;
+  if (!component?.srkParams || !component.antoine) return null;
   const { Tc_K, Pc_Pa, omega } = component.srkParams;
-  if (P_Pa >= Pc_Pa) return null;
 
-  let T_low = 0.4 * Tc_K;
-  let T_high = 0.99 * Tc_K;
+  if (P_Pa >= Pc_Pa * 0.99) {
+      return antoineBoilingPointSolverLocal(component.antoine, P_Pa);
+  }
+
+  // Use Antoine equation for a very good initial guess
+  let T = antoineBoilingPointSolverLocal(component.antoine, P_Pa);
+  if (T === null) T = 0.7 * Tc_K;
+
   const R = R_gas_const_J_molK;
 
-  const objective = (T: number): number => {
+  for (let i = 0; i < maxIter; i++) {
     const Tr = T / Tc_K;
+    if (T <= 0 || Tr >= 1) break;
+
     const m = 0.480 + 1.574 * omega - 0.176 * omega * omega;
     const alpha = Math.pow(1 + m * (1 - Math.sqrt(Tr)), 2);
     const a = 0.42748 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha;
@@ -1530,42 +1730,45 @@ export function calculateSaturationTemperaturePureSrk(
     const A = a * P_Pa / Math.pow(R * T, 2);
     const B = b * P_Pa / (R * T);
 
-    // SRK cubic: Z³ - Z² + (A - B - B²)Z - A B = 0
     const roots = solveCubicEOS(1, -1, A - B - B * B, -A * B);
-    if (!roots || roots.length < 2) return Number.NaN;
+    if (!roots || roots.length < 2) {
+      T += 1.0;
+      continue;
+    }
     const Z_L = Math.min(...roots);
     const Z_V = Math.max(...roots);
 
-    const lnPhi = (Z: number): number => {
-      return (Z - 1) - Math.log(Z - B) - (A / B) * Math.log(1 + B / Z);
-    };
-    return lnPhi(Z_L) - lnPhi(Z_V);
-  };
+    const lnPhi = (Z: number): number => (Z - 1) - Math.log(Z - B) - (A / B) * Math.log(1 + B / Z);
+    const f_T = lnPhi(Z_L) - lnPhi(Z_V);
 
-  let f_low = objective(T_low);
-  let f_high = objective(T_high);
-  for (let expand = 0; expand < 10 && f_low * f_high > 0; expand++) {
-    T_low *= 0.9;
-    T_high = 0.5 * (T_high + Tc_K);
-    f_low = objective(T_low);
-    f_high = objective(T_high);
-  }
-  if (f_low * f_high > 0 || !isFinite(f_low) || !isFinite(f_high)) return null;
-
-  for (let iter = 0; iter < maxIter; iter++) {
-    const T_mid = 0.5 * (T_low + T_high);
-    const f_mid = objective(T_mid);
-    if (!isFinite(f_mid)) return null;
-    if (Math.abs(f_mid) < tol) return T_mid;
-    if (f_low * f_mid < 0) {
-      T_high = T_mid;
-      f_high = f_mid;
-    } else {
-      T_low = T_mid;
-      f_low = f_mid;
+    if (Math.abs(f_T) < tolerance) {
+      return T;
     }
+
+    const dT = 0.001 * T;
+    const T_plus_dT = T + dT;
+    const Tr_plus_dT = T_plus_dT / Tc_K;
+    const alpha_plus_dT = Math.pow(1 + m * (1 - Math.sqrt(Tr_plus_dT)), 2);
+    const a_plus_dT = 0.42748 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha_plus_dT;
+    const A_plus_dT = a_plus_dT * P_Pa / Math.pow(R * T_plus_dT, 2);
+    const B_plus_dT = b * P_Pa / (R * T_plus_dT);
+    const roots_plus_dT = solveCubicEOS(1, -1, A_plus_dT - B_plus_dT - B_plus_dT * B_plus_dT, -A_plus_dT * B_plus_dT);
+
+    if (!roots_plus_dT || roots_plus_dT.length < 2) {
+        T -= f_T * 5;
+        continue;
+    }
+    const Z_L_plus_dT = Math.min(...roots_plus_dT);
+    const Z_V_plus_dT = Math.max(...roots_plus_dT);
+    const f_T_plus_dT = lnPhi(Z_L_plus_dT) - lnPhi(Z_V_plus_dT);
+    const df_dT = (f_T_plus_dT - f_T) / dT;
+    
+    if (Math.abs(df_dT) < 1e-9) break;
+
+    T -= f_T / df_dT;
   }
-  return null;
+  
+  return antoineBoilingPointSolverLocal(component.antoine, P_Pa);
 }
 
 // --------------------------------------------------------------
@@ -1598,7 +1801,10 @@ function _brentRoot(
 
     const tol = 2 * Number.EPSILON * Math.abs(b) + tolAbs;
     const m = 0.5 * (c - b);
-    if (Math.abs(m) <= tol || fb === 0) return b;
+    // Fixed: Check BOTH function value AND step size
+    if (Math.abs(fb) < tolAbs || Math.abs(m) <= tol) {
+      return b;
+    }
 
     if (Math.abs(e) >= tol && Math.abs(fa) > Math.abs(fb)) {
       // Attempt inverse quadratic / secant step
