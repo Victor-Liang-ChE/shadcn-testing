@@ -2028,9 +2028,17 @@ export default function CompoundPropertiesPage() {
                       type="number"
                       value={manualTempInput}
                       onChange={(e) => {
-                        setManualTempInput(e.target.value);
-                        if (e.target.value === '') {
-                          setManualTempPointsData([]); // Clear points if input is cleared
+                        const raw = e.target.value;
+                        const num = parseFloat(raw);
+                        const CLAMP_MAX = 2000;
+                        if (raw === '' || isNaN(num)) {
+                          setManualTempInput(raw);
+                        } else {
+                          const clamped = Math.min(Math.abs(num), CLAMP_MAX) * Math.sign(num);
+                          setManualTempInput(String(clamped));
+                        }
+                        if (raw === '') {
+                          setManualTempPointsData([]);
                         }
                       }}
                       onKeyDown={handleManualTempInputKeyDown}

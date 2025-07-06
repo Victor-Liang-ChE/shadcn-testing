@@ -1288,8 +1288,22 @@ export default function McCabeThielePage() {
                         type="text"
                         value={useTemperature ? tempMax : pressureMax}
                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                          if (useTemperature) setTempMax(e.target.value);
-                          else setPressureMax(e.target.value);
+                          const raw = e.target.value;
+                          const num = parseFloat(raw);
+                          const CLAMP_MAX = 2000;
+                          if (useTemperature) {
+                            if (raw === "" || isNaN(num)) {
+                              setTempMax(raw);
+                            } else {
+                              setTempMax(String(Math.min(num, CLAMP_MAX)));
+                            }
+                          } else {
+                            if (raw === "" || isNaN(num)) {
+                              setPressureMax(raw);
+                            } else {
+                              setPressureMax(String(Math.min(num, CLAMP_MAX)));
+                            }
+                          }
                         }}
                         className="w-16 h-8 text-xs"
                       />

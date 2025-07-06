@@ -1000,7 +1000,16 @@ export default function ReactorDesignPage() {
                         id="maxTempInput"
                         type="number"
                         value={maxTemperatureSlider}
-                        onChange={(e) => setMaxTemperatureSlider(e.target.value)}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          const num = parseFloat(raw);
+                          const CLAMP_MAX = 2000; // Clamp in Kelvin (approx 1727°C)
+                          if (raw === "" || isNaN(num)) {
+                            setMaxTemperatureSlider(raw);
+                          } else {
+                            setMaxTemperatureSlider(String(Math.min(num, CLAMP_MAX)));
+                          }
+                        }}
                         className="w-20 h-8 text-xs"
                         min="250"
                       />
@@ -1023,7 +1032,10 @@ export default function ReactorDesignPage() {
                         max={parseFloat(maxPressureSlider)}
                         step={0.1}
                         value={[parseFloat(totalPressure)]}
-                        onValueChange={(value) => setTotalPressure(value[0].toString())}
+                        onValueChange={(value) => {
+                          const clamped = Math.min(value[0], 2000);
+                          setTotalPressure(clamped.toString());
+                        }}
                         className="flex-1"
                       />
                       <div className="flex items-center gap-1">
@@ -1032,7 +1044,16 @@ export default function ReactorDesignPage() {
                           id="maxPressureInput"
                           type="number"
                           value={maxPressureSlider}
-                          onChange={(e) => setMaxPressureSlider(e.target.value)}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const num = parseFloat(raw);
+                            const CLAMP_MAX = 2000;
+                            if (raw === "" || isNaN(num)) {
+                              setMaxPressureSlider(raw);
+                            } else {
+                              setMaxPressureSlider(String(Math.min(num, CLAMP_MAX)));
+                            }
+                          }}
                           className="w-20 h-8 text-xs"
                           min="0.1"
                         />

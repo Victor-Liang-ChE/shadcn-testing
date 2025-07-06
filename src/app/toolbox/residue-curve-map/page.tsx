@@ -2153,7 +2153,16 @@ export default function TernaryResidueMapPage() {
                                             id="systemPressure"
                                             type="number"
                                             value={systemPressure}
-                                            onChange={e => setSystemPressure(e.target.value)}
+                                            onChange={e => {
+                                                const raw = e.target.value;
+                                                const num = parseFloat(raw);
+                                                const CLAMP_MAX = 2000;
+                                                if (raw === "" || isNaN(num)) {
+                                                    setSystemPressure(raw);
+                                                } else {
+                                                    setSystemPressure(String(Math.min(num, CLAMP_MAX)));
+                                                }
+                                            }}
                                             onKeyDown={e => {
                                                 if (e.key === 'Enter') {
                                                     e.preventDefault();

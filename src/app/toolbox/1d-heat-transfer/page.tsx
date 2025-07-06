@@ -175,7 +175,7 @@ export default function HeatTransferPage() {
 
   // Temperature slider bounds
   const [tempMin, setTempMin] = useState<string>('0');
-  const [tempMax, setTempMax] = useState<string>('200');
+  const [tempMax, setTempMax] = useState<string>('200'); // will be clamped to 2000
 
   const [hotTemp, setHotTemp] = useState<number | string>(100);
   const [coldTemp, setColdTemp] = useState<number | string>(0);
@@ -297,9 +297,11 @@ export default function HeatTransferPage() {
       setter("");
     } else {
       const numValue = Number(value);
-      // Clamp temperature inputs to absolute zero
+      const CLAMP_MAX_TEMP = 2000; // °C
+      // Clamp temperature inputs between absolute zero and 2000 °C
       if (setter === setHotTemp || setter === setColdTemp) {
-        setter(Math.max(numValue, -273.15));
+        const clamped = Math.min(Math.max(numValue, -273.15), CLAMP_MAX_TEMP);
+        setter(clamped);
       } else {
         setter(numValue);
       }
@@ -462,7 +464,21 @@ export default function HeatTransferPage() {
                     <Label className="text-xs text-muted-foreground">Min:</Label>
                     <Input type="text" value={tempMin} onChange={(e)=>setTempMin(e.target.value)} className="w-16 h-8 text-xs" />
                     <Label className="text-xs text-muted-foreground">Max:</Label>
-                    <Input type="text" value={tempMax} onChange={(e)=>setTempMax(e.target.value)} className="w-16 h-8 text-xs" />
+                    <Input
+                      type="text"
+                      value={tempMax}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const num = parseFloat(raw);
+                        const CLAMP_MAX = 2000;
+                        if (raw === "" || isNaN(num)) {
+                          setTempMax(raw);
+                        } else {
+                          setTempMax(String(Math.min(num, CLAMP_MAX)));
+                        }
+                      }}
+                      className="w-16 h-8 text-xs"
+                    />
                   </div>
                 </div>
                 <Slider
@@ -485,9 +501,37 @@ export default function HeatTransferPage() {
                      <Label htmlFor="rightTempSlider">Cold Temp (°C): {Number(coldTemp).toFixed(2)}</Label>
                      <div className="flex items-center gap-1">
                        <Label className="text-xs text-muted-foreground">Min:</Label>
-                       <Input type="text" value={tempMin} onChange={(e)=>setTempMin(e.target.value)} className="w-16 h-8 text-xs" />
+                       <Input
+                         type="text"
+                         value={tempMin}
+                         onChange={(e) => {
+                           const raw = e.target.value;
+                           const num = parseFloat(raw);
+                           const CLAMP_MAX = 2000;
+                           if (raw === "" || isNaN(num)) {
+                             setTempMin(raw);
+                           } else {
+                             setTempMin(String(Math.min(num, CLAMP_MAX)));
+                           }
+                         }}
+                         className="w-16 h-8 text-xs"
+                       />
                        <Label className="text-xs text-muted-foreground">Max:</Label>
-                       <Input type="text" value={tempMax} onChange={(e)=>setTempMax(e.target.value)} className="w-16 h-8 text-xs" />
+                       <Input
+                         type="text"
+                         value={tempMax}
+                         onChange={(e) => {
+                           const raw = e.target.value;
+                           const num = parseFloat(raw);
+                           const CLAMP_MAX = 2000;
+                           if (raw === "" || isNaN(num)) {
+                             setTempMax(raw);
+                           } else {
+                             setTempMax(String(Math.min(num, CLAMP_MAX)));
+                           }
+                         }}
+                         className="w-16 h-8 text-xs"
+                       />
                      </div>
                    </div>
                    <Slider

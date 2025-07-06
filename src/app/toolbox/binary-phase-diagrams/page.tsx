@@ -636,7 +636,21 @@ export default function VleDiagramPage() {
                             <Label htmlFor="pressure-slider">Pressure (bar): {formatNumberToPrecision(pressureBar ?? 0)}</Label>
                             <div className="flex items-center gap-1">
                                 <Label className="text-xs text-muted-foreground">Max:</Label>
-                                <Input type="text" value={pressureMax} onChange={(e) => setPressureMax(e.target.value)} className="w-16 h-8 text-xs"/>
+                                <Input
+                                    type="text"
+                                    value={pressureMax}
+                                    onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const num = parseFloat(raw);
+                                        const CLAMP_MAX = 2000;
+                                        if (raw === "" || isNaN(num)) {
+                                            setPressureMax(raw);
+                                        } else {
+                                            setPressureMax(String(Math.min(num, CLAMP_MAX)));
+                                        }
+                                    }}
+                                    className="w-16 h-8 text-xs"
+                                />
                             </div>
                         </div>
                         <Slider id="pressure-slider" min={0.1} max={parseFloat(pressureMax) || 10} step={computeStep(parseFloat(pressureMax) || 10)} value={[pressureBar || 1]} onValueChange={([v]) => setPressureBar(v)} className="w-full"/>
@@ -649,7 +663,21 @@ export default function VleDiagramPage() {
                             <Label htmlFor="temperature-slider">Temperature (°C): {formatNumberToPrecision(temperatureC ?? 0)}</Label>
                             <div className="flex items-center gap-1">
                                 <Label className="text-xs text-muted-foreground">Max:</Label>
-                                <Input type="text" value={tempMax} onChange={(e) => setTempMax(e.target.value)} className="w-16 h-8 text-xs"/>
+                                <Input
+                                    type="text"
+                                    value={tempMax}
+                                    onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const num = parseFloat(raw);
+                                        const CLAMP_MAX = 2000;
+                                        if (raw === "" || isNaN(num)) {
+                                            setTempMax(raw);
+                                        } else {
+                                            setTempMax(String(Math.min(num, CLAMP_MAX)));
+                                        }
+                                    }}
+                                    className="w-16 h-8 text-xs"
+                                />
                             </div>
                         </div>
                         <Slider id="temperature-slider" min={-50} max={parseFloat(tempMax) || 200} step={computeStep(parseFloat(tempMax) || 200)} value={[temperatureC || 60]} onValueChange={([v]) => setTemperatureC(v)} className="w-full"/>
@@ -674,7 +702,23 @@ export default function VleDiagramPage() {
                             </div>
                             <div className="flex items-center gap-1">
                                 <Label className="text-xs text-muted-foreground">Max:</Label>
-                                <Input type="text" value={useTemperatureForXY ? tempMax : pressureMax} onChange={e => useTemperatureForXY ? setTempMax(e.target.value) : setPressureMax(e.target.value)} className="w-16 h-8 text-xs"/>
+                                <Input
+                                    type="text"
+                                    value={useTemperatureForXY ? tempMax : pressureMax}
+                                    onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const num = parseFloat(raw);
+                                        const CLAMP_MAX = 2000;
+                                        if (useTemperatureForXY) {
+                                            if (raw === "" || isNaN(num)) setTempMax(raw);
+                                            else setTempMax(String(Math.min(num, CLAMP_MAX)));
+                                        } else {
+                                            if (raw === "" || isNaN(num)) setPressureMax(raw);
+                                            else setPressureMax(String(Math.min(num, CLAMP_MAX)));
+                                        }
+                                    }}
+                                    className="w-16 h-8 text-xs"
+                                />
                             </div>
                         </div>
                         <Slider
