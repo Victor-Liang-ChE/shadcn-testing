@@ -126,20 +126,20 @@ export default function Home() {
       thumbnailLightPath: binaryPhaseThumbnailLightPath
     },
     {
-      name: "Azeotrope Finder",
-      path: "/toolbox/azeotrope-finder",
-      description:
-        "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
-      thumbnailPath: azeotropeThumbnailPath,
-      thumbnailLightPath: azeotropeThumbnailLightPath
-    },
-    {
       name: "Compound Properties",
       path: "/toolbox/compound-properties",
       description:
         "Fetch, plot, and compare various physical and thermodynamic properties of chemical compounds.",
       thumbnailPath: compoundPropertiesThumbnailPath,
       thumbnailLightPath: compoundPropertiesThumbnailLightPath
+    },
+    {
+      name: "Azeotrope Finder",
+      path: "/toolbox/azeotrope-finder",
+      description:
+        "Predict and visualize azeotropic behavior of binary mixtures using various thermodynamic models.",
+      thumbnailPath: azeotropeThumbnailPath,
+      thumbnailLightPath: azeotropeThumbnailLightPath
     },
     {
       name: "Isotherms",
