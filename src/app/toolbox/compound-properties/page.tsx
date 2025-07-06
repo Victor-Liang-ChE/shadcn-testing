@@ -318,6 +318,9 @@ export default function CompoundPropertiesPage() {
 
   // State to control when auto-updates should happen
   const [shouldAutoUpdate, setShouldAutoUpdate] = useState(true);
+  
+  // State to track if user explicitly clicked fetch button (to show empty compound errors)
+  const [userClickedFetch, setUserClickedFetch] = useState(false);
 
   // useEffect for initial data fetching (e.g., for 'Water')
   useEffect(() => {
@@ -459,7 +462,20 @@ export default function CompoundPropertiesPage() {
     setOverallError(null);
     if (!propertyKey) {
       setEchartsOptions({});
-      setOverallError(plotMode === 'tempDependent' ? "Please select a temperature-dependent property to plot." : "Please select a constant property to plot.");
+      
+      // Count compounds with data
+      const compoundsWithData = allCompoundsData.filter(c => c.data && c.name.trim());
+      
+      if (compoundsWithData.length === 0) {
+        // No compounds with data
+        setOverallError(plotMode === 'tempDependent' ? "Please select a temperature-dependent property to plot." : "Please select a constant property to plot.");
+      } else if (compoundsWithData.length === 1) {
+        // Only one compound
+        setOverallError(plotMode === 'tempDependent' ? "No temperature-dependent properties available to display for this compound." : "No constant properties available to display for this compound.");
+      } else {
+        // Multiple compounds but no common properties
+        setOverallError(plotMode === 'tempDependent' ? "No common temperature-dependent properties found between the selected compounds." : "No common constant properties found between the selected compounds.");
+      }
       return;
     }
 
@@ -892,15 +908,15 @@ export default function CompoundPropertiesPage() {
           nameLocation: 'middle' as const,
           nameGap: calculatedNameGap, 
           position: 'left' as const,
-          axisLine: { show: true, lineStyle: { color: propDef.color, width: 2 } },
+          axisLine: { show: true, lineStyle: { color: 'white', width: 2 } },
           axisLabel: { 
             formatter: yAxisTickFormatter, 
-            color: textColor, 
+            color: 'white', 
             fontSize: 16, 
             fontFamily: 'Merriweather Sans',
             margin: dynamicAxisLabelMargin, 
           },
-          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, 
+          nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' }, 
           splitLine: { show: false },
           scale: true, // Y-axis always auto-scales
           min: undefined, 
@@ -1027,7 +1043,7 @@ export default function CompoundPropertiesPage() {
           },
           legend: {
             data: finalSeriesToPlot.map(s => s.name as string), // Use filtered series for legend data
-            bottom: 5, // Reduced gap to x-axis
+            bottom: 40, // Closer to x-axis
             textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 11 },
             inactiveColor: '#4b5563',
             type: 'scroll',
@@ -1057,16 +1073,7 @@ export default function CompoundPropertiesPage() {
           yAxis: yAxisConfig,
           series: finalSeriesToPlot as any, // Use type assertion here
           toolbox: {
-            show: true, 
-            orient: 'horizontal', 
-            right: 20,            
-            bottom: 20,           
-            top: 'auto',          
-            left: 'auto',         
-            feature: { 
-              saveAsImage: { show: true, title: 'Save as Image', backgroundColor: isDark ? '#0f172a' : '#ffffff' },
-            },
-            iconStyle: { borderColor: textColor }
+            show: false,
           },
         });
 
@@ -1150,7 +1157,7 @@ export default function CompoundPropertiesPage() {
         
         const yAxisDisplayName = constDef.displayName;
 
-        const originalBaseTotalGapConst = 100; 
+        const originalBaseTotalGapConst = (constDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75);
         const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGapConst);
         console.log('[DebugYAxis] Constants Plot - Applied:', { yAxisDisplayName, displayUnit, dataMinY, dataMaxY, originalBaseTotalGapConst, dynamicAxisLabelMargin, calculatedNameGap });
 
@@ -1159,16 +1166,16 @@ export default function CompoundPropertiesPage() {
             name: displayUnit === '-' ? yAxisDisplayName : `${yAxisDisplayName} (${displayUnit})`,
             nameLocation: 'middle' as const,
             nameGap: calculatedNameGap, 
-            axisLine: { show: true, lineStyle: { color: constDef.color || '#EE6666', width: 2 } },
-            axisTick: { show: true, lineStyle: { color: textColor } }, // Added Y-axis tick marks
+            axisLine: { show: true, lineStyle: { color: 'white', width: 2 } },
+            axisTick: { show: true, lineStyle: { color: 'white' } }, // Added Y-axis tick marks
             axisLabel: { 
               formatter: (val: number) => formatNumberToPrecision(val, 4), 
-              color: textColor, 
+              color: 'white', 
               fontSize: 16, 
               fontFamily: 'Merriweather Sans',
               margin: dynamicAxisLabelMargin, 
             },
-            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' },
             splitLine: { show: false },
             scale: true, // Reverted: Ensure auto-scaling
             min: undefined, // Reverted: Let ECharts determine min
@@ -1192,7 +1199,7 @@ export default function CompoundPropertiesPage() {
                 textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
             },
             legend: { show: false }, 
-            grid: { left: '17%', right: '4%', bottom: '3%', containLabel: true }, 
+            grid: { left: '5%', right: '5%', bottom: '12%', top: '10%', containLabel: true }, 
             xAxis: {
                 type: 'category',
                 data: compoundNames,
@@ -1216,22 +1223,13 @@ export default function CompoundPropertiesPage() {
                 }
             }] as any, // Use type assertion here for consistency
             toolbox: { 
-              show: true, 
-              orient: 'horizontal', 
-              right: 20,            
-              bottom: 20,           
-              top: 'auto',          
-              left: 'auto',         
-              feature: { 
-                saveAsImage: { show: true, title: 'Save as Image', backgroundColor: isDark ? '#0f172a' : '#ffffff' }, 
-              }, 
-              iconStyle: { borderColor: textColor } 
+              show: false,
             },
         });
     }
   }, [plotMode, resolvedTheme]);
 
-  const handleFetchAndPlot = useCallback(async () => {
+  const handleFetchAndPlot = useCallback(async (isUserInitiated = false) => {
     setLoading(true);
     setOverallError(null);
     setManualTempInput(''); // Clear manual input
@@ -1241,7 +1239,7 @@ export default function CompoundPropertiesPage() {
     console.log("handleFetchAndPlot: Starting fetch and plot process.");
     const fetchedCompoundStates = await Promise.all(compounds.map(async (compound) => {
         if (!compound.name.trim()) {
-            return { ...compound, data: null, error: compound.error || "Compound name is empty." };
+            return { ...compound, data: null, error: (isUserInitiated ? "Compound name is empty." : null) };
         }
         try {
             const data = await fetchCompoundPropertiesLocal(compound.name);
@@ -1369,6 +1367,12 @@ export default function CompoundPropertiesPage() {
     setLoading(false);
   }, [compounds, selectedPropertyKey, selectedUnit, fetchCompoundPropertiesLocal, plotMode, selectedConstantKey, selectedConstantUnit]);
 
+  // Separate handler for button click
+  const handleFetchButtonClick = () => {
+    setUserClickedFetch(true);
+    handleFetchAndPlot(true);
+  };
+
   const handleExportCSV = useCallback(() => {
     if (!echartsOptions || !echartsOptions.series || (echartsOptions.series as AppLineSeriesOption[]).length === 0) { // Use AppLineSeriesOption here
       console.warn("No data to export.");
@@ -1486,7 +1490,7 @@ export default function CompoundPropertiesPage() {
   }, [supabase]); 
 
   const handleCompoundNameChange = (id: string, value: string) => {
-    setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, data: null, error: null } : c)); 
+    setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, error: null } : c)); 
     // Disable auto-updates when user is typing compound names
     setShouldAutoUpdate(false);
     if (value.trim() === "") { 
@@ -1500,7 +1504,7 @@ export default function CompoundPropertiesPage() {
     setCompounds(prev => prev.map(c => {
       if (c.id === compoundId) {
         c.inputRef.current?.focus();
-        return { ...c, name: suggestion, suggestions: [], showSuggestions: false, data: null, error: null };
+        return { ...c, name: suggestion, suggestions: [], showSuggestions: false, error: null };
       }
       return c;
     }));
@@ -1516,10 +1520,9 @@ export default function CompoundPropertiesPage() {
   };
 
   const removeCompoundInput = (idToRemove: string) => {
+    // Remove the compound from state and re-enable auto-updates
     setCompounds(prev => prev.filter(c => c.id !== idToRemove));
-    const remainingCompounds = compounds.filter(c => c.id !== idToRemove);
-    if (!remainingCompounds.some(c => c.data)) {
-    }
+    setShouldAutoUpdate(true);
   };
 
 
@@ -1538,10 +1541,18 @@ export default function CompoundPropertiesPage() {
 
   useEffect(() => {
     if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading && shouldAutoUpdate) {
-      handleFetchAndPlot();
+      handleFetchAndPlot(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, compounds[0]?.name, compounds[0]?.data, shouldAutoUpdate]);
+
+  // useEffect to handle compound removal/addition - triggers when compounds array length changes
+  useEffect(() => {
+    if (shouldAutoUpdate && compounds.length > 0 && compounds.some(c => c.data)) {
+      handleFetchAndPlot(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compounds.length, shouldAutoUpdate]);
 
   useEffect(() => {
     if (plotMode === 'constants' || plotMode === 'tempDependent') {
@@ -1551,7 +1562,7 @@ export default function CompoundPropertiesPage() {
         setManualTempPointsData([]);
         // Enable auto-updates when plot mode changes
         setShouldAutoUpdate(true);
-        handleFetchAndPlot();
+        handleFetchAndPlot(false);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1582,7 +1593,7 @@ export default function CompoundPropertiesPage() {
         }
        } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
     }
-  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData, resolvedTheme, shouldAutoUpdate]); 
+  }, [compounds.filter(c => c.data).map(c => c.data?.name).join(','), selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData, resolvedTheme, shouldAutoUpdate]); 
 
   const canExportCSV = echartsOptions && 
                        echartsOptions.series && 
@@ -1594,7 +1605,7 @@ export default function CompoundPropertiesPage() {
       event.preventDefault();
       // Re-enable auto-updates when Enter is pressed
       setShouldAutoUpdate(true); 
-      handleFetchAndPlot();
+      handleFetchAndPlot(true);
     }
   };
 
@@ -2001,7 +2012,7 @@ export default function CompoundPropertiesPage() {
                 </div>
 
 
-                <Button onClick={handleFetchAndPlot} disabled={loading} className="w-full">
+                <Button onClick={handleFetchButtonClick} disabled={loading} className="w-full">
                   {loading ? 'Fetching...' : 'Fetch & Plot Properties'}
                 </Button>
                 {canExportCSV && !loading && (
@@ -2009,7 +2020,7 @@ export default function CompoundPropertiesPage() {
                         Export Data as CSV
                     </Button>
                 )}
-                {overallError && ! loading && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{overallError}</AlertDescription></Alert>}
+
               </CardContent>
             </Card>
 
@@ -2091,10 +2102,7 @@ export default function CompoundPropertiesPage() {
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Note: Property correlations are from database (ChemSep, DWSIM, etc.) and have specific temperature ranges and accuracies.
-                    <br/>Hover over legend items for the full equation.
-                </p>
+
               </CardContent>
             </Card>
           </div>
