@@ -1257,12 +1257,12 @@ export default function McCabeThielePage() {
                       }}>
                           <SelectTrigger id="fluidPackageMcCabe" className="flex-1"><SelectValue placeholder="Select fluid package" /></SelectTrigger>
                           <SelectContent>
-                              <SelectItem value="uniquac">UNIQUAC</SelectItem>
-                              <SelectItem value="pr">Peng-Robinson</SelectItem>
                               <SelectItem value="wilson">Wilson</SelectItem>
+                              <SelectItem value="uniquac">UNIQUAC</SelectItem>
                               <SelectItem value="nrtl">NRTL</SelectItem>
-                              <SelectItem value="srk">SRK</SelectItem>
                               <SelectItem value="unifac">UNIFAC</SelectItem>
+                              <SelectItem value="pr">Peng-Robinson</SelectItem>
+                              <SelectItem value="srk">SRK</SelectItem>
                           </SelectContent>
                       </Select>
                   </div>

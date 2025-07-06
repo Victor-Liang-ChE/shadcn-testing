@@ -812,7 +812,7 @@ export default function VleDiagramPage() {
                                         // The generateDiagram() call is removed from here.
                                         // The useEffect hook will handle the regeneration
                                         // when the fluidPackage state changes.
-                                    }}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="srk">SRK</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem></SelectContent></Select>
+                                    }}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="srk">SRK</SelectItem></SelectContent></Select>
                                 </div>
                             </div>
                             <Button onClick={() => generateDiagram()} disabled={loading} className="w-full">{loading ? 'Calculating...' : 'Generate Diagram'}</Button>

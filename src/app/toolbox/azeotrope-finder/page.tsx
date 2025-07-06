@@ -814,14 +814,14 @@ export default function AzeotropeFinderPage() {
                     setFluidPackage(value as FluidPackageTypeAzeotrope);
                   }}>
                     <SelectTrigger id="fluidPackageAzeo" className="flex-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="uniquac">UNIQUAC</SelectItem>
-                      <SelectItem value="pr">Peng-Robinson</SelectItem>
-                      <SelectItem value="wilson">Wilson</SelectItem>
-                      <SelectItem value="nrtl">NRTL</SelectItem>
-                      <SelectItem value="srk">SRK</SelectItem>
-                      <SelectItem value="unifac">UNIFAC</SelectItem>
-                    </SelectContent>
+                                              <SelectContent>
+                              <SelectItem value="wilson">Wilson</SelectItem>
+                              <SelectItem value="uniquac">UNIQUAC</SelectItem>
+                              <SelectItem value="nrtl">NRTL</SelectItem>
+                              <SelectItem value="unifac">UNIFAC</SelectItem>
+                              <SelectItem value="pr">Peng-Robinson</SelectItem>
+                              <SelectItem value="srk">SRK</SelectItem>
+                          </SelectContent>
                   </Select>
                 </div>
                 {/* Scan Type Select removed */}
