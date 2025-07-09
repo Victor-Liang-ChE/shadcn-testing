@@ -75,6 +75,7 @@ interface FetchedPhaseData {
     triplePointTemp: number | null;
     triplePointPressure: number | null;
     normalBoilingPoint: number | null;
+    normalMeltingPoint: number | null;
     molarWeight: number | null;
     heatOfFusion: number | null;
     heatOfVaporization: any | null;
@@ -100,7 +101,7 @@ export default function PhaseDiagramPage() {
   // NEW: State for temperature unit
   const [tempUnit, setTempUnit] = useState<'C' | 'K' | 'F'>('C');
   const [pressureUnit, setPressureUnit] = useState<'Pa' | 'kPa' | 'bar' | 'atm'>('bar');
-  const [logScaleY, setLogScaleY] = useState<boolean>(true);
+  const [logScaleY, setLogScaleY] = useState<boolean>(false);
 
   const getUnitFactor = useCallback((unit: typeof pressureUnit) => {
     switch (unit) {
@@ -154,6 +155,7 @@ export default function PhaseDiagramPage() {
             triplePointTemp: parseCoefficient(properties["Triple point temperature"]),
             triplePointPressure: parseCoefficient(properties["Triple point pressure"]),
             normalBoilingPoint: parseCoefficient(properties["Normal boiling point"]),
+            normalMeltingPoint: parseCoefficient(properties["Melting point"]),
             molarWeight: compoundDbData.molecular_weight,
             heatOfFusion: heatOfFusionKmol ? heatOfFusionKmol / 1000 : null,
             heatOfVaporization: properties["Heat of vaporization"],
@@ -369,17 +371,7 @@ export default function PhaseDiagramPage() {
             symbolSize: 10, z: 10, itemStyle: { opacity: 1 }
         });
     }
-    if (data.normalBoilingPoint) {
-        // Check if normal boiling point is lower than triple point temperature
-        const isNormalSublimationPoint = triplePointTemp && data.normalBoilingPoint < triplePointTemp;
-        const pointName = isNormalSublimationPoint ? 'Normal Sublimation Point' : 'Normal Boiling Point';
-        
-        series.push({
-            name: pointName, type: 'scatter', color: '#8b5cf6', 
-            data: (() => { const y = transformPressure(101325); updateBounds(y); return [{ name: pointName, value: [convertTempFromK(data.normalBoilingPoint, tempUnit), y], itemStyle: { color: '#8b5cf6', opacity: 1 } }]; })(),
-            symbolSize: 10, z: 10, itemStyle: { opacity: 1 }
-        });
-    }
+    
     
     // ECharts options (same as before)
     const isDark = resolvedTheme === 'dark';
@@ -583,8 +575,8 @@ export default function PhaseDiagramPage() {
                         <Select value={logScaleY ? 'log' : 'linear'} onValueChange={(v) => setLogScaleY(v === 'log')}>
                             <SelectTrigger id="y-axis-scale" className="justify-center"><SelectValue placeholder="Select scale" className="text-center" /></SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="log">Log</SelectItem>
                                 <SelectItem value="linear">Linear</SelectItem>
+                                <SelectItem value="log">Log</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -594,22 +586,71 @@ export default function PhaseDiagramPage() {
             </Card>
             {compoundData && !loading && (
               <Card>
-                <CardHeader>
-                  <CardTitle>Key Properties</CardTitle>
-                  <div className="border-t border-border mt-2"></div>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  {/* NEW: Key Properties now use the temp unit converter */}
-                  {compoundData.criticalTemp && <p><b>Critical Temp:</b> {formatNumber(convertTempFromK(compoundData.criticalTemp, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</p>}
-                  {compoundData.criticalPressure && <p><b>Critical Pressure:</b> {formatNumber(compoundData.criticalPressure * getUnitFactor(pressureUnit), 3)} {pressureUnit}</p>}
-                  {compoundData.triplePointTemp && <p><b>Triple Point Temp:</b> {formatNumber(convertTempFromK(compoundData.triplePointTemp, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</p>}
-                  {compoundData.triplePointPressure && <p><b>Triple Point Pressure:</b> {formatNumber(compoundData.triplePointPressure * getUnitFactor(pressureUnit), 3)} {pressureUnit}</p>}
-                  {compoundData.normalBoilingPoint && (
-                    (() => {
-                      const isNormalSublimationPoint = compoundData.triplePointTemp && compoundData.normalBoilingPoint < compoundData.triplePointTemp;
-                      const pointLabel = isNormalSublimationPoint ? 'Normal Sublimation Point' : 'Normal Boiling Point';
-                      return <p><b>{pointLabel}:</b> {formatNumber(convertTempFromK(compoundData.normalBoilingPoint, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</p>;
-                    })()
+                <CardContent className="space-y-4">
+                  {/* Critical Properties */}
+                  <div className="space-y-2">
+                    <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Critical Point</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      {compoundData.criticalTemp && (
+                        <div className="bg-muted rounded-lg p-3 text-center">
+                          <div className="text-xs text-muted-foreground mb-1">Temperature</div>
+                          <div className="font-semibold">{formatNumber(convertTempFromK(compoundData.criticalTemp, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</div>
+                        </div>
+                      )}
+                      {compoundData.criticalPressure && (
+                        <div className="bg-muted rounded-lg p-3 text-center">
+                          <div className="text-xs text-muted-foreground mb-1">Pressure</div>
+                          <div className="font-semibold">{formatNumber(compoundData.criticalPressure * getUnitFactor(pressureUnit), 3)} {pressureUnit}</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Triple Point Properties */}
+                  {(compoundData.triplePointTemp || compoundData.triplePointPressure) && (
+                    <div className="space-y-2">
+                      <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Triple Point</h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        {compoundData.triplePointTemp && (
+                          <div className="bg-muted rounded-lg p-3 text-center">
+                            <div className="text-xs text-muted-foreground mb-1">Temperature</div>
+                            <div className="font-semibold">{formatNumber(convertTempFromK(compoundData.triplePointTemp, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</div>
+                          </div>
+                        )}
+                        {compoundData.triplePointPressure && (
+                          <div className="bg-muted rounded-lg p-3 text-center">
+                            <div className="text-xs text-muted-foreground mb-1">Pressure</div>
+                            <div className="font-semibold">{formatNumber(compoundData.triplePointPressure * getUnitFactor(pressureUnit), 3)} {pressureUnit}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Phase Transition Points */}
+                  {(compoundData.normalBoilingPoint || compoundData.normalMeltingPoint) && (
+                    <div className="space-y-2">
+                      <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Phase Transitions</h4>
+                      <div className="grid grid-cols-1 gap-2">
+                        {compoundData.normalMeltingPoint && (
+                          <div className="bg-muted rounded-lg p-3 flex justify-between items-center">
+                            <div className="text-sm font-medium">Normal Melting Point</div>
+                            <div className="font-semibold">{formatNumber(convertTempFromK(compoundData.normalMeltingPoint, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</div>
+                          </div>
+                        )}
+                        {compoundData.normalBoilingPoint && (
+                          <div className="bg-muted rounded-lg p-3 flex justify-between items-center">
+                            <div className="text-sm font-medium">
+                              {(() => {
+                                const isNormalSublimationPoint = compoundData.triplePointTemp && compoundData.normalBoilingPoint < compoundData.triplePointTemp;
+                                return isNormalSublimationPoint ? 'Normal Sublimation Point' : 'Normal Boiling Point';
+                              })()}
+                            </div>
+                            <div className="font-semibold">{formatNumber(convertTempFromK(compoundData.normalBoilingPoint, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </CardContent>
               </Card>
