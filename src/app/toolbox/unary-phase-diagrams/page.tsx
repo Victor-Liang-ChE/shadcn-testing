@@ -259,7 +259,7 @@ export default function PhaseDiagramPage() {
             
             series.push({
                 name: 'Vaporization', type: 'line', color: '#dc2626', data: curveData,
-                symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false,
+                symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 1
             });
         }
     }
@@ -297,7 +297,7 @@ export default function PhaseDiagramPage() {
         
         series.push({
             name: 'Fusion', type: 'line', color: '#91CC75', data: fusionCurveData,
-            symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false,
+            symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 1
         });
     }
 
@@ -349,31 +349,35 @@ export default function PhaseDiagramPage() {
             series.push({
                 name: 'Sublimation', type: 'line', color: '#1d4ed8',
                 data: sublimationCurveData,
-                symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false,
+                symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 1
             });
         }
     }
 
-    // 3. Individual Key Points
+    // Add key points AFTER curves so they appear on top
     if (criticalTemp && criticalPressure) {
         series.push({
             name: 'Critical Point', type: 'scatter', color: '#d62728', 
-            data: (() => { const y = transformPressure(criticalPressure!); updateBounds(y); return [{ name: 'Critical Point', value: [convertTempFromK(criticalTemp, tempUnit), y], itemStyle: { color: '#d62728' } }]; })(),
-            symbolSize: 10
+            data: (() => { const y = transformPressure(criticalPressure!); updateBounds(y); return [{ name: 'Critical Point', value: [convertTempFromK(criticalTemp, tempUnit), y], itemStyle: { color: '#d62728', opacity: 1 } }]; })(),
+            symbolSize: 10, z: 10, itemStyle: { opacity: 1 }
         });
     }
     if (triplePointTemp && triplePointPressure) {
         series.push({
             name: 'Triple Point', type: 'scatter', color: '#ff7f0e', 
-            data: (() => { const y = transformPressure(triplePointPressure!); updateBounds(y); return [{ name: 'Triple Point', value: [convertTempFromK(triplePointTemp, tempUnit), y], itemStyle: { color: '#ff7f0e' } }]; })(),
-            symbolSize: 10
+            data: (() => { const y = transformPressure(triplePointPressure!); updateBounds(y); return [{ name: 'Triple Point', value: [convertTempFromK(triplePointTemp, tempUnit), y], itemStyle: { color: '#ff7f0e', opacity: 1 } }]; })(),
+            symbolSize: 10, z: 10, itemStyle: { opacity: 1 }
         });
     }
     if (data.normalBoilingPoint) {
+        // Check if normal boiling point is lower than triple point temperature
+        const isNormalSublimationPoint = triplePointTemp && data.normalBoilingPoint < triplePointTemp;
+        const pointName = isNormalSublimationPoint ? 'Normal Sublimation Point' : 'Normal Boiling Point';
+        
         series.push({
-            name: 'Normal Boiling Point', type: 'scatter', color: '#8b5cf6', 
-            data: (() => { const y = transformPressure(101325); updateBounds(y); return [{ name: 'Normal Boiling Point', value: [convertTempFromK(data.normalBoilingPoint, tempUnit), y], itemStyle: { color: '#8b5cf6' } }]; })(),
-            symbolSize: 10
+            name: pointName, type: 'scatter', color: '#8b5cf6', 
+            data: (() => { const y = transformPressure(101325); updateBounds(y); return [{ name: pointName, value: [convertTempFromK(data.normalBoilingPoint, tempUnit), y], itemStyle: { color: '#8b5cf6', opacity: 1 } }]; })(),
+            symbolSize: 10, z: 10, itemStyle: { opacity: 1 }
         });
     }
     
@@ -383,7 +387,7 @@ export default function PhaseDiagramPage() {
     setEchartsOptions({
         backgroundColor: 'transparent',
         title: { text: `Phase Diagram for ${data.name}`, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
-        grid: { left: '8%', right: '5%', bottom: '10%', top: '10%', containLabel: true },
+        grid: { left: '8%', right: '5%', bottom: '10%', top: '5%', containLabel: true },
         tooltip: {
             trigger: 'axis',
             axisPointer: { 
@@ -427,7 +431,7 @@ export default function PhaseDiagramPage() {
                 return tooltipContent.slice(0, -5); // Remove last <br/>
             }
         },
-        legend: { bottom: 15, textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 }, inactiveColor: '#4b5563' },
+        legend: { bottom: 5, textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 }, inactiveColor: '#4b5563' },
         xAxis: { type: 'value', name: `Temperature (${getTempUnitSymbol(tempUnit)})`, nameLocation: 'middle', nameGap: 30, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 12 }, splitLine: { show: false }, scale: true },
         yAxis: logScaleY ? (() => {
             const minVal = isFinite(minChartY) ? minChartY : 1e-3;
@@ -554,7 +558,7 @@ export default function PhaseDiagramPage() {
                     <div className="space-y-1">
                         <Label htmlFor="temp-unit">T. Unit</Label>
                         <Select value={tempUnit} onValueChange={(v) => setTempUnit(v as any)}>
-                            <SelectTrigger id="temp-unit"><SelectValue placeholder="Select unit" /></SelectTrigger>
+                            <SelectTrigger id="temp-unit" className="justify-center"><SelectValue placeholder="Select unit" className="text-center" /></SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="C">°C</SelectItem>
                                 <SelectItem value="K">K</SelectItem>
@@ -565,7 +569,7 @@ export default function PhaseDiagramPage() {
                     <div className="space-y-1">
                         <Label htmlFor="pressure-unit">P. Unit</Label>
                         <Select value={pressureUnit} onValueChange={(v) => setPressureUnit(v as any)}>
-                            <SelectTrigger id="pressure-unit"><SelectValue placeholder="Select unit" /></SelectTrigger>
+                            <SelectTrigger id="pressure-unit" className="justify-center"><SelectValue placeholder="Select unit" className="text-center" /></SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="bar">bar</SelectItem>
                                 <SelectItem value="Pa">Pa</SelectItem>
@@ -574,10 +578,10 @@ export default function PhaseDiagramPage() {
                             </SelectContent>
                         </Select>
                     </div>
-                    <div className="space-y-1 text-right">
+                    <div className="space-y-1">
                         <Label htmlFor="y-axis-scale">Scale</Label>
                         <Select value={logScaleY ? 'log' : 'linear'} onValueChange={(v) => setLogScaleY(v === 'log')}>
-                            <SelectTrigger id="y-axis-scale"><SelectValue placeholder="Select scale" /></SelectTrigger>
+                            <SelectTrigger id="y-axis-scale" className="justify-center"><SelectValue placeholder="Select scale" className="text-center" /></SelectTrigger>
                             <SelectContent>
                                 <SelectItem value="log">Log</SelectItem>
                                 <SelectItem value="linear">Linear</SelectItem>
@@ -600,7 +604,13 @@ export default function PhaseDiagramPage() {
                   {compoundData.criticalPressure && <p><b>Critical Pressure:</b> {formatNumber(compoundData.criticalPressure * getUnitFactor(pressureUnit), 3)} {pressureUnit}</p>}
                   {compoundData.triplePointTemp && <p><b>Triple Point Temp:</b> {formatNumber(convertTempFromK(compoundData.triplePointTemp, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</p>}
                   {compoundData.triplePointPressure && <p><b>Triple Point Pressure:</b> {formatNumber(compoundData.triplePointPressure * getUnitFactor(pressureUnit), 3)} {pressureUnit}</p>}
-                  {compoundData.normalBoilingPoint && <p><b>Normal Boiling Point:</b> {formatNumber(convertTempFromK(compoundData.normalBoilingPoint, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</p>}
+                  {compoundData.normalBoilingPoint && (
+                    (() => {
+                      const isNormalSublimationPoint = compoundData.triplePointTemp && compoundData.normalBoilingPoint < compoundData.triplePointTemp;
+                      const pointLabel = isNormalSublimationPoint ? 'Normal Sublimation Point' : 'Normal Boiling Point';
+                      return <p><b>{pointLabel}:</b> {formatNumber(convertTempFromK(compoundData.normalBoilingPoint, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</p>;
+                    })()
+                  )}
                 </CardContent>
               </Card>
             )}
