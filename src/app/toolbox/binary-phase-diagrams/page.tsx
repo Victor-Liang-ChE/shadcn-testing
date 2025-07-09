@@ -274,6 +274,7 @@ export default function VleDiagramPage() {
                 orient: 'horizontal', bottom: 10, left: 'center',
                 data: series.map(s => s.name).filter((n): n is string => !!n),
                 textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+                itemHeight: 2,
             },
             tooltip: {
                 trigger: 'axis', backgroundColor: tooltipBg, borderColor: tooltipBorder, borderWidth: 1,
