@@ -59,7 +59,10 @@ function Navbar() {
         return "Isotherm Simulator";
 
       case "/toolbox/binary-phase-diagrams":
-        return "Binary Phase Diagrams";
+        return "Binary Phase Diagram";
+
+      case "/toolbox/unary-phase-diagrams":
+        return "Unary Phase Diagram";
 
       case "/toolbox/1d-heat-transfer":
         return "1D Heat Transfer";
