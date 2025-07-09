@@ -2210,46 +2210,67 @@ export default function TernaryResidueMapPage() {
 
                     {directAzeotropes.length > 0 && (
                         <Card>
-                            <CardHeader>
-                                <CardTitle>Azeotropic Composition and Temperature</CardTitle>
-                            </CardHeader>
-                            <CardContent>
-                                <Table>
-                                    <TableHeader>
-                                        <TableRow className="hover:bg-transparent">
-                                            <TableHead className="px-2 text-center">Type</TableHead>
-                                            <TableHead className="px-2 text-center">T(°C)</TableHead>
-                                            <TableHead className="px-2 text-center">{displayedComponentNames[0] || 'Comp 1'}</TableHead>
-                                            <TableHead className="px-2 text-center">{displayedComponentNames[1] || 'Comp 2'}</TableHead>
-                                            <TableHead className="px-2 text-center">{displayedComponentNames[2] || 'Comp 3'}</TableHead>
-                                        </TableRow>
-                                    </TableHeader>
-                                    <TableBody>
-                                        {[...directAzeotropes]
-                                            .sort((a, b) => b.T_K - a.T_K) // Sort by temperature descending
-                                            .map((az, index) => {
-                                            const type = classifyAzeotrope(az); // Use the new, unified function
-                                            const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az);
-                                            const color = type === 'min' ? '#00C000' 
-                                                        : type === 'max' ? '#9900FF' 
-                                                        : type === 'saddle' ? '#FF0000' 
-                                                        : '#666666';
-                                            return (
-                                                <TableRow
-                                                    key={index}
-                                                    onMouseEnter={() => setHighlightedAzeoIdx(originalIndex)}
-                                                    onMouseLeave={() => setHighlightedAzeoIdx(null)}
-                                                >
-                                                 <TableCell className="px-2 text-center"><span style={{color}}>&#9733;</span></TableCell>
-                                                 <TableCell className="px-2 text-center">{(az.T_K - 273.15).toFixed(1)}</TableCell>
-                                                 <TableCell className="px-2 text-center">{az.x[0].toFixed(3)}</TableCell>
-                                                 <TableCell className="px-2 text-center">{az.x[1].toFixed(3)}</TableCell>
-                                                 <TableCell className="px-2 text-center">{az.x[2].toFixed(3)}</TableCell>
-                                                 </TableRow>
-                                            );
-                                        })}
-                                    </TableBody>
-                                </Table>
+                            <CardContent className="space-y-3 pt-2">
+                                {[...directAzeotropes]
+                                    .sort((a, b) => b.T_K - a.T_K) // Sort by temperature descending
+                                    .map((az, index) => {
+                                    const type = classifyAzeotrope(az); // Use the new, unified function
+                                    const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az);
+                                    const typeConfig = type === 'min' ? { color: '#00C000', label: 'Min-boiling', bgColor: 'bg-green-50 dark:bg-green-900/20', borderColor: 'border-green-200 dark:border-green-800' } 
+                                                     : type === 'max' ? { color: '#9900FF', label: 'Max-boiling', bgColor: 'bg-purple-50 dark:bg-purple-900/20', borderColor: 'border-purple-200 dark:border-purple-800' } 
+                                                     : type === 'saddle' ? { color: '#FF0000', label: 'Saddle', bgColor: 'bg-red-50 dark:bg-red-900/20', borderColor: 'border-red-200 dark:border-red-800' } 
+                                                     : { color: '#666666', label: 'Unknown', bgColor: 'bg-gray-50 dark:bg-gray-900/20', borderColor: 'border-gray-200 dark:border-gray-800' };
+                                    
+                                    return (
+                                        <div
+                                            key={index}
+                                            className={`p-4 rounded-lg border-2 transition-all duration-200 cursor-pointer hover:shadow-md ${typeConfig.bgColor} ${typeConfig.borderColor} hover:scale-[1.02]`}
+                                            onMouseEnter={() => setHighlightedAzeoIdx(originalIndex)}
+                                            onMouseLeave={() => setHighlightedAzeoIdx(null)}
+                                        >
+                                            <div className="flex items-center justify-between mb-3">
+                                                <div className="flex items-center gap-2">
+                                                    <span style={{color: typeConfig.color, fontSize: '1.2em'}}>★</span>
+                                                    <span className="font-medium text-sm" style={{color: typeConfig.color}}>
+                                                        {typeConfig.label}
+                                                    </span>
+                                                </div>
+                                                <div className="bg-white dark:bg-gray-800 px-3 py-1 rounded-full border">
+                                                    <span className="font-mono text-sm font-medium">
+                                                        {(az.T_K - 273.15).toFixed(1)}°C
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="grid grid-cols-3 gap-3">
+                                                <div className="text-center">
+                                                    <div className="text-xs text-muted-foreground mb-1 truncate" title={displayedComponentNames[0] || 'Comp 1'}>
+                                                        {displayedComponentNames[0] || 'Comp 1'}
+                                                    </div>
+                                                    <div className="bg-white dark:bg-gray-800 px-2 py-1 rounded border font-mono text-sm">
+                                                        {az.x[0].toFixed(3)}
+                                                    </div>
+                                                </div>
+                                                <div className="text-center">
+                                                    <div className="text-xs text-muted-foreground mb-1 truncate" title={displayedComponentNames[1] || 'Comp 2'}>
+                                                        {displayedComponentNames[1] || 'Comp 2'}
+                                                    </div>
+                                                    <div className="bg-white dark:bg-gray-800 px-2 py-1 rounded border font-mono text-sm">
+                                                        {az.x[1].toFixed(3)}
+                                                    </div>
+                                                </div>
+                                                <div className="text-center">
+                                                    <div className="text-xs text-muted-foreground mb-1 truncate" title={displayedComponentNames[2] || 'Comp 3'}>
+                                                        {displayedComponentNames[2] || 'Comp 3'}
+                                                    </div>
+                                                    <div className="bg-white dark:bg-gray-800 px-2 py-1 rounded border font-mono text-sm">
+                                                        {az.x[2].toFixed(3)}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </CardContent>
                         </Card>
                     )}
