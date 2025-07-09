@@ -30,6 +30,8 @@ const binaryPhaseThumbnailPath = "/thumbnails/binary-phase-diagrams-thumbnail.pn
 const binaryPhaseThumbnailLightPath = "/thumbnails/binary-phase-diagrams-thumbnail-light.png";
 const heatTransferThumbnailPath = "/thumbnails/1d-heat-transfer-thumbnail.png";
 const heatTransferThumbnailLightPath = "/thumbnails/1d-heat-transfer-thumbnail-light.png";
+const unaryPhaseThumbnailPath = "/thumbnails/unary-phase-diagrams-thumbnail.png";
+const unaryPhaseThumbnailLightPath = "/thumbnails/unary-phase-diagrams-thumbnail-light.png";
 
 export default function Page() {
   const { resolvedTheme } = useTheme();
@@ -116,6 +118,13 @@ export default function Page() {
       description: "Interactive heat transfer visualization through multiple layers with temperature controls.",
       thumbnailPath: heatTransferThumbnailPath,
       thumbnailLightPath: heatTransferThumbnailLightPath
+    },
+    {
+      name: "Unary Phase Diagram",
+      path: "/toolbox/unary-phase-diagrams",
+      description: "Interactive phase diagrams for pure compounds showing vaporization, fusion, and sublimation curves with key thermodynamic points.",
+      thumbnailPath: unaryPhaseThumbnailPath,
+      thumbnailLightPath: unaryPhaseThumbnailLightPath
     }
   ];
 
