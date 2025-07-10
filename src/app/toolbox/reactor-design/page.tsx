@@ -539,7 +539,9 @@ export default function ReactorDesignPage() {
           axisLine: { lineStyle: { color: textColor } }, 
           axisTick: { lineStyle: { color: textColor } },
           axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false }
+          splitLine: { show: false },
+          min: 0,
+          max: 100
         },
         legend: { 
           orient: 'horizontal',
@@ -607,7 +609,9 @@ export default function ReactorDesignPage() {
           bottom: '5%', 
           left: 'center',
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: ['Conversion']
+          data: ['Conversion'],
+          itemWidth: 25,
+          itemHeight: 2
         };
 
         chartOptions.series = [
@@ -644,7 +648,9 @@ export default function ReactorDesignPage() {
           bottom: '5%', 
           left: 'center',
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: ['Selectivity']
+          data: ['Selectivity'],
+          itemWidth: 25,
+          itemHeight: 2
         };
 
         chartOptions.series = [
@@ -686,7 +692,9 @@ export default function ReactorDesignPage() {
           bottom: '5%', 
           left: 'center',
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: components.map(c => c.name)
+          data: components.map(c => c.name),
+          itemWidth: 25,
+          itemHeight: 2
         };
         chartOptions.tooltip = { 
           trigger: 'axis', 
@@ -747,14 +755,18 @@ export default function ReactorDesignPage() {
           axisLine: { lineStyle: { color: textColor } }, 
           axisTick: { lineStyle: { color: textColor } },
           axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false }
+          splitLine: { show: false },
+          min: 0,
+          max: 100
         };
         chartOptions.legend = {
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: components.map(c => c.name)
+          data: components.map(c => c.name),
+          itemWidth: 25,
+          itemHeight: 2
         };
         chartOptions.tooltip = { 
           trigger: 'axis', 
