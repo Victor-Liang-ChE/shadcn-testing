@@ -757,12 +757,7 @@ export default function AzeotropeFinderPage() {
       ],
       // dataZoom removed
       toolbox: {
-            show: true, 
-            orient: 'horizontal', // Changed from vertical
-            right: 10, 
-            bottom: 10, // Changed from top: 'center'
-            feature: { saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' } },
-            iconStyle: { borderColor: '#9ca3af' }
+            show: false
       },
     };
     setEchartsOptions(options);

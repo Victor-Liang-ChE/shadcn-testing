@@ -320,9 +320,7 @@ export default function VleDiagramPage() {
             series: series,
             animation: false,
             toolbox: {
-                show: true, orient: 'vertical', right: 0, top: 'bottom',
-                feature: { saveAsImage: { show: true, title: 'Save as Image', name: `phase-diagram-${comp1Label}-${comp2Label}`, backgroundColor: isDark ? '#08306b' : '#ffffff', pixelRatio: 2 } },
-                iconStyle: { borderColor: textColor }
+                show: false
             },
         });
     }, [diagramType, useTemperatureForXY, displayedParams, resolvedTheme]);

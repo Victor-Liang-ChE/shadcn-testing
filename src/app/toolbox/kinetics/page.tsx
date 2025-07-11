@@ -343,8 +343,7 @@ export default function KineticsPage() {
           left: '5%', right: '5%', bottom: '10%', top: '3%', containLabel: true
         },
         toolbox: {
-          feature: { saveAsImage: { name: 'kinetics-plot', backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff' } },
-          iconStyle: { borderColor: textColor }, orient: 'vertical', right: 10, bottom: 15
+          show: false
         },
         xAxis: {
           type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,

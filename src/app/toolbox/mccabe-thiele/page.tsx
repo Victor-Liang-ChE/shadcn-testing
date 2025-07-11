@@ -1029,9 +1029,7 @@ export default function McCabeThielePage() {
         }, 
         animationDuration: 300, animationEasing: 'cubicInOut',
         toolbox: {
-            show: true, orient: 'vertical', right: 0, top: 'bottom',
-            feature: { saveAsImage: { show: true, title: 'Save as Image', name: `mccabe-thiele-${displayedComp1}-${displayedComp2}`, backgroundColor: isDark ? '#08306b' : '#ffffff', pixelRatio: 2 } },
-            iconStyle: { borderColor: textColor }
+            show: false
         },
         series: series,
     });

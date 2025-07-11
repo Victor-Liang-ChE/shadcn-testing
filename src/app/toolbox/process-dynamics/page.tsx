@@ -221,9 +221,7 @@ export default function ProcessControlPage() {
             },
             grid: { left: '8%', right: '8%', bottom: '10%', top: '3%', containLabel: true },
             toolbox: {
-                feature: { saveAsImage: { name: 'process-dynamics-plot', backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff' } },
-                iconStyle: { borderColor: textColor },
-                orient: 'vertical', right: 10, bottom: 40
+                show: false
             },
             xAxis: {
                 type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,
