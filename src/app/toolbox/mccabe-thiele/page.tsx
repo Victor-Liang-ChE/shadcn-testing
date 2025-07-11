@@ -192,6 +192,7 @@ export default function McCabeThielePage() {
   const [stages, setStages] = useState<number | null>(null);
   const [feedStage, setFeedStage] = useState<number | null>(null);
   const [rMin, setRMin] = useState<number | null>(null);
+  const [murphreeEfficiency, setMurphreeEfficiency] = useState(1.0);
 
   // State for ECharts options - Use the imported EChartsOption type
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
@@ -710,25 +711,15 @@ export default function McCabeThielePage() {
   };
 
 
-  const generateEChartsOptions = useCallback((xValues: number[], yValues: number[]) => {
+    const generateEChartsOptions = useCallback((xValues: number[], yValues: number[]) => {
     if (!xValues || !yValues || xValues.length === 0) {
         setEchartsOptions({});
         setRMin(null);
         return;
     }
     const series: SeriesOption[] = [];
-    // Swapped colors: Equilibrium Line now cyan, y = x Line now blue
-    series.push({
-      name: 'Equilibrium Line',
-      type: 'line',
-      data: xValues.map((x, i) => [x, yValues[i]]),
-      color: 'cyan', symbol: 'none', lineStyle: { width: 3.5 }, z: 5, animation: false,
-    });
-    series.push({
-      name: 'y = x Line', type: 'line', data: [[0, 0], [1, 1]],
-      color: 'blue', symbol: 'none', lineStyle: { width: 3.5, type: 'dotted' }, animation: false,
-    });
-
+    
+    // --- Define Operating Lines ---
     const rectifyingSlope = r / (r + 1);
     const rectifyingIntercept = xd / (r + 1);
     let feedSlope: number;
@@ -742,77 +733,113 @@ export default function McCabeThielePage() {
     const strippingSlope = (xIntersect === xb) ? Infinity : (yIntersect - xb) / (xIntersect - xb);
     const strippingIntercept = (strippingSlope === Infinity) ? NaN : xb - strippingSlope * xb;
 
-    series.push({
-        name: 'Rectifying Section', type: 'line', data: [[xd, xd], [xIntersect, yIntersect]],
-        color: 'orange', symbol: 'none', lineStyle: { width: 3.5 }, animation: false,
-    });
-    const feedLineData: EChartsPoint[] = [[xf, xf]];
-    if (feedSlope === Infinity) { feedLineData.push([xf, yIntersect]); } else { feedLineData.push([xIntersect, yIntersect]); }
-    series.push({
-        name: 'Feed Section', type: 'line', data: feedLineData,
-        color: 'red', symbol: 'none', lineStyle: { width: 3.5 }, animation: false,
-    });
-    series.push({
-        name: 'Stripping Section', type: 'line', data: [[xIntersect, yIntersect], [xb, xb]],
-        color: 'green', symbol: 'none', lineStyle: { width: 3.5 }, animation: false,
-    });
-    series.push({
-        name: 'Key Points', type: 'scatter',
-        data: [
-            { value: [xd, xd], itemStyle: { color: 'orange' }, name: 'Distillate' },
-            { value: [xb, xb], itemStyle: { color: 'green' }, name: 'Bottoms' },
-            { value: [xf, xf], itemStyle: { color: 'red' }, name: 'Feed' }
-        ],
-        symbolSize: 8, label: { show: false },
-        tooltip: { formatter: (params: any) => `${params.name}: (${params.value[0].toFixed(3)}, ${params.value[1].toFixed(3)})` },
-        animation: false,
-    });
+    // --- Define Data for Calculations ---
+    let yDataForStepping = yValues;
+    if (murphreeEfficiency < 1.0) {
+        yDataForStepping = xValues.map((x, i) => {
+            const y_eq = yValues[i];
+            let y_op: number;
+            if (x >= xIntersect) {
+                y_op = rectifyingSlope * x + rectifyingIntercept;
+            } else {
+                y_op = (strippingSlope === Infinity) ? xb : strippingSlope * x + strippingIntercept;
+            }
+            return y_op + murphreeEfficiency * (y_eq - y_op);
+        });
+    }
 
-    let stageCount = 0; let feedStageCount = 0; let currentX = xd; let currentY = xd;
+    // --- PASS 1: Calculate Stage Data and Find Final X Position ---
+    let stageCount = 0;
+    let feedStageCount = 0;
+    let currentX = xd;
+    let currentY = xd;
+    let finalStageX = xb;
     const stageLineData: EChartsPoint[] = [];
     let previousSectionIsRectifying = true;
 
-    while (currentX > xb + 0.005 && stageCount < 25) {
+    for(let i = 0; i < 50; i++) {
+        if (currentX <= xb + buffer) break;
+
         let intersectX = NaN;
-        for (let i = 0; i < xValues.length - 1; i++) {
-            if ((yValues[i] <= currentY && yValues[i+1] >= currentY) || (yValues[i] >= currentY && yValues[i+1] <= currentY)) {
-                 if (Math.abs(yValues[i+1] - yValues[i]) < 1e-9) { intersectX = (yValues[i] === currentY) ? xValues[i] : xValues[i+1]; }
-                 else { const fraction = (currentY - yValues[i]) / (yValues[i+1] - yValues[i]); intersectX = xValues[i] + fraction * (xValues[i+1] - xValues[i]); }
+        for (let j = 0; j < xValues.length - 1; j++) {
+            if (yDataForStepping[j] === null || yDataForStepping[j+1] === null) continue;
+            if ((yDataForStepping[j] <= currentY && yDataForStepping[j+1] >= currentY) || (yDataForStepping[j] >= currentY && yDataForStepping[j+1] <= currentY)) {
+                 if (Math.abs(yDataForStepping[j+1] - yDataForStepping[j]) < 1e-9) {
+                     intersectX = (yDataForStepping[j] === currentY) ? xValues[j] : xValues[j+1];
+                 } else {
+                     const fraction = (currentY - yDataForStepping[j]) / (yDataForStepping[j+1] - yDataForStepping[j]);
+                     intersectX = xValues[j] + fraction * (xValues[j+1] - xValues[j]);
+                 }
                  break;
             }
         }
-        if (isNaN(intersectX)) {
-            if (currentY <= yValues[0]) intersectX = xValues[0];
-            else if (currentY >= yValues[yValues.length - 1]) intersectX = xValues[xValues.length - 1];
-            else break;
-        }
-        intersectX = Math.max(0, Math.min(1, intersectX));
-        stageLineData.push([currentX, currentY]); stageLineData.push([intersectX, currentY]); stageLineData.push([null, null]);
+        if (isNaN(intersectX)) break;
 
-        let nextY: number;
-        const currentSectionIsRectifying = intersectX > xIntersect;
-        if (currentSectionIsRectifying) { nextY = rectifyingSlope * intersectX + rectifyingIntercept; }
-        else { nextY = (strippingSlope === Infinity) ? xb : strippingSlope * intersectX + strippingIntercept; }
-        nextY = Math.max(0, Math.min(1, nextY));
-        if (feedStageCount === 0 && currentSectionIsRectifying !== previousSectionIsRectifying) { feedStageCount = stageCount + 1; }
-        previousSectionIsRectifying = currentSectionIsRectifying;
-
-        const isLastStage = (intersectX <= xb + 0.005) || (stageCount >= 24);
-        if (isLastStage) {
-            stageLineData.push([intersectX, currentY]); stageLineData.push([intersectX, intersectX]); stageLineData.push([null, null]);
-            currentX = intersectX;
-        } else {
-            stageLineData.push([intersectX, currentY]); stageLineData.push([intersectX, nextY]); stageLineData.push([null, null]);
-            currentX = intersectX; currentY = nextY;
-        }
+        finalStageX = intersectX;
         stageCount++;
+
+        stageLineData.push([currentX, currentY]);
+        stageLineData.push([intersectX, currentY]);
+        stageLineData.push([null, null]);
+
+        const isFinalStage = intersectX <= xb + buffer;
+        if (isFinalStage) {
+            stageLineData.push([intersectX, currentY]);
+            stageLineData.push([intersectX, intersectX]);
+            stageLineData.push([null, null]);
+            break;
+        } else {
+            const currentSectionIsRectifying = intersectX >= xIntersect;
+            let nextY;
+            if (currentSectionIsRectifying) {
+                nextY = rectifyingSlope * intersectX + rectifyingIntercept;
+            } else {
+                nextY = (strippingSlope === Infinity) ? xb : strippingSlope * intersectX + strippingIntercept;
+            }
+            nextY = Math.max(0, Math.min(1, nextY));
+
+            stageLineData.push([intersectX, currentY]);
+            stageLineData.push([intersectX, nextY]);
+            stageLineData.push([null, null]);
+            
+            if (feedStageCount === 0 && currentSectionIsRectifying !== previousSectionIsRectifying) {
+                feedStageCount = stageCount;
+            }
+            previousSectionIsRectifying = currentSectionIsRectifying;
+            currentX = intersectX;
+            currentY = nextY;
+        }
     }
-    if (feedStageCount === 0 && stageCount > 0) { feedStageCount = stageCount; }
-    series.push({
-        name: 'Stages', type: 'line', data: stageLineData, color: 'black',
-        symbol: 'none', lineStyle: { width: 3 }, connectNulls: false, legendHoverLink: false, animation: false,
-    });
-    setStages(stageCount); setFeedStage(feedStageCount);
+    
+    setStages(stageCount);
+    if (feedStageCount === 0 && stageCount > 0) setFeedStage(stageCount);
+    else setFeedStage(feedStageCount);
+    
+    // --- PASS 2: Assemble All Chart Series With Finalized Data ---
+    series.push({ name: 'Equilibrium Line', type: 'line', data: xValues.map((x, i) => [x, yValues[i]]), color: 'cyan', symbol: 'none', lineStyle: { width: 3.5 }, z: 5, animation: false });
+    series.push({ name: 'y = x Line', type: 'line', data: [[0, 0], [1, 1]], color: 'blue', symbol: 'none', lineStyle: { width: 3.5, type: 'dotted' }, animation: false });
+
+    if (murphreeEfficiency < 1.0) {
+        const plotData = xValues
+            .map((x, i) => (x >= finalStageX && x <= xd) ? [x, yDataForStepping[i]] as EChartsPoint : null)
+            .filter(p => p !== null);
+
+        const yAtFinalStageX = interpolateY(finalStageX, xValues, yDataForStepping);
+        if (yAtFinalStageX !== null) {
+             // Add the precise final point to the start of the data array to ensure a perfect connection
+            plotData.unshift([finalStageX, yAtFinalStageX]);
+        }
+        
+        series.push({ name: 'Effective Equilibrium', type: 'line', data: plotData, connectNulls: false, color: 'purple', symbol: 'none', lineStyle: { width: 2, type: 'dashed' }, z: 4, animation: false });
+    }
+
+    const feedLineData: EChartsPoint[] = [[xf, xf]];
+    if (feedSlope === Infinity) { feedLineData.push([xf, yIntersect]); } else { feedLineData.push([xIntersect, yIntersect]); }
+    series.push({ name: 'Rectifying Section', type: 'line', data: [[xd, xd], [xIntersect, yIntersect]], color: 'orange', symbol: 'none', lineStyle: { width: 3.5 }, animation: false });
+    series.push({ name: 'Feed Section', type: 'line', data: feedLineData, color: 'red', symbol: 'none', lineStyle: { width: 3.5 }, animation: false });
+    series.push({ name: 'Stripping Section', type: 'line', data: [[xIntersect, yIntersect], [xb, xb]], color: 'green', symbol: 'none', lineStyle: { width: 3.5 }, animation: false });
+    series.push({ name: 'Key Points', type: 'scatter', data: [{ value: [xd, xd], itemStyle: { color: 'orange' }, name: 'Distillate' },{ value: [xb, xb], itemStyle: { color: 'green' }, name: 'Bottoms' },{ value: [xf, xf], itemStyle: { color: 'red' }, name: 'Feed' }], symbolSize: 8, label: { show: false }, tooltip: { formatter: (params: any) => `${params.name}: (${params.value[0].toFixed(3)}, ${params.value[1].toFixed(3)})` }, animation: false });
+    series.push({ name: 'Stages', type: 'line', data: stageLineData, color: 'black', symbol: 'none', lineStyle: { width: 3 }, connectNulls: false, legendHoverLink: false, animation: false });
 
     // Calculate Rmin
     let x_pinch: number | null = null;
@@ -943,12 +970,12 @@ export default function McCabeThielePage() {
             backgroundColor: isDark ? '#08306b' : '#ffffff', // Theme-aware background for tooltip
             borderColor: isDark ? '#55aaff' : '#333333', // Theme-aware border
             borderWidth: 1,
-            textStyle: { 
+            textStyle: {
                 color: textColor, // Theme-aware text color
                 fontSize: 12,
                 fontFamily: 'Merriweather Sans'
             },
-            axisPointer: { 
+            axisPointer: {
                 type: 'cross',
                 label: {
                     show: true,
@@ -1008,7 +1035,7 @@ export default function McCabeThielePage() {
         },
         series: series,
     });
-  }, [xd, xb, xf, q, r, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, displayedFluidPackage, buffer, resolvedTheme]);
+  }, [xd, xb, xf, q, r, murphreeEfficiency, displayedComp1, displayedComp2, displayedTemp, displayedPressure, displayedUseTemp, displayedFluidPackage, buffer, resolvedTheme]);
 
   useEffect(() => {
     if (equilibriumData?.x && equilibriumData?.y) {
@@ -1361,6 +1388,21 @@ export default function McCabeThielePage() {
                      )}
                    </Label>
                    <Slider id="r" min={0.1} max={10} step={0.05} value={[r]} onValueChange={(value) => setR(value[0])} style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}/>
+                 </div>
+                 {/* Murphree Efficiency Slider */}
+                 <div className="space-y-3">
+                   <Label htmlFor="murphree" className="flex justify-between items-center">
+                     <span dangerouslySetInnerHTML={{ __html: `Murphree Efficiency (E<sub>M</sub>): ${(murphreeEfficiency * 100).toFixed(0)}%` }} />
+                   </Label>
+                   <Slider
+                     id="murphree"
+                     min={0.01}
+                     max={1}
+                     step={0.01}
+                     value={[murphreeEfficiency]}
+                     onValueChange={(value) => setMurphreeEfficiency(value[0])}
+                     style={{ '--primary': 'hsl(210 40% 98%)' } as React.CSSProperties}
+                   />
                  </div>
                </CardContent>
             </Card>
