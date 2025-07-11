@@ -165,6 +165,10 @@ export default function McCabeThielePage() {
   const [pressureInput, setPressureInput] = useState<string>(pressureBar !== null ? String(pressureBar) : '');
   const [tempMax, setTempMax] = useState<string>('100');
   const [pressureMax, setPressureMax] = useState<string>('10');
+  const [qMinSlider, setQMinSlider] = useState<string>('-1');
+  const [qMaxSlider, setQMaxSlider] = useState<string>('2');
+  const [rMinSlider, setRMinSlider] = useState<string>('0.1');
+  const [rMaxSlider, setRMaxSlider] = useState<string>('10');
 
   const [useTemperature, setUseTemperature] = useState(true);
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeMcCabe>('uniquac');
@@ -464,7 +468,7 @@ export default function McCabeThielePage() {
     };
   }, [activeSuggestionInput]);
 
-  const calculateEquilibriumCurve = useCallback(async (showLoading: boolean = true, pointsCount: number = 51) => {
+  const calculateEquilibriumCurve = useCallback(async (showLoading: boolean = true, pointsCount: number = 101) => {
     if (showLoading) {
       setLoading(true);
       // setEquilibriumData(null); // This line is removed to keep the old graph visible.
@@ -826,11 +830,13 @@ export default function McCabeThielePage() {
 
         const yAtFinalStageX = interpolateY(finalStageX, xValues, yDataForStepping);
         if (yAtFinalStageX !== null) {
-             // Add the precise final point to the start of the data array to ensure a perfect connection
             plotData.unshift([finalStageX, yAtFinalStageX]);
         }
         
-        series.push({ name: 'Effective Equilibrium', type: 'line', data: plotData, connectNulls: false, color: 'purple', symbol: 'none', lineStyle: { width: 2, type: 'dashed' }, z: 4, animation: false });
+        series.push({ name: 'Effective Equilibrium', type: 'line', data: plotData, connectNulls: false, color: 'cyan', symbol: 'none', lineStyle: { width: 3.5, type: 'dashed' }, z: 4, animation: false });
+    } else {
+        // Force removal of effective equilibrium when efficiency is 100%
+        // This ensures the series array doesn't contain any cached effective equilibrium data
     }
 
     const feedLineData: EChartsPoint[] = [[xf, xf]];
@@ -841,86 +847,47 @@ export default function McCabeThielePage() {
     series.push({ name: 'Key Points', type: 'scatter', data: [{ value: [xd, xd], itemStyle: { color: 'orange' }, name: 'Distillate' },{ value: [xb, xb], itemStyle: { color: 'green' }, name: 'Bottoms' },{ value: [xf, xf], itemStyle: { color: 'red' }, name: 'Feed' }], symbolSize: 8, label: { show: false }, tooltip: { formatter: (params: any) => `${params.name}: (${params.value[0].toFixed(3)}, ${params.value[1].toFixed(3)})` }, animation: false });
     series.push({ name: 'Stages', type: 'line', data: stageLineData, color: 'black', symbol: 'none', lineStyle: { width: 3 }, connectNulls: false, legendHoverLink: false, animation: false });
 
-    // Calculate Rmin
-    let x_pinch: number | null = null;
-    let y_pinch: number | null = null;
+    // --- NEW: Robust Rmin Calculation ---
+    let rMinValue: number | null = null;
+    let maxOperatingSlope = -Infinity;
+    
+    const qLineY = (x: number): number => {
+        if (feedSlope === Infinity) return Infinity; // for q=1, this is a vertical line
+        return feedSlope * x + feedIntercept;
+    };
 
-    if (Math.abs(q - 1.0) < 1e-6) { // q = 1 (saturated liquid feed)
-        x_pinch = xf;
-        y_pinch = interpolateY(xf, xValues, yValues);
-    } else if (Math.abs(q - 0.0) < 1e-6) { // q = 0 (saturated vapor feed)
-        y_pinch = xf;
-        x_pinch = interpolateX(xf, yValues, xValues);
-    } else { // Mixed feed or subcooled/superheated
-        const m_q = q / (q - 1);
-        const c_q = -xf / (q - 1);
+    for (let i = 0; i < xValues.length; i++) {
+        const x_eq = xValues[i];
+        const y_eq = yValues[i];
 
-        for (let i = 0; i < xValues.length - 1; i++) {
-            const x1_eq = xValues[i], y1_eq = yValues[i];
-            const x2_eq = xValues[i+1], y2_eq = yValues[i+1];
+        if (x_eq > xd + 1e-6) continue; // Pinch point can't be above distillate composition
 
-            if (x2_eq === x1_eq) continue; // Skip vertical segment in equilibrium data (unlikely)
-            const m_eq = (y2_eq - y1_eq) / (x2_eq - x1_eq);
-            const c_eq = y1_eq - m_eq * x1_eq;
-
-            if (Math.abs(m_q - m_eq) < 1e-9) { // Parallel lines
-                if (Math.abs(c_q - c_eq) < 1e-9) { // Lines are collinear
-                    // Pinch can be anywhere on this segment that's also on q-line.
-                    // A common choice is xf if it falls on this segment.
-                    // For simplicity, we might need a more robust pinch finding for this rare case.
-                    // Or, if xf is within [x1_eq, x2_eq], use xf.
-                    if (xf >= Math.min(x1_eq, x2_eq) && xf <= Math.max(x1_eq, x2_eq)) {
-                        x_pinch = xf;
-                        y_pinch = m_q * x_pinch + c_q;
-                        break;
-                    }
-                }
-                continue;
-            }
-
-            const x_intersect_candidate = (c_eq - c_q) / (m_q - m_eq);
-
-            if (x_intersect_candidate >= Math.min(x1_eq, x2_eq) - 1e-6 && x_intersect_candidate <= Math.max(x1_eq, x2_eq) + 1e-6) {
-                 // Check if this intersection is "before" or "at" xd from feed perspective
-                if ( (q > 1 && x_intersect_candidate <= xf) || (q < 0 && x_intersect_candidate >= xf) || (q >= 0 && q <= 1) ) {
-                     // More refined check: the pinch point should generally be between xf and where the operating line would hit y=x if extended from xd.
-                     // For Rmin, the operating line from (xd,xd) to (x_pinch, y_pinch) is key.
-                     // The intersection must be on the equilibrium curve.
-                    x_pinch = x_intersect_candidate;
-                    y_pinch = m_q * x_pinch + c_q; // or y_pinch = interpolateY(x_pinch, xValues, yValues);
-                    // Ensure y_pinch is also on the equilibrium curve segment
-                    const y_check = interpolateY(x_pinch, xValues, yValues);
-                    if (y_check !== null && Math.abs(y_check - y_pinch) < 1e-3) { // Allow small tolerance
-                        break;
-                    } else {
-                        x_pinch = null; y_pinch = null; // Reset if not a valid intersection point on equilibrium
-                    }
-                }
+        let isReachableByFeed = false;
+        if (feedSlope === Infinity) { // Case for q=1
+            if (x_eq <= xf) isReachableByFeed = true;
+        } else {
+            // Point must be on or "above" the q-line
+            if (y_eq >= qLineY(x_eq) - 1e-9) {
+                isReachableByFeed = true;
             }
         }
-        // If no intersection found through segments, it might be at xf itself if q-line passes through (xf, y_eq(xf))
-        if (!x_pinch && interpolateY(xf, xValues, yValues) !== null) {
-            const y_at_xf_eq = interpolateY(xf, xValues, yValues)!;
-            const y_at_xf_qline = m_q * xf + c_q;
-            if (Math.abs(y_at_xf_eq - y_at_xf_qline) < 1e-3) { // Check if (xf, y_eq(xf)) is on q-line
-                x_pinch = xf;
-                y_pinch = y_at_xf_eq;
+        
+        if (isReachableByFeed) {
+            if (Math.abs(xd - x_eq) < 1e-9) continue; // Avoid division by zero
+
+            const slope = (xd - y_eq) / (xd - x_eq);
+            if (slope > maxOperatingSlope) {
+                maxOperatingSlope = slope;
             }
         }
     }
 
-    if (x_pinch !== null && y_pinch !== null && (y_pinch - x_pinch) > 1e-6) { // Avoid division by zero/small number
-        const calculatedRMin = (xd - y_pinch) / (y_pinch - x_pinch);
-        setRMin(calculatedRMin >= 0 ? calculatedRMin : null); // Rmin should be non-negative
-    } else {
-        // A more complex tangency check might be needed if the above fails,
-        // or if y_pinch is very close to x_pinch leading to huge Rmin.
-        // For now, set to null if simple calculation isn't valid.
-        setRMin(null);
-        if (x_pinch !== null && y_pinch !== null && (y_pinch - x_pinch) <= 1e-6) {
-            console.warn("Rmin calculation: pinch point y_pinch is too close to x_pinch, Rmin might be very large or infinite.");
-        }
+    // The operating line slope must be less than 1 for a positive R value
+    if (maxOperatingSlope > -Infinity && maxOperatingSlope < 1) {
+        // R / (R + 1) = slope  => R = slope / (1 - slope)
+        rMinValue = maxOperatingSlope / (1 - maxOperatingSlope);
     }
+    setRMin(rMinValue !== null && rMinValue >= 0 ? rMinValue : null);
 
 
     const capitalizeFirst = (str: string) => str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
@@ -930,13 +897,10 @@ export default function McCabeThielePage() {
         (displayedTemp !== null ? `${displayedTemp.toFixed(1)} °C` : 'N/A Temp') : 
         (displayedPressure !== null ? `${displayedPressure.toFixed(2)} bar` : 'N/A Pressure');
     const titleText = displayedComp1 && displayedComp2 ?
-        `McCabe-Thiele: ${dispComp1Cap}/${dispComp2Cap} at ${titleCondition}` : // Removed fluid package
+        `McCabe-Thiele: ${dispComp1Cap}/${dispComp2Cap} at ${titleCondition}` :
         'McCabe-Thiele Diagram';
     
-    // Axis label will refer to comp1
     const axisCompLabel = dispComp1Cap;
-
-    // Theme-dependent colors
     const isDark = resolvedTheme === 'dark';
     const textColor = isDark ? 'white' : '#000000';
 
@@ -946,48 +910,64 @@ export default function McCabeThielePage() {
         grid: { left: '5%', right: '5%', bottom: '5%', top: '5%', containLabel: true },
         xAxis: {
             type: 'value', min: 0, max: 1, interval: 0.1,
-            name: `Liquid Mole Fraction ${axisCompLabel} (x)`, // Updated label
+            name: `Liquid Mole Fraction ${axisCompLabel} (x)`,
             nameLocation: 'middle', nameGap: 30, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
             axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
         },
         yAxis: {
             type: 'value', min: 0, max: 1, interval: 0.1,
-            name: `Vapor Mole Fraction ${axisCompLabel} (y)`, // Updated label
+            name: `Vapor Mole Fraction ${axisCompLabel} (y)`,
             nameLocation: 'middle', nameGap: 40, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
             axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
         },
         legend: {
             orient: 'vertical', right: '2%', top: 'center',
-            data: series.map(s => s.name).filter(name => name !== 'Key Points' && name !== 'Stages') as string[],
-
+            data: (() => {
+                const names = series.map(s => s.name).filter((n): n is string => typeof n === 'string');
+                const filtered = names.filter(name => name !== 'Key Points' && name !== 'Stages');
+                let ordered: string[] = [];
+                if (filtered.includes('Equilibrium Line')) ordered.push('Equilibrium Line');
+                if (filtered.includes('Effective Equilibrium') && murphreeEfficiency < 1.0) ordered.push('Effective Equilibrium');
+                filtered.forEach(name => {
+                  if (name !== 'Equilibrium Line' && name !== 'Effective Equilibrium') ordered.push(name);
+                });
+                return ordered as string[];
+            })(),
             textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
             itemWidth: 25, itemHeight: 2,
         },        tooltip: {
             show: true,
             trigger: 'axis',
-            backgroundColor: isDark ? '#08306b' : '#ffffff', // Theme-aware background for tooltip
-            borderColor: isDark ? '#55aaff' : '#333333', // Theme-aware border
+            triggerOn: 'mousemove',
+            enterable: true,
+            confine: true,
+            backgroundColor: isDark ? '#08306b' : '#ffffff',
+            borderColor: isDark ? '#55aaff' : '#333333',
             borderWidth: 1,
             textStyle: {
-                color: textColor, // Theme-aware text color
+                color: textColor,
                 fontSize: 12,
                 fontFamily: 'Merriweather Sans'
             },
             axisPointer: {
                 type: 'cross',
+                snap: true,
+                triggerTooltip: true,
+                value: 0,
+                animation: false,
                 label: {
                     show: true,
-                    backgroundColor: isDark ? '#08306b' : '#ffffff', // Theme-aware background for axis pointer label
-                    color: isDark ? 'white' : 'black', // Theme-aware text color for axis pointer label
+                    backgroundColor: isDark ? '#08306b' : '#ffffff',
+                    color: isDark ? 'white' : 'black',
                     borderColor: isDark ? '#55aaff' : '#333333',
                     borderWidth: 1,
-                    shadowBlur: 0, // Optional: remove shadow if any
+                    shadowBlur: 0,
                     shadowColor: 'transparent',
                     fontFamily: 'Merriweather Sans',
+                    precision: 3,
                     formatter: function (params: any) {
-                        // params.value is the axis value
                         if (params.axisDimension === 'x') {
                             return `x: ${formatNumberToPrecision(params.value, 3)}`;
                         }
@@ -997,37 +977,74 @@ export default function McCabeThielePage() {
                         return formatNumberToPrecision(params.value, 3);
                     }
                 },
-                crossStyle: { // Optional: style the crosshair lines
+                crossStyle: {
                     color: isDark ? '#999' : '#666'
                 }
             },
             formatter: function (params: any) {
                 let tooltipHtml = '';
                 if (Array.isArray(params) && params.length > 0) {
-                    // Display the x-value once at the top, if it's an axis trigger
                     const xAxisValue = params[0].axisValue;
                     if (xAxisValue !== undefined) {
                          tooltipHtml += `x: ${formatNumberToPrecision(xAxisValue, 3)}<br/>`;
                     }
 
+                    if (xAxisValue !== undefined) {
+                        const operatingLineInfo = [];
+                        
+                        if (xAxisValue >= xIntersect && xAxisValue <= xd) {
+                            operatingLineInfo.push('<span style="color: orange;">Rectifying Section</span>');
+                        }
+                        
+                        if (xAxisValue >= xb && xAxisValue <= xIntersect) {
+                            operatingLineInfo.push('<span style="color: green;">Stripping Section</span>');
+                        }
+                        
+                        if (operatingLineInfo.length > 0) {
+                            tooltipHtml += operatingLineInfo.join(' & ') + '<br/>';
+                        }
+                        
+                        if (stages !== null && stages > 0) {
+                            const isOnVerticalStageLine = params.some((param: any) => {
+                                return param.seriesName === 'Stages' && param.value && 
+                                       Array.isArray(param.value) && param.value.length >= 2 &&
+                                       Math.abs(param.value[0] - xAxisValue) < 0.001;
+                            });
+                            
+                            if (!isOnVerticalStageLine) {
+                                const stageWidth = (xd - xb) / stages;
+                                const stageNumber = Math.ceil((xd - xAxisValue) / stageWidth);
+                                if (stageNumber >= 1 && stageNumber <= stages) {
+                                    tooltipHtml += `<span style="color: purple;">Stage ${stageNumber}</span><br/>`;
+                                }
+                            }
+                        }
+                    }
+
                     params.forEach((param: any, index: number) => {
                         const seriesName = param.seriesName;
-                        // Key Points series has custom tooltip already, skip detailed formatting here or customize if needed
                         if (seriesName === 'Key Points') {
                             if (param.data && param.data.name) {
                                 tooltipHtml += `<span style="color: ${param.color};">${param.data.name}: (${formatNumberToPrecision(param.value[0], 3)}, ${formatNumberToPrecision(param.value[1], 3)})</span><br/>`;
                             }
+                        } else if (seriesName === 'Stages') {
+                            const isVerticalLine = param.value && Array.isArray(param.value) && param.value.length >= 2 &&
+                                                  Math.abs(param.value[0] - xAxisValue) < 0.001;
+                            if (!isVerticalLine) {
+                                tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
+                            }
                         } else if (seriesName && param.value && Array.isArray(param.value) && param.value.length >= 2) {
-                            // For other line series, show series name and y-value
-                            // The x-value is common (axisValue), y-value is param.value[1]
-                            tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
+                            // Skip showing numerical values for section lines (Rectifying Section, Feed Section, Stripping Section)
+                            if (seriesName !== 'Rectifying Section' && seriesName !== 'Feed Section' && seriesName !== 'Stripping Section') {
+                                tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
+                            }
                         }
                     });
                 }
                 return tooltipHtml;
             }
         }, 
-        animationDuration: 300, animationEasing: 'cubicInOut',
+        animation: false,
         toolbox: {
             show: false
         },
@@ -1370,22 +1387,58 @@ export default function McCabeThielePage() {
                  </div>
                  {/* q Slider */}
                  <div className="space-y-3">
-                   <Label htmlFor="q" className="flex items-center">Feed Quality (q): {q.toFixed(2)}
-                       <ShadTooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-5 w-5 rounded-full"><span className="text-xs">ⓘ</span></Button></TooltipTrigger><TooltipContent><p>{getFeedQualityState()}</p></TooltipContent></ShadTooltip>
-                   </Label>
-                   <Slider id="q" min={-1} max={2} step={0.05} value={[q]} onValueChange={(value) => setQ(value[0])} style={{ '--primary': 'hsl(60 100% 50%)' } as React.CSSProperties}/>
+                   <div className="flex items-center justify-between">
+                     <Label htmlFor="q" className="flex items-center">Feed Quality (q): {q.toFixed(2)}
+                         <ShadTooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-5 w-5 rounded-full"><span className="text-xs">ⓘ</span></Button></TooltipTrigger><TooltipContent><p>{getFeedQualityState()}</p></TooltipContent></ShadTooltip>
+                     </Label>
+                     <div className="flex items-center gap-1">
+                       <Label className="text-xs text-muted-foreground">Min:</Label>
+                       <Input
+                         type="text"
+                         value={qMinSlider}
+                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQMinSlider(e.target.value)}
+                         className="w-12 h-8 text-xs"
+                       />
+                       <Label className="text-xs text-muted-foreground">Max:</Label>
+                       <Input
+                         type="text"
+                         value={qMaxSlider}
+                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQMaxSlider(e.target.value)}
+                         className="w-12 h-8 text-xs"
+                       />
+                     </div>
+                   </div>
+                   <Slider id="q" min={parseFloat(qMinSlider)} max={parseFloat(qMaxSlider)} step={0.05} value={[q]} onValueChange={(value) => setQ(value[0])} style={{ '--primary': 'hsl(60 100% 50%)' } as React.CSSProperties}/>
                  </div>
                  {/* r Slider */}
                  <div className="space-y-3">
-                   <Label htmlFor="r" className="flex justify-between items-center">
-                     <span>Reflux Ratio (R): {r.toFixed(2)}</span>
-                     {rMin !== null && (
-                        <span className="text-xs text-muted-foreground">
-                            R<sub>min</sub>: {rMin.toFixed(2)}
-                        </span>
-                     )}
-                   </Label>
-                   <Slider id="r" min={0.1} max={10} step={0.05} value={[r]} onValueChange={(value) => setR(value[0])} style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}/>
+                   <div className="flex justify-between items-center">
+                     <Label htmlFor="r" className="flex justify-between items-center">
+                       <span>Reflux Ratio (R): {r.toFixed(2)}</span>
+                       {rMin !== null && (
+                          <span className="text-xs text-muted-foreground ml-2">
+                              R<sub>min</sub>: {rMin.toFixed(2)}
+                          </span>
+                       )}
+                     </Label>
+                     <div className="flex items-center gap-1">
+                       <Label className="text-xs text-muted-foreground">Min:</Label>
+                       <Input
+                         type="text"
+                         value={rMinSlider}
+                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRMinSlider(e.target.value)}
+                         className="w-12 h-8 text-xs"
+                       />
+                       <Label className="text-xs text-muted-foreground">Max:</Label>
+                       <Input
+                         type="text"
+                         value={rMaxSlider}
+                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRMaxSlider(e.target.value)}
+                         className="w-12 h-8 text-xs"
+                       />
+                     </div>
+                   </div>
+                   <Slider id="r" min={parseFloat(rMinSlider)} max={parseFloat(rMaxSlider)} step={0.05} value={[r]} onValueChange={(value) => setR(value[0])} style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}/>
                  </div>
                  {/* Murphree Efficiency Slider */}
                  <div className="space-y-3">
@@ -1399,7 +1452,7 @@ export default function McCabeThielePage() {
                      step={0.01}
                      value={[murphreeEfficiency]}
                      onValueChange={(value) => setMurphreeEfficiency(value[0])}
-                     style={{ '--primary': 'hsl(210 40% 98%)' } as React.CSSProperties}
+                     style={{ '--primary': 'hsl(180 100% 50%)' } as React.CSSProperties}
                    />
                  </div>
                </CardContent>
@@ -1435,7 +1488,15 @@ export default function McCabeThielePage() {
 
                   {/* The graph is shown as long as equilibriumData exists, even during reloads. */}
                   {equilibriumData && Object.keys(echartsOptions).length > 0 && (
-                    <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} notMerge={false} lazyUpdate={false} />
+                    <ReactECharts 
+                  key={`echarts-${murphreeEfficiency === 1.0 ? 'no-eff' : 'with-eff'}`}
+                  ref={echartsRef} 
+                  echarts={echarts} 
+                  option={echartsOptions} 
+                  style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
+                  notMerge={true} 
+                  lazyUpdate={false} 
+                />
                   )}
                 </div>
               </CardContent>
