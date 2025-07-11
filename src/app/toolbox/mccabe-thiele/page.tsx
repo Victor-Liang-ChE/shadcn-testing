@@ -1317,7 +1317,7 @@ export default function McCabeThielePage() {
             </Card>
             {/* Slider Card */}
             <Card>
-               <CardContent className="space-y-8 pt-6 pb-6">
+               <CardContent className="space-y-8 pt-2 pb-2">
                 {/* Fixed condition slider */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
