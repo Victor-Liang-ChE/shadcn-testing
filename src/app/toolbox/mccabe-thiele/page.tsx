@@ -834,9 +834,6 @@ export default function McCabeThielePage() {
         }
         
         series.push({ name: 'Effective Equilibrium', type: 'line', data: plotData, connectNulls: false, color: 'cyan', symbol: 'none', lineStyle: { width: 3.5, type: 'dashed' }, z: 4, animation: false });
-    } else {
-        // Force removal of effective equilibrium when efficiency is 100%
-        // This ensures the series array doesn't contain any cached effective equilibrium data
     }
 
     const feedLineData: EChartsPoint[] = [[xf, xf]];
@@ -847,48 +844,72 @@ export default function McCabeThielePage() {
     series.push({ name: 'Key Points', type: 'scatter', data: [{ value: [xd, xd], itemStyle: { color: 'orange' }, name: 'Distillate' },{ value: [xb, xb], itemStyle: { color: 'green' }, name: 'Bottoms' },{ value: [xf, xf], itemStyle: { color: 'red' }, name: 'Feed' }], symbolSize: 8, label: { show: false }, tooltip: { formatter: (params: any) => `${params.name}: (${params.value[0].toFixed(3)}, ${params.value[1].toFixed(3)})` }, animation: false });
     series.push({ name: 'Stages', type: 'line', data: stageLineData, color: 'black', symbol: 'none', lineStyle: { width: 3 }, connectNulls: false, legendHoverLink: false, animation: false });
 
-    // --- NEW: Robust Rmin Calculation ---
+    // --- FINAL Rmin Calculation ---
     let rMinValue: number | null = null;
     let maxOperatingSlope = -Infinity;
-    
-    const qLineY = (x: number): number => {
-        if (feedSlope === Infinity) return Infinity; // for q=1, this is a vertical line
-        return feedSlope * x + feedIntercept;
-    };
 
-    for (let i = 0; i < xValues.length; i++) {
-        const x_eq = xValues[i];
-        const y_eq = yValues[i];
-
-        if (x_eq > xd + 1e-6) continue; // Pinch point can't be above distillate composition
-
-        let isReachableByFeed = false;
-        if (feedSlope === Infinity) { // Case for q=1
-            if (x_eq <= xf) isReachableByFeed = true;
-        } else {
-            // Point must be on or "above" the q-line
-            if (y_eq >= qLineY(x_eq) - 1e-9) {
-                isReachableByFeed = true;
-            }
+    // Step 1: Calculate q-line/equilibrium intersection
+    let intersectionPinch: { x: number; y: number } | null = null;
+    if (Math.abs(q - 1) < 1e-9) {
+        const y_val = interpolateY(xf, xValues, yValues);
+        if (y_val !== null) {
+            intersectionPinch = { x: xf, y: y_val };
         }
-        
-        if (isReachableByFeed) {
-            if (Math.abs(xd - x_eq) < 1e-9) continue; // Avoid division by zero
-
-            const slope = (xd - y_eq) / (xd - x_eq);
-            if (slope > maxOperatingSlope) {
-                maxOperatingSlope = slope;
+    } else {
+        for (let i = 0; i < xValues.length - 1; i++) {
+            const x1 = xValues[i], y1 = yValues[i];
+            const x2 = xValues[i + 1], y2 = yValues[i + 1];
+            if (x1 === x2) continue;
+            const m_eq = (y2 - y1) / (x2 - x1);
+            const c_eq = y1 - m_eq * x1;
+            const denominator = (q - 1) * m_eq - q;
+            if (Math.abs(denominator) < 1e-9) continue;
+            const x_int = (-(q - 1) * c_eq - xf) / denominator;
+            if (x_int >= Math.min(x1, x2) - 1e-6 && x_int <= Math.max(x1, x2) + 1e-6) {
+                const y_int = m_eq * x_int + c_eq;
+                intersectionPinch = { x: x_int, y: y_int };
+                break;
             }
         }
     }
 
-    // The operating line slope must be less than 1 for a positive R value
+    if (intersectionPinch && intersectionPinch.x <= xd) {
+        if (Math.abs(xd - intersectionPinch.x) > 1e-9) {
+            maxOperatingSlope = (xd - intersectionPinch.y) / (xd - intersectionPinch.x);
+        }
+    }
+
+    // Step 2: Check for a more limiting tangency
+    if (q >= 1 || q <= 0) {
+        // ✅ FIXED: Start loop at i = 1 to skip the invalid (0, 0) point.
+        for (let i = 1; i < xValues.length; i++) {
+            const x_eq = xValues[i];
+            const y_eq = yValues[i];
+
+            if (x_eq > xd + 1e-6) continue;
+
+            let isCandidate = false;
+            if (q >= 1) {
+                if (x_eq <= xf + 1e-6) isCandidate = true;
+            } else { // q <= 0
+                if (x_eq >= xf - 1e-6) isCandidate = true;
+            }
+            
+            if (isCandidate) {
+                if (Math.abs(xd - x_eq) < 1e-9) continue;
+                const slope = (xd - y_eq) / (xd - x_eq);
+                if (slope > maxOperatingSlope) {
+                    maxOperatingSlope = slope;
+                }
+            }
+        }
+    }
+
+    // Step 3: Final Calculation
     if (maxOperatingSlope > -Infinity && maxOperatingSlope < 1) {
-        // R / (R + 1) = slope  => R = slope / (1 - slope)
         rMinValue = maxOperatingSlope / (1 - maxOperatingSlope);
     }
     setRMin(rMinValue !== null && rMinValue >= 0 ? rMinValue : null);
-
 
     const capitalizeFirst = (str: string) => str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
     const dispComp1Cap = capitalizeFirst(displayedComp1);
@@ -941,8 +962,6 @@ export default function McCabeThielePage() {
             show: true,
             trigger: 'axis',
             triggerOn: 'mousemove',
-            enterable: true,
-            confine: true,
             backgroundColor: isDark ? '#08306b' : '#ffffff',
             borderColor: isDark ? '#55aaff' : '#333333',
             borderWidth: 1,
@@ -954,9 +973,6 @@ export default function McCabeThielePage() {
             axisPointer: {
                 type: 'cross',
                 snap: true,
-                triggerTooltip: true,
-                value: 0,
-                animation: false,
                 label: {
                     show: true,
                     backgroundColor: isDark ? '#08306b' : '#ffffff',
@@ -966,7 +982,7 @@ export default function McCabeThielePage() {
                     shadowBlur: 0,
                     shadowColor: 'transparent',
                     fontFamily: 'Merriweather Sans',
-                    precision: 3,
+                    precision: 2,
                     formatter: function (params: any) {
                         if (params.axisDimension === 'x') {
                             return `x: ${formatNumberToPrecision(params.value, 3)}`;
@@ -1034,17 +1050,14 @@ export default function McCabeThielePage() {
                                 tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
                             }
                         } else if (seriesName && param.value && Array.isArray(param.value) && param.value.length >= 2) {
-                            // Skip showing numerical values for section lines (Rectifying Section, Feed Section, Stripping Section)
-                            if (seriesName !== 'Rectifying Section' && seriesName !== 'Feed Section' && seriesName !== 'Stripping Section') {
-                                tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
-                            }
+                            tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
                         }
                     });
                 }
                 return tooltipHtml;
             }
         }, 
-        animation: false,
+        animationDuration: 300, animationEasing: 'cubicInOut',
         toolbox: {
             show: false
         },
