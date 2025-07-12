@@ -161,7 +161,6 @@ export default function PhaseDiagramPage() {
   const [tempUnit, setTempUnit] = useState<'C' | 'K' | 'F'>('C');
   const [pressureUnit, setPressureUnit] = useState<'Pa' | 'kPa' | 'bar' | 'atm'>('bar');
   const [logScaleY, setLogScaleY] = useState<boolean>(false);
-  const [debugMode, setDebugMode] = useState<boolean>(false);
 
   const getUnitFactor = useCallback((unit: typeof pressureUnit) => {
     switch (unit) { case 'Pa': return 1; case 'kPa': return 1 / 1000; case 'bar': return 1 / 100000; case 'atm': return 1 / 101325; default: return 1 / 100000; }
@@ -293,9 +292,7 @@ export default function PhaseDiagramPage() {
             const x = searchBox.xMin + (searchBox.xMax - searchBox.xMin) * i / gridDensity;
             for (let j = 0; j <= gridDensity; j++) {
                 const y = searchBox.yMin + (searchBox.yMax - searchBox.yMin) * j / gridDensity;
-                if(debugMode) dbgGrid.push([x,y]);
                 if (!isPointInRegion(x, y)) continue;
-                if(debugMode) dbgValid.push([x,y]);
                 const normDistToLeft = ((x - searchBox.xMin) / normBox.width)**2; const normDistToRight = ((searchBox.xMax - x) / normBox.width)**2; const normDistToBottom = ((y - searchBox.yMin) / normBox.height)**2; const normDistToTop = ((searchBox.yMax - y) / normBox.height)**2;
                 let minBoundaryDistSq = Math.min(normDistToLeft, normDistToRight, normDistToBottom, normDistToTop);
                 for (const curve of boundaries) { minBoundaryDistSq = Math.min(minBoundaryDistSq, minDistToCurveSqNormalized([x,y], curve, normBox)); }
@@ -306,16 +303,6 @@ export default function PhaseDiagramPage() {
         if (bestPoints.length > 0) {
             if (breakTiesByCentroid && bestPoints.length > 1) { const sumX = bestPoints.reduce((acc, p) => acc + p[0], 0); const sumY = bestPoints.reduce((acc, p) => acc + p[1], 0); finalBestPoint = [sumX / bestPoints.length, sumY / bestPoints.length]; } 
             else { finalBestPoint = bestPoints[0]; }
-        }
-        if(debugMode) {
-            debugSeries.push({ name: `${regionName} Grid`, type: 'scatter', data: dbgGrid, symbolSize: 3, itemStyle: {color: '#888', opacity: 0.3}, z: 15 });
-            debugSeries.push({ name: `${regionName} Valid`, type: 'scatter', data: dbgValid, symbolSize: 5, itemStyle: {color: '#3b82f6'}, z: 16 });
-            if(finalBestPoint) {
-                debugSeries.push({ name: `${regionName} Best`, type: 'scatter', data: [finalBestPoint], symbolSize: 10, itemStyle: {color: '#e11d48'}, z: 17 });
-                const radius_norm = Math.sqrt(maxMinDistSq); const radius_x = radius_norm * normBox.width; const radius_y = radius_norm * normBox.height; const circlePoints = [];
-                for(let k=0; k<=360; k+=10) { const angle = k * Math.PI / 180; circlePoints.push([finalBestPoint[0] + radius_x * Math.cos(angle), finalBestPoint[1] + radius_y * Math.sin(angle)]); }
-                debugSeries.push({ name: `${regionName} Circle`, type: 'line', data: circlePoints, symbol: 'none', lineStyle: { color: '#e11d48', width: 1.5, type: 'dotted' }, areaStyle: { color: '#e11d48', opacity: 0.1}, z: 14 });
-            }
         }
         return finalBestPoint;
     };
@@ -331,7 +318,6 @@ export default function PhaseDiagramPage() {
     const spotSuper = findBestSpot("Supercritical", chartBox, [verticalCritLine, horizontalCritLine], (x,y) => x > T_c && y > P_c, true);
     if(spotSuper) annotationPoints.push({ name: 'Supercritical', value: spotSuper });
     series.push({ name: 'Phases', type: 'scatter', data: annotationPoints, symbol: 'circle', symbolSize: 0, label: { show: true, position: 'inside', formatter: '{b}', color: textColor, fontSize: 16, fontWeight: 'bold', fontFamily: 'Merriweather Sans', opacity: 0.6 }, z: 5, silent: true });
-    if (debugMode) series.push(...debugSeries);
     
     // 4. ECharts Options
     setEchartsOptions({
@@ -344,7 +330,7 @@ export default function PhaseDiagramPage() {
         yAxis: logScaleY ? { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 75, min: axisYMin, max: axisYMax, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, hideOverlap: false, showMaxLabel: true, showMinLabel: true, interval: 1, formatter: (val: number) => `1e${val.toFixed(0)}` }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, minorTick: { show: true, splitNumber: 9, length: 5 }, splitLine: { show: false }, minorSplitLine: { show: false }, scale: false, } as any : { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 75, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, formatter: (val: number) => { if (Math.abs(val) >= 1e6 || (Math.abs(val) < 1e-3 && val !== 0)) { return val.toExponential(1); } return val.toString(); } }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, splitLine: { show: false }, scale: false, min: axisYMin, max: axisYMax } as any,
         series: series,
     });
-  }, [pressureUnit, tempUnit, logScaleY, resolvedTheme, getUnitFactor, debugMode]);
+  }, [pressureUnit, tempUnit, logScaleY, resolvedTheme, getUnitFactor]);
 
   useEffect(() => {
       plotPhaseDiagram(compoundData);
@@ -396,7 +382,7 @@ export default function PhaseDiagramPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-1 space-y-6">
             <Card>
-              <CardContent className="space-y-4 pt-6">
+              <CardContent className="space-y-4 pt-2">
                 <div className="space-y-1">
                     <Label htmlFor="compound-input">Compound Name</Label>
                     <div className="relative">
@@ -443,18 +429,12 @@ export default function PhaseDiagramPage() {
                         </Select>
                     </div>
                 </div>
-                 <div className="flex items-center space-x-2 pt-2">
-                    <Checkbox id="debug-mode" checked={debugMode} onCheckedChange={(c) => setDebugMode(c as boolean)} />
-                    <Label htmlFor="debug-mode" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
-                        Show Annotation Debugging
-                    </Label>
-                </div>
                 <Button onClick={handleFetchAndPlot} disabled={loading} className="w-full">{loading ? 'Loading...' : 'Generate Diagram'}</Button>
               </CardContent>
             </Card>
             {compoundData && !loading && (
               <Card>
-                <CardContent className="space-y-4 pt-6">
+                <CardContent className="space-y-4 pt-2">
                   {/* Critical Properties */}
                   <div className="space-y-2">
                     <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Critical Point</h4>
@@ -494,6 +474,46 @@ export default function PhaseDiagramPage() {
                       </div>
                     </div>
                   )}
+
+                  {/* Phase Transitions */}
+                  {(() => {
+                    // A substance sublimes if its triple point pressure is above 1 atm (101325 Pa).
+                    const sublimesAtNormalPressure = compoundData.triplePointPressure && compoundData.triplePointPressure > 101325;
+                    // Only show melting point if the substance does NOT sublime at normal pressure.
+                    const showMeltingPoint = !sublimesAtNormalPressure && compoundData.normalMeltingPoint;
+                    // The boiling/sublimation point is shown if the data exists.
+                    const showBoilingOrSublimation = compoundData.normalBoilingPoint;
+                    // Don't render the section at all if there's nothing to display.
+                    if (!showMeltingPoint && !showBoilingOrSublimation) {
+                      return null;
+                    }
+                    // Count how many are shown
+                    const shownCount = [showMeltingPoint, showBoilingOrSublimation].filter(Boolean).length;
+                    const gridClass = shownCount === 1 ? 'grid grid-cols-1' : 'grid grid-cols-2 gap-3';
+                    return (
+                      <div className="space-y-2">
+                        <h4 className="font-semibold text-sm text-muted-foreground uppercase tracking-wide">Phase Transitions</h4>
+                        <div className={gridClass}>
+                          {/* Conditionally render Normal Melting Point */}
+                          {showMeltingPoint && (
+                            <div className="bg-muted rounded-lg p-3 text-center">
+                              <div className="text-xs text-muted-foreground mb-1">Normal Melting Point</div>
+                              <div className="font-semibold">{formatNumber(convertTempFromK(compoundData.normalMeltingPoint!, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</div>
+                            </div>
+                          )}
+                          {/* Conditionally render Normal Boiling or Sublimation Point */}
+                          {showBoilingOrSublimation && (
+                            <div className="bg-muted rounded-lg p-3 text-center">
+                              <div className="text-xs text-muted-foreground mb-1">
+                                {sublimesAtNormalPressure ? 'Normal Sublimation Point' : 'Normal Boiling Point'}
+                              </div>
+                              <div className="font-semibold">{formatNumber(convertTempFromK(compoundData.normalBoilingPoint!, tempUnit), 3)} {getTempUnitSymbol(tempUnit)}</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </CardContent>
               </Card>
             )}
