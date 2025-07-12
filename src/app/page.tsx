@@ -104,20 +104,20 @@ export default function Home() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "Reaction Kinetics",
-      path: "/toolbox/kinetics",
+      name: "1D Heat Transfer",
+      path: "/toolbox/1d-heat-transfer",
       description:
-        "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
-      thumbnailPath: kineticsThumbnailPath,
-      thumbnailLightPath: kineticsThumbnailLightPath,
+        "Interactive heat transfer visualization through multiple layers with temperature controls.",
+      thumbnailPath: heatTransferThumbnailPath,
+      thumbnailLightPath: heatTransferThumbnailLightPath
     },
     {
-      name: "Process Dynamics",
-      path: "/toolbox/process-dynamics",
+      name: "Unary Phase Diagram",
+      path: "/toolbox/unary-phase-diagrams",
       description:
-        "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
-      thumbnailPath: dynamicsThumbnailPath,
-      thumbnailLightPath: dynamicsThumbnailLightPath,
+        "Interactive phase diagrams for pure compounds showing vaporization, fusion, and sublimation curves with key thermodynamic points.",
+      thumbnailPath: unaryPhaseThumbnailPath,
+      thumbnailLightPath: unaryPhaseThumbnailLightPath
     },
     {
       name: "Binary Phase Diagram",
@@ -152,20 +152,20 @@ export default function Home() {
       thumbnailLightPath: isothermsThumbnailLightPath
     },
     {
-      name: "1D Heat Transfer",
-      path: "/toolbox/1d-heat-transfer",
+      name: "Reaction Kinetics",
+      path: "/toolbox/kinetics",
       description:
-        "Interactive heat transfer visualization through multiple layers with temperature controls.",
-      thumbnailPath: heatTransferThumbnailPath,
-      thumbnailLightPath: heatTransferThumbnailLightPath
+        "Interactive simulator for chemical reaction kinetics. Model various reaction types and visualize concentration profiles over time.",
+      thumbnailPath: kineticsThumbnailPath,
+      thumbnailLightPath: kineticsThumbnailLightPath,
     },
     {
-      name: "Unary Phase Diagram",
-      path: "/toolbox/unary-phase-diagrams",
+      name: "Process Dynamics",
+      path: "/toolbox/process-dynamics",
       description:
-        "Interactive phase diagrams for pure compounds showing vaporization, fusion, and sublimation curves with key thermodynamic points.",
-      thumbnailPath: unaryPhaseThumbnailPath,
-      thumbnailLightPath: unaryPhaseThumbnailLightPath
+        "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
+      thumbnailPath: dynamicsThumbnailPath,
+      thumbnailLightPath: dynamicsThumbnailLightPath,
     }
   ];
 
