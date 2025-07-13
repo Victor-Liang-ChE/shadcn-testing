@@ -72,8 +72,8 @@ const R_GAS_CONSTANT = 8.314; // J/(mol*K) or m³*kPa/(mol*K) depending on units
 // Interface for a single point on the graph
 interface DataPoint {
   volume: number;
-  conversion: number;
-  selectivity?: number;
+  conversions: { [reactantName: string]: number };
+  selectivities: { [productName: string]: number };
   flowRates: { [key: string]: number };
   compositions: { [key: string]: number };
 }
@@ -457,7 +457,7 @@ export default function ReactorDesignPage() {
         profile = solvePFR_ODE_System(parsedParallelReactions, maxVol, initialFlowRates, v0_calc, components.map(c => c.name));
     } else { // CSTR
         profile = [];
-        const steps = 50; // Reduced from 100 for better performance
+        const steps = 50;
         for (let i = 1; i <= steps; i++) {
             const vol = (i / steps) * maxVol;
             const flowRates = solveCSTRParallel(parsedParallelReactions, vol, initialFlowRates, v0_calc);
@@ -467,30 +467,38 @@ export default function ReactorDesignPage() {
 
     const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
     if (!limitingReactant) return;
-    const F_A0 = limitingReactant.initialFlow;
+
+    // Identify all unique reactants and products
+    const allReactantNames = new Set<string>();
+    const allProductNames = new Set<string>();
+    parsedParallelReactions.reactions.forEach(r => {
+        r.reactants.forEach(comp => allReactantNames.add(comp.name));
+        r.products.forEach(comp => allProductNames.add(comp.name));
+    });
+    const reactantComponents = components.filter(c => allReactantNames.has(c.name));
+    const productComponents = components.filter(c => allProductNames.has(c.name));
     
     const dataPoints: DataPoint[] = profile.map(point => {
         const { volume, flowRates } = point;
-        const F_A = flowRates[limitingReactant!.name];
-        const conversion = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
         
-        // --- This is the new block for Overall Selectivity ---
-        // Note: This calculation is for the Overall Selectivity of component 'C'.
+        const conversions: { [reactantName: string]: number } = {};
+        reactantComponents.forEach(reactant => {
+            const F_initial = initialFlowRates[reactant.name] ?? 0;
+            const F_current = flowRates[reactant.name] ?? 0;
+            conversions[reactant.name] = F_initial > 1e-9 ? (F_initial - F_current) / F_initial : 0;
+        });
+
+        const selectivities: { [productName: string]: number } = {};
+        const moles_limiting_reactant_consumed = limitingReactant.initialFlow - (flowRates[limitingReactant.name] ?? 0);
         
-        // 1. Calculate the net moles of the desired product ('C') formed up to this point.
-        const moles_product_formed = (flowRates['C'] || 0) - (initialFlowRates['C'] || 0);
-
-        // 2. Calculate the moles of the limiting reactant consumed up to this point.
-        const moles_reactant_consumed = F_A0 - flowRates[limitingReactant!.name];
-
-        let selectivity: number;
-        // 3. Calculate selectivity, avoiding division by zero at the reactor inlet.
-        if (moles_reactant_consumed < 1e-9) {
-          selectivity = 0; // At the very beginning, selectivity can be considered zero.
-        } else {
-          selectivity = moles_product_formed / moles_reactant_consumed;
-        }
-        // --- End of new block ---
+        productComponents.forEach(product => {
+            const moles_product_formed = (flowRates[product.name] || 0) - (initialFlowRates[product.name] || 0);
+            if (moles_limiting_reactant_consumed < 1e-9) {
+                selectivities[product.name] = 0;
+            } else {
+                selectivities[product.name] = moles_product_formed / moles_limiting_reactant_consumed;
+            }
+        });
 
         // Calculate compositions (mol%)
         const totalFlow = Object.values(flowRates).reduce((sum, flow) => sum + flow, 0);
@@ -505,19 +513,18 @@ export default function ReactorDesignPage() {
             });
         }
 
-        return { volume, conversion, selectivity, flowRates, compositions };
+        return { volume, conversions, selectivities, flowRates, compositions };
     });
 
     // Charting logic
-    // Theme-dependent colors
     const isDark = resolvedTheme === 'dark';
     const textColor = isDark ? 'white' : '#000000';
+    const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
     
     let chartOptions: EChartsOption = {
         backgroundColor: 'transparent',
         animation: false,
         animationDuration: 0,
-        title: { text: 'Conversion vs Volume', left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
         xAxis: { 
           type: 'value', 
@@ -532,23 +539,18 @@ export default function ReactorDesignPage() {
         },
         yAxis: { 
           type: 'value', 
-          name: 'Percentage (%)', 
           nameLocation: 'middle', 
-          nameGap: 40, 
           nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
           axisLine: { lineStyle: { color: textColor } }, 
           axisTick: { lineStyle: { color: textColor } },
           axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false },
-          min: 0,
-          max: 100
+          splitLine: { show: false }
         },
         legend: { 
           orient: 'horizontal',
           bottom: '5%', 
           left: 'center',
           textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: ['Conversion', 'Selectivity'],
           itemWidth: 25,
           itemHeight: 2
         },
@@ -575,136 +577,119 @@ export default function ReactorDesignPage() {
                 }
               }
             }
-          },
-          formatter: function(params: any) {
-            if (!Array.isArray(params)) return '';
-            const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
-            
-            params.forEach((param: any) => {
-              if (param.seriesName === 'Conversion' || param.seriesName === 'Selectivity') {
-                const value = formatToSigFigs(param.value[1]);
-                const color = param.color;
-                tooltipContent += `<span style="color: ${color};">${param.seriesName}: ${value}%</span><br/>`;
-              }
-            });
-            
-            tooltipContent += '</div>';
-            return tooltipContent;
           }
         },
         series: []
     };
 
     if (graphType === 'conversion') {
-        // Find the data point closest to the current reactor volume
-        const currentVolume = parseFloat(reactorVolume);
-        const closestPoint = dataPoints.reduce((closest, point) => 
-            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-        );
-
         chartOptions.title = { text: 'Conversion vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
-        chartOptions.legend = { 
-          orient: 'horizontal',
-          bottom: '5%', 
-          left: 'center',
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: ['Conversion'],
-          itemWidth: 25,
-          itemHeight: 2
+        chartOptions.yAxis = { 
+          ...chartOptions.yAxis, 
+          name: 'Conversion (%)', 
+          nameGap: 50, 
+          min: 0, 
+          max: 100 
         };
-
-        chartOptions.series = [
-            { 
-              name: 'Conversion', 
-              type: 'line', 
-              showSymbol: false, 
-              data: dataPoints.map(p => [p.volume, p.conversion * 100]), 
-              color: '#FF6347', // Add this for legend and tooltip colors
-              lineStyle: { color: '#FF6347', width: 2 },
-              emphasis: { lineStyle: { width: 3 } },
-              markPoint: {
-                data: [{
-                  name: 'Current Volume',
-                  coord: [closestPoint.volume, closestPoint.conversion * 100],
-                  symbol: 'circle',
-                  symbolSize: 8,
-                  itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                  label: { show: false }
-                }]
-              }
-            }
-        ];
-    } else if (graphType === 'selectivity') {
-        // Find the data point closest to the current reactor volume
+        (chartOptions.legend as any).data = reactantComponents.map(c => c.name);
+        (chartOptions.tooltip as any).formatter = function(params: any) {
+          if (!Array.isArray(params) || params.length === 0) return '';
+          const volume = params[0]?.axisValue || 0;
+          let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
+          
+          params.forEach((param: any) => {
+            const value = formatToSigFigs(param.value[1]);
+            const color = param.color;
+            tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}%</span><br/>`;
+          });
+          
+          tooltipContent += '</div>';
+          return tooltipContent;
+        };
+        
         const currentVolume = parseFloat(reactorVolume);
-        const closestPoint = dataPoints.reduce((closest, point) => 
-            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-        );
+        
+        chartOptions.series = reactantComponents.map((comp, i) => {
+            const closestPoint = dataPoints.reduce((closest, point) => 
+                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+            );
+            return {
+                name: comp.name,
+                type: 'line',
+                showSymbol: false,
+                data: dataPoints.map(p => [p.volume, (p.conversions[comp.name] ?? 0) * 100]),
+                color: colors[i % colors.length],
+                lineStyle: { color: colors[i % colors.length], width: 2 },
+                emphasis: { lineStyle: { width: 3 } },
+                markPoint: {
+                    data: [{
+                        name: 'Current Volume',
+                        coord: [closestPoint.volume, (closestPoint.conversions[comp.name] ?? 0) * 100],
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                        label: { show: false }
+                    }]
+                }
+            };
+        });
 
+    } else if (graphType === 'selectivity') {
         chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
-        chartOptions.legend = { 
-          orient: 'horizontal',
-          bottom: '5%', 
-          left: 'center',
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: ['Selectivity'],
-          itemWidth: 25,
-          itemHeight: 2
+        chartOptions.yAxis = { ...chartOptions.yAxis, name: `Selectivity (mol prod / mol ${limitingReactant.name} consumed)`, nameGap: 65, min: 0 };
+        (chartOptions.legend as any).data = productComponents.map(c => c.name);
+        (chartOptions.tooltip as any).formatter = function(params: any) {
+            if (!Array.isArray(params) || params.length === 0) return '';
+            const volume = params[0]?.axisValue || 0;
+            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
+            
+            params.forEach((param: any) => {
+                const value = formatToSigFigs(param.value[1]);
+                const color = param.color;
+                tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}</span><br/>`;
+            });
+            
+            tooltipContent += '</div>';
+            return tooltipContent;
         };
+        
+        const currentVolume = parseFloat(reactorVolume);
 
-        chartOptions.series = [
-            { 
-              name: 'Selectivity', 
-              type: 'line', 
-              showSymbol: false, 
-              data: dataPoints.filter(p => p.volume > 0).map(p => [p.volume, (p.selectivity ?? 0) * 100]), 
-              color: '#00BFFF', // Add this for legend and tooltip colors
-              lineStyle: { color: '#00BFFF', width: 2 },
-              emphasis: { lineStyle: { width: 3 } },
-              markPoint: {
-                data: [{
-                  name: 'Current Volume',
-                  coord: [closestPoint.volume, (closestPoint.selectivity ?? 0) * 100],
-                  symbol: 'circle',
-                  symbolSize: 8,
-                  itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                  label: { show: false }
-                }]
-              }
-            }
-        ];
+        chartOptions.series = productComponents.map((comp, i) => {
+            const closestPoint = dataPoints.reduce((closest, point) => 
+                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+            );
+            return {
+                name: comp.name,
+                type: 'line',
+                showSymbol: false,
+                data: dataPoints.filter(p => p.volume > 1e-9).map(p => [p.volume, p.selectivities[comp.name] ?? 0]),
+                color: colors[i % colors.length],
+                lineStyle: { color: colors[i % colors.length], width: 2 },
+                emphasis: { lineStyle: { width: 3 } },
+                markPoint: {
+                    data: [{
+                        name: 'Current Volume',
+                        coord: [closestPoint.volume, closestPoint.selectivities[comp.name] ?? 0],
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                        label: { show: false }
+                    }]
+                }
+            };
+        });
     } else if (graphType === 'flowrates') {
         chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
-          type: 'value', 
+          ...chartOptions.yAxis, 
           name: 'Flow Rate (mol/s)', 
-          nameLocation: 'middle', 
-          nameGap: 50, 
-          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: textColor } }, 
-          axisTick: { lineStyle: { color: textColor } },
-          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false }
+          nameGap: 50 
         };
-        chartOptions.legend = {
-          orient: 'horizontal',
-          bottom: '5%', 
-          left: 'center',
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: components.map(c => c.name),
-          itemWidth: 25,
-          itemHeight: 2
-        };
-        chartOptions.tooltip = { 
-          trigger: 'axis', 
-          backgroundColor: isDark ? '#08306b' : '#ffffff', 
-          borderColor: isDark ? '#55aaff' : '#333333', 
-          borderWidth: 1,
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          formatter: function(params: any) {
-            if (!Array.isArray(params)) return '';
-            const volume = params[0]?.axisValue || 0;
+        (chartOptions.legend as any).data = components.map(c => c.name);
+        (chartOptions.tooltip as any).formatter = function(params: any) {
+            if (!Array.isArray(params) || !params[0]) return '';
+            const volume = params[0].axisValue || 0;
             let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
             
             params.forEach((param: any) => {
@@ -715,68 +700,47 @@ export default function ReactorDesignPage() {
             
             tooltipContent += '</div>';
             return tooltipContent;
-          }
         };
-        const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
         
-        // Find the data point closest to the current reactor volume for flow rates chart
         const currentVolume = parseFloat(reactorVolume);
-        const closestPoint = dataPoints.reduce((closest, point) => 
-            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-        );
         
-        chartOptions.series = components.map((comp, i) => ({
-            name: comp.name,
-            type: 'line',
-            showSymbol: false,
-            data: dataPoints.map(p => [p.volume, p.flowRates[comp.name]]),
-            color: colors[i % colors.length], // Add this for legend and tooltip colors
-            lineStyle: { color: colors[i % colors.length], width: 2 },
-            emphasis: { lineStyle: { width: 3 } },
-            markPoint: {
-              data: [{
-                name: 'Current Volume',
-                coord: [closestPoint.volume, closestPoint.flowRates[comp.name]],
-                symbol: 'circle',
-                symbolSize: 8,
-                itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                label: { show: false }
-              }]
-            }
-        }));
+        chartOptions.series = components.map((comp, i) => {
+            const closestPoint = dataPoints.reduce((closest, point) => 
+                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+            );
+            return {
+                name: comp.name,
+                type: 'line',
+                showSymbol: false,
+                data: dataPoints.map(p => [p.volume, p.flowRates[comp.name]]),
+                color: colors[i % colors.length],
+                lineStyle: { color: colors[i % colors.length], width: 2 },
+                emphasis: { lineStyle: { width: 3 } },
+                markPoint: {
+                    data: [{
+                        name: 'Current Volume',
+                        coord: [closestPoint.volume, closestPoint.flowRates[comp.name]],
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                        label: { show: false }
+                    }]
+                }
+            };
+        });
     } else { // 'composition'
         chartOptions.title = { text: 'Composition vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
         chartOptions.yAxis = { 
-          type: 'value', 
+          ...chartOptions.yAxis, 
           name: 'Composition (mol%)', 
-          nameLocation: 'middle', 
           nameGap: 50, 
-          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: textColor } }, 
-          axisTick: { lineStyle: { color: textColor } },
-          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false },
-          min: 0,
-          max: 100
+          min: 0, 
+          max: 100 
         };
-        chartOptions.legend = {
-          orient: 'horizontal',
-          bottom: '5%', 
-          left: 'center',
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          data: components.map(c => c.name),
-          itemWidth: 25,
-          itemHeight: 2
-        };
-        chartOptions.tooltip = { 
-          trigger: 'axis', 
-          backgroundColor: isDark ? '#08306b' : '#ffffff', 
-          borderColor: isDark ? '#55aaff' : '#333333', 
-          borderWidth: 1,
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          formatter: function(params: any) {
-            if (!Array.isArray(params)) return '';
-            const volume = params[0]?.axisValue || 0;
+        (chartOptions.legend as any).data = components.map(c => c.name);
+        (chartOptions.tooltip as any).formatter = function(params: any) {
+            if (!Array.isArray(params) || !params[0]) return '';
+            const volume = params[0].axisValue || 0;
             let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
             
             params.forEach((param: any) => {
@@ -787,35 +751,34 @@ export default function ReactorDesignPage() {
             
             tooltipContent += '</div>';
             return tooltipContent;
-          }
         };
-        const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
         
-        // Find the data point closest to the current reactor volume for composition chart
         const currentVolume = parseFloat(reactorVolume);
-        const closestPoint = dataPoints.reduce((closest, point) => 
-            Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-        );
-        
-        chartOptions.series = components.map((comp, i) => ({
-            name: comp.name,
-            type: 'line',
-            showSymbol: false,
-            data: dataPoints.map(p => [p.volume, p.compositions[comp.name]]),
-            color: colors[i % colors.length], // Add this for legend and tooltip colors
-            lineStyle: { color: colors[i % colors.length], width: 2 },
-            emphasis: { lineStyle: { width: 3 } },
-            markPoint: {
-              data: [{
-                name: 'Current Volume',
-                coord: [closestPoint.volume, closestPoint.compositions[comp.name]],
-                symbol: 'circle',
-                symbolSize: 8,
-                itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                label: { show: false }
-              }]
-            }
-        }));
+
+        chartOptions.series = components.map((comp, i) => {
+            const closestPoint = dataPoints.reduce((closest, point) => 
+                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
+            );
+            return {
+                name: comp.name,
+                type: 'line',
+                showSymbol: false,
+                data: dataPoints.map(p => [p.volume, p.compositions[comp.name]]),
+                color: colors[i % colors.length],
+                lineStyle: { color: colors[i % colors.length], width: 2 },
+                emphasis: { lineStyle: { width: 3 } },
+                markPoint: {
+                    data: [{
+                        name: 'Current Volume',
+                        coord: [closestPoint.volume, closestPoint.compositions[comp.name]],
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
+                        label: { show: false }
+                    }]
+                }
+            };
+        });
     }
 
     setGraphOptions(chartOptions);
