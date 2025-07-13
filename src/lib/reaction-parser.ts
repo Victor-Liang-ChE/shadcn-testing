@@ -60,20 +60,62 @@ export const calculateRateConstant = (A: number, Ea: number, T: number): number 
   return A * Math.exp(-Ea / (R_GAS_CONSTANT * T));
 };
 
+/**
+ * Parses a string of chemical compounds (e.g., "2A + B + 0.5C") into a stoichiometry object.
+ * @param compoundString The string of reactants or products.
+ * @returns An object mapping each compound name to its coefficient, e.g., { A: 2, B: 1, C: 0.5 }.
+ */
+const parseStoichiometryFromString = (compoundString: string): { [key: string]: number } => {
+  const stoichiometry: { [key: string]: number } = {};
+  if (!compoundString || compoundString.trim() === '') {
+    return stoichiometry;
+  }
+
+  // This regex finds all chemical terms and their optional coefficients.
+  // It looks for patterns like "2A", "B", "0.5C", or "1/2D".
+  const termRegex = /(?:(\d+\s*\/\s*\d+|\d*\.\d+|\d+)\s*)?([A-Za-z][A-Za-z0-9]*)/g;
+  
+  const matches = compoundString.matchAll(termRegex);
+
+  for (const match of matches) {
+    // match[1] is the coefficient string (e.g., "2", "0.5", "1/2") or undefined if not present.
+    // match[2] is the compound name (e.g., "A", "C", "D").
+    const coeffStr = match[1] ? match[1].replace(/\s/g, '') : undefined;
+    const compoundName = match[2];
+
+    let coefficient = 1.0; // Default coefficient is 1.0 if not specified.
+    if (coeffStr) {
+      if (coeffStr.includes('/')) {
+        const parts = coeffStr.split('/');
+        coefficient = parseFloat(parts[0]) / parseFloat(parts[1]);
+      } else {
+        coefficient = parseFloat(coeffStr);
+      }
+    }
+    
+    // Add the parsed coefficient to the stoichiometry object for the given compound.
+    stoichiometry[compoundName] = (stoichiometry[compoundName] || 0) + coefficient;
+  }
+
+  return stoichiometry;
+};
+
 // Function to parse compounds from reaction stoichiometry
-export const parseCompoundsFromReaction = (reaction: string): string[] => {
-  // Remove spaces and split by -> to get reactants and products
-  const cleanReaction = reaction.replace(/\s/g, '');
-  const [reactants, products] = cleanReaction.split('->');
+export const parseCompoundsFromReaction = (reactionStr: string): string[] => {
+  if (!reactionStr) {
+    return [];
+  }
   
-  if (!reactants || !products) return [];
+  // Use a regex that specifically looks for valid chemical names (starts with a letter).
+  const nameRegex = /[A-Za-z][A-Za-z0-9]*/g;
+  const matches = reactionStr.match(nameRegex);
   
-  // Extract compound names (letters only, ignoring coefficients)
-  const reactantCompounds = reactants.split('+').map(r => r.replace(/\d/g, ''));
-  const productCompounds = products.split('+').map(p => p.replace(/\d/g, ''));
-  
-  // Combine and remove duplicates
-  return [...new Set([...reactantCompounds, ...productCompounds])].filter(c => c.length > 0);
+  if (!matches) {
+    return [];
+  }
+
+  // Return a unique list of found names.
+  return Array.from(new Set(matches));
 };
 
 // Stoichiometry Parsing Logic
@@ -298,37 +340,146 @@ export const parseParallelReactions = (
       continue; // Skip incomplete reactions
     }
 
-    // Build reaction string from the reaction data
-    const arrow = reactionData.isEquilibrium ? '<=>' : '->';
-    const rxnString = `${reactionData.reactants} ${arrow} ${reactionData.products}`;
+    const reactantStoichiometry = parseStoichiometryFromString(reactionData.reactants);
+    const productStoichiometry = parseStoichiometryFromString(reactionData.products);
     
-    // Parse this single reaction with its specific kinetic data
-    const { parsedReaction, error } = parseSingleReaction(
-      rxnString,
-      components,
-      kinetics,
-      reactionData,
-      forCalculation
-    );
+    // Map the stoichiometry to ParsedComponents
+    const parsedReactants: ParsedComponent[] = [];
+    const parsedProducts: ParsedComponent[] = [];
+    
+    // Process reactants
+    for (const [name, coeff] of Object.entries(reactantStoichiometry)) {
+      const component = components.find(c => c.name === name);
+      if (!component) continue; // Skip if component not found in feed list
 
-    if (error && forCalculation) {
+      let orderNum: number | undefined = 1; // Default order is 1
+      const possibleKeys = [reactionData.id, `${reactionData.id}-fwd`];
+      for (const key of possibleKeys) {
+        if (key && component.reactionOrders?.[key] !== undefined) {
+          orderNum = parseFloat(component.reactionOrders[key]);
+          break;
+        }
+      }
+
+      if (isNaN(orderNum) || orderNum < 0) {
+        if (forCalculation) {
+          return {
+            reactions: [],
+            allInvolvedComponents: [],
+            error: `Invalid forward reaction order for ${name}. Must be a non-negative number.`
+          };
+        }
+        orderNum = 1; // Default to 1 if not calculating
+      }
+
+      parsedReactants.push({
+        ...component,
+        stoichiometricCoefficient: coeff,
+        role: 'reactant',
+        reactionOrderNum: orderNum
+      });
+    }
+
+    // Process products
+    for (const [name, coeff] of Object.entries(productStoichiometry)) {
+      const component = components.find(c => c.name === name);
+      if (!component) continue; // Skip if component not found in feed list
+
+      let orderNumBackward: number | undefined;
+      if (reactionData.isEquilibrium) {
+        orderNumBackward = 1; // Default order is 1
+        const reactionSpecificIdRev = `${reactionData.id}-rev`;
+        if (component.reactionOrders?.[reactionSpecificIdRev] !== undefined) {
+          orderNumBackward = parseFloat(component.reactionOrders[reactionSpecificIdRev]);
+        }
+
+        if (isNaN(orderNumBackward) || orderNumBackward < 0) {
+          if (forCalculation) {
+            return {
+              reactions: [],
+              allInvolvedComponents: [],
+              error: `Invalid backward reaction order for ${name}. Must be a non-negative number.`
+            };
+          }
+          orderNumBackward = 1; // Default to 1 if not calculating
+        }
+      }
+
+      parsedProducts.push({
+        ...component,
+        stoichiometricCoefficient: coeff,
+        role: 'product',
+        reactionOrderNumBackward: orderNumBackward
+      });
+    }
+
+    // Calculate rate constants at temperature T
+    const T_K = parseFloat(kinetics.reactionTempK);
+    if (isNaN(T_K) || T_K <= 0) {
+      if (forCalculation) {
+        return {
+          reactions: [],
+          allInvolvedComponents: [],
+          error: "Reaction temperature must be a positive number."
+        };
+      }
+    }
+
+    let kAtT: number | undefined;
+    let kBackwardAtT: number | undefined;
+
+    // Forward rate constant
+    const A = parseFloat(reactionData.AValue);
+    const Ea = parseFloat(reactionData.EaValue);
+    
+    if (!isNaN(A) && !isNaN(Ea) && A > 0 && Ea >= 0 && T_K > 0) {
+      kAtT = calculateRateConstant(A, Ea, T_K);
+    } else if (forCalculation) {
       return {
         reactions: [],
         allInvolvedComponents: [],
-        error: `Error in reaction ${i + 1}: ${error}`
+        error: "Invalid A or Ea value for forward Arrhenius equation. A must be positive, Ea must be non-negative."
       };
     }
 
-    if (parsedReaction) {
-      parsedReactions.push(parsedReaction);
-      
-      // Add all involved components to the global map
-      parsedReaction.allInvolved.forEach(comp => {
-        if (!allComponentsMap.has(comp.name)) {
-          allComponentsMap.set(comp.name, comp);
+    // Backward rate constant for equilibrium reactions
+    if (reactionData.isEquilibrium) {
+      const A_bwd = parseFloat(reactionData.AValueBackward || "0");
+      const Ea_bwd = parseFloat(reactionData.EaValueBackward || "0");
+
+      if (isNaN(A_bwd) || isNaN(Ea_bwd) || A_bwd < 0 || Ea_bwd < 0) {
+        if (forCalculation) {
+          return {
+            reactions: [],
+            allInvolvedComponents: [],
+            error: "Invalid A or Ea value for backward Arrhenius equation. A_bwd and Ea_bwd must be non-negative."
+          };
         }
-      });
+      } else if (A_bwd > 0 && T_K > 0) {
+        kBackwardAtT = calculateRateConstant(A_bwd, Ea_bwd, T_K);
+      }
     }
+
+    // Combine all involved components
+    const allInvolved = [...new Set([...parsedReactants, ...parsedProducts])];
+    
+    const parsedReaction: ParsedReaction = {
+      reactants: parsedReactants,
+      products: parsedProducts,
+      allInvolved,
+      rateConstantAtT: kAtT,
+      rateConstantBackwardAtT: kBackwardAtT,
+      isEquilibriumReaction: reactionData.isEquilibrium
+    };
+
+    parsedReactions.push(parsedReaction);
+    
+    // Add all involved components to the global map
+    allInvolved.forEach(comp => {
+      if (!allComponentsMap.has(comp.name)) {
+        allComponentsMap.set(comp.name, comp);
+      }
+    });
   }
 
   return {
@@ -507,16 +658,8 @@ export const parseSingleReaction = (
             parsedReaction: null,
             error: forCalculation ? "Invalid A or Ea value for backward Arrhenius equation. A_bwd and Ea_bwd must be non-negative." : null
           };
-      } else if (A_bwd > 0) { // Only calculate if A_bwd is positive, otherwise k_bwd is 0
+      } else if (A_bwd > 0 && T_K > 0) {
           kBackwardAtT = calculateRateConstant(A_bwd, Ea_bwd, T_K);
-          if (kBackwardAtT < 0 && forCalculation) { // Should not happen if A_bwd > 0
-               return {
-                 parsedReaction: null,
-                 error: "Calculated backward rate constant (k_bwd) is negative."
-               };
-          }
-      } else {
-          kBackwardAtT = 0; // If A_bwd is 0, k_bwd is 0
       }
     }
 
