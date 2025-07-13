@@ -407,7 +407,7 @@ export default function ReactorDesignPage() {
     }
     debounceTimer.current = setTimeout(() => {
       handleCalculate();
-    }, 1); // 1ms debounce delay
+    }, 50); // 50ms debounce delay
   }, [handleCalculate]);
 
   // Effect to run calculation when primary inputs change (debounced)
