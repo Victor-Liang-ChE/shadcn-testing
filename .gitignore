@@ -47,5 +47,5 @@ __pycache__/
 *$py.class
 .env.local content:
 
-test
-test2
+test.md
+test2.md
