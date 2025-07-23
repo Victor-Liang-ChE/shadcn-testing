@@ -1,17 +1,9 @@
-import type { Metadata } from "next";
 import { Analytics } from "@vercel/analytics/next"
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import Navbar from "@/components/Navbar";
 import Script from 'next/script';
 
-// Remove Inter font initialization if not the default
-// const inter = Inter({ subsets: ["latin"] });
-
-export const metadata: Metadata = {
-  title: "Victor Liang",
-  description: "Personal Website",
-};
 
 export default function RootLayout({
   children,
