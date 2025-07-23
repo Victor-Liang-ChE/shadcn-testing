@@ -1,1833 +1,1618 @@
-'use client';
+"use client"
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useTheme } from "next-themes";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { Slider } from "@/components/ui/slider";
-import { AlertCircle, PlusCircle, Trash2, BarChart3 } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react'
+import ReactECharts from 'echarts-for-react'
+import { EChartsOption } from 'echarts'
+import { PlusCircle, Trash2, ArrowLeft } from 'lucide-react'
+import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
+import { Slider } from '@/components/ui/slider'
+import { useTheme } from 'next-themes';
+import { Button } from '@/components/ui/button';
+import { CardTitle } from '@/components/ui/card';
+import { Card, CardHeader, CardContent } from '@/components/ui/card';
+import { solvePFR_ODE_System } from '@/lib/reactor-solver'
+import { parseParallelReactions } from '@/lib/reaction-parser';
+import { Select } from '@/components/ui/select';
+import { SelectItem } from '@/components/ui/select';
+import { SelectTrigger } from '@/components/ui/select';
+import { SelectValue } from '@/components/ui/select';
+import { SelectContent } from '@/components/ui/select';
 
-
-// Import ECharts components
-import ReactECharts from 'echarts-for-react';
-import * as echarts from 'echarts/core';
-import type { EChartsOption } from 'echarts';
-import { LineChart, ScatterChart } from 'echarts/charts';
-import {
-  TitleComponent,
-  TooltipComponent,
-  GridComponent,
-  LegendComponent,
-  MarkLineComponent,
-  MarkPointComponent,
-  ToolboxComponent
-} from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
-
-// Register necessary ECharts components
-echarts.use([
-  TitleComponent,
-  TooltipComponent,
-  GridComponent,
-  LegendComponent,
-  MarkLineComponent,
-  MarkPointComponent,
-  ToolboxComponent,
-  LineChart,
-  ScatterChart,
-  CanvasRenderer
-]);
-
-// Import from lib files
-import {
-  Component,
-  Kinetics,
-  ReactionData,
-  parseCompoundsFromReaction,
-  parseParallelReactions
-} from '@/lib/reaction-parser';
-import {
-  CalculationResults,
-  solveCSTRParallel,
-  solvePFR_ODE_System, // Use the new ODE system solver
-  PFR_ODE_ProfilePoint, // Use the new profile point type
-  findLimitingReactant
-} from '@/lib/reactor-solver';
-import {
-  solveRecycleSystem,
-  RecycleCalculationResult
-} from '@/lib/recycle-solver';
-
-// Helper types
-type ReactorType = 'PFR' | 'CSTR';
-type ReactionPhase = 'Liquid' | 'Gas';
-
-const R_GAS_CONSTANT = 8.314; // J/(mol*K) or m³*kPa/(mol*K) depending on units
-
-// Interface for a single point on the graph
-interface DataPoint {
-  volume: number;
-  conversions: { [reactantName: string]: number };
-  selectivities: { [productName: string]: number };
-  flowRates: { [key: string]: number };
-  compositions: { [key: string]: number };
+// --- Type Definitions ---
+interface ReactionSetup {
+  id: string
+  AValue: string
+  EaValue: string
+  isEquilibrium: boolean
+  AValueBackward?: string
+  EaValueBackward?: string
 }
 
-interface ExtendedCalculationResults extends CalculationResults {
-  dataPoints: DataPoint[];
+interface ComponentSetup {
+  id: string
+  name: string
+  reactionData: {
+    [reactionId: string]: {
+      stoichiometry: string
+      order: string
+      orderReverse?: string // Added for reversible reactions
+    }
+  }
+  initialFlowRate?: string
 }
 
-export default function ReactorDesignPage() {
-  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
-  
-  const [reactorType, setReactorType] = useState<ReactorType>('CSTR');
-  const [reactionPhase, setReactionPhase] = useState<ReactionPhase>('Liquid');
-  const [operationMode, setOperationMode] = useState<'SinglePass' | 'Recycle'>('SinglePass');
-  const [reactionString, setReactionString] = useState<string>('A + B -> C');
-  const [reactions, setReactions] = useState<ReactionData[]>([
-    { id: '1', reactants: 'A + B', products: 'C', AValue: '1e6', EaValue: '50000', AValueBackward: '1e4', EaValueBackward: '60000', isEquilibrium: false },
-    { id: '2', reactants: 'C', products: 'D', AValue: '5e5', EaValue: '45000', AValueBackward: '1e3', EaValueBackward: '55000', isEquilibrium: false }
-  ]); // Parallel reactions: A+B->C and C->D
-  
-  // State for components (auto-generated but with editable reaction orders)
-  const [components, setComponents] = useState<Component[]>([]);
-  
-  const [kinetics, setKinetics] = useState<Kinetics>({
-    rateConstantInputMode: 'directK',
-    kValue: '0.1', // Units depend on reaction order and concentration units
-    AValue: '1e6',
-    EaValue: '50000', // e.g., J/mol
-    reactionTempK: '350', // Kelvin
-  });
+type ReactorType = 'PFR' | 'CSTR'
+type GraphType = 'selectivity' | 'volume' | 'conversion' | 'flowrates' | 'composition' | 'selectivityVsConversion';
 
-  const [reactorVolume, setReactorVolume] = useState<string>('100'); // e.g., cubic meters
-  const [totalPressure, setTotalPressure] = useState<string>('1'); // e.g., bar (for gas phase)
-  const [volumetricFlowRate, setVolumetricFlowRate] = useState<string>('1'); // v0 (for liquid phase, m³/s)
-  const [maxVolumeSlider, setMaxVolumeSlider] = useState<string>('1000'); // User-defined max for volume slider
-  const [maxTemperatureSlider, setMaxTemperatureSlider] = useState<string>('500'); // User-defined max for temperature slider
-  const [maxFlowRateSlider, setMaxFlowRateSlider] = useState<string>('10'); // User-defined max for flow rate slider
-  const [maxPressureSlider, setMaxPressureSlider] = useState<string>('50'); // User-defined max for pressure slider
-  const [recycleFraction, setRecycleFraction] = useState<string>('50'); // Recycle fraction percentage (0-100%)
+// Default Data (now used as initial state for the editable form)
+const initialReactions: ReactionSetup[] = [
+  { id: '1', AValue: '3.66e14', EaValue: '101600', isEquilibrium: false },
+  { id: '2', AValue: '4.77e16', EaValue: '110850', isEquilibrium: false },
+]
 
-  const [calculationResults, setCalculationResults] = useState<CalculationResults | null>(null);
-  const [recycleResults, setRecycleResults] = useState<RecycleCalculationResult | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [calculationError, setCalculationError] = useState<string | null>(null);
+const initialComponents: ComponentSetup[] = [
+  { id: 'comp-A', name: '1-Butene', reactionData: { '1': { stoichiometry: '-1', order: '1' }, '2': { stoichiometry: '-1', order: '1' } } },
+  { id: 'comp-B', name: 'Isobutane', reactionData: { '1': { stoichiometry: '-1', order: '1' }, '2': { stoichiometry: '0', order: '0' } } },
+  { id: 'comp-C', name: 'Isooctane', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-1', order: '1' } } },
+  { id: 'comp-D', name: 'Dodecane', reactionData: { '1': { stoichiometry: '0', order: '0' }, '2': { stoichiometry: '1', order: '0' } } },
+]
 
-  // Debounce timer reference
-  const debounceTimer = useRef<NodeJS.Timeout | null>(null);
 
-  // Graph-related state
-  const [showGraph, setShowGraph] = useState(false);
-  const [graphType, setGraphType] = useState<'conversion' | 'selectivity' | 'flowrates' | 'composition'>('conversion');
-  const [graphOptions, setGraphOptions] = useState<EChartsOption>({});
-  const echartsRef = useRef<ReactECharts | null>(null);
+// --- Calculation Engine (Now more generic) ---
+const R = 8.314
 
-  // Handle Enter key press to trigger calculation
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleCalculate();
-    }
-  };
+// Helper function to perform linear interpolation
+const interpolate = (
+  targetX: number,
+  p1: { x: number; y: number },
+  p2: { x: number; y: number }
+): number => {
+  if (p1.x === p2.x) {
+    return p1.y; // Avoid division by zero
+  }
+  // Standard linear interpolation formula
+  return p1.y + ((targetX - p1.x) * (p2.y - p1.y)) / (p2.x - p1.x);
+};
 
-  // Component Management
-  const addReaction = () => {
-    // Cap at 6 reactions maximum
-    if (reactions.length >= 6) {
-      return;
-    }
-    const newId = (reactions.length + 1).toString();
-    setReactions([...reactions, { id: newId, reactants: '', products: '', AValue: '1e6', EaValue: '50000', AValueBackward: '1e4', EaValueBackward: '60000', isEquilibrium: false }]);
-  };
+const calculateKinetics = (reactions: ReactionSetup[], tempK: number) => {
+  // This assumes the first two reactions are the key ones for the model.
+  const k1 = parseFloat(reactions[0]?.AValue || '0') * Math.exp(-parseFloat(reactions[0]?.EaValue || '0') / (R * tempK))
+  const k2 = parseFloat(reactions[1]?.AValue || '0') * Math.exp(-parseFloat(reactions[1]?.EaValue || '0') / (R * tempK))
+  return { k1, k2 }
+}
 
-  const removeReaction = (id: string) => {
-    const updatedReactions = reactions.filter(reaction => reaction.id !== id);
-    setReactions(updatedReactions);
-    
-    // Update the main reaction string to reflect the first remaining reaction
-    if (updatedReactions.length > 0) {
-      const firstReaction = updatedReactions[0];
-      const arrow = firstReaction.isEquilibrium ? '<=>' : '->';
-      setReactionString(`${firstReaction.reactants} ${arrow} ${firstReaction.products}`);
-    } else {
-      // If no reactions left, set a default
-      setReactionString('A + B -> C');
-    }
-  };
+// This is the new, debug-friendly solver function
+const solveForInitialFlows = (
+  targetProductionRate: number,
+  targetComponentName: string,
+  reactorVolume: number,
+  reactorType: ReactorType,
+  molarRatios: { numeratorId: string; value: number }[],
+  reactions: ReactionSetup[],
+  components: ComponentSetup[],
+  tempK: number,
+  simBasis: { limitingReactantId: string; desiredProductId: string }
+): { [key: string]: number } | null => {
+  const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+  if (!limitingReactant) {
+    console.error("DEBUG: Limiting reactant not found in component list.");
+    return null;
+  }
 
-  const updateReaction = (id: string, field: 'reactants' | 'products' | 'AValue' | 'EaValue' | 'AValueBackward' | 'EaValueBackward' | 'isEquilibrium', value: string | boolean) => {
-    setReactions(reactions.map(reaction => 
-      reaction.id === id ? { ...reaction, [field]: value } : reaction
-    ));
-    
-    // Update the main reaction string based on the updated reaction
-    if (field === 'reactants' || field === 'products' || field === 'isEquilibrium') {
-      const updatedReaction = reactions.find(r => r.id === id);
-      if (updatedReaction) {
-        const newReactants = field === 'reactants' ? value as string : updatedReaction.reactants;
-        const newProducts = field === 'products' ? value as string : updatedReaction.products;
-        const reactionIsEquilibrium = field === 'isEquilibrium' ? value as boolean : updatedReaction.isEquilibrium;
-        const arrow = reactionIsEquilibrium ? '<=>' : '->';
-        setReactionString(`${newReactants} ${arrow} ${newProducts}`);
-      }
-    }
-  };
+  // --- Start of Debug Logging ---
+  console.log("--- [Debug] Starting solveForInitialFlows ---");
+  console.log(`Target: ${targetProductionRate.toFixed(4)} mol/s of ${targetComponentName}`);
+  console.log(`At Reactor Volume: ${reactorVolume} m³ | Temp: ${tempK} K`);
 
-  const handleComponentChange = (id: string, field: keyof Component, value: string | boolean | { [reactionId: string]: string }) => {
-    if (field === 'reactionOrders') {
-      // Update the reaction orders for a specific component
-      setComponents(prevComponents => 
-        prevComponents.map(comp => 
-          comp.id === id ? { ...comp, reactionOrders: value as { [reactionId: string]: string } } : comp
-        )
-      );
-    } else if (field === 'initialFlowRate') {
-      // Update the initial flow rate for a specific component
-      setComponents(prevComponents => 
-        prevComponents.map(comp => 
-          comp.id === id ? { ...comp, initialFlowRate: value as string } : comp
-        )
-      );
-    }
-  };
+  const errorFunction = (limitingReactantFlowGuess: number): number => {
+    if (limitingReactantFlowGuess <= 0) return 1e6;
 
-  const handleKineticsChange = (field: keyof Kinetics, value: string) => {
-    setKinetics(prev => ({ ...prev, [field]: value }));
-  };
-
-  // Auto-detect components from reactions and update state
-  useEffect(() => {
-    const allDetectedNames = new Set<string>();
-    const reactantNames = new Set<string>();
-    const productNames = new Set<string>();
-    
-    reactions.forEach(reaction => {
-      const reactionStr = `${reaction.reactants} -> ${reaction.products}`;
-      const names = parseCompoundsFromReaction(reactionStr);
-      names.forEach(name => allDetectedNames.add(name));
-      
-      // Track which components are reactants vs products
-      if (reaction.reactants) {
-        const reactants = parseCompoundsFromReaction(reaction.reactants + ' -> dummy');
-        reactants.forEach(name => reactantNames.add(name));
-      }
-      if (reaction.products) {
-        const products = parseCompoundsFromReaction('dummy -> ' + reaction.products);
-        products.forEach(name => productNames.add(name));
-      }
-    });
-    
-    const detectedNames = Array.from(allDetectedNames);
-    const newComponents = detectedNames.map(name => {
-      // Find existing component to preserve user input
-      const existingComponent = components.find(comp => comp.name === name);
-      
-      // Set initial flow rate: 1 if reactant in any reaction, 0 if only product
-      // Special case: C should start with 0 flow rate (intermediate product)
-      const initialFlowRate = name === 'C' ? '0' : (reactantNames.has(name) ? '1' : '0');
-      
-      // Initialize reaction orders for each reaction
-      const reactionOrders: { [reactionId: string]: string } = {};
-      reactions.forEach(reaction => {
-        const isReactantInReaction = reaction.reactants && reaction.reactants.toLowerCase().includes(name.toLowerCase());
-        const isProductInReaction = reaction.products && reaction.products.toLowerCase().includes(name.toLowerCase());
-        
-        if (reaction.isEquilibrium) {
-          // For equilibrium reactions, add both forward and backward keys
-          const forwardKey = `${reaction.id}-fwd`;
-          const backwardKey = `${reaction.id}-rev`;
-          
-          if (isReactantInReaction) {
-            reactionOrders[forwardKey] = existingComponent?.reactionOrders?.[forwardKey] || '1';
-          }
-          if (isProductInReaction) {
-            reactionOrders[backwardKey] = existingComponent?.reactionOrders?.[backwardKey] || '1';
-          }
-        } else {
-          // For forward-only reactions
-          if (isReactantInReaction) {
-            reactionOrders[reaction.id] = existingComponent?.reactionOrders?.[reaction.id] || '1';
-          }
+    const initialFlowRates = components.reduce((acc, comp) => {
+        if (comp.id === limitingReactant.id) { acc[comp.name] = limitingReactantFlowGuess; } 
+        else {
+            const ratioInfo = molarRatios.find(r => r.numeratorId === comp.id);
+            acc[comp.name] = ratioInfo ? limitingReactantFlowGuess * ratioInfo.value : 0;
         }
-      });
-      
+        return acc;
+    }, {} as {[key: string]: number});
+    
+    // Self-contained, single-point calculation
+    let outletFlows: { [key: string]: number };
+    const v0 = 1.0; // Basis for liquid phase
+    // Map ComponentSetup[] to Component[] for parseParallelReactions
+    const componentsForParsing = components.map(comp => ({
+      ...comp,
+      initialFlowRate: (comp as any).initialFlowRate !== undefined ? (comp as any).initialFlowRate : '0'
+    }));
+    const kineticsForParsing = {
+      rateConstantInputMode: 'arrhenius' as const,
+      kValue: '0',
+      AValue: '0',
+      EaValue: '0',
+      reactionTempK: tempK.toString()
+    };
+    // Convert ReactionSetup[] to ReactionData[]
+    const reactionsData = reactions.map(r => {
+      const reactants = components
+        .filter(c => parseFloat(c.reactionData[r.id]?.stoichiometry || '0') < 0)
+        .map(c => {
+          const s = Math.abs(parseFloat(c.reactionData[r.id]?.stoichiometry || '0'));
+          return s === 1 ? c.name : `${s} ${c.name}`;
+        })
+        .join(' + ');
+      const products = components
+        .filter(c => parseFloat(c.reactionData[r.id]?.stoichiometry || '0') > 0)
+        .map(c => {
+          const s = parseFloat(c.reactionData[r.id]?.stoichiometry || '0');
+          return s === 1 ? c.name : `${s} ${c.name}`;
+        })
+        .join(' + ');
       return {
-        id: `comp-${name}`,
-        name,
-        initialFlowRate: existingComponent?.initialFlowRate || initialFlowRate,
-        reactionOrders
+        id: r.id,
+        reactants,
+        products,
+        AValue: r.AValue,
+        EaValue: r.EaValue,
+        AValueBackward: r.AValueBackward,
+        EaValueBackward: r.EaValueBackward,
+        isEquilibrium: r.isEquilibrium,
       };
     });
-    
-    // Only update if components actually changed to prevent loops
-    if (JSON.stringify(newComponents) !== JSON.stringify(components)) {
-      setComponents(newComponents);
-    }
-  }, [reactions]); // Only depend on reactions, not components to avoid loops
+    const parsed = parseParallelReactions('', componentsForParsing, kineticsForParsing, reactionsData, false);
 
-  // Memoize parsed parallel reactions to prevent unnecessary recalculations
-  const parsedParallelReactions = useMemo(() => {
-    const parallelResult = parseParallelReactions(reactionString, components, kinetics, reactions, false);
-    return parallelResult;
-  }, [reactionString, components, kinetics, reactions]);
-
-  // Update reaction string when reactions change (but don't trigger infinite loops)
-  useEffect(() => {
-    if (reactions.length > 0) {
-      const firstReaction = reactions[0];
-      const arrow = firstReaction.isEquilibrium ? '<=>' : '->';
-      const newReactionString = `${firstReaction.reactants} ${arrow} ${firstReaction.products}`;
-      
-      // Only update if different to prevent loops
-      if (newReactionString !== reactionString) {
-        setReactionString(newReactionString);
-      }
-    }
-  }, [reactions, reactionString]);
-
-  // Main Calculation Logic - Updated for single pass and recycle modes
-  const handleCalculate = useCallback(async () => {
-    setIsLoading(true);
-    setCalculationResults(null);
-    setRecycleResults(null);
-    setCalculationError(null);
-
-    if (parsedParallelReactions.error || parsedParallelReactions.reactions.length === 0) {
-      setCalculationError(parsedParallelReactions.error || "No valid reactions to process.");
-      setIsLoading(false);
-      return;
+    if (reactorType === 'CSTR') {
+        outletFlows = solveCSTRParallel(parsed, reactorVolume, initialFlowRates, v0, 'Liquid', 1, tempK);
+    } else {
+        const componentNames = parsed.allInvolvedComponents.map(c => c.name);
+        const profile = solvePFR_ODE_System(parsed, reactorVolume, initialFlowRates, v0, componentNames);
+        outletFlows = profile.length > 0 ? profile[profile.length - 1].flowRates : initialFlowRates;
     }
     
-    // Common parameters
-    const V = parseFloat(reactorVolume);
-    const T_K = parseFloat(kinetics.reactionTempK);
-    const v0_input_Ls = parseFloat(volumetricFlowRate);
-    const initialFlowRates = components.reduce((acc, comp) => {
-      acc[comp.name] = parseFloat(comp.initialFlowRate) || 0;
-      return acc;
-    }, {} as { [key: string]: number });
-
-    let v0_calc: number;
-    if (reactionPhase === 'Liquid') {
-      if (isNaN(v0_input_Ls) || v0_input_Ls <= 0) {
-        setCalculationError("Liquid phase requires a positive volumetric flow rate.");
-        setIsLoading(false);
-        return;
-      }
-      v0_calc = v0_input_Ls;
-    } else { // Gas Phase
-      const P_total_kPa = parseFloat(totalPressure) * 100;
-      if (isNaN(P_total_kPa) || P_total_kPa <= 0) {
-        setCalculationError("Gas phase requires a positive total pressure.");
-        setIsLoading(false);
-        return;
-      }
-      const F_total0 = Object.values(initialFlowRates).reduce((sum, f) => sum + f, 0);
-      if (T_K <= 0) {
-        setCalculationError("Gas phase requires a positive absolute temperature.");
-        setIsLoading(false);
-        return;
-      }
-      const R_GAS_CONSTANT = 8.314;
-      v0_calc = (F_total0 * R_GAS_CONSTANT * T_K) / P_total_kPa;
-    }
-
-    try {
-      if (operationMode === 'Recycle') {
-        // Solve recycle system
-        const recycleResult = await solveRecycleSystem(
-          parsedParallelReactions,
-          V,
-          initialFlowRates,
-          v0_input_Ls,
-          components,
-          reactorType,
-          reactionPhase,
-          kinetics,
-          parseFloat(recycleFraction),
-          totalPressure
-        );
-        
-        if (recycleResult.calculationError || recycleResult.error) {
-          setCalculationError(recycleResult.calculationError || recycleResult.error || "Recycle calculation failed.");
-        } else {
-          setRecycleResults(recycleResult);
-        }
-      } else {
-        // Single pass operation
-        let finalFlowRates: { [key: string]: number };
-
-        if (reactorType === 'PFR') {
-          const pfrProfile = solvePFR_ODE_System(
-            parsedParallelReactions, V, initialFlowRates, v0_calc, components.map(c => c.name)
-          );
-          finalFlowRates = pfrProfile.length > 0 ? pfrProfile[pfrProfile.length - 1].flowRates : initialFlowRates;
-        } else { // CSTR
-          finalFlowRates = solveCSTRParallel(
-              parsedParallelReactions, V, initialFlowRates, v0_calc
-          );
-        }
-        
-        const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
-        let conversion: { reactantName: string; value: number } | undefined;
-        if (limitingReactant) {
-          const F_A0 = limitingReactant.initialFlow;
-          const F_A = finalFlowRates[limitingReactant.name];
-          const X = F_A0 > 0 ? (F_A0 - F_A) / F_A0 : 0;
-          conversion = { reactantName: limitingReactant.name, value: Math.max(0, Math.min(X, 1)) };
-        }
-
-        setCalculationResults({ conversion, outletFlowRates: finalFlowRates });
-      }
-
-    } catch (e: any) {
-      setCalculationError(`Calculation Error: ${e.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [parsedParallelReactions, reactorType, reactorVolume, kinetics.reactionTempK, components, reactionPhase, totalPressure, volumetricFlowRate, operationMode, recycleFraction]);
-
-  // Add helper function for 3 significant figures formatting
-  const formatToSigFigs = (num: number, sigFigs: number = 3): string => {
-    if (num === 0) return '0.00';
-    const magnitude = Math.floor(Math.log10(Math.abs(num)));
-    const factor = Math.pow(10, sigFigs - 1 - magnitude);
-    return (Math.round(num * factor) / factor).toString();
+    const calculatedProduction = outletFlows[targetComponentName] || 0;
+    return calculatedProduction - targetProductionRate;
   };
 
-  // Debounced calculation trigger
-  const triggerDebouncedCalculation = useCallback(() => {
-    if (debounceTimer.current) {
-      clearTimeout(debounceTimer.current);
-    }
-    debounceTimer.current = setTimeout(() => {
-      handleCalculate();
-    }, 50); // 50ms debounce delay
-  }, [handleCalculate]);
+  // --- Robust Secant Method with Logging ---
+  let x0 = 0.1;
+  let x1 = 100.0; 
+  let f0 = errorFunction(x0);
+  let f1 = errorFunction(x1);
+  const maxIter = 50;
+  const tol = 1e-6;
 
-  // Effect to run calculation when primary inputs change (debounced)
-  useEffect(() => {
-    triggerDebouncedCalculation();
-  }, [
-    reactorVolume, 
-    kinetics.reactionTempK, 
-    volumetricFlowRate, 
-    totalPressure,
-    recycleFraction,
-    triggerDebouncedCalculation
-  ]);
+  console.log(`Initial Guesses: f(${x0.toFixed(2)}) = ${f0.toFixed(4)}, f(${x1.toFixed(2)}) = ${f1.toFixed(4)}`);
 
+  if (f0 * f1 > 0) {
+      console.warn("Solver Warning: The target production rate may be unachievable. The error is the same sign at both low and high feed rates.");
+  }
 
-  // --- Graphing Logic ---
-  // Generate graph data when results are available
-  const generateGraphData = useCallback(() => {
-    if (!parsedParallelReactions || parsedParallelReactions.error || parsedParallelReactions.reactions.length === 0) {
-      setGraphOptions({});
-      return;
-    }
-
-    const maxVol = parseFloat(maxVolumeSlider);
-    const T_K = parseFloat(kinetics.reactionTempK);
-    const v0_input_Ls = parseFloat(volumetricFlowRate);
-    const initialFlowRates = components.reduce((acc, comp) => {
-        acc[comp.name] = parseFloat(comp.initialFlowRate) || 0;
-        return acc;
-    }, {} as { [key: string]: number });
-    
-    let v0_calc: number;
-    if (reactionPhase === 'Liquid') {
-        if (isNaN(v0_input_Ls) || v0_input_Ls <= 0) return;
-        v0_calc = v0_input_Ls;
-    } else {
-        const P_total_kPa = parseFloat(totalPressure) * 100;
-        if (isNaN(P_total_kPa) || P_total_kPa <= 0) return;
-        const F_total0 = Object.values(initialFlowRates).reduce((sum, f) => sum + f, 0);
-        if (T_K <= 0) return;
-        const R_GAS_CONSTANT = 8.314;
-        v0_calc = (F_total0 * R_GAS_CONSTANT * T_K) / P_total_kPa;
-    }
-
-    let profile: PFR_ODE_ProfilePoint[];
-    if (reactorType === 'PFR') {
-        profile = solvePFR_ODE_System(parsedParallelReactions, maxVol, initialFlowRates, v0_calc, components.map(c => c.name));
-    } else { // CSTR
-        profile = [];
-        const steps = 50;
-        for (let i = 1; i <= steps; i++) {
-            const vol = (i / steps) * maxVol;
-            const flowRates = solveCSTRParallel(parsedParallelReactions, vol, initialFlowRates, v0_calc);
-            profile.push({ volume: vol, flowRates });
-        }
-    }
-
-    const limitingReactant = findLimitingReactant(parsedParallelReactions, components);
-    if (!limitingReactant) return;
-
-    // Identify all unique reactants and products
-    const allReactantNames = new Set<string>();
-    const allProductNames = new Set<string>();
-    parsedParallelReactions.reactions.forEach(r => {
-        r.reactants.forEach(comp => allReactantNames.add(comp.name));
-        r.products.forEach(comp => allProductNames.add(comp.name));
-    });
-    const reactantComponents = components.filter(c => allReactantNames.has(c.name));
-    const productComponents = components.filter(c => allProductNames.has(c.name));
-    
-    const dataPoints: DataPoint[] = profile.map(point => {
-        const { volume, flowRates } = point;
-        
-        const conversions: { [reactantName: string]: number } = {};
-        reactantComponents.forEach(reactant => {
-            const F_initial = initialFlowRates[reactant.name] ?? 0;
-            const F_current = flowRates[reactant.name] ?? 0;
-            conversions[reactant.name] = F_initial > 1e-9 ? (F_initial - F_current) / F_initial : 0;
-        });
-
-        const selectivities: { [productName: string]: number } = {};
-        const moles_limiting_reactant_consumed = limitingReactant.initialFlow - (flowRates[limitingReactant.name] ?? 0);
-        
-        productComponents.forEach(product => {
-            const moles_product_formed = (flowRates[product.name] || 0) - (initialFlowRates[product.name] || 0);
-            if (moles_limiting_reactant_consumed < 1e-9) {
-                selectivities[product.name] = 0;
-            } else {
-                selectivities[product.name] = moles_product_formed / moles_limiting_reactant_consumed;
+  for (let i = 0; i < maxIter; i++) {
+    if (Math.abs(f1) < tol) {
+        console.log(`%c[Debug] Solver CONVERGED in ${i + 1} iterations.`, 'color: #4CAF50; font-weight: bold;');
+        const finalFlowRate = x1;
+        return components.reduce((acc, comp) => {
+            if (comp.id === limitingReactant.id) { acc[comp.name] = finalFlowRate; } 
+            else {
+                const ratioInfo = molarRatios.find(r => r.numeratorId === comp.id);
+                acc[comp.name] = ratioInfo ? finalFlowRate * ratioInfo.value : 0;
             }
-        });
+            return acc;
+        }, {} as {[key: string]: number});
+    }
 
-        // Calculate compositions (mol%)
-        const totalFlow = Object.values(flowRates).reduce((sum, flow) => sum + flow, 0);
-        const compositions: { [key: string]: number } = {};
-        if (totalFlow > 1e-9) {
-            Object.keys(flowRates).forEach(componentName => {
-                compositions[componentName] = (flowRates[componentName] / totalFlow) * 100;
-            });
-        } else {
-            Object.keys(flowRates).forEach(componentName => {
-                compositions[componentName] = 0;
-            });
-        }
-
-        return { volume, conversions, selectivities, flowRates, compositions };
-    });
-
-    // Charting logic
-    const isDark = resolvedTheme === 'dark';
-    const textColor = isDark ? 'white' : '#000000';
-    const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57', '#ff9ff3'];
+    const denominator = f1 - f0;
+    if (Math.abs(denominator) < 1e-12) {
+        console.warn(`[Debug] Solver STOPPED: Denominator is too small. The function is too flat.`);
+        return null;
+    }
     
-    let chartOptions: EChartsOption = {
-        backgroundColor: 'transparent',
-        animation: false,
-        animationDuration: 0,
-        grid: { left: '10%', right: '10%', bottom: '15%', top: '15%', containLabel: true },
-        xAxis: { 
-          type: 'value', 
-          name: 'Reactor Volume (m³)', 
-          nameLocation: 'middle', 
-          nameGap: 30, 
-          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: textColor } }, 
-          axisTick: { lineStyle: { color: textColor } },
-          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false }
-        },
-        yAxis: { 
-          type: 'value', 
-          nameLocation: 'middle', 
-          nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: textColor } }, 
-          axisTick: { lineStyle: { color: textColor } },
-          axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          splitLine: { show: false }
-        },
-        legend: { 
-          orient: 'horizontal',
-          bottom: '5%', 
-          left: 'center',
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          itemWidth: 25,
-          itemHeight: 2
-        },
-        tooltip: { 
-          trigger: 'axis', 
-          backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff', 
-          borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333', 
-          borderWidth: 1,
-          textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
-          axisPointer: {
-            type: 'cross',
-            label: {
-              show: true,
-              backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
-              color: textColor,
-              borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
-              borderWidth: 1,
-              fontFamily: 'Merriweather Sans',
-              formatter: function (params: any) {
-                if (params.axisDimension === 'x') {
-                  return `Volume: ${params.value.toFixed(2)} m³`;
-                } else {
-                  return `${params.value.toFixed(1)}%`;
+    const x2 = x1 - f1 * (x1 - x0) / denominator;
+    if (x2 <= 0) {
+        console.warn(`[Debug] Solver STOPPED: Next guess for feed rate was zero or negative (${x2.toFixed(4)}).`);
+        return null;
+    }
+    
+    x0 = x1; f0 = f1; x1 = x2; f1 = errorFunction(x1);
+  }
+
+  console.error(`[Debug] Solver FAILED to converge after ${maxIter} iterations.`);
+  console.log(`Final State: Guess = ${x1.toFixed(4)}, Error = ${f1.toExponential(3)}`);
+  return null;
+};
+
+// --- Update calculateCstrData to return outletFlowsAtV ---
+const calculateCstrData = (
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    initialFlowRates: { [key: string]: number },
+    v0: number,
+    tempK: number,
+    simBasis: { limitingReactantId: string; desiredProductId: string },
+    V_max?: number
+) => {
+    // 1. Parse reactions into a generic structure the solver can use
+    const allInvolvedComponents = components.filter(c => Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0));
+    const allComponentNames = allInvolvedComponents.map(c => c.name);
+    const parsedReactions = {
+        reactions: reactions.map(reactionInfo => {
+            const reactants: any[] = [];
+            const products: any[] = [];
+            allInvolvedComponents.forEach(comp => {
+                const reactionData = comp.reactionData?.[reactionInfo.id];
+                if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
+                    const parsedComp = {
+                        name: comp.name,
+                        stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)),
+                        reactionOrderNum: parseFloat(reactionData.order || '0')
+                    };
+                    if (parseFloat(reactionData.stoichiometry) < 0) reactants.push(parsedComp);
+                    else products.push(parsedComp);
                 }
-              }
-            }
-          }
-        },
-        series: []
+            });
+            const A = parseFloat(reactionInfo.AValue);
+            const Ea = parseFloat(reactionInfo.EaValue);
+            return { reactants, products, rateConstantAtT: A * Math.exp(-Ea / (R * tempK)) };
+        }),
+        allInvolvedComponents: allInvolvedComponents.map(c => ({ name: c.name, id: c.id })),
     };
 
-    if (graphType === 'conversion') {
-        chartOptions.title = { text: 'Conversion vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
-        chartOptions.yAxis = { 
-          ...chartOptions.yAxis, 
-          name: 'Conversion (%)', 
-          nameGap: 50, 
-          min: 0, 
-          max: 100 
-        };
-        (chartOptions.legend as any).data = reactantComponents.map(c => c.name);
-        (chartOptions.tooltip as any).formatter = function(params: any) {
-          if (!Array.isArray(params) || params.length === 0) return '';
-          const volume = params[0]?.axisValue || 0;
-          let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
-          
-          params.forEach((param: any) => {
-            const value = formatToSigFigs(param.value[1]);
-            const color = param.color;
-            tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}%</span><br/>`;
-          });
-          
-          tooltipContent += '</div>';
-          return tooltipContent;
-        };
+    let solverGuess: number[] | undefined = undefined;
+    const nPoints = 100;
+    const maxVolume = 2000;
+    const minVolume = 0.01;
+    const logMinV = Math.log10(minVolume);
+    const logMaxV = Math.log10(maxVolume);
+    const logStep = (logMaxV - logMinV) / (nPoints - 1);
+    const selectivityData: { x: number; y: number }[] = [];
+    const volumeData: { x: number; y: number }[] = [];
+    let outletFlowsAtV: { [key: string]: number } = {};
+    let closestDiff = Infinity;
+    
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
+
+    if (!limitingReactant || !desiredProduct) return { selectivityData, volumeData, outletFlowsAtV: {} };
+
+    const F_A0 = initialFlowRates[limitingReactant.name] || 0;
+    if (F_A0 <= 1e-9) return { selectivityData, volumeData, outletFlowsAtV: {} };
+
+    // 2. Loop over a logarithmic range of reactor volumes
+    for (let i = 0; i < nPoints; i++) {
+        const logV = logMinV + i * logStep;
+        const V = Math.pow(10, logV);
         
-        const currentVolume = parseFloat(reactorVolume);
+        // 3. Call the solver, using the last result as the initial guess
+        const outletFlowRates = solveCSTRParallel(
+            parsedReactions, V, initialFlowRates, v0, 'Liquid', 1, tempK, solverGuess
+        );
         
-        chartOptions.series = reactantComponents.map((comp, i) => {
-            const closestPoint = dataPoints.reduce((closest, point) => 
-                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-            );
-            return {
-                name: comp.name,
-                type: 'line',
-                showSymbol: false,
-                data: dataPoints.map(p => [p.volume, (p.conversions[comp.name] ?? 0) * 100]),
-                color: colors[i % colors.length],
-                lineStyle: { color: colors[i % colors.length], width: 2 },
-                emphasis: { lineStyle: { width: 3 } },
-                markPoint: {
-                    data: [{
-                        name: 'Current Volume',
-                        coord: [closestPoint.volume, (closestPoint.conversions[comp.name] ?? 0) * 100],
-                        symbol: 'circle',
-                        symbolSize: 8,
-                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                        label: { show: false }
-                    }]
+        solverGuess = parsedReactions.allInvolvedComponents.map((c:any) => outletFlowRates[c.name] || 0);
+
+        // 4. Calculate metrics for the graph
+        const F_A_final = outletFlowRates[limitingReactant.name] || 0;
+        const conversion = (F_A0 - F_A_final) / F_A0;
+
+        const molesReactantConsumed = F_A0 - F_A_final;
+        const molesProductFormed = (outletFlowRates[desiredProduct.name] || 0) - (initialFlowRates[desiredProduct.name] || 0);
+        
+        // This simplified selectivity is valid for many common reaction schemes
+        const selectivity = molesReactantConsumed > 1e-9 ? molesProductFormed / molesReactantConsumed : 0;
+
+        if (conversion >= 0.001 && conversion <= 0.999) {
+            selectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
+            volumeData.push({ x: conversion, y: V });
+        }
+    }
+    
+    selectivityData.sort((a, b) => a.x - b.x);
+    volumeData.sort((a, b) => a.x - b.x);
+
+    return { selectivityData, volumeData, outletFlowsAtV };
+};
+
+// --- Update calculatePfrData to return outletFlowsAtV ---
+const calculatePfrData = (
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    V_max: number, // This will now be the dynamically calculated max volume
+    initialFlowRates: { [key: string]: number },
+    tempK: number,
+    simBasis: { limitingReactantId: string; desiredProductId: string }
+) => {
+    // 1. Parse reactions into a generic structure the solver can use
+    const allInvolvedComponents = components.filter(c => Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0));
+    const allComponentNames = allInvolvedComponents.map(c => c.name);
+    const parsedReactions = {
+        reactions: reactions.map(reactionInfo => {
+            const reactants: any[] = [];
+            const products: any[] = [];
+            allInvolvedComponents.forEach(comp => {
+                const reactionData = comp.reactionData?.[reactionInfo.id];
+                if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
+                    const parsedComp = {
+                        name: comp.name,
+                        stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)),
+                        reactionOrderNum: parseFloat(reactionData.order || '0')
+                    };
+                    if (parseFloat(reactionData.stoichiometry) < 0) reactants.push(parsedComp);
+                    else products.push(parsedComp);
                 }
-            };
+            });
+            const A = parseFloat(reactionInfo.AValue);
+            const Ea = parseFloat(reactionInfo.EaValue);
+            return { reactants, products, rateConstantAtT: A * Math.exp(-Ea / (R * tempK)) };
+        }),
+    };
+
+    // 2. Define the PFR differential equations (dF/dV = r)
+    const dFdV = (V: number, F: number[]): number[] => {
+        const concentrations: { [key: string]: number } = {};
+        const F_dict = allComponentNames.reduce((acc, name, i) => { acc[name] = F[i]; return acc; }, {} as {[key:string]:number});
+        
+        const v0 = 1.0; // Assuming constant liquid volumetric flow rate for rate calc
+        allComponentNames.forEach(name => concentrations[name] = (F_dict[name] > 0 ? F_dict[name] : 0) / v0);
+
+        const reactionRates = parsedReactions.reactions.map((reaction:any) => {
+            let rate = reaction.rateConstantAtT || 0;
+            reaction.reactants.forEach((reactant:any) => {
+                rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
+            });
+            return rate;
         });
 
-    } else if (graphType === 'selectivity') {
-        chartOptions.title = { text: 'Selectivity vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
-        chartOptions.yAxis = { ...chartOptions.yAxis, name: `Selectivity (mol prod / mol ${limitingReactant.name} consumed)`, nameGap: 65, min: 0 };
-        (chartOptions.legend as any).data = productComponents.map(c => c.name);
-        (chartOptions.tooltip as any).formatter = function(params: any) {
-            if (!Array.isArray(params) || params.length === 0) return '';
-            const volume = params[0]?.axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
-            
-            params.forEach((param: any) => {
-                const value = formatToSigFigs(param.value[1]);
-                const color = param.color;
-                tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}</span><br/>`;
+        return allComponentNames.map(name => {
+            let netRateOfFormation = 0; // This is r_j
+            parsedReactions.reactions.forEach((reaction:any, j:number) => {
+                const reactantInfo = reaction.reactants.find((r:any) => r.name === name);
+                const productInfo = reaction.products.find((p:any) => p.name === name);
+                if (reactantInfo) netRateOfFormation -= (reactantInfo.stoichiometricCoefficient || 0) * reactionRates[j];
+                if (productInfo) netRateOfFormation += (productInfo.stoichiometricCoefficient || 0) * reactionRates[j];
             });
-            
-            tooltipContent += '</div>';
-            return tooltipContent;
-        };
-        
-        const currentVolume = parseFloat(reactorVolume);
+            return netRateOfFormation; // dFj/dV = r_j
+        });
+    };
 
-        chartOptions.series = productComponents.map((comp, i) => {
-            const closestPoint = dataPoints.reduce((closest, point) => 
-                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-            );
-            return {
-                name: comp.name,
-                type: 'line',
-                showSymbol: false,
-                data: dataPoints.filter(p => p.volume > 1e-9).map(p => [p.volume, p.selectivities[comp.name] ?? 0]),
-                color: colors[i % colors.length],
-                lineStyle: { color: colors[i % colors.length], width: 2 },
-                emphasis: { lineStyle: { width: 3 } },
-                markPoint: {
-                    data: [{
-                        name: 'Current Volume',
-                        coord: [closestPoint.volume, closestPoint.selectivities[comp.name] ?? 0],
-                        symbol: 'circle',
-                        symbolSize: 8,
-                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                        label: { show: false }
-                    }]
-                }
-            };
-        });
-    } else if (graphType === 'flowrates') {
-        chartOptions.title = { text: 'Flow Rates vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
-        chartOptions.yAxis = { 
-          ...chartOptions.yAxis, 
-          name: 'Flow Rate (mol/s)', 
-          nameGap: 50 
-        };
-        (chartOptions.legend as any).data = components.map(c => c.name);
-        (chartOptions.tooltip as any).formatter = function(params: any) {
-            if (!Array.isArray(params) || !params[0]) return '';
-            const volume = params[0].axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
-            
-            params.forEach((param: any) => {
-              const value = formatToSigFigs(param.value[1]);
-              const color = param.color;
-              tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value} mol/s</span><br/>`;
-            });
-            
-            tooltipContent += '</div>';
-            return tooltipContent;
-        };
-        
-        const currentVolume = parseFloat(reactorVolume);
-        
-        chartOptions.series = components.map((comp, i) => {
-            const closestPoint = dataPoints.reduce((closest, point) => 
-                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-            );
-            return {
-                name: comp.name,
-                type: 'line',
-                showSymbol: false,
-                data: dataPoints.map(p => [p.volume, p.flowRates[comp.name]]),
-                color: colors[i % colors.length],
-                lineStyle: { color: colors[i % colors.length], width: 2 },
-                emphasis: { lineStyle: { width: 3 } },
-                markPoint: {
-                    data: [{
-                        name: 'Current Volume',
-                        coord: [closestPoint.volume, closestPoint.flowRates[comp.name]],
-                        symbol: 'circle',
-                        symbolSize: 8,
-                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                        label: { show: false }
-                    }]
-                }
-            };
-        });
-    } else { // 'composition'
-        chartOptions.title = { text: 'Composition vs Volume', left: 'center', top: '3%', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } };
-        chartOptions.yAxis = { 
-          ...chartOptions.yAxis, 
-          name: 'Composition (mol%)', 
-          nameGap: 50, 
-          min: 0, 
-          max: 100 
-        };
-        (chartOptions.legend as any).data = components.map(c => c.name);
-        (chartOptions.tooltip as any).formatter = function(params: any) {
-            if (!Array.isArray(params) || !params[0]) return '';
-            const volume = params[0].axisValue || 0;
-            let tooltipContent = `<div style="color: ${textColor};">Volume: ${formatToSigFigs(volume)} m³<br/>`;
-            
-            params.forEach((param: any) => {
-              const value = formatToSigFigs(param.value[1]);
-              const color = param.color;
-              tooltipContent += `<span style="color: ${color};">● ${param.seriesName}: ${value}%</span><br/>`;
-            });
-            
-            tooltipContent += '</div>';
-            return tooltipContent;
-        };
-        
-        const currentVolume = parseFloat(reactorVolume);
+    // MODIFICATION: Use a logarithmic scale for the volume span
+    // The BDF solver will choose its own steps
+    const V_span: [number, number] = [0, V_max];
+    
+    const F0 = allComponentNames.map(name => initialFlowRates[name] || 0);
+    const results = solveODE_BDF(dFdV, F0, V_span);
 
-        chartOptions.series = components.map((comp, i) => {
-            const closestPoint = dataPoints.reduce((closest, point) => 
-                Math.abs(point.volume - currentVolume) < Math.abs(closest.volume - currentVolume) ? point : closest
-            );
-            return {
-                name: comp.name,
-                type: 'line',
-                showSymbol: false,
-                data: dataPoints.map(p => [p.volume, p.compositions[comp.name]]),
-                color: colors[i % colors.length],
-                lineStyle: { color: colors[i % colors.length], width: 2 },
-                emphasis: { lineStyle: { width: 3 } },
-                markPoint: {
-                    data: [{
-                        name: 'Current Volume',
-                        coord: [closestPoint.volume, closestPoint.compositions[comp.name]],
-                        symbol: 'circle',
-                        symbolSize: 8,
-                        itemStyle: { color: '#FF0000', borderColor: '#FFFFFF', borderWidth: 2 },
-                        label: { show: false }
-                    }]
-                }
-            };
-        });
+    const selectivityData: { x: number; y: number }[] = [];
+    const volumeData: { x: number; y: number }[] = [];
+    let outletFlowsAtV: { [key: string]: number } = {};
+    let closestDiff = Infinity;
+    
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
+    if (!limitingReactant || !desiredProduct || !results.y) return { selectivityData, volumeData, outletFlowsAtV: {} };
+
+    const F_A0 = initialFlowRates[limitingReactant.name] || 0;
+    if (F_A0 <= 1e-9) return { selectivityData, volumeData, outletFlowsAtV: {} };
+
+    results.t.forEach((v, i) => {
+        const currentFlowRates = allComponentNames.reduce((acc, name, j) => {
+            acc[name] = results.y[j][i];
+            return acc;
+        }, {} as { [key: string]: number });
+        
+        const F_A_current = currentFlowRates[limitingReactant.name] || 0;
+        const conversion = (F_A0 - F_A_current) / F_A0;
+
+        const molesReactantConsumed = F_A0 - F_A_current;
+        const molesProductFormed = (currentFlowRates[desiredProduct.name] || 0) - (initialFlowRates[desiredProduct.name] || 0);
+        
+        const selectivity = molesReactantConsumed > 1e-9 ? molesProductFormed / molesReactantConsumed : 0;
+        
+        if (conversion >= 0.001 && conversion <= 0.999) {
+            selectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
+            volumeData.push({ x: conversion, y: v });
+        }
+        // Track the closest volume to targetVolume
+        // if (targetVolume !== undefined) {
+        //     const diff = Math.abs(v - targetVolume);
+        //     if (diff < closestDiff) {
+        //         closestDiff = diff;
+        //         outletFlowsAtV = currentFlowRates;
+        //     }
+        // }
+    });
+
+    return { selectivityData, volumeData, outletFlowsAtV };
+};
+
+// --- Linear System Solver ---
+/**
+ * Solves a linear system of equations Ax = b using Gaussian elimination.
+ */
+function solveLinearSystem(A: number[][], b: number[]): number[] | null {
+    const n = A.length;
+    // Create copies to avoid modifying the original arrays
+    const A_copy = A.map(row => [...row]);
+    const b_copy = [...b];
+
+    for (let i = 0; i < n; i++) {
+        let maxRow = i;
+        for (let k = i + 1; k < n; k++) {
+            if (Math.abs(A_copy[k][i]) > Math.abs(A_copy[maxRow][i])) maxRow = k;
+        }
+        [A_copy[i], A_copy[maxRow]] = [A_copy[maxRow], A_copy[i]];
+        [b_copy[i], b_copy[maxRow]] = [b_copy[maxRow], b_copy[i]];
+        
+        if (Math.abs(A_copy[i][i]) < 1e-12) return null; // System is singular
+
+        for (let k = i + 1; k < n; k++) {
+            const factor = A_copy[k][i] / A_copy[i][i];
+            b_copy[k] -= factor * b_copy[i];
+            for (let j = i; j < n; j++) {
+                A_copy[k][j] -= factor * A_copy[i][j];
+            }
+        }
     }
 
-    setGraphOptions(chartOptions);
-
-  }, [parsedParallelReactions, reactorType, reactorVolume, maxVolumeSlider, kinetics.reactionTempK, volumetricFlowRate, components, reactionPhase, totalPressure, graphType, resolvedTheme]);
-
-
-  // Update graph when calculation results change - immediate updates
-  useEffect(() => {
-    if (showGraph && calculationResults && operationMode === 'SinglePass') {
-      generateGraphData();
+    const x = new Array(n).fill(0);
+    for (let i = n - 1; i >= 0; i--) {
+        let sum = 0;
+        for (let j = i + 1; j < n; j++) sum += A_copy[i][j] * x[j];
+        x[i] = (b_copy[i] - sum) / A_copy[i][i];
     }
-  }, [showGraph, calculationResults, graphType, reactorType, maxVolumeSlider, operationMode, generateGraphData]);
+    return x;
+}
 
-  // Reactor SVG Visualization
-  const renderReactorSVG = () => {
-    // ... SVG code is unchanged ...
-    if (reactorType === 'PFR') {
-      return (
-        <div className="w-full h-64 bg-card rounded flex items-center justify-center">
-          <svg viewBox="0 0 400 200" className="w-full h-full">
-            {/* PFR Tube - slightly smaller */}
-            <rect x="60" y="70" width="280" height="60" fill="lightblue" stroke="currentColor" strokeWidth="2" rx="30"/>
-            
-            {/* Feed Arrow - longer tail */}
-            <defs>
-              <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
-                <polygon points="0 0, 7 2.5, 0 5" fill="currentColor"/>
-              </marker>
-            </defs>
-            <line x1="10" y1="100" x2="55" y2="100" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
-            <text x="32" y="85" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Feed</text>
-            
-            {/* Product Arrow - longer tail */}
-            <line x1="345" y1="100" x2="390" y2="100" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
-            <text x="367" y="85" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Product</text>
-            
-            {/* PFR Label */}
-            <text x="200" y="110" fontSize="20" fill="currentColor" className="text-foreground" textAnchor="middle" fontWeight="bold">PFR</text>
-          </svg>
-        </div>
-      );
+/**
+ * Solves a system of ODEs using a custom BDF method, ideal for stiff systems.
+ */
+function solveODE_BDF(
+  derivatives: (t: number, y: number[]) => number[],
+  y0: number[],
+  tSpan: [number, number],
+): { t: number[], y: number[][] } {
+  const [t0, tf] = tSpan;
+  let t = t0;
+  let y = [...y0];
+  const t_out = [t0];
+  const y_out = [y0];
+  const n = y0.length;
+
+  // MODIFICATION: The initial step 'h' is now capped at 1.0 to prevent a giant first jump.
+  let h = Math.min((tf - t0) / 1000, 1.0) || 1e-5; 
+  
+  const min_h = 1e-12;
+  const newton_tol = 1e-8;
+  const newton_max_iter = 20;
+  
+  while (t < tf) {
+    if (t + h > tf) h = tf - t;
+    if (h < min_h) break;
+
+    let y_next = [...y];
+    let converged = false;
+
+    // Newton's method to solve the implicit BDF equation
+    for (let iter = 0; iter < newton_max_iter; iter++) {
+        const f_next = derivatives(t + h, y_next);
+        const G = y_next.map((val, i) => val - y[i] - h * f_next[i]);
+        
+        if (Math.sqrt(G.reduce((sum, val) => sum + val*val, 0)) < newton_tol) {
+            converged = true;
+            break;
+        }
+        
+        const J_f: number[][] = Array.from({length: n}, () => Array(n).fill(0));
+        const h_eps = 1e-8;
+        for(let j=0; j<n; j++){
+            const y_h = [...y_next];
+            y_h[j] += h_eps;
+            const fx_h = derivatives(t+h, y_h);
+            for(let i=0; i<n; i++){
+                J_f[i][j] = (fx_h[i] - f_next[i]) / h_eps;
+            }
+        }
+        
+        const J_G = Array.from({length: n}, (_, i) => 
+            Array.from({length: n}, (_, j) => (i === j ? 1 : 0) - h * J_f[i][j])
+        );
+
+        const delta_y = solveLinearSystem(J_G, G.map(val => -val));
+
+        if (!delta_y) break;
+        y_next = y_next.map((val, i) => val + delta_y[i]);
+    }
+    
+    if (converged) {
+        y = y_next.map(v => Math.max(0, v)); // Ensure no negative flows
+        t += h;
+        t_out.push(t);
+        y_out.push([...y]);
+        h = Math.min(h * 1.2, tf - t); // Increase step size
     } else {
-      return (
-        <div className="w-full h-64 bg-card rounded flex items-center justify-center">
-          <svg viewBox="0 0 400 240" className="w-full h-full">
-            {/* CSTR Tank - even larger rectangular shape matching CSTRVisualization.tsx */}
-            <rect x="80" y="20" width="240" height="180" fill="lightblue" stroke="currentColor" strokeWidth="4" rx="25"/>
-            
-            {/* Feed Arrow - longer tail */}
-            <defs>
-              <marker id="arrowhead" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
-                <polygon points="0 0, 7 2.5, 0 5" fill="currentColor"/>
-              </marker>
-            </defs>
-            <line x1="20" y1="105" x2="75" y2="105" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
-            <text x="47" y="90" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Feed</text>
-            
-            {/* Product Arrow - longer tail */}
-            <line x1="325" y1="105" x2="380" y2="105" stroke="currentColor" strokeWidth="3" markerEnd="url(#arrowhead)"/>
-            <text x="352" y="90" fontSize="14" fill="currentColor" className="text-foreground font-medium" textAnchor="middle">Product</text>
-            
-            {/* Stirrer shaft */}
-            <line x1="200" y1="0" x2="200" y2="155" stroke="currentColor" strokeWidth="8"/>
-            
-            {/* Stirrer blades with spinning animation - matching CSTRVisualization.tsx */}
-            <g className="animate-spin" style={{transformOrigin: '200px 155px'}}>
-              {/* A horizontal blade centered at (200, 155) */}
-              <line x1="160" y1="155" x2="240" y2="155" stroke="currentColor" strokeWidth="8"/>
-              {/* A vertical blade of the same length, also centered at (200, 155) */}
-              <line x1="200" y1="115" x2="200" y2="195" stroke="currentColor" strokeWidth="8"/>
-            </g>
-            
-            {/* CSTR Label */}
-            <text x="200" y="230" fontSize="28" fill="currentColor" className="text-foreground" textAnchor="middle" fontWeight="bold">CSTR</text>
-          </svg>
-        </div>
-      );
+        h *= 0.5; // Reduce step size if convergence fails
     }
+  }
+
+  // Transpose results for easier processing
+  const y_transposed: number[][] = Array.from({ length: n }, () => []);
+  for (let i = 0; i < t_out.length; i++) {
+    for (let j = 0; j < n; j++) {
+      y_transposed[j][i] = y_out[i][j];
+    }
+  }
+  return { t: t_out, y: y_transposed };
+}
+
+// --- CSTR Parallel Solver ---
+function solveCSTRParallel(
+  parsedReactions: any,
+  V: number,
+  initialFlowRates: { [key: string]: number },
+  v0: number,
+  reactionPhase: 'Liquid' | 'Gas',
+  totalPressure_bar: number,
+  temp_K: number,
+  initialGuess?: number[]
+): { [key: string]: number } {
+  // CORRECTED: Get component order directly from the parsed data
+  const componentNames = parsedReactions.allInvolvedComponents.map((c: any) => c.name);
+  
+  let F = initialGuess ? [...initialGuess] : componentNames.map((name: string) => initialFlowRates[name] || 0);
+  const n = F.length;
+  
+  const max_iter = 50;
+  const tol = 1e-9;
+
+  const G = (current_F: number[]): number[] => {
+    let concentrations: { [key: string]: number } = {};
+    const F_dict = componentNames.reduce((acc: { [key: string]: number }, name: string, i: number) => { acc[name] = current_F[i]; return acc; }, {} as {[key:string]:number});
+
+    if (reactionPhase === 'Liquid') {
+        componentNames.forEach((name: string) => concentrations[name] = (F_dict[name] > 0 ? F_dict[name] : 0) / v0);
+    } else {
+        const F_total = current_F.reduce((sum: number, f: number) => sum + f, 0);
+        if (F_total < 1e-9) componentNames.forEach((name: string) => concentrations[name] = 0);
+        else {
+          const P_kPa = totalPressure_bar * 100;
+          componentNames.forEach((name: string) => concentrations[name] = (F_dict[name] > 0 ? F_dict[name] : 0) / F_total * P_kPa / (R * temp_K));
+        }
+    }
+
+    const rates = parsedReactions.reactions.map((reaction: any) => {
+      let rate = reaction.rateConstantAtT || 0;
+      reaction.reactants.forEach((reactant: any) => {
+        rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
+      });
+      return rate;
+    });
+
+    return componentNames.map((name: string, i: number) => {
+      let netRateOfFormation = 0;
+      parsedReactions.reactions.forEach((reaction: any, j: number) => {
+        const reactantInfo = reaction.reactants.find((r: any) => r.name === name);
+        const productInfo = reaction.products.find((p: any) => p.name === name);
+        if (reactantInfo) netRateOfFormation -= (reactantInfo.stoichiometricCoefficient || 0) * rates[j];
+        if (productInfo) netRateOfFormation += (productInfo.stoichiometricCoefficient || 0) * rates[j];
+      });
+      return (initialFlowRates[name] || 0) - current_F[i] + netRateOfFormation * V;
+    });
   };
 
+  for (let iter = 0; iter < max_iter; iter++) {
+    const G_current = G(F);
+    if (Math.sqrt(G_current.reduce((s: number, v: number) => s + v * v, 0)) < tol) break;
+    const J_G: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+    const epsilon = 1e-8;
+    for (let j = 0; j < n; j++) {
+        const F_plus_h = [...F];
+        F_plus_h[j] += epsilon;
+        const G_plus_h = G(F_plus_h);
+        for (let i = 0; i < n; i++) J_G[i][j] = (G_plus_h[i] - G_current[i]) / epsilon;
+    }
+    const delta_F = solveLinearSystem(J_G, G_current.map((val: number) => -val));
+    if (!delta_F) break;
+    const dampingFactor = 0.7;
+    F = F.map((val: number, i: number) => val + dampingFactor * delta_F[i]);
+  }
+
+  return componentNames.reduce((acc: { [key: string]: number }, name: string, index: number) => {
+    acc[name] = F[index] > 0 ? F[index] : 0;
+    return acc;
+  }, {} as { [key: string]: number });
+}
+
+// --- React Components ---
+
+const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSetup, setComponentsSetup, simBasis, setSimBasis }: { 
+    onNext: () => void,
+    reactionsSetup: ReactionSetup[],
+    setReactionsSetup: React.Dispatch<React.SetStateAction<ReactionSetup[]>>,
+    componentsSetup: ComponentSetup[],
+    setComponentsSetup: React.Dispatch<React.SetStateAction<ComponentSetup[]>>,
+    simBasis: any,
+    setSimBasis: any
+}) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const cardBg = 'bg-card';
+  const cardFg = 'text-card-foreground';
+  const mainBg = 'bg-background';
+  const mainFg = 'text-foreground';
+  const mutedFg = 'text-muted-foreground';
+
+  const addReactionSetup = () => {
+    if (reactionsSetup.length >= 4) return
+    const newId = (Math.max(0, ...reactionsSetup.map(r => parseInt(r.id))) + 1).toString()
+    setReactionsSetup([...reactionsSetup, { id: newId, AValue: '1e6', EaValue: '50000', isEquilibrium: false }])
+  }
+
+  const removeReactionSetup = (idToRemove: string) => {
+    if (reactionsSetup.length <= 1) return;
+    setReactionsSetup(reactionsSetup.filter(r => r.id !== idToRemove))
+    setComponentsSetup(componentsSetup.map(comp => {
+      const newReactionData = { ...comp.reactionData }
+      delete newReactionData[idToRemove]
+      return { ...comp, reactionData: newReactionData }
+    }))
+  }
+
+  // Update updateReactionSetup to handle boolean and string fields
+  const updateReactionSetup = (id: string, field: keyof ReactionSetup, value: any) => {
+    setReactionsSetup(reactionsSetup.map(reaction =>
+      reaction.id === id ? { ...reaction, [field]: value } : reaction
+    ))
+  }
+
+  const addComponentSetup = () => {
+    const newId = `comp-${Date.now()}`
+    setComponentsSetup([...componentsSetup, { id: newId, name: '', reactionData: {} }])
+  }
+
+  const removeComponentSetup = (idToRemove: string) => {
+    if (componentsSetup.length <= 2) return;
+    setComponentsSetup(componentsSetup.filter(c => c.id !== idToRemove))
+  }
+
+  const handleComponentSetupChange = (id: string, field: keyof ComponentSetup, value: any) => {
+      setComponentsSetup(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c))
+  }
+  
+  // --- MODIFICATION START ---
+  // Validate that every reaction has at least one reactant and one product.
+  const validationResult = useMemo(() => {
+    for (const reaction of reactionsSetup) {
+        let hasReactant = false;
+        let hasProduct = false;
+
+        // Check all components for their role in this specific reaction
+        for (const comp of componentsSetup) {
+            const stoichValue = parseFloat(comp.reactionData[reaction.id]?.stoichiometry || '0');
+            if (stoichValue < 0) {
+                hasReactant = true;
+            } else if (stoichValue > 0) {
+                hasProduct = true;
+            }
+        }
+
+        // If a reaction is incomplete, invalidate the form.
+        if (!hasReactant || !hasProduct) {
+            return {
+                isValid: false,
+                message: `Reaction ${reaction.id} must have at least one reactant (negative stoichiometry) and one product (positive stoichiometry).`
+            };
+        }
+    }
+
+    // If all reactions are valid
+    return { isValid: true, message: '' };
+  }, [reactionsSetup, componentsSetup]);
+  // --- MODIFICATION END ---
+  
+  const ReactionPreview = useMemo(() => {
+    const generatePreview = (reaction: ReactionSetup) => {
+        const reactants = componentsSetup
+            .filter(c => c.name && parseFloat(c.reactionData[reaction.id]?.stoichiometry || '0') < 0)
+            .map(c => {
+                const stoich = Math.abs(parseFloat(c.reactionData[reaction.id]?.stoichiometry || '0'));
+                return stoich === 1 ? c.name : `${stoich} ${c.name}`;
+            })
+            .join(' + ');
+
+        const products = componentsSetup
+            .filter(c => c.name && parseFloat(c.reactionData[reaction.id]?.stoichiometry || '0') > 0)
+            .map(c => {
+                const stoich = parseFloat(c.reactionData[reaction.id]?.stoichiometry || '0');
+                return stoich === 1 ? c.name : `${stoich} ${c.name}`;
+            })
+            .join(' + ');
+
+        const rateLawReactants = componentsSetup
+            .filter(c => c.name && parseFloat(c.reactionData[reaction.id]?.order || '0') !== 0)
+            .map(c => {
+                const order = c.reactionData[reaction.id]?.order;
+                const exponent = (order && order !== '1') ? <sup>{order}</sup> : null;
+                return (
+                    <React.Fragment key={c.id}>
+                        {' '}C<sub>{c.name}</sub>
+                        {exponent}
+                    </React.Fragment>
+                );
+            });
+
+        // MODIFICATION: Conditionally render the reverse exponent
+        const rateLawProducts = reaction.isEquilibrium ? componentsSetup
+            .filter(c => c.name && parseFloat(c.reactionData[reaction.id]?.orderReverse || '0') !== 0)
+            .map(c => {
+                const reverseOrder = c.reactionData[reaction.id]?.orderReverse;
+                const exponent = (reverseOrder && reverseOrder !== '1') ? <sup>{reverseOrder}</sup> : null;
+                return (
+                    <React.Fragment key={c.id}>
+                        {' '}C<sub>{c.name}</sub>
+                        {exponent}
+                    </React.Fragment>
+                );
+            }) : [];
+
+        return {
+            equation: `${reactants || '...'} ${reaction.isEquilibrium ? '⇌' : '→'} ${products || '...'}`,
+            rateLaw: rateLawReactants,
+            rateLawReverse: rateLawProducts
+        };
+    };
+    
+    return (
+        <Card>
+            <CardHeader>
+                {/* MODIFICATION: Ensure title class matches others */}
+                <CardTitle>Parsed Reactions & Rate Laws</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+                {reactionsSetup.map(r => {
+                    const preview = generatePreview(r)
+                    return (
+                        <div key={r.id} className="p-3 bg-card rounded-md">
+                          <p className="font-bold text-primary">Rxn {r.id}:</p>
+                            <p className="font-medium text-center mb-1">{preview.equation}</p>
+                          <p className="font-mono text-sm text-center text-muted-foreground w-full">
+                            Rate = k
+                            {/* Conditionally add ',f' to the subscript if reversible */}
+                            <sub>{r.id}{r.isEquilibrium ? ',f' : ''}</sub>
+                            {preview.rateLaw}
+                            {/* Show the reverse rate term if reversible */}
+                            {r.isEquilibrium && preview.rateLawReverse.length > 0 && (
+                                <> - k<sub>{r.id},r</sub>{preview.rateLawReverse}</>
+                            )}
+                            </p>
+                        </div>
+                    )
+                })}
+            </CardContent>
+        </Card>
+    )
+  }, [reactionsSetup, componentsSetup])
 
   return (
-    // ... The entire JSX return block is unchanged ...
-    <TooltipProvider>
-      <div className="container mx-auto p-4 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-6"> {/* Changed md:grid-cols-2 to md:grid-cols-5 */}
-          {/* Left Column: Inputs */}
-          <div className="space-y-6 md:col-span-2"> {/* Added md:col-span-2 */}
-            {/* Reactor Type and Phase Selection */}
-            <Card>
-              <CardContent className="space-y-6 pt-3 relative">
-                {/* Phase Selection - Top Left */}
-                <div className="absolute top-3 left-3">
-                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-                    <Button
-                      variant={reactionPhase === 'Liquid' ? 'default' : 'ghost'}
-                      size="sm"
-                      onClick={() => setReactionPhase('Liquid')}
-                      className="h-8 px-3"
-                    >
-                      Liquid
-                    </Button>
-                    <Button
-                      variant={reactionPhase === 'Gas' ? 'default' : 'ghost'}
-                      size="sm"
-                      onClick={() => setReactionPhase('Gas')}
-                      className="h-8 px-3"
-                    >
-                      Gas
-                    </Button>
-                  </div>
-                </div>
-                
-                {/* Operation Mode Selection - Top Right */}
-                <div className="absolute top-3 right-3">
-                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-                    <Button
-                      variant={operationMode === 'SinglePass' ? 'default' : 'ghost'}
-                      size="sm"
-                      onClick={() => setOperationMode('SinglePass')}
-                      className="h-8 px-3"
-                    >
-                      Single Pass
-                    </Button>
-                    <Button
-                      variant={operationMode === 'Recycle' ? 'default' : 'ghost'}
-                      size="sm"
-                      onClick={() => {
-                        setOperationMode('Recycle');
-                        setShowGraph(false); // Turn off graph mode when switching to recycle
-                      }}
-                      className="h-8 px-3"
-                    >
-                      Recycle
-                    </Button>
-                  </div>
-                </div>
-                
-                {/* Add top margin to account for absolute positioned buttons */}
-                <div className="mt-12"></div>
-                
-                {/* Reactor Volume Slider */}
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1">
-                      <Label htmlFor="reactorVolumeSlider" className="text-sm font-medium whitespace-nowrap">Reactor Volume:</Label>
-                      <span className="text-sm font-medium w-12 text-right">{reactorVolume}</span>
-                      <span className="text-xs text-muted-foreground">m³</span>
-                    </div>
-                    <Slider
-                      id="reactorVolumeSlider"
-                      min={1}
-                      max={parseFloat(maxVolumeSlider)}
-                      step={1}
-                      value={[parseFloat(reactorVolume)]}
-                      onValueChange={(value) => setReactorVolume(value[0].toString())}
-                      className="flex-1"
-                    />
-                    <div className="flex items-center gap-1">
-                      <Label htmlFor="maxVolumeInput" className="text-xs text-muted-foreground">Max:</Label>
-                      <Input
-                        id="maxVolumeInput"
-                        type="number"
-                        value={maxVolumeSlider}
-                        onChange={(e) => setMaxVolumeSlider(e.target.value)}
-                        className="w-20 h-8 text-xs"
-                        min="1"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Temperature Slider */}
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1">
-                      <Label htmlFor="temperatureSlider" className="text-sm font-medium whitespace-nowrap">Temperature:</Label>
-                      <span className="text-sm font-medium w-12 text-right">{kinetics.reactionTempK}</span>
-                      <span className="text-xs text-muted-foreground">K</span>
-                    </div>
-                    <Slider
-                      id="temperatureSlider"
-                      min={250}
-                      max={parseFloat(maxTemperatureSlider)}
-                      step={1}
-                      value={[parseFloat(kinetics.reactionTempK)]}
-                      onValueChange={(value) => handleKineticsChange('reactionTempK', value[0].toString())}
-                      className="flex-1"
-                    />
-                    <div className="flex items-center gap-1">
-                      <Label htmlFor="maxTempInput" className="text-xs text-muted-foreground">Max:</Label>
-                      <Input
-                        id="maxTempInput"
-                        type="number"
-                        value={maxTemperatureSlider}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          const num = parseFloat(raw);
-                          const CLAMP_MAX = 2000; // Clamp in Kelvin (approx 1727°C)
-                          if (raw === "" || isNaN(num)) {
-                            setMaxTemperatureSlider(raw);
-                          } else {
-                            setMaxTemperatureSlider(String(Math.min(num, CLAMP_MAX)));
-                          }
-                        }}
-                        className="w-20 h-8 text-xs"
-                        min="250"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Volumetric Flow Rate / Pressure */}
-                <div className="space-y-3">
-                  {reactionPhase === 'Gas' && (
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="pressureSlider" className="text-sm font-medium whitespace-nowrap">Total Pressure:</Label>
-                        <span className="text-sm font-medium w-12 text-right">{totalPressure}</span>
-                        <span className="text-xs text-muted-foreground">bar</span>
-                      </div>
-                      <Slider
-                        id="pressureSlider"
-                        min={0.1}
-                        max={parseFloat(maxPressureSlider)}
-                        step={0.1}
-                        value={[parseFloat(totalPressure)]}
-                        onValueChange={(value) => {
-                          const clamped = Math.min(value[0], 2000);
-                          setTotalPressure(clamped.toString());
-                        }}
-                        className="flex-1"
-                      />
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="maxPressureInput" className="text-xs text-muted-foreground">Max:</Label>
-                        <Input
-                          id="maxPressureInput"
-                          type="number"
-                          value={maxPressureSlider}
-                          onChange={(e) => {
-                            const raw = e.target.value;
-                            const num = parseFloat(raw);
-                            const CLAMP_MAX = 2000;
-                            if (raw === "" || isNaN(num)) {
-                              setMaxPressureSlider(raw);
-                            } else {
-                              setMaxPressureSlider(String(Math.min(num, CLAMP_MAX)));
-                            }
-                          }}
-                          className="w-20 h-8 text-xs"
-                          min="0.1"
-                        />
-                      </div>
-                    </div>
-                  )}
-                  {reactionPhase === 'Liquid' && (
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="volumetricFlowRateSlider" className="text-sm font-medium whitespace-nowrap">Vol Flow Rate:</Label>
-                        <span className="text-sm font-medium w-12 text-right">{volumetricFlowRate}</span>
-                        <span className="text-xs text-muted-foreground">m³/s</span>
-                      </div>
-                      <Slider
-                        id="volumetricFlowRateSlider"
-                        min={0.1}
-                        max={parseFloat(maxFlowRateSlider)}
-                        step={0.1}
-                        value={[parseFloat(volumetricFlowRate)]}
-                        onValueChange={(value) => setVolumetricFlowRate(value[0].toString())}
-                        className="flex-1"
-                      />
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="maxFlowRateInput" className="text-xs text-muted-foreground">Max:</Label>
-                        <Input
-                          id="maxFlowRateInput"
-                          type="number"
-                          value={maxFlowRateSlider}
-                          onChange={(e) => setMaxFlowRateSlider(e.target.value)}
-                          className="w-20 h-8 text-xs"
-                          min="0.1"
-                          step="0.1"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Recycle Fraction Slider - Only for Recycle Mode */}
-                {operationMode === 'Recycle' && (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-1">
-                        <Label htmlFor="recycleFractionSlider" className="text-sm font-medium whitespace-nowrap">Recycle Fraction:</Label>
-                        <span className="text-sm font-medium w-12 text-right">{recycleFraction}</span>
-                        <span className="text-xs text-muted-foreground">%</span>
-                      </div>
-                      <Slider
-                        id="recycleFractionSlider"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={[parseFloat(recycleFraction)]}
-                        onValueChange={(value) => setRecycleFraction(value[0].toString())}
-                        className="flex-1"
-                      />
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs text-muted-foreground w-20">0-100%</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Reaction Stoichiometry */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  Reaction Stoichiometry
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={addReaction}
-                    disabled={reactions.length >= 6}
-                  >
-                    <PlusCircle className="mr-2 h-4 w-4" />Add Reaction
-                  </Button>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {reactions.map((reaction, index) => (
-                  <div key={reaction.id}>
-                    <div className="grid grid-cols-12 gap-3 items-center">
-                      <div className="col-span-2 flex items-center justify-start">
-                        <Label className="text-sm font-medium whitespace-nowrap">Reaction {index + 1}:</Label>
-                      </div>
-                      <div className="col-span-3">
-                        <Input
-                          placeholder="A + B"
-                          value={reaction.reactants}
-                          onChange={(e) => updateReaction(reaction.id, 'reactants', e.target.value)}
-                        />
-                      </div>
-                      <div className="col-span-2 text-center flex items-center justify-center">
-                        <div className="flex flex-col items-center gap-2">
-                          <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-                            <Button
-                              variant={!reaction.isEquilibrium ? 'default' : 'ghost'}
-                              size="sm"
-                              onClick={() => updateReaction(reaction.id, 'isEquilibrium', false)}
-                              className="h-8 px-3"
-                            >
-                              →
-                            </Button>
-                            <Button
-                              variant={reaction.isEquilibrium ? 'default' : 'ghost'}
-                              size="sm"
-                              onClick={() => updateReaction(reaction.id, 'isEquilibrium', true)}
-                              className="h-8 px-3"
-                            >
-                              ⇌
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="col-span-3">
-                        <Input
-                          placeholder="C"
-                          value={reaction.products}
-                          onChange={(e) => updateReaction(reaction.id, 'products', e.target.value)}
-                        />
-                      </div>
-                      <div className="col-span-1"></div>
-                      <div className="col-span-1 flex justify-start">
-                        {index > 0 && (
-                          <button
-                            onClick={() => removeReaction(reaction.id)}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    
-                    {/* A and Ea values for this reaction */}
-                    <div className="mt-2 pl-4 space-y-3">
-                      {/* Forward reaction parameters */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="flex items-center gap-2">
-                          <Label className="text-sm whitespace-nowrap" style={{fontFeatureSettings: '"subs" 1'}}>
-                            {reaction.isEquilibrium ? (
-                              <span>A<sub style={{fontSize: '0.75em', lineHeight: '1'}}>forward</sub>:</span>
-                            ) : (
-                              'A:'
-                            )}
-                          </Label>
-                          <Input
-                            type="number"
-                            value={reaction.AValue}
-                            onChange={(e) => updateReaction(reaction.id, 'AValue', e.target.value)}
-                            placeholder="1e6"
-                            className="flex-1"
-                          />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Label className="text-sm whitespace-nowrap" style={{fontFeatureSettings: '"subs" 1'}}>
-                            {reaction.isEquilibrium ? (
-                              <span>Ea<sub style={{fontSize: '0.75em', lineHeight: '1'}}>forward</sub>:</span>
-                            ) : (
-                              'Ea:'
-                            )}
-                          </Label>
-                          <div className="flex items-center gap-1 flex-1">
-                            <Input
-                              type="number"
-                              value={reaction.EaValue}
-                              onChange={(e) => updateReaction(reaction.id, 'EaValue', e.target.value)}
-                              placeholder="50000"
-                            />
-                            <span className="text-xs text-muted-foreground">J/mol</span>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      {/* Backward reaction parameters (only shown for equilibrium) */}
-                      {reaction.isEquilibrium && (
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="flex items-center gap-2">
-                            <Label className="text-sm whitespace-nowrap" style={{fontFeatureSettings: '"subs" 1'}}>
-                              <span>A<sub style={{fontSize: '0.75em', lineHeight: '1'}}>backward</sub>:</span>
-                            </Label>
-                            <Input
-                              type="number"
-                              value={reaction.AValueBackward || ''}
-                              onChange={(e) => updateReaction(reaction.id, 'AValueBackward', e.target.value)}
-                              placeholder="1e4"
-                              className="flex-1"
-                            />
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Label className="text-sm whitespace-nowrap" style={{fontFeatureSettings: '"subs" 1'}}>
-                              <span>Ea<sub style={{fontSize: '0.75em', lineHeight: '1'}}>backward</sub>:</span>
-                            </Label>
-                            <div className="flex items-center gap-1 flex-1">
-                              <Input
-                                type="number"
-                                value={reaction.EaValueBackward || ''}
-                                onChange={(e) => updateReaction(reaction.id, 'EaValueBackward', e.target.value)}
-                                placeholder="60000"
-                              />
-                              <span className="text-xs text-muted-foreground">J/mol</span>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    
-                    {index < reactions.length - 1 && <hr className="my-4" />}
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-            {/* Component Feed Composition */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="font-bold">Components</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="mb-2">
-                  <div className={`grid gap-2 items-center text-xs font-medium text-muted-foreground`} style={{gridTemplateColumns: `1fr 1fr repeat(${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}, 1fr)`}}>
-                    <div></div>
-                    <div></div>
-                    <div className="text-center flex justify-center" style={{gridColumn: `span ${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}`}}>
-                      <Label className="text-sm font-medium">Reaction Order</Label>
-                    </div>
-                  </div>
-                </div>
-                <div className={`grid gap-2 items-center text-xs font-medium text-muted-foreground border-b pb-1`} style={{gridTemplateColumns: `1fr 1fr repeat(${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}, 1fr)`}}>
-                  <div className="text-center flex justify-center">
-                    <Label className="text-sm font-medium">Name</Label>
-                  </div>
-                  <div className="text-center flex justify-center">
-                    <Label className="text-sm font-medium">Initial Flow Rate (mol/s)</Label>
-                  </div>
-                  {reactions.map((reaction, index) => (
-                    reaction.isEquilibrium ? (
-                      <React.Fragment key={reaction.id}>
-                        <div className="text-center flex justify-center">
-                          <Label className="text-xs font-medium">Rxn {index + 1} Fwd</Label>
-                        </div>
-                        <div className="text-center flex justify-center">
-                          <Label className="text-xs font-medium">Rxn {index + 1} Rev</Label>
-                        </div>
-                      </React.Fragment>
-                    ) : (
-                      <div key={reaction.id} className="text-center flex justify-center">
-                        <Label className="text-xs font-medium">Rxn {index + 1}</Label>
-                      </div>
-                    )
-                  ))}
-                </div>
-                {components.map((comp, index) => {
-                  return (
-                    <div key={comp.id} className={`grid gap-2 items-center`} style={{gridTemplateColumns: `1fr 1fr repeat(${reactions.reduce((acc, r) => acc + (r.isEquilibrium ? 2 : 1), 0)}, 1fr)`}}>
-                      <div className="flex justify-center">
-                        <div className="text-sm font-medium p-2">
-                          {comp.name}
-                        </div>
-                      </div>
-                      <div className="flex justify-center">
-                        <Input
-                          type="number"
-                          value={comp.initialFlowRate}
-                          onChange={(e) => handleComponentChange(comp.id, 'initialFlowRate', e.target.value)}
-                          onKeyDown={handleKeyDown}
-                          placeholder="1.0"
-                          className="w-full text-center"
-                        />
-                      </div>
-                      {reactions.map((reaction, reactionIndex) => {
-                        const isReactantInReaction = reaction.reactants && reaction.reactants.toLowerCase().includes(comp.name.toLowerCase());
-                        const isProductInReaction = reaction.products && reaction.products.toLowerCase().includes(comp.name.toLowerCase());
-                        
-                        if (reaction.isEquilibrium) {
-                          const forwardKey = `${reaction.id}-fwd`;
-                          const backwardKey = `${reaction.id}-rev`;
-                          
-                          return (
-                            <React.Fragment key={reaction.id}>
-                              {/* Forward reaction order */}
-                              <div className="flex items-center justify-center">
-                                {isReactantInReaction ? (
-                                  <Input
-                                    type="number"
-                                    value={comp.reactionOrders?.[forwardKey] || ''}
-                                    onChange={(e) => {
-                                      const newReactionOrders = { ...comp.reactionOrders, [forwardKey]: e.target.value };
-                                      handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
-                                    }}
-                                    placeholder="0"
-                                    className="w-16 h-8 text-center text-xs"
-                                    step="0.1"
-                                    min="0"
-                                  />
-                                ) : (
-                                  <Input
-                                    type="text"
-                                    value="-"
-                                    disabled
-                                    className="w-16 h-8 text-center text-xs bg-muted text-muted-foreground cursor-not-allowed"
-                                  />
-                                )}
-                              </div>
-                              {/* Reverse reaction order */}
-                              <div className="flex items-center justify-center">
-                                {isProductInReaction ? (
-                                  <Input
-                                    type="number"
-                                    value={comp.reactionOrders?.[backwardKey] || ''}
-                                    onChange={(e) => {
-                                      const newReactionOrders = { ...comp.reactionOrders, [backwardKey]: e.target.value };
-                                      handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
-                                    }}
-                                    placeholder="0"
-                                    className="w-16 h-8 text-center text-xs"
-                                    step="0.1"
-                                    min="0"
-                                  />
-                                ) : (
-                                  <Input
-                                    type="text"
-                                    value="-"
-                                    disabled
-                                    className="w-16 h-8 text-center text-xs bg-muted text-muted-foreground cursor-not-allowed"
-                                  />
-                                )}
-                              </div>
-                            </React.Fragment>
-                          );
-                        } else {
-                          return (
-                            <div key={reaction.id} className="flex items-center justify-center">
-                              {isReactantInReaction ? (
-                                <Input
-                                  type="number"
-                                  value={comp.reactionOrders?.[reaction.id] || ''}
-                                  onChange={(e) => {
-                                    const newReactionOrders = { ...comp.reactionOrders, [reaction.id]: e.target.value };
-                                    handleComponentChange(comp.id, 'reactionOrders', newReactionOrders);
-                                  }}
-                                  placeholder="0"
-                                  className="w-16 h-8 text-center text-xs"
-                                  step="0.1"
-                                  min="0"
-                                />
-                              ) : (
-                                <Input
-                                  type="text"
-                                  value="-"
-                                  disabled
-                                  className="w-16 h-8 text-center text-xs bg-muted text-muted-foreground cursor-not-allowed"
-                                />
-                              )}
-                            </div>
-                          );
-                        }
-                      })}
-                    </div>
-                  );
-                })}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Right Column: Visualization and Results */}
-          <div className="space-y-6 md:col-span-3"> {/* Added md:col-span-3 */}
-            {!showGraph ? (
-              <>
-                {/* Reactor Visualization and Type Selection */}
-                <Card>
-              <CardContent className="p-0">
-                <div className="flex justify-center pt-6">
-                  <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-                    <Button
-                      variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
-                      size="sm"
-                      onClick={() => setReactorType('CSTR')}
-                      className="h-8 px-3"
-                    >
-                      CSTR
-                    </Button>
-                    <Button
-                      variant={reactorType === 'PFR' ? 'default' : 'ghost'}
-                      size="sm"
-                      onClick={() => setReactorType('PFR')}
-                      className="h-8 px-3"
-                    >
-                      PFR
-                    </Button>
-                  </div>
-                </div>
-                <div className="p-6 pb-2">
-                  {renderReactorSVG()}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Results Display */}
-            {(calculationResults || recycleResults) && (
+    <div className={`min-h-screen flex flex-col items-center justify-center p-4 sm:p-8 ${mainBg} ${mainFg}`}>
+      <div className="container mx-auto space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}> 
               <Card>
                 <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle>Results {operationMode === 'Recycle' ? '- Recycle System' : '- Single Pass'}</CardTitle>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <div className="flex items-center gap-1">
-                        <div className="px-2 py-1 bg-yellow-100 dark:bg-yellow-900/50 rounded-sm text-[10px] font-medium text-gray-700 dark:text-gray-300">
-                          Limiting Reactant
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <CardTitle className="flex items-center justify-between">
+                    Reactions & Kinetics
+                    {/* This button was missing */}
+                    <Button variant="outline" size="sm" onClick={addReactionSetup} disabled={reactionsSetup.length >= 6}>
+                        <PlusCircle className="mr-2 h-4 w-4" />
+                        Add Reaction
+                    </Button>
+                  </CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <div className="overflow-x-auto">
-                    {operationMode === 'SinglePass' && calculationResults ? (
-                      // Single Pass Results Table
-                      (<table className="w-full border-collapse border border-border">
-                        <thead>
-                          <tr className="bg-muted/50">
-                            <th className="border border-border px-3 py-2 text-center font-medium">Comp.</th>
-                            <th className="border border-border px-3 py-2 text-center font-medium">Conversion (%)</th>
-                            <th className="border border-border px-3 py-2 text-center font-medium">Selectivity (%)</th>
-                            <th className="border border-border px-3 py-2 text-center font-medium">Outlet Flow Rate (mol/s)</th>
-                            <th className="border border-border px-3 py-2 text-center font-medium">Composition (mol%)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {components.map((comp) => {
-                            const isReactantInAnyReaction = reactions.some(r =>
-                              (r.reactants || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
-                            );
-                            const isProductInAnyReaction = reactions.some(r =>
-                              (r.products || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
-                            );
-
-                            let conversionValue: string | number = '-';
-                            if (isReactantInAnyReaction && calculationResults?.outletFlowRates) {
-                              const F_R_in = parseFloat(comp.initialFlowRate || '0');
-                              const F_R_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
-                              if (F_R_in > 1e-9) {
-                                const X_R = (F_R_in - F_R_out) / F_R_in;
-                                conversionValue = formatToSigFigs(Math.max(0, Math.min(1, X_R)) * 100);
-                              } else {
-                                conversionValue = F_R_out > 1e-9 ? '0.00' : '-';
-                              }
-                            }
-
-                            let selectivityValue: string | number = '-';
-                            if (isProductInAnyReaction && calculationResults?.conversion && calculationResults?.outletFlowRates) {
-                              const F_P_out = calculationResults.outletFlowRates?.[comp.name] ?? 0;
-                              const F_P_in = parseFloat(comp.initialFlowRate || '0');
-                              const moles_P_formed = Math.max(0, F_P_out - F_P_in);
-
-                              const keyReactantName = calculationResults.conversion.reactantName;
-                              const F_key_in_comp = components.find(c => c.name === keyReactantName);
-                              const F_key_in = parseFloat(F_key_in_comp?.initialFlowRate || '0');
-                              const X_key = calculationResults.conversion.value;
-                              const moles_key_reacted = F_key_in * X_key;
-
-                              if (moles_key_reacted > 1e-9) {
-                                const rawSelectivity = moles_P_formed / moles_key_reacted;
-                                selectivityValue = formatToSigFigs(Math.max(0, rawSelectivity) * 100);
-                              } else {
-                                selectivityValue = (moles_P_formed > 1e-9) ? '-' : '0.00';
-                              }
-                            }
-                            
-                            const isLimitingReactant = comp.name === calculationResults?.conversion?.reactantName;
-
-                            // Calculate composition (mol%)
-                            let compositionValue: string = '-';
-                            if (calculationResults?.outletFlowRates) {
-                              const totalOutletFlow = Object.values(calculationResults.outletFlowRates).reduce((sum, flow) => sum + flow, 0);
-                              const compOutletFlow = calculationResults.outletFlowRates[comp.name] ?? 0;
-                              if (totalOutletFlow > 1e-9) {
-                                const molPercent = (compOutletFlow / totalOutletFlow) * 100;
-                                compositionValue = formatToSigFigs(molPercent);
-                              }
-                            }
-
-                            return (
-                              <tr 
-                                key={comp.id} 
-                                className={`${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}
-                              >
-                                <td className={`border border-border px-3 py-2 text-center ${isLimitingReactant ? 'font-bold' : ''}`}>
-                                  {comp.name}
-                                </td>
-                                <td className="border border-border px-3 py-2 text-center">
-                                  {conversionValue}
-                                </td>
-                                <td className="border border-border px-3 py-2 text-center">
-                                  {selectivityValue}
-                                </td>
-                                <td className="border border-border px-3 py-2 text-center">
-                                  {calculationResults?.outletFlowRates?.[comp.name] !== undefined ? formatToSigFigs(calculationResults.outletFlowRates[comp.name]) : '-'}
-                                </td>
-                                <td className="border border-border px-3 py-2 text-center">
-                                  {compositionValue}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>)
-                    ) : operationMode === 'Recycle' && recycleResults ? (
-                      // Recycle Results Table
-                      (<div className="space-y-4">
-                        {/* Summary Information */}
-                        <div className="grid grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
-                          <div className="text-center">
-                            <div className="text-sm font-medium text-muted-foreground">Overall Conv.</div>
-                            <div className="text-lg font-bold">
-                              {recycleResults.overallConversion ? `${formatToSigFigs(recycleResults.overallConversion.value * 100)}%` : '-'}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {recycleResults.overallConversion?.reactantName || ''}
-                            </div>
-                          </div>
-                          <div className="text-center">
-                            <div className="text-sm font-medium text-muted-foreground">Single Pass Conversion</div>
-                            <div className="text-lg font-bold">
-                              {recycleResults.singlePassConversion ? `${formatToSigFigs(recycleResults.singlePassConversion.value * 100)}%` : '-'}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {recycleResults.singlePassConversion?.reactantName || ''} (Reactor Only)
-                            </div>
-                          </div>
-                        </div>
-                        {/* Convergence Issues Warning */}
-                        {!recycleResults.converged && (
-                          <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                            <h4 className="font-semibold text-red-800 dark:text-red-200 mb-2">⚠️ System Not Converged</h4>
-                            <div className="space-y-2 text-sm text-red-700 dark:text-red-300">
-                              {recycleResults.singlePassConversion && recycleResults.singlePassConversion.value < 0.05 && (
-                                <div className="p-2 bg-blue-100 dark:bg-blue-900/50 rounded">
-                                  <div className="font-medium text-blue-800 dark:text-blue-200">Low Single Pass Conversion Detected!</div>
-                                  <div className="text-blue-700 dark:text-blue-300 text-sm">
-                                    Single pass conversion is only {formatToSigFigs(recycleResults.singlePassConversion.value * 100)}%. 
-                                    Try:
-                                    <br />• Increasing reactor volume from {reactorVolume}m³ to {Math.ceil(parseFloat(reactorVolume) * 5)}m³+
-                                    <br />• Increasing temperature from {kinetics.reactionTempK}K to {Math.ceil(parseFloat(kinetics.reactionTempK) + 50)}K+
-                                  </div>
-                                </div>
-                              )}
-                              <div className="mt-2">
-                                <div className="font-medium">General Solutions:</div>
-                                <div className="ml-4">- Increase reactor volume to allow more reaction</div>
-                                <div className="ml-4">- Increase temperature to increase reaction rate</div>
-                                <div className="ml-4">- Check that reaction kinetics parameters are reasonable</div>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                        {/* Detailed Results Table */}
-                        <table className="w-full border-collapse border border-border">
-                          <thead>
-                            <tr className="bg-muted/50">
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Component</th>
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Overall Conv (%)</th>
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Sel (%)</th>
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Outlet (mol/s)</th>
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Outlet Comp (%)</th>
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Rec (mol/s)</th>
-                              <th className="border border-border px-2 py-2 text-center font-medium text-xs">Rec Comp (%)</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {components.map((comp) => {
-                              const isReactantInAnyReaction = reactions.some(r =>
-                                (r.reactants || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
-                              );
-                              const isProductInAnyReaction = reactions.some(r =>
-                                (r.products || '').split(/[+\s]+/).map(s => s.trim().replace(/^\d+/, '')).includes(comp.name)
-                             
-                              );
-
-                              // Overall conversion (fresh feed to product stream)
-                              let conversionValue: string = '-';
-                              if (isReactantInAnyReaction) {
-                                const F_fresh = parseFloat(comp.initialFlowRate || '0');
-                                const F_product = recycleResults.productStream[comp.name] || 0;
-                                if (F_fresh > 1e-9) {
-                                  const X_overall = (F_fresh - F_product) / F_fresh;
-                                  conversionValue = formatToSigFigs(Math.max(0, Math.min(1, X_overall)) * 100);
-                                } else {
-                                  conversionValue = F_product > 1e-9 ? '0.00' : '-';
-                                }
-                              }
-
-                              // Overall selectivity (product formed / reactant consumed from fresh feed)
-                              let selectivityValue: string = '-';
-                              if (isProductInAnyReaction && recycleResults.overallConversion) {
-                                const F_product_out = recycleResults.productStream[comp.name] || 0;
-                                const F_product_in = parseFloat(comp.initialFlowRate || '0'); // Fresh feed of this product
-                                const moles_product_formed = Math.max(0, F_product_out - F_product_in);
-
-                                const keyReactantName = recycleResults.overallConversion.reactantName;
-                                const F_key_fresh_comp = components.find(c => c.name === keyReactantName);
-                                const F_key_fresh = parseFloat(F_key_fresh_comp?.initialFlowRate || '0');
-                                const X_key_overall = recycleResults.overallConversion.value;
-                                const moles_key_consumed = F_key_fresh * X_key_overall;
-
-                                if (moles_key_consumed > 1e-9) {
-                                  const overallSelectivity = moles_product_formed / moles_key_consumed;
-                                  selectivityValue = formatToSigFigs(Math.max(0, overallSelectivity) * 100);
-                                } else {
-                                  selectivityValue = (moles_product_formed > 1e-9) ? '-' : '0.00';
-                                }
-                              }
-
-                              const isLimitingReactant = comp.name === recycleResults.overallConversion?.reactantName;
-
-                              // Calculate outlet composition (mol%)
-                              let outletCompositionValue: string = '-';
-                              const totalOutletFlow = Object.values(recycleResults.reactorOutletStreamFinal).reduce((sum, flow) => sum + flow, 0);
-                              const compOutletFlow = recycleResults.reactorOutletStreamFinal[comp.name] || 0;
-                              if (totalOutletFlow > 1e-9) {
-                                const molPercent = (compOutletFlow / totalOutletFlow) * 100;
-                                outletCompositionValue = formatToSigFigs(molPercent);
-                              }
-
-                              // Calculate recycle composition (mol%)
-                              let recycleCompositionValue: string = '-';
-                              const totalRecycleFlow = Object.values(recycleResults.recycleStreamFinal).reduce((sum, flow) => sum + flow, 0);
-                              const compRecycleFlow = recycleResults.recycleStreamFinal[comp.name] || 0;
-                              if (totalRecycleFlow > 1e-9) {
-                                const molPercent = (compRecycleFlow / totalRecycleFlow) * 100;
-                                recycleCompositionValue = formatToSigFigs(molPercent);
-                              }
-
-                              return (
-                                <tr 
-                                  key={comp.id} 
-                                  className={`${isLimitingReactant ? 'bg-yellow-100 dark:bg-yellow-900/30' : ''}`}
-                                >
-                                  <td className={`border border-border px-2 py-2 text-center text-xs ${isLimitingReactant ? 'font-bold' : ''}`}>
-                                    {comp.name}
-                                  </td>
-                                  <td className="border border-border px-2 py-2 text-center text-xs">
-                                    {conversionValue}
-                                  </td>
-                                  <td className="border border-border px-2 py-2 text-center text-xs">
-                                    {selectivityValue}
-                                  </td>
-                                  <td className="border border-border px-2 py-2 text-center text-xs">
-                                    {formatToSigFigs(recycleResults.reactorOutletStreamFinal[comp.name] || 0)}
-                                  </td>
-                                  <td className="border border-border px-2 py-2 text-center text-xs">
-                                    {outletCompositionValue}
-                                  </td>
-                                  <td className="border border-border px-2 py-2 text-center text-xs">
-                                    {formatToSigFigs(recycleResults.recycleStreamFinal[comp.name] || 0)}
-                                  </td>
-                                  <td className="border border-border px-2 py-2 text-center text-xs">
-                                    {recycleCompositionValue}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                        {/* System Performance Analysis - Moved below the table */}
-                        <div className="p-4 bg-gray-50 dark:bg-gray-900/20 border border-gray-200 dark:border-gray-800 rounded-lg">
-                          <h4 className="font-semibold text-gray-800 dark:text-gray-200 mb-2">System Performance Analysis</h4>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                            <div>
-                              <div className="text-muted-foreground">Reactor Inlet Total Flow</div>
-                              <div className="font-medium">
-                                {formatToSigFigs(Object.values(recycleResults.reactorInletStreamFinal).reduce((sum, flow) => sum + flow, 0))} mol/s
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-muted-foreground">Reactor Outlet Total Flow</div>
-                              <div className="font-medium">
-                                {formatToSigFigs(Object.values(recycleResults.reactorOutletStreamFinal).reduce((sum, flow) => sum + flow, 0))} mol/s
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-muted-foreground">Recycle Ratio</div>
-                              <div className="font-medium">
-                                {(() => {
-                                  const totalRecycle = Object.values(recycleResults.recycleStreamFinal).reduce((sum, flow) => sum + flow, 0);
-                                  const totalFresh = components.reduce((sum, comp) => sum + (parseFloat(comp.initialFlowRate) || 0), 0);
-                                  return totalFresh > 1e-9 ? formatToSigFigs(totalRecycle / totalFresh) : '-';
-                                })()}
-                              </div>
-                            </div>
-                            <div>
-                              <div className="text-muted-foreground">Material Balance</div>
-                              <div className="font-medium">
-                                {(() => {
-                                  const totalIn = components.reduce((sum, comp) => sum + (parseFloat(comp.initialFlowRate) || 0), 0);
-                                  const totalOut = Object.values(recycleResults.productStream).reduce((sum, flow) => sum + flow, 0);
-                                  const balance = totalIn > 1e-9 ? (totalOut / totalIn) * 100 : 0;
-                                  return `${formatToSigFigs(balance)}%`;
-                                })()}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>)
-                    ) : null}
-                  </div>
-                </CardContent>
+                <CardContent className="space-y-6">
+    {reactionsSetup.map((reaction, index) => (
+      <div key={reaction.id} className={`space-y-3 ${index > 0 ? 'border-t pt-6' : ''}`}>
+        <div className="flex items-center justify-between">
+            <Label className="font-bold">Reaction {reaction.id}</Label>
+            {/* This ensures the remove button shows for all but the first reaction */}
+            {index > 0 && 
+              <Button variant="destructive" size="sm" onClick={() => removeReactionSetup(reaction.id)} aria-label="Remove">
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            }
+        </div>
+        {/* Forward Reaction Inputs */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex items-center gap-2">
+              <Label className="text-sm whitespace-nowrap" htmlFor={`a-value-${reaction.id}`}>
+                {reaction.isEquilibrium ? <span>A<sub className="relative -left-px">f</sub>:</span> : 'A:'}
+              </Label>
+              <Input id={`a-value-${reaction.id}`} type="text" value={reaction.AValue} onChange={(e) => updateReactionSetup(reaction.id, 'AValue', e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-sm whitespace-nowrap" htmlFor={`ea-value-${reaction.id}`}>
+                {reaction.isEquilibrium ? <span>Ea<sub className="relative -left-px">f</sub>:</span> : 'Ea:'}
+              </Label>
+              <Input id={`ea-value-${reaction.id}`} type="text" value={reaction.EaValue} onChange={(e) => updateReactionSetup(reaction.id, 'EaValue', e.target.value)} />
+              <span className="text-xs text-muted-foreground">J/mol</span>
+            </div>
+        </div>
+        {/* Conditionally show reverse reaction inputs */}
+        {reaction.isEquilibrium && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t">
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm whitespace-now-wrap" htmlFor={`a-value-rev-${reaction.id}`}> 
+                    <span>A<sub className="relative -left-px">r</sub>:</span>
+                  </Label>
+                  <Input id={`a-value-rev-${reaction.id}`} type="text" value={reaction.AValueBackward || ''} onChange={(e) => updateReactionSetup(reaction.id, 'AValueBackward', e.target.value)} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm whitespace-now-wrap" htmlFor={`ea-value-rev-${reaction.id}`}> 
+                    <span>Ea<sub className="relative -left-px">r</sub>:</span>
+                  </Label>
+                  <Input id={`ea-value-rev-${reaction.id}`} type="text" value={reaction.EaValueBackward || ''} onChange={(e) => updateReactionSetup(reaction.id, 'EaValueBackward', e.target.value)} />
+                  <span className="text-xs text-muted-foreground">J/mol</span>
+                </div>
+            </div>
+        )}
+      </div>
+    ))}
+</CardContent>
               </Card>
-            )}
-              </>
-            ) : (
-              /* Graph Display - Replaces visualization and results */
-              (<Card>
-                <CardContent>
-                  <div className="relative w-full aspect-square rounded-md">
-                    {/* PFR/CSTR Switch on top-left corner of graph */}
-                    <div className="absolute top-4 left-4 z-10">
-                      <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
-                        <Button
-                          variant={reactorType === 'PFR' ? 'default' : 'ghost'}
-                          size="sm"
-                          onClick={() => setReactorType('PFR')}
-                          className="h-8 px-3"
-                        >
-                          PFR
-                        </Button>
-                        <Button
-                          variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
-                          size="sm"
-                          onClick={() => setReactorType('CSTR')}
-                          className="h-8 px-3"
-                        >
-                          CSTR
-                        </Button>
-                      </div>
-                    </div>
-                    
-                    {/* Graph Type Selector on top-right corner of graph */}
-                    <div className="absolute top-4 right-4 z-10">
-                      <Select value={graphType} onValueChange={(value: 'conversion' | 'selectivity' | 'flowrates' | 'composition') => setGraphType(value)}>
-                        <SelectTrigger className="w-56">
-                          <SelectValue placeholder="Select graph type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="conversion">Conversion vs Volume</SelectItem>
-                          <SelectItem value="selectivity">Selectivity vs Volume</SelectItem>
-                          <SelectItem value="flowrates">Flow Rates vs Volume</SelectItem>
-                          <SelectItem value="composition">Composition vs Volume</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {Object.keys(graphOptions).length > 0 && graphOptions.series && (graphOptions.series as any[]).length > 0 ? (
-                      <ReactECharts 
-                        ref={echartsRef} 
-                        echarts={echarts} 
-                        option={graphOptions} 
-                        style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }} 
-                        notMerge={true} 
-                        lazyUpdate={false}
-                      />
-                    ) : (
-                      <div className="absolute inset-0 flex items-center justify-center text-white">
-                        <div className="text-center">
-                          <div className="mb-2">Generating analysis data...</div>
-                          <div className="text-sm text-gray-300">This may take a moment</div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>)
-            )}
+            </div>
+            {ReactionPreview}
+        </div>
 
-            {/* Graph Visualization Button */}
-            {(calculationResults || recycleResults) && operationMode === 'SinglePass' && (
-              <div className="flex justify-center">
-                <Button 
-                  onClick={() => setShowGraph(!showGraph)}
-                  variant="outline"
-                  className="flex items-center gap-2"
-                >
-                  <BarChart3 className="h-4 w-4" />
-                  {showGraph ? 'Hide Analysis Graph' : 'Show Analysis Graph'}
-                </Button>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className={`lg:col-span-2 p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}> 
+              <div className="mb-4">
+                <CardTitle className="flex items-center justify-between">
+                  Components
+                  <Button variant="secondary" size="sm" onClick={addComponentSetup}>
+                      <PlusCircle className="mr-2 h-4 w-4" />Add Component
+                  </Button>
+                </CardTitle>
               </div>
-            )}
+              <div className="overflow-x-auto">
+                  {/* First header row: Main column names and Reaction X */}
+                  <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: `40px 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`}}>
+                      <div></div> {/* Spacer for trashcan icon */}
+                      <div className="text-center">Name</div>
+                      <div className="text-center">Initial Flow (mol/s)</div>
+                      {reactionsSetup.map(r => (
+                          <div key={r.id} className="text-center col-span-2">Reaction {r.id}</div>
+                      ))}
+                  </div>
+                  {/* Second header row: Stoich. and Order */}
+                  <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: `40px 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`}}>
+                      <div></div><div></div><div></div> {/* Spacers */}
+                      {reactionsSetup.map(r => (
+                          <React.Fragment key={r.id}>
+                              <div className="text-center">Stoich.</div>
+                              <div className="text-center">Order</div>
+                          </React.Fragment>
+                      ))}
+                  </div>
 
-            {/* Error Display */}
-            {calculationError && (
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertTitle>Error</AlertTitle>
-                <AlertDescription>{calculationError}</AlertDescription>
-              </Alert>
-            )}
+                  {/* Data rows for each component */}
+                  {componentsSetup.map((comp, index) => (
+                      <div key={comp.id} className="grid gap-2 items-center py-2 relative" style={{gridTemplateColumns: `40px 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`}}>
+                          {/* Trashcan button */}
+                          {index > 0 ? (
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeComponentSetup(comp.id)}>
+                                <Trash2 className="h-4 w-4 text-red-500" />
+                            </Button>
+                          ) : (
+                            <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
+                              <Trash2 className="h-4 w-4 text-muted-foreground" />
+                            </Button>
+                          )}
+
+                          {/* Name Input */}
+                          <div className="relative">
+                              <Input 
+                                  value={comp.name} 
+                                  onChange={e => {
+                                      handleComponentSetupChange(comp.id, 'name', e.target.value)
+                                      // fetchSuggestions(e.target.value) // Removed undefined function
+                                  }}
+                                  // ... other props
+                              />
+                              {/* ... suggestion box logic ... */}
+                          </div>
+
+                          {/* Initial Flow Input */}
+                          <Input type="number" value={comp.initialFlowRate} onChange={e => handleComponentSetupChange(comp.id, 'initialFlowRate', e.target.value)} placeholder="0.0" className="h-8 text-center"/>
+                          
+                          {/* Stoich. and Order inputs for each reaction */}
+                          {reactionsSetup.map(r => (
+                              <React.Fragment key={r.id}>
+                                  <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.stoichiometry || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], stoichiometry: e.target.value}})} className="h-8 text-center" step="0.1" />
+                                  <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.order || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], order: e.target.value}})} className="h-8 text-center" step="0.1" />
+                              </React.Fragment>
+                          ))}
+                      </div>
+                  ))}
+              </div>
+          </div>
+          <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}>
+            <Card>
+                <CardHeader>
+                    <CardTitle>Simulation Basis</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {/* Limiting Reactant Dropdown */}
+                    <div>
+                        <Label>Limiting Reactant</Label>
+                        <Select 
+                            value={simBasis.limitingReactantId} 
+                            onValueChange={(value) => setSimBasis({...simBasis, limitingReactantId: value})}
+                        >
+                            <SelectTrigger className="w-full mt-1">
+                                <SelectValue placeholder="Select a reactant" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {componentsSetup
+                                    .filter(c => {
+                                        const isReactant = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') < 0);
+                                        const isProduct = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0);
+                                        return isReactant && !isProduct;
+                                    })
+                                    .map(c => (
+                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                    ))
+                                }
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    {/* Desired Product Dropdown */}
+                    <div>
+                        <Label>Desired Product</Label>
+                        <Select 
+                            value={simBasis.desiredProductId} 
+                            onValueChange={(value) => setSimBasis({...simBasis, desiredProductId: value})}
+                        >
+                            <SelectTrigger className="w-full mt-1">
+                                <SelectValue placeholder="Select a product" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {componentsSetup
+                                    .filter(c => Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0))
+                                    .map(c => (
+                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                    ))
+                                }
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </CardContent>
+            </Card>
           </div>
         </div>
+
+        <div className="text-right mt-2">
+            <div title={!validationResult.isValid ? validationResult.message : undefined} className="inline-block">
+                {/* Use the Button component for the primary action */}
+                <Button onClick={onNext} disabled={!validationResult.isValid}>
+                Next: Configure Simulation →
+                </Button>
+            </div>
+        </div>
       </div>
-    </TooltipProvider>
+    </div>
+  )
+}
+
+// Interface for the new molarRatios prop
+interface MolarRatio {
+    numeratorId: string;
+    value: number;
+}
+
+const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios, setMolarRatios }: { 
+    onBack: () => void, 
+    reactions: ReactionSetup[], 
+    components: ComponentSetup[],
+    simBasis: any,
+    molarRatios: MolarRatio[],
+    setMolarRatios: React.Dispatch<React.SetStateAction<MolarRatio[]>>
+}) => {
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+  const textColor = isDark ? '#E5E7EB' : '#1F2937';
+  const cardBg = isDark ? 'bg-card' : 'bg-card'; // Tailwind + theme
+  const cardFg = isDark ? 'text-card-foreground' : 'text-card-foreground';
+  const mainBg = isDark ? 'bg-background' : 'bg-background';
+  const mainFg = isDark ? 'text-foreground' : 'text-foreground';
+
+  const [reactorType, setReactorType] = useState<ReactorType>('PFR')
+  const [graphType, setGraphType] = useState<GraphType>('selectivity')
+  const [temperature, setTemperature] = useState(4)
+  
+  const [molarRatioMin, setMolarRatioMin] = useState('2');
+  const [molarRatioMax, setMolarRatioMax] = useState('20');
+  const [tempMin, setTempMin] = useState('4');
+  const [tempMax, setTempMax] = useState('20');
+
+  const [prodRate, setProdRate] = useState('100');
+  const [prodMolarMass, setProdMolarMass] = useState('114.23');
+  const [reactorVolume, setReactorVolume] = useState('100'); // New state for reactor volume
+
+  const tempK = temperature + 273.15
+  
+  const generateGraphData = useCallback(() => {
+    const v0 = 1.0; // Assume a constant volumetric flow rate for the liquid phase basis
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    if (!limitingReactant) return { series: [], xAxis: '', yAxis: '', legend: [] };
+
+    // 1. Use a fixed basis for the initial simulation run (e.g., 1 mol/s of limiting reactant).
+    const F_A0_BASIS = 1.0;
+    const basisFlowRates = components.reduce((acc, comp) => {
+        if (comp.id === limitingReactant.id) {
+            acc[comp.name] = F_A0_BASIS;
+        } else {
+            const ratioInfo = molarRatios.find(r => r.numeratorId === comp.id);
+            // As MR increases, this flow rate increases, correctly increasing total flow.
+            acc[comp.name] = ratioInfo ? F_A0_BASIS * ratioInfo.value : 0;
+        }
+        return acc;
+    }, {} as {[key: string]: number});
+
+    // 2. Dynamically find the required V_max to ensure the graph reaches ~99% conversion on the basis run.
+    let V_max;
+    if (reactorType === 'PFR') {
+        V_max = findVolumeForConversion_PFR(0.99, reactions, components, basisFlowRates, tempK, simBasis);
+    } else { // CSTR
+        V_max = findVolumeForConversion_CSTR(0.99, reactions, components, basisFlowRates, v0, tempK, simBasis);
+    }
+    
+    // 3. Run the appropriate solver to get the performance curves for the basis feed rate.
+    const basisResults = reactorType === 'CSTR' 
+        ? calculateCstrData(reactions, components, basisFlowRates, v0, tempK, simBasis, V_max)
+        : calculatePfrData(reactions, components, V_max, basisFlowRates, tempK, simBasis);
+    
+    // 4. Scale the volume data based on the desired production rate from the UI.
+    const targetProduction_mol_s = (parseFloat(prodRate) * 1e6) / parseFloat(prodMolarMass) / (365 * 24 * 3600);
+    
+    const scaledVolumeData = basisResults.volumeData.map(point => {
+        const conversion = point.x;
+        const basisVolume = point.y;
+        
+        // Find corresponding selectivity by interpolating from the simulation results
+        const sData = basisResults.selectivityData;
+        let selectivity = 0;
+        if (sData.length > 0) {
+            const p1 = sData.findLast(p => p.x <= conversion) ?? sData[0];
+            const p2 = sData.find(p => p.x >= conversion) ?? sData[sData.length - 1];
+            selectivity = interpolate(conversion, p1, p2);
+        }
+
+        if (conversion < 1e-6 || selectivity < 1e-6) return null; // Avoid division by zero
+
+        // Calculate the actual feed rate required for the target production
+        const F_A0_actual = targetProduction_mol_s / (selectivity * conversion);
+        // Determine how much to scale the basis volume by
+        const scalingFactor = F_A0_actual / F_A0_BASIS;
+        const actualVolume = basisVolume * scalingFactor;
+        
+        return { x: conversion, y: actualVolume };
+    }).filter((p): p is {x: number, y: number} => p !== null && isFinite(p.y));
+
+    // --- The rest of the function formats the data for the ECharts component ---
+    const dataToShow = {
+        selectivityData: basisResults.selectivityData,
+        volumeData: scaledVolumeData,
+    };
+    
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
+    const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`;
+    let yLabel = '';
+    let legend: string[] = [];
+    let series: any[] = [];
+    
+    if (graphType === 'volume') {
+      yLabel = 'Reactor Volume (m³)';
+      legend = ['Volume'];
+      series = [{ name: legend[0], type: 'line', data: dataToShow.volumeData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 2 } }];
+    } else { 
+      yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`;
+      legend = [desiredProduct?.name || 'Product'];
+      series = [{ name: legend[0], type: 'line', data: dataToShow.selectivityData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 2 } }];
+    }
+    
+    return { series, xAxis: xLabel, yAxis: yLabel, legend };
+  }, [reactorType, molarRatios, temperature, graphType, tempK, reactions, components, simBasis, prodRate, prodMolarMass]);
+
+  const graphData = generateGraphData();
+
+  const chartOptions: EChartsOption = {
+    animation: false,
+    backgroundColor: 'transparent',
+    title: {
+        text: `${reactorType} Performance`,
+        left: 'center',
+        top: '2%',
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
+    },
+    grid: { left: '5%', right: '3%', bottom: '8%', top: '10%', containLabel: true },
+    xAxis: {
+        type: 'value',
+        name: graphData.xAxis,
+        nameLocation: 'middle', nameGap: 30,
+        nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+        min: 0, max: 1,
+        axisLine: { lineStyle: { color: textColor } },
+        axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        splitLine: { show: false },
+    },
+    yAxis: {
+        type: 'value',
+        name: graphData.yAxis,
+        nameLocation: 'middle',
+        nameGap: 50,
+        nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+        min: 0, 
+        
+        // MODIFICATION: Set max to 1 for selectivity/conversion, otherwise auto-scale
+        max: ['selectivity', 'selectivityVsConversion', 'conversion'].includes(graphType) ? 1 : 'dataMax',
+        
+        axisLine: { lineStyle: { color: textColor } },
+        axisLabel: { 
+            color: textColor, 
+            fontSize: 12, 
+            fontFamily: 'Merriweather Sans',
+            formatter: (value: number) => value.toPrecision(2), // Use toPrecision for better formatting
+            showMaxLabel: true 
+        },
+        splitLine: { show: false },
+    },
+    legend: {
+      orient: 'horizontal', bottom: -5, left: 'center',
+      textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+      data: graphData.legend,
+      itemWidth: 25, itemHeight: 2
+    },
+    tooltip: { 
+      trigger: 'axis',
+      backgroundColor: isDark ? 'rgba(31, 41, 55, 0.9)' : '#f9fafb',
+      borderColor: isDark ? '#4B5563' : '#d1d5db',
+      textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+      
+      // 1. Format the tooltips that appear on the axes
+      axisPointer: {
+        type: 'cross',
+        label: {
+          backgroundColor: isDark ? '#374151' : '#e5e7eb', // A dark grey color
+          formatter: function (params) {
+            // Use toPrecision(3) for 3 significant figures
+            return parseFloat(params.value as string).toPrecision(3);
+          }
+        }
+      },
+
+      // 2. Format the main data tooltip that appears on hover
+      formatter: (params: any) => {
+        if (!params || params.length === 0) {
+            return '';
+        }
+
+        // Get the x-axis name (e.g., "Conversion") and format its value
+        const xAxisLabel = graphData.xAxis.split(' ')[0]; 
+        const xAxisValue = parseFloat(params[0].axisValue).toPrecision(3);
+        
+        let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}<br/>`;
+
+        // Add a line for each data series (e.g., Volume)
+        params.forEach((p: any) => {
+            const seriesName = p.seriesName;
+            const seriesValue = parseFloat(p.value[1]).toPrecision(3);
+            const marker = p.marker; // The colored dot icon
+            tooltipContent += `${marker} ${seriesName}: <strong>${seriesValue}</strong>`;
+        });
+
+        return tooltipContent;
+      }
+    },
+    series: graphData.series
+  };
+  
+  const limitingReactantName = components.find(c => c.id === simBasis.limitingReactantId)?.name || 'Limiting';
+
+  // Move handleMolarRatioChange here so it can access setMolarRatios from props
+  const handleMolarRatioChange = (numeratorId: string, newValue: number) => {
+    setMolarRatios((prevRatios: MolarRatio[]) => 
+      prevRatios.map((ratio: MolarRatio) => 
+        ratio.numeratorId === numeratorId ? { ...ratio, value: newValue } : ratio
+      )
+    );
+  };
+
+  return (
+    <div className={`min-h-screen flex flex-col p-4 ${mainBg} ${mainFg}`}>
+      {/* MODIFICATION: Wrap the grid in a snapping container */}
+      <div className="container mx-auto flex-grow">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+        
+            {/* Control Panel Card */}
+            <div className={`lg:col-span-1 p-6 rounded-lg shadow-lg flex flex-col space-y-6 ${cardBg} ${cardFg}`}>
+            <div className="flex justify-start">
+                 <button onClick={onBack} className="bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 px-4 rounded-lg transition-colors flex items-center">
+                    <ArrowLeft className="h-4 w-4 mr-2"/> Back
+                </button>
+            </div>
+                
+                {/* MODIFICATION: Add the input boxes back */}
+            <div className="space-y-2">
+                <label className="text-sm font-medium">Desired Production Rate (kta)</label>
+                    <input type="number" value={prodRate} onChange={e => setProdRate(e.target.value)} className="w-full bg-background text-foreground p-2 rounded"/>
+            </div>
+            <div className="space-y-2">
+                <label className="text-sm font-medium">Product Molar Mass (g/mol)</label>
+                    <input type="number" value={prodMolarMass} onChange={e => setProdMolarMass(e.target.value)} className="w-full bg-background text-foreground p-2 rounded"/>
+            </div>
+                
+                {/* Molar ratio sliders using ParameterSlider */}
+                {molarRatios.map(ratio => {
+                    const numeratorName = components.find(c => c.id === ratio.numeratorId)?.name || 'N/A';
+                    return (
+                        <div key={ratio.numeratorId} className="pt-4 border-t border-border">
+                            <ParameterSlider
+                                /* MODIFICATION: Parentheses removed from the label */
+                                label={`${numeratorName} / ${limitingReactantName}`}
+                                unit="" // Unit is now part of the label
+                                value={ratio.value.toString()}
+                                onValueChange={(value) => handleMolarRatioChange(ratio.numeratorId, value)}
+                                min={parseFloat(molarRatioMin)}
+                                max={parseFloat(molarRatioMax)}
+                                step={1}
+                                maxSliderValue={molarRatioMax}
+                                onMaxSliderChange={setMolarRatioMax}
+                                minSliderValue={molarRatioMin}
+                                onMinSliderChange={setMolarRatioMin}
+                            />
+                </div>
+                    );
+                })}
+
+                {/* Temperature slider using ParameterSlider */}
+                <ParameterSlider
+                    label="Temperature"
+                    unit="°C"
+                    value={temperature.toString()}
+                    onValueChange={(value) => setTemperature(value)}
+                    min={parseFloat(tempMin)}
+                    max={parseFloat(tempMax)}
+                    step={1}
+                    maxSliderValue={tempMax}
+                    onMaxSliderChange={setTempMax}
+                    minSliderValue={tempMin}
+                    onMinSliderChange={setTempMin}
+                />
+            </div>
+
+            {/* Graph Card */}
+            <div className={`lg:col-span-2 p-4 rounded-lg shadow-lg aspect-square ${cardBg} ${cardFg}`}> 
+              {/* Chart section is unchanged */}
+            <div className="relative mb-2">
+                <div className="absolute top-0 left-0 z-10">
+                        {/* Wrap the buttons in a muted background for a nice toggle effect */}
+                        <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
+                            <Button
+                                onClick={() => setReactorType('PFR')}
+                                variant={reactorType === 'PFR' ? 'default' : 'ghost'}
+                                size="sm"
+                                className="text-xs px-3 py-1 h-auto"
+                            >
+                                PFR
+                            </Button>
+                            <Button
+                                onClick={() => setReactorType('CSTR')}
+                                variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
+                                size="sm"
+                                className="text-xs px-3 py-1 h-auto"
+                            >
+                                CSTR
+                            </Button>
+                    </div>
+                </div>
+                <div className="absolute top-0 right-0 z-10">
+                        <select onChange={(e) => setGraphType(e.target.value as GraphType)} value={graphType} className={`p-1 rounded-md text-xs ${isDark ? 'bg-muted' : 'bg-muted'}`}> 
+                        <option value="selectivity">Selectivity vs. Conversion</option>
+                        <option value="volume">Volume vs. Conversion</option>
+                    </select>
+                </div>
+            </div>
+          <ReactECharts
+            // MODIFICATION: Add reactorType to the key to force a full re-render on switch
+            key={`${resolvedTheme}-${reactorType}`}
+            // If you have echartsRef and echarts, include them as props
+            // ref={echartsRef}
+            // echarts={echarts}
+            option={chartOptions}
+            style={{ height: '100%', width: '100%', minHeight: '450px' }}
+            notMerge={true}
+          />
+            </div>
+            
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Place this new component before your main Page component
+interface ParameterSliderProps {
+  label: string;
+  value: string;
+  unit: string;
+  onValueChange: (value: number) => void;
+  min: number;
+  max: number;
+  step: number;
+  maxSliderValue: string;
+  onMaxSliderChange: (value: string) => void;
+  minSliderValue: string;
+  onMinSliderChange: (value: string) => void;
+  isReadOnly?: boolean;
+}
+
+const ParameterSlider: React.FC<ParameterSliderProps> = ({
+  label,
+  value,
+  unit,
+  onValueChange,
+  min,
+  max,
+  step,
+  maxSliderValue,
+  onMaxSliderChange,
+  minSliderValue,
+  onMinSliderChange,
+  isReadOnly = false
+}) => {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <Label htmlFor={`${label}-slider`} className="text-sm font-medium">
+          {label}: {value} {unit}
+        </Label>
+        <div className="flex items-center gap-1">
+          <Label htmlFor={`${label}-min-input`} className="text-xs text-muted-foreground">Min:</Label>
+          {/* MODIFICATION: Changed to your preferred width of w-14 */}
+          <Input id={`${label}-min-input`} type="number" value={minSliderValue} onChange={(e) => onMinSliderChange(e.target.value)} className="w-14 h-8 text-xs" />
+          <Label htmlFor={`${label}-max-input`} className="text-xs text-muted-foreground">Max:</Label>
+          {/* MODIFICATION: Changed to your preferred width of w-14 */}
+          <Input id={`${label}-max-input`} type="number" value={maxSliderValue} onChange={(e) => onMaxSliderChange(e.target.value)} className="w-14 h-8 text-xs" readOnly={isReadOnly} />
+        </div>
+      </div>
+      <Slider
+        id={`${label}-slider`}
+        min={min}
+        max={max}
+        step={step}
+        value={[parseFloat(value)]}
+        onValueChange={(val) => onValueChange(val[0])}
+        className="w-full"
+      />
+    </div>
   );
+};
+
+// This helper function finds the PFR volume required for a target conversion
+const findVolumeForConversion_PFR = (
+    targetConversion: number,
+    // Pass in all the necessary data for a simulation run
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    initialFlowRates: { [key: string]: number },
+    tempK: number,
+    simBasis: { limitingReactantId: string; desiredProductId: string }
+): number => {
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    if (!limitingReactant) return 2000; // Default fallback
+
+    // This "error function" will be used by our solver
+    const errorFunction = (volumeGuess: number): number => {
+        if (volumeGuess <= 0) return -targetConversion; // Return large error for invalid input
+
+        // Run a PFR simulation up to the guessed volume
+        const profile = calculatePfrData(reactions, components, volumeGuess, initialFlowRates, tempK, simBasis);
+        
+        // Find the maximum conversion achieved in the simulation
+        let maxConversion = 0;
+        if (profile.selectivityData.length > 0) {
+            maxConversion = profile.selectivityData.reduce((max, p) => p.x > max ? p.x : max, 0);
+        }
+
+        return maxConversion - targetConversion;
+    };
+
+    // Simple solver (bisection method) to find the volume
+    let low = 0.1;
+    let high = 50000; // Start with a very large max volume
+    const maxIter = 50;
+
+    for (let i = 0; i < maxIter; i++) {
+        const mid = (low + high) / 2;
+        const error = errorFunction(mid);
+        if (Math.abs(error) < 0.01) return mid; // Close enough
+        if (error < 0) {
+            low = mid; // Conversion is too low, need more volume
+        } else {
+            high = mid; // Conversion is too high, need less volume
+        }
+    }
+    return high; // Return the best guess if not fully converged
+};
+
+// This helper function finds the CSTR volume required for a target conversion
+const findVolumeForConversion_CSTR = (
+    targetConversion: number,
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    initialFlowRates: { [key: string]: number },
+    v0: number,
+    tempK: number,
+    simBasis: { limitingReactantId: string; desiredProductId: string }
+): number => {
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    if (!limitingReactant) return 2000; // Default fallback
+
+    const errorFunction = (volumeGuess: number): number => {
+        if (volumeGuess <= 0) return -targetConversion;
+
+        // Use the same parsing logic as in calculateCstrData
+        const allInvolvedComponents = components.filter(c => Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0));
+        const parsedReactions = {
+            reactions: reactions.map(reactionInfo => {
+                const reactants: any[] = [];
+                const products: any[] = [];
+                allInvolvedComponents.forEach(comp => {
+                    const reactionData = comp.reactionData?.[reactionInfo.id];
+                    if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
+                        const parsedComp = {
+                            name: comp.name,
+                            stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)),
+                            reactionOrderNum: parseFloat(reactionData.order || '0')
+                        };
+                        if (parseFloat(reactionData.stoichiometry) < 0) reactants.push(parsedComp);
+                        else products.push(parsedComp);
+                    }
+                });
+                const A = parseFloat(reactionInfo.AValue);
+                const Ea = parseFloat(reactionInfo.EaValue);
+                return { reactants, products, rateConstantAtT: A * Math.exp(-Ea / (8.314 * tempK)) };
+            }),
+            allInvolvedComponents: allInvolvedComponents.map(c => ({ name: c.name, id: c.id })),
+        };
+        const outletFlows = solveCSTRParallel(parsedReactions, volumeGuess, initialFlowRates, v0, 'Liquid', 1, tempK);
+        
+        const F_A0 = initialFlowRates[limitingReactant.name] || 0;
+        const F_A_final = outletFlows[limitingReactant.name] || 0;
+        const currentConversion = (F_A0 > 1e-9) ? (F_A0 - F_A_final) / F_A0 : 0;
+
+        return currentConversion - targetConversion;
+    };
+
+    // Use a simple bisection solver to find the required volume
+    let low = 0.1;
+    let high = 50000; // Start with a very large max volume to ensure we find the target
+    const maxIter = 50;
+
+    for (let i = 0; i < maxIter; i++) {
+        const mid = (low + high) / 2;
+        if (mid === low || mid === high) break; // No progress
+        const error = errorFunction(mid);
+        if (Math.abs(error) < 0.01) return mid; // Target found
+        if (error < 0) {
+            low = mid; // Conversion is too low, need more volume
+        } else {
+            high = mid; // Conversion is too high, need less volume
+        }
+    }
+    return high; // Return the best guess
+};
+
+export default function Home() {
+  const [showSimulator, setShowSimulator] = useState(false)
+  
+  const [reactionsSetup, setReactionsSetup] = useState<ReactionSetup[]>(initialReactions);
+  const [componentsSetup, setComponentsSetup] = useState<ComponentSetup[]>(initialComponents);
+  
+  const [simBasis, setSimBasis] = useState({
+    limitingReactantId: 'comp-A',
+    desiredProductId: 'comp-C',
+  });
+
+  const [molarRatios, setMolarRatios] = useState<Array<{numeratorId: string, value: number}>>([]);
+
+  // --- MODIFICATION START ---
+  // This function now correctly identifies ONLY primary reactants (chemicals that are
+  // consumed but not also produced), which fixes the bug.
+  const getReactants = useCallback((components: ComponentSetup[], reactions: ReactionSetup[]) => {
+      const componentRoles = new Map<string, {isReactant: boolean, isProduct: boolean}>();
+
+      // First, determine if each component is a reactant or a product in any reaction
+      for (const comp of components) {
+          const roles = { isReactant: false, isProduct: false };
+          for (const reaction of reactions) {
+              const stoich = parseFloat(comp.reactionData[reaction.id]?.stoichiometry || '0');
+              if (stoich < 0) {
+                  roles.isReactant = true;
+              } 
+              else if (stoich > 0) {
+                  roles.isProduct = true;
+              }
+          }
+          componentRoles.set(comp.id, roles);
+      }
+
+      // A true "reactant" for our purposes is one that is consumed but never produced (i.e., not an intermediate)
+      const reactantIds = new Set<string>();
+      for (const [id, roles] of componentRoles.entries()) {
+          if (roles.isReactant && !roles.isProduct) {
+              reactantIds.add(id);
+          }
+      }
+      return components.filter(comp => reactantIds.has(comp.id));
+  }, []);
+  // --- MODIFICATION END ---
+
+  // 4. Effect to automatically manage the molar ratios based on the limiting reactant
+  useEffect(() => {
+    const allReactants = getReactants(componentsSetup, reactionsSetup);
+    const otherReactants = allReactants.filter(r => r.id !== simBasis.limitingReactantId);
+
+    // Update the molarRatios state, preserving existing values where possible
+    setMolarRatios(prevRatios => {
+        const newRatios = otherReactants.map(reactant => {
+            const existingRatio = prevRatios.find(r => r.numeratorId === reactant.id);
+            return {
+                numeratorId: reactant.id,
+                value: existingRatio ? existingRatio.value : 12.0 // Default value for new ratios
+            };
+        });
+        
+        // Prevents unnecessary re-renders if the ratios haven't changed
+        if (JSON.stringify(newRatios) !== JSON.stringify(prevRatios)) {
+             return newRatios;
+        }
+        return prevRatios;
+    });
+
+  }, [componentsSetup, reactionsSetup, simBasis.limitingReactantId, getReactants]);
+
+
+  // 5. Updated effect to handle component deletion
+  useEffect(() => {
+    const componentIds = new Set(componentsSetup.map(c => c.id));
+    const allReactants = getReactants(componentsSetup, reactionsSetup);
+
+    if (!componentIds.has(simBasis.limitingReactantId)) {
+        setSimBasis(b => ({...b, limitingReactantId: allReactants[0]?.id || ''}))
+    }
+    if (!componentIds.has(simBasis.desiredProductId)) {
+        // Fallback to the first component if the desired product is deleted
+        setSimBasis(b => ({...b, desiredProductId: componentsSetup[0]?.id || ''}))
+    }
+  }, [componentsSetup, simBasis.limitingReactantId, simBasis.desiredProductId, getReactants, reactionsSetup]);
+
+  if (showSimulator) {
+    return <ReactorSimulator 
+              onBack={() => setShowSimulator(false)} 
+              reactions={reactionsSetup} 
+              components={componentsSetup} 
+              simBasis={simBasis}
+              // Pass the new molar ratio state down
+              molarRatios={molarRatios}
+              setMolarRatios={setMolarRatios}
+            />
+  } else {
+    return <KineticsInput 
+              onNext={() => setShowSimulator(true)} 
+              reactionsSetup={reactionsSetup}
+              setReactionsSetup={setReactionsSetup}
+              componentsSetup={componentsSetup}
+              setComponentsSetup={setComponentsSetup}
+              simBasis={simBasis}
+              setSimBasis={setSimBasis}
+            />
+  }
 }
