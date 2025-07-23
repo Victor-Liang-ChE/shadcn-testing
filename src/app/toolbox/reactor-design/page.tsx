@@ -18,6 +18,7 @@ import { SelectItem } from '@/components/ui/select';
 import { SelectTrigger } from '@/components/ui/select';
 import { SelectValue } from '@/components/ui/select';
 import { SelectContent } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 
 // --- Type Definitions ---
 interface ReactionSetup {
@@ -655,7 +656,6 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
     }))
   }
 
-  // Update updateReactionSetup to handle boolean and string fields
   const updateReactionSetup = (id: string, field: keyof ReactionSetup, value: any) => {
     setReactionsSetup(reactionsSetup.map(reaction =>
       reaction.id === id ? { ...reaction, [field]: value } : reaction
@@ -672,18 +672,15 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
     setComponentsSetup(componentsSetup.filter(c => c.id !== idToRemove))
   }
 
-  const handleComponentSetupChange = (id: string, field: keyof ComponentSetup, value: any) => {
+  const handleComponentSetupChange = (id: string, field: 'name' | 'reactionData', value: any) => {
       setComponentsSetup(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c))
   }
   
-  // --- MODIFICATION START ---
-  // Validate that every reaction has at least one reactant and one product.
   const validationResult = useMemo(() => {
     for (const reaction of reactionsSetup) {
         let hasReactant = false;
         let hasProduct = false;
 
-        // Check all components for their role in this specific reaction
         for (const comp of componentsSetup) {
             const stoichValue = parseFloat(comp.reactionData[reaction.id]?.stoichiometry || '0');
             if (stoichValue < 0) {
@@ -693,7 +690,6 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
             }
         }
 
-        // If a reaction is incomplete, invalidate the form.
         if (!hasReactant || !hasProduct) {
             return {
                 isValid: false,
@@ -702,10 +698,8 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
         }
     }
 
-    // If all reactions are valid
     return { isValid: true, message: '' };
   }, [reactionsSetup, componentsSetup]);
-  // --- MODIFICATION END ---
   
   const ReactionPreview = useMemo(() => {
     const generatePreview = (reaction: ReactionSetup) => {
@@ -738,7 +732,6 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                 );
             });
 
-        // MODIFICATION: Conditionally render the reverse exponent
         const rateLawProducts = reaction.isEquilibrium ? componentsSetup
             .filter(c => c.name && parseFloat(c.reactionData[reaction.id]?.orderReverse || '0') !== 0)
             .map(c => {
@@ -762,7 +755,6 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
     return (
         <Card>
             <CardHeader>
-                {/* MODIFICATION: Ensure title class matches others */}
                 <CardTitle>Parsed Reactions & Rate Laws</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -774,10 +766,8 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                             <p className="font-medium text-center mb-1">{preview.equation}</p>
                           <p className="font-mono text-sm text-center text-muted-foreground w-full">
                             Rate = k
-                            {/* Conditionally add ',f' to the subscript if reversible */}
                             <sub>{r.id}{r.isEquilibrium ? ',f' : ''}</sub>
                             {preview.rateLaw}
-                            {/* Show the reverse rate term if reversible */}
                             {r.isEquilibrium && preview.rateLawReverse.length > 0 && (
                                 <> - k<sub>{r.id},r</sub>{preview.rateLawReverse}</>
                             )}
@@ -791,71 +781,81 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
   }, [reactionsSetup, componentsSetup])
 
   return (
-    <div className={`min-h-screen flex flex-col items-center justify-center p-4 sm:p-8 ${mainBg} ${mainFg}`}>
+    <div className={`min-h-screen flex flex-col p-4 ${mainBg} ${mainFg}`}>
       <div className="container mx-auto space-y-6">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}> 
-              <Card>
-                <CardHeader>
+                <div className="mb-6">
                   <CardTitle className="flex items-center justify-between">
                     Reactions & Kinetics
-                    {/* This button was missing */}
                     <Button variant="outline" size="sm" onClick={addReactionSetup} disabled={reactionsSetup.length >= 6}>
                         <PlusCircle className="mr-2 h-4 w-4" />
                         Add Reaction
                     </Button>
                   </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-6">
-    {reactionsSetup.map((reaction, index) => (
-      <div key={reaction.id} className={`space-y-3 ${index > 0 ? 'border-t pt-6' : ''}`}>
-        <div className="flex items-center justify-between">
-            <Label className="font-bold">Reaction {reaction.id}</Label>
-            {/* This ensures the remove button shows for all but the first reaction */}
-            {index > 0 && 
-              <Button variant="destructive" size="sm" onClick={() => removeReactionSetup(reaction.id)} aria-label="Remove">
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            }
-        </div>
-        {/* Forward Reaction Inputs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex items-center gap-2">
-              <Label className="text-sm whitespace-nowrap" htmlFor={`a-value-${reaction.id}`}>
-                {reaction.isEquilibrium ? <span>A<sub className="relative -left-px">f</sub>:</span> : 'A:'}
-              </Label>
-              <Input id={`a-value-${reaction.id}`} type="text" value={reaction.AValue} onChange={(e) => updateReactionSetup(reaction.id, 'AValue', e.target.value)} />
-            </div>
-            <div className="flex items-center gap-2">
-              <Label className="text-sm whitespace-nowrap" htmlFor={`ea-value-${reaction.id}`}>
-                {reaction.isEquilibrium ? <span>Ea<sub className="relative -left-px">f</sub>:</span> : 'Ea:'}
-              </Label>
-              <Input id={`ea-value-${reaction.id}`} type="text" value={reaction.EaValue} onChange={(e) => updateReactionSetup(reaction.id, 'EaValue', e.target.value)} />
-              <span className="text-xs text-muted-foreground">J/mol</span>
-            </div>
-        </div>
-        {/* Conditionally show reverse reaction inputs */}
-        {reaction.isEquilibrium && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t">
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm whitespace-now-wrap" htmlFor={`a-value-rev-${reaction.id}`}> 
-                    <span>A<sub className="relative -left-px">r</sub>:</span>
-                  </Label>
-                  <Input id={`a-value-rev-${reaction.id}`} type="text" value={reaction.AValueBackward || ''} onChange={(e) => updateReactionSetup(reaction.id, 'AValueBackward', e.target.value)} />
                 </div>
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm whitespace-now-wrap" htmlFor={`ea-value-rev-${reaction.id}`}> 
-                    <span>Ea<sub className="relative -left-px">r</sub>:</span>
-                  </Label>
-                  <Input id={`ea-value-rev-${reaction.id}`} type="text" value={reaction.EaValueBackward || ''} onChange={(e) => updateReactionSetup(reaction.id, 'EaValueBackward', e.target.value)} />
-                  <span className="text-xs text-muted-foreground">J/mol</span>
+                <div className="space-y-6">
+                    {reactionsSetup.map((reaction, index) => (
+                    <div key={reaction.id} className={`space-y-4 ${index > 0 ? 'border-t pt-6' : ''}`}> 
+                        <div className="flex items-center justify-between">
+                            <Label className="font-bold">Reaction {reaction.id}</Label>
+                            <div className='flex items-center gap-4'>
+                            <div className='flex items-center gap-2'>
+                                <Label htmlFor={`reversible-switch-${reaction.id}`} className="text-sm">Reversible</Label>
+                                <Switch
+                                id={`reversible-switch-${reaction.id}`}
+                                checked={reaction.isEquilibrium}
+                                onCheckedChange={(checked) => updateReactionSetup(reaction.id, 'isEquilibrium', checked)}
+                                />
+                            </div>
+                            {index > 0 ? (
+                                <Button variant="destructive" size="sm" onClick={() => removeReactionSetup(reaction.id)} aria-label="Remove reaction">
+                                <Trash2 className="h-4 w-4" />
+                                </Button>
+                            ) : (
+                                <Button variant="outline" size="sm" disabled aria-label="Cannot remove first reaction">
+                                <Trash2 className="h-4 w-4" />
+                                </Button>
+                            )}
+                            </div>
+                        </div>
+                        {/* Forward Reaction Inputs */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="flex items-center gap-2">
+                            <Label className="w-12 text-sm" htmlFor={`a-value-${reaction.id}`}> 
+                                {reaction.isEquilibrium ? <span>A<sub className="font-medium relative -left-px">f</sub>:</span> : 'A:'}
+                            </Label>
+                            <Input id={`a-value-${reaction.id}`} type="text" value={reaction.AValue} onChange={(e) => updateReactionSetup(reaction.id, 'AValue', e.target.value)} />
+                            </div>
+                            <div className="flex items-center gap-2">
+                            <Label className="w-12 text-sm" htmlFor={`ea-value-${reaction.id}`}> 
+                                {reaction.isEquilibrium ? <span>Ea<sub className="font-medium relative -left-px">f</sub>:</span> : 'Ea:'}
+                            </Label>
+                            <Input id={`ea-value-${reaction.id}`} type="text" value={reaction.EaValue} onChange={(e) => updateReactionSetup(reaction.id, 'EaValue', e.target.value)} />
+                            <span className="text-xs text-muted-foreground">J/mol</span>
+                            </div>
+                        </div>
+                        {/* Conditionally show reverse reaction inputs */}
+                        {reaction.isEquilibrium && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dashed">
+                                <div className="flex items-center gap-2">
+                                <Label className="w-12 text-sm" htmlFor={`a-value-rev-${reaction.id}`}> 
+                                    <span>A<sub className="font-medium relative -left-px">r</sub>:</span>
+                                </Label>
+                                <Input id={`a-value-rev-${reaction.id}`} type="text" value={reaction.AValueBackward || ''} placeholder='e.g. 1e12' onChange={(e) => updateReactionSetup(reaction.id, 'AValueBackward', e.target.value)} />
+                                </div>
+                                <div className="flex items-center gap-2">
+                                <Label className="w-12 text-sm" htmlFor={`ea-value-rev-${reaction.id}`}> 
+                                    <span>Ea<sub className="font-medium relative -left-px">r</sub>:</span>
+                                </Label>
+                                <Input id={`ea-value-rev-${reaction.id}`} type="text" value={reaction.EaValueBackward || ''} placeholder='e.g. 80000' onChange={(e) => updateReactionSetup(reaction.id, 'EaValueBackward', e.target.value)} />
+                                <span className="text-xs text-muted-foreground">J/mol</span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    ))}
                 </div>
-            </div>
-        )}
-      </div>
-    ))}
-</CardContent>
-              </Card>
             </div>
             {ReactionPreview}
         </div>
@@ -871,125 +871,132 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                 </CardTitle>
               </div>
               <div className="overflow-x-auto">
-                  {/* First header row: Main column names and Reaction X */}
-                  <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: `40px 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`}}>
-                      <div></div> {/* Spacer for trashcan icon */}
-                      <div className="text-center">Name</div>
-                      <div className="text-center">Initial Flow (mol/s)</div>
-                      {reactionsSetup.map(r => (
-                          <div key={r.id} className="text-center col-span-2">Reaction {r.id}</div>
-                      ))}
-                  </div>
-                  {/* Second header row: Stoich. and Order */}
-                  <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: `40px 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`}}>
-                      <div></div><div></div><div></div> {/* Spacers */}
-                      {reactionsSetup.map(r => (
-                          <React.Fragment key={r.id}>
-                              <div className="text-center">Stoich.</div>
-                              <div className="text-center">Order</div>
-                          </React.Fragment>
-                      ))}
-                  </div>
+                  {(() => {
+                    const gridCols = `40px 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
+                    return (
+                        <>
+                            {/* First header row: Main column names and Reaction X */}
+                            <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground" style={{gridTemplateColumns: gridCols}}>
+                                <div></div> {/* Spacer for trashcan icon */}
+                                <div className="text-center">Name</div>
+                                {reactionsSetup.map(r => (
+                                    <div key={r.id} className="text-center col-span-2">{`Reaction ${r.id}`}</div>
+                                ))}
+                            </div>
+                            {/* Second header row: Stoich. and Order. This row has the bottom border. */}
+                            <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: gridCols}}>
+                                <div></div> {/* Spacer for trashcan */}
+                                <div></div> {/* Spacer for Name */}
+                                {reactionsSetup.map(r => (
+                                    <React.Fragment key={r.id}>
+                                        <div className="text-center">Stoich.</div>
+                                        <div className="text-center">
+                                            {r.isEquilibrium ? 'Order (fwd/rev)' : 'Order'}
+                                        </div>
+                                    </React.Fragment>
+                                ))}
+                            </div>
 
-                  {/* Data rows for each component */}
-                  {componentsSetup.map((comp, index) => (
-                      <div key={comp.id} className="grid gap-2 items-center py-2 relative" style={{gridTemplateColumns: `40px 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`}}>
-                          {/* Trashcan button */}
-                          {index > 0 ? (
-                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeComponentSetup(comp.id)}>
-                                <Trash2 className="h-4 w-4 text-red-500" />
-                            </Button>
-                          ) : (
-                            <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
-                              <Trash2 className="h-4 w-4 text-muted-foreground" />
-                            </Button>
-                          )}
+                            {/* Data rows for each component */}
+                            {componentsSetup.map((comp, index) => (
+                                <div key={comp.id} className="grid gap-2 items-center py-2" style={{gridTemplateColumns: gridCols}}>
+                                    {index > 0 ? (
+                                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeComponentSetup(comp.id)}>
+                                            <Trash2 className="h-4 w-4 text-red-500" />
+                                        </Button>
+                                    ) : (
+                                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
+                                        <Trash2 className="h-4 w-4 text-muted-foreground" />
+                                        </Button>
+                                    )}
 
-                          {/* Name Input */}
-                          <div className="relative">
-                              <Input 
-                                  value={comp.name} 
-                                  onChange={e => {
-                                      handleComponentSetupChange(comp.id, 'name', e.target.value)
-                                      // fetchSuggestions(e.target.value) // Removed undefined function
-                                  }}
-                                  // ... other props
-                              />
-                              {/* ... suggestion box logic ... */}
-                          </div>
-
-                          {/* Initial Flow Input */}
-                          <Input type="number" value={comp.initialFlowRate} onChange={e => handleComponentSetupChange(comp.id, 'initialFlowRate', e.target.value)} placeholder="0.0" className="h-8 text-center"/>
-                          
-                          {/* Stoich. and Order inputs for each reaction */}
-                          {reactionsSetup.map(r => (
-                              <React.Fragment key={r.id}>
-                                  <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.stoichiometry || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], stoichiometry: e.target.value}})} className="h-8 text-center" step="0.1" />
-                                  <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.order || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], order: e.target.value}})} className="h-8 text-center" step="0.1" />
-                              </React.Fragment>
-                          ))}
-                      </div>
-                  ))}
+                                    <Input value={comp.name} onChange={e => handleComponentSetupChange(comp.id, 'name', e.target.value)} />
+                                    
+                                    {reactionsSetup.map(r => (
+                                        <React.Fragment key={r.id}>
+                                            <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.stoichiometry || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], stoichiometry: e.target.value}})} className="h-8 text-center" step="0.1" />
+                                            <div className="flex items-center gap-1">
+                                                <Input 
+                                                type="number" 
+                                                placeholder={r.isEquilibrium ? "fwd" : "0"}
+                                                value={comp.reactionData[r.id]?.order || ''} 
+                                                onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], order: e.target.value}})} 
+                                                className="h-8 text-center" 
+                                                step="0.1" 
+                                                />
+                                                {r.isEquilibrium && (
+                                                <Input 
+                                                    type="number" 
+                                                    placeholder="rev"
+                                                    value={comp.reactionData[r.id]?.orderReverse || ''} 
+                                                    onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], orderReverse: e.target.value}})} 
+                                                    className="h-8 text-center" 
+                                                    step="0.1" 
+                                                />
+                                                )}
+                                            </div>
+                                        </React.Fragment>
+                                    ))}
+                                </div>
+                            ))}
+                        </>
+                    )
+                  })()}
               </div>
           </div>
           <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}>
-            <Card>
-                <CardHeader>
-                    <CardTitle>Simulation Basis</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                    {/* Limiting Reactant Dropdown */}
-                    <div>
-                        <Label>Limiting Reactant</Label>
-                        <Select 
-                            value={simBasis.limitingReactantId} 
-                            onValueChange={(value) => setSimBasis({...simBasis, limitingReactantId: value})}
-                        >
-                            <SelectTrigger className="w-full mt-1">
-                                <SelectValue placeholder="Select a reactant" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {componentsSetup
-                                    .filter(c => {
-                                        const isReactant = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') < 0);
-                                        const isProduct = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0);
-                                        return isReactant && !isProduct;
-                                    })
-                                    .map(c => (
-                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                                    ))
-                                }
-                            </SelectContent>
-                        </Select>
-                    </div>
-                    {/* Desired Product Dropdown */}
-                    <div>
-                        <Label>Desired Product</Label>
-                        <Select 
-                            value={simBasis.desiredProductId} 
-                            onValueChange={(value) => setSimBasis({...simBasis, desiredProductId: value})}
-                        >
-                            <SelectTrigger className="w-full mt-1">
-                                <SelectValue placeholder="Select a product" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {componentsSetup
-                                    .filter(c => Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0))
-                                    .map(c => (
-                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                                    ))
-                                }
-                            </SelectContent>
-                        </Select>
-                    </div>
-                </CardContent>
-            </Card>
+            <div className="mb-6">
+                <CardTitle>Simulation Basis</CardTitle>
+            </div>
+            <div className="space-y-4">
+                <div>
+                    <Label>Limiting Reactant</Label>
+                    <Select 
+                        value={simBasis.limitingReactantId} 
+                        onValueChange={(value) => setSimBasis({...simBasis, limitingReactantId: value})}
+                    >
+                        <SelectTrigger className="w-full mt-1">
+                            <SelectValue placeholder="Select a reactant" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {componentsSetup
+                                .filter(c => {
+                                    const isReactant = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') < 0);
+                                    const isProduct = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0);
+                                    return isReactant && !isProduct;
+                                })
+                                .map(c => (
+                                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                ))
+                            }
+                        </SelectContent>
+                    </Select>
+                </div>
+                <div>
+                    <Label>Desired Product</Label>
+                    <Select 
+                        value={simBasis.desiredProductId} 
+                        onValueChange={(value) => setSimBasis({...simBasis, desiredProductId: value})}
+                    >
+                        <SelectTrigger className="w-full mt-1">
+                            <SelectValue placeholder="Select a product" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {componentsSetup
+                                .filter(c => Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0))
+                                .map(c => (
+                                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                ))
+                            }
+                        </SelectContent>
+                    </Select>
+                </div>
+            </div>
           </div>
         </div>
 
         <div className="text-right mt-2">
             <div title={!validationResult.isValid ? validationResult.message : undefined} className="inline-block">
-                {/* Use the Button component for the primary action */}
                 <Button onClick={onNext} disabled={!validationResult.isValid}>
                 Next: Configure Simulation →
                 </Button>
@@ -1158,7 +1165,7 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
             color: textColor, 
             fontSize: 12, 
             fontFamily: 'Merriweather Sans',
-            formatter: (value: number) => value.toPrecision(2), // Use toPrecision for better formatting
+            formatter: (value: number) => value.toPrecision(3), // Use toPrecision for better formatting
             showMaxLabel: true 
         },
         splitLine: { show: false },
@@ -1254,7 +1261,6 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
                     return (
                         <div key={ratio.numeratorId} className="pt-4 border-t border-border">
                             <ParameterSlider
-                                /* MODIFICATION: Parentheses removed from the label */
                                 label={`${numeratorName} / ${limitingReactantName}`}
                                 unit="" // Unit is now part of the label
                                 value={ratio.value.toString()}
@@ -1320,11 +1326,7 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
                 </div>
             </div>
           <ReactECharts
-            // MODIFICATION: Add reactorType to the key to force a full re-render on switch
             key={`${resolvedTheme}-${reactorType}`}
-            // If you have echartsRef and echarts, include them as props
-            // ref={echartsRef}
-            // echarts={echarts}
             option={chartOptions}
             style={{ height: '100%', width: '100%', minHeight: '450px' }}
             notMerge={true}
@@ -1375,10 +1377,8 @@ const ParameterSlider: React.FC<ParameterSliderProps> = ({
         </Label>
         <div className="flex items-center gap-1">
           <Label htmlFor={`${label}-min-input`} className="text-xs text-muted-foreground">Min:</Label>
-          {/* MODIFICATION: Changed to your preferred width of w-14 */}
           <Input id={`${label}-min-input`} type="number" value={minSliderValue} onChange={(e) => onMinSliderChange(e.target.value)} className="w-14 h-8 text-xs" />
           <Label htmlFor={`${label}-max-input`} className="text-xs text-muted-foreground">Max:</Label>
-          {/* MODIFICATION: Changed to your preferred width of w-14 */}
           <Input id={`${label}-max-input`} type="number" value={maxSliderValue} onChange={(e) => onMaxSliderChange(e.target.value)} className="w-14 h-8 text-xs" readOnly={isReadOnly} />
         </div>
       </div>
