@@ -40,7 +40,8 @@ interface ComponentSetup {
       orderReverse?: string // Added for reversible reactions
     }
   }
-  initialFlowRate?: string
+  molarMass?: string // New
+  density?: string // New
 }
 
 type ReactorType = 'PFR' | 'CSTR'
@@ -53,10 +54,10 @@ const initialReactions: ReactionSetup[] = [
 ]
 
 const initialComponents: ComponentSetup[] = [
-  { id: 'comp-A', name: '1-Butene', reactionData: { '1': { stoichiometry: '-1', order: '1' }, '2': { stoichiometry: '-1', order: '1' } } },
-  { id: 'comp-B', name: 'Isobutane', reactionData: { '1': { stoichiometry: '-1', order: '1' }, '2': { stoichiometry: '0', order: '0' } } },
-  { id: 'comp-C', name: 'Isooctane', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-1', order: '1' } } },
-  { id: 'comp-D', name: 'Dodecane', reactionData: { '1': { stoichiometry: '0', order: '0' }, '2': { stoichiometry: '1', order: '0' } } },
+  { id: 'comp-A', name: '1-Butene', molarMass: '56.11', density: '595', reactionData: { '1': { stoichiometry: '-1', order: '1' }, '2': { stoichiometry: '-1', order: '1' } } },
+  { id: 'comp-B', name: 'Isobutane', molarMass: '58.12', density: '593', reactionData: { '1': { stoichiometry: '-1', order: '1' }, '2': { stoichiometry: '0', order: '0' } } },
+  { id: 'comp-C', name: 'Isooctane', molarMass: '114.23', density: '692', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-1', order: '1' } } },
+  { id: 'comp-D', name: 'Dodecane', molarMass: '170.34', density: '750', reactionData: { '1': { stoichiometry: '0', order: '0' }, '2': { stoichiometry: '1', order: '0' } } },
 ]
 
 
@@ -623,14 +624,22 @@ function solveCSTRParallel(
 
 // --- React Components ---
 
-const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSetup, setComponentsSetup, simBasis, setSimBasis }: { 
+const KineticsInput = ({ 
+    onNext, 
+    reactionsSetup, setReactionsSetup, 
+    componentsSetup, setComponentsSetup, 
+    simBasis, setSimBasis,
+    prodRate, setProdRate // New props for production rate
+}: { 
     onNext: () => void,
     reactionsSetup: ReactionSetup[],
     setReactionsSetup: React.Dispatch<React.SetStateAction<ReactionSetup[]>>,
     componentsSetup: ComponentSetup[],
     setComponentsSetup: React.Dispatch<React.SetStateAction<ComponentSetup[]>>,
     simBasis: any,
-    setSimBasis: any
+    setSimBasis: any,
+    prodRate: string,
+    setProdRate: React.Dispatch<React.SetStateAction<string>>
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -638,8 +647,7 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
   const cardFg = 'text-card-foreground';
   const mainBg = 'bg-background';
   const mainFg = 'text-foreground';
-  const mutedFg = 'text-muted-foreground';
-
+  
   const addReactionSetup = () => {
     if (reactionsSetup.length >= 4) return
     const newId = (Math.max(0, ...reactionsSetup.map(r => parseInt(r.id))) + 1).toString()
@@ -672,7 +680,7 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
     setComponentsSetup(componentsSetup.filter(c => c.id !== idToRemove))
   }
 
-  const handleComponentSetupChange = (id: string, field: 'name' | 'reactionData', value: any) => {
+  const handleComponentSetupChange = (id: string, field: 'name' | 'reactionData' | 'molarMass' | 'density', value: any) => {
       setComponentsSetup(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c))
   }
   
@@ -780,10 +788,13 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
     )
   }, [reactionsSetup, componentsSetup])
 
+  const componentsGridCols = `40px 1fr 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
+
   return (
     <div className={`min-h-screen flex flex-col p-4 ${mainBg} ${mainFg}`}>
       <div className="container mx-auto space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Reactions & Kinetics Card */}
             <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}> 
                 <div className="mb-6">
                   <CardTitle className="flex items-center justify-between">
@@ -819,17 +830,16 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                             )}
                             </div>
                         </div>
-                        {/* Forward Reaction Inputs */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="flex items-center gap-2">
-                            <Label className="w-12 text-sm" htmlFor={`a-value-${reaction.id}`}> 
-                                {reaction.isEquilibrium ? <span>A<sub className="font-medium relative -left-px">f</sub>:</span> : 'A:'}
+                            <Label className="w-16 text-sm" htmlFor={`a-value-${reaction.id}`}> 
+                                <span>A<sub className="font-medium relative -left-px">{reaction.id}{reaction.isEquilibrium ? ',f' : ''}</sub>:</span>
                             </Label>
                             <Input id={`a-value-${reaction.id}`} type="text" value={reaction.AValue} onChange={(e) => updateReactionSetup(reaction.id, 'AValue', e.target.value)} />
                             </div>
                             <div className="flex items-center gap-2">
-                            <Label className="w-12 text-sm" htmlFor={`ea-value-${reaction.id}`}> 
-                                {reaction.isEquilibrium ? <span>Ea<sub className="font-medium relative -left-px">f</sub>:</span> : 'Ea:'}
+                            <Label className="w-16 text-sm" htmlFor={`ea-value-${reaction.id}`}> 
+                                <span>Ea<sub className="font-medium relative -left-px">{reaction.id}{reaction.isEquilibrium ? ',f' : ''}</sub>:</span>
                             </Label>
                             <Input id={`ea-value-${reaction.id}`} type="text" value={reaction.EaValue} onChange={(e) => updateReactionSetup(reaction.id, 'EaValue', e.target.value)} />
                             <span className="text-xs text-muted-foreground">J/mol</span>
@@ -839,14 +849,14 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                         {reaction.isEquilibrium && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dashed">
                                 <div className="flex items-center gap-2">
-                                <Label className="w-12 text-sm" htmlFor={`a-value-rev-${reaction.id}`}> 
-                                    <span>A<sub className="font-medium relative -left-px">r</sub>:</span>
+                                <Label className="w-16 text-sm" htmlFor={`a-value-rev-${reaction.id}`}> 
+                                    <span>A<sub className="font-medium relative -left-px">{reaction.id},r</sub>:</span>
                                 </Label>
                                 <Input id={`a-value-rev-${reaction.id}`} type="text" value={reaction.AValueBackward || ''} placeholder='e.g. 1e12' onChange={(e) => updateReactionSetup(reaction.id, 'AValueBackward', e.target.value)} />
                                 </div>
                                 <div className="flex items-center gap-2">
-                                <Label className="w-12 text-sm" htmlFor={`ea-value-rev-${reaction.id}`}> 
-                                    <span>Ea<sub className="font-medium relative -left-px">r</sub>:</span>
+                                <Label className="w-16 text-sm" htmlFor={`ea-value-rev-${reaction.id}`}> 
+                                    <span>Ea<sub className="font-medium relative -left-px">{reaction.id},r</sub>:</span>
                                 </Label>
                                 <Input id={`ea-value-rev-${reaction.id}`} type="text" value={reaction.EaValueBackward || ''} placeholder='e.g. 80000' onChange={(e) => updateReactionSetup(reaction.id, 'EaValueBackward', e.target.value)} />
                                 <span className="text-xs text-muted-foreground">J/mol</span>
@@ -857,11 +867,73 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                     ))}
                 </div>
             </div>
+            {/* Simulation Basis Card */}
+            <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}>
+                <div className="mb-6">
+                    <CardTitle>Simulation Basis</CardTitle>
+                </div>
+                <div className="space-y-4">
+                    <div>
+                        <Label>Limiting Reactant</Label>
+                        <Select 
+                            value={simBasis.limitingReactantId} 
+                            onValueChange={(value) => setSimBasis({...simBasis, limitingReactantId: value})}
+                        >
+                            <SelectTrigger className="w-full mt-1">
+                                <SelectValue placeholder="Select a reactant" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {componentsSetup
+                                    .filter(c => {
+                                        const isReactant = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') < 0);
+                                        const isProduct = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0);
+                                        return isReactant && !isProduct;
+                                    })
+                                    .map(c => (
+                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                    ))
+                                }
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div>
+                        <Label>Desired Product</Label>
+                        <Select 
+                            value={simBasis.desiredProductId} 
+                            onValueChange={(value) => setSimBasis({...simBasis, desiredProductId: value})}
+                        >
+                            <SelectTrigger className="w-full mt-1">
+                                <SelectValue placeholder="Select a product" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {componentsSetup
+                                    .filter(c => Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0))
+                                    .map(c => (
+                                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                                    ))
+                                }
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    {/* Production rate input moved here */}
+                    <div>
+                        <Label>Desired Production Rate (kta)</Label>
+                        <Input
+                            type="number"
+                            value={prodRate}
+                            onChange={e => setProdRate(e.target.value)}
+                            className="w-full mt-1"
+                        />
+                    </div>
+                </div>
+            </div>
+            
+            {/* Parsed Reactions Card */}
             {ReactionPreview}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className={`lg:col-span-2 p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}> 
+        {/* Components Card */}
+        <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}> 
               <div className="mb-4">
                 <CardTitle className="flex items-center justify-between">
                   Components
@@ -872,21 +944,25 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
               </div>
               <div className="overflow-x-auto">
                   {(() => {
-                    const gridCols = `40px 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
+                    const componentsGridCols = `40px 1fr 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
                     return (
                         <>
-                            {/* First header row: Main column names and Reaction X */}
-                            <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground" style={{gridTemplateColumns: gridCols}}>
-                                <div></div> {/* Spacer for trashcan icon */}
+                            {/* Header Row 1: Main Titles */}
+                            <div className="grid items-center text-xs font-medium text-muted-foreground" style={{gridTemplateColumns: componentsGridCols}}>
+                                <div/> {/* Spacer */}
                                 <div className="text-center">Name</div>
+                                <div className="text-center">Molar Mass</div>
+                                <div className="text-center">Density</div>
                                 {reactionsSetup.map(r => (
                                     <div key={r.id} className="text-center col-span-2">{`Reaction ${r.id}`}</div>
                                 ))}
                             </div>
-                            {/* Second header row: Stoich. and Order. This row has the bottom border. */}
-                            <div className="grid gap-2 items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: gridCols}}>
-                                <div></div> {/* Spacer for trashcan */}
-                                <div></div> {/* Spacer for Name */}
+                            {/* Header Row 2: Units and Sub-headers */}
+                            <div className="grid items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: componentsGridCols}}>
+                                <div/> {/* Spacer */}
+                                <div/> {/* Spacer for Name */}
+                                <div className="text-center">(g/mol)</div>
+                                <div className="text-center">(g/L)</div>
                                 {reactionsSetup.map(r => (
                                     <React.Fragment key={r.id}>
                                         <div className="text-center">Stoich.</div>
@@ -897,9 +973,8 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                                 ))}
                             </div>
 
-                            {/* Data rows for each component */}
                             {componentsSetup.map((comp, index) => (
-                                <div key={comp.id} className="grid gap-2 items-center py-2" style={{gridTemplateColumns: gridCols}}>
+                                <div key={comp.id} className="grid gap-2 items-center py-2" style={{gridTemplateColumns: componentsGridCols}}>
                                     {index > 0 ? (
                                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeComponentSetup(comp.id)}>
                                             <Trash2 className="h-4 w-4 text-red-500" />
@@ -910,8 +985,10 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                                         </Button>
                                     )}
 
+                                    {/* Correctly ordered input fields */}
                                     <Input value={comp.name} onChange={e => handleComponentSetupChange(comp.id, 'name', e.target.value)} />
-                                    
+                                    <Input type="number" placeholder="g/mol" value={comp.molarMass || ''} onChange={e => handleComponentSetupChange(comp.id, 'molarMass', e.target.value)} className="h-8 text-center"/>
+                                    <Input type="number" placeholder="g/L" value={comp.density || ''} onChange={e => handleComponentSetupChange(comp.id, 'density', e.target.value)} className="h-8 text-center"/>
                                     {reactionsSetup.map(r => (
                                         <React.Fragment key={r.id}>
                                             <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.stoichiometry || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], stoichiometry: e.target.value}})} className="h-8 text-center" step="0.1" />
@@ -944,56 +1021,6 @@ const KineticsInput = ({ onNext, reactionsSetup, setReactionsSetup, componentsSe
                   })()}
               </div>
           </div>
-          <div className={`p-6 rounded-lg shadow-lg ${cardBg} ${cardFg}`}>
-            <div className="mb-6">
-                <CardTitle>Simulation Basis</CardTitle>
-            </div>
-            <div className="space-y-4">
-                <div>
-                    <Label>Limiting Reactant</Label>
-                    <Select 
-                        value={simBasis.limitingReactantId} 
-                        onValueChange={(value) => setSimBasis({...simBasis, limitingReactantId: value})}
-                    >
-                        <SelectTrigger className="w-full mt-1">
-                            <SelectValue placeholder="Select a reactant" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {componentsSetup
-                                .filter(c => {
-                                    const isReactant = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') < 0);
-                                    const isProduct = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0);
-                                    return isReactant && !isProduct;
-                                })
-                                .map(c => (
-                                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                                ))
-                            }
-                        </SelectContent>
-                    </Select>
-                </div>
-                <div>
-                    <Label>Desired Product</Label>
-                    <Select 
-                        value={simBasis.desiredProductId} 
-                        onValueChange={(value) => setSimBasis({...simBasis, desiredProductId: value})}
-                    >
-                        <SelectTrigger className="w-full mt-1">
-                            <SelectValue placeholder="Select a product" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {componentsSetup
-                                .filter(c => Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0))
-                                .map(c => (
-                                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                                ))
-                            }
-                        </SelectContent>
-                    </Select>
-                </div>
-            </div>
-          </div>
-        </div>
 
         <div className="text-right mt-2">
             <div title={!validationResult.isValid ? validationResult.message : undefined} className="inline-block">
@@ -1013,21 +1040,28 @@ interface MolarRatio {
     value: number;
 }
 
-const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios, setMolarRatios }: { 
+const ReactorSimulator = ({ 
+    onBack, 
+    reactions, components, 
+    simBasis, 
+    molarRatios, setMolarRatios,
+    prodRate // Receive prodRate as a prop
+}: { 
     onBack: () => void, 
     reactions: ReactionSetup[], 
     components: ComponentSetup[],
     simBasis: any,
     molarRatios: MolarRatio[],
-    setMolarRatios: React.Dispatch<React.SetStateAction<MolarRatio[]>>
+    setMolarRatios: React.Dispatch<React.SetStateAction<MolarRatio[]>>,
+    prodRate: string 
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
   const textColor = isDark ? '#E5E7EB' : '#1F2937';
-  const cardBg = isDark ? 'bg-card' : 'bg-card'; // Tailwind + theme
-  const cardFg = isDark ? 'text-card-foreground' : 'text-card-foreground';
-  const mainBg = isDark ? 'bg-background' : 'bg-background';
-  const mainFg = isDark ? 'text-foreground' : 'text-foreground';
+  const cardBg = 'bg-card';
+  const cardFg = 'text-card-foreground';
+  const mainBg = 'bg-background';
+  const mainFg = 'text-foreground';
 
   const [reactorType, setReactorType] = useState<ReactorType>('PFR')
   const [graphType, setGraphType] = useState<GraphType>('selectivity')
@@ -1037,47 +1071,48 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
   const [molarRatioMax, setMolarRatioMax] = useState('20');
   const [tempMin, setTempMin] = useState('4');
   const [tempMax, setTempMax] = useState('20');
-
-  const [prodRate, setProdRate] = useState('100');
-  const [prodMolarMass, setProdMolarMass] = useState('114.23');
-  const [reactorVolume, setReactorVolume] = useState('100'); // New state for reactor volume
+  // Removed local prodRate state
 
   const tempK = temperature + 273.15
   
   const generateGraphData = useCallback(() => {
-    const v0 = 1.0; // Assume a constant volumetric flow rate for the liquid phase basis
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
-    if (!limitingReactant) return { series: [], xAxis: '', yAxis: '', legend: [] };
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
 
-    // 1. Use a fixed basis for the initial simulation run (e.g., 1 mol/s of limiting reactant).
+    if (!limitingReactant || !desiredProduct) return { series: [], xAxis: '', yAxis: '', legend: [] };
+
+    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
+    if(productMolarMass <= 0) return { series: [], xAxis: '', yAxis: '', legend: [] }; 
+
+    const targetProduction_mol_s = (parseFloat(prodRate) * 1e6) / productMolarMass / (365 * 24 * 3600);
+    
+    // --- Restore previous logic for xLabel, yLabel, legend, series ---
+    // 3. Use a fixed basis for the initial simulation run (e.g., 1 mol/s of limiting reactant).
     const F_A0_BASIS = 1.0;
     const basisFlowRates = components.reduce((acc, comp) => {
         if (comp.id === limitingReactant.id) {
             acc[comp.name] = F_A0_BASIS;
         } else {
             const ratioInfo = molarRatios.find(r => r.numeratorId === comp.id);
-            // As MR increases, this flow rate increases, correctly increasing total flow.
             acc[comp.name] = ratioInfo ? F_A0_BASIS * ratioInfo.value : 0;
         }
         return acc;
     }, {} as {[key: string]: number});
 
-    // 2. Dynamically find the required V_max to ensure the graph reaches ~99% conversion on the basis run.
+    // 4. Dynamically find the required V_max to ensure the graph reaches ~99% conversion on the basis run.
     let V_max;
     if (reactorType === 'PFR') {
         V_max = findVolumeForConversion_PFR(0.99, reactions, components, basisFlowRates, tempK, simBasis);
     } else { // CSTR
-        V_max = findVolumeForConversion_CSTR(0.99, reactions, components, basisFlowRates, v0, tempK, simBasis);
+        V_max = findVolumeForConversion_CSTR(0.99, reactions, components, basisFlowRates, 1.0, tempK, simBasis);
     }
     
-    // 3. Run the appropriate solver to get the performance curves for the basis feed rate.
+    // 5. Run the appropriate solver to get the performance curves for the basis feed rate.
     const basisResults = reactorType === 'CSTR' 
-        ? calculateCstrData(reactions, components, basisFlowRates, v0, tempK, simBasis, V_max)
+        ? calculateCstrData(reactions, components, basisFlowRates, 1.0, tempK, simBasis, V_max)
         : calculatePfrData(reactions, components, V_max, basisFlowRates, tempK, simBasis);
     
-    // 4. Scale the volume data based on the desired production rate from the UI.
-    const targetProduction_mol_s = (parseFloat(prodRate) * 1e6) / parseFloat(prodMolarMass) / (365 * 24 * 3600);
-    
+    // 6. Scale the volume data based on the desired production rate from the UI.
     const scaledVolumeData = basisResults.volumeData.map(point => {
         const conversion = point.x;
         const basisVolume = point.y;
@@ -1108,7 +1143,6 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
         volumeData: scaledVolumeData,
     };
     
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
     const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`;
     let yLabel = '';
     let legend: string[] = [];
@@ -1123,9 +1157,9 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
       legend = [desiredProduct?.name || 'Product'];
       series = [{ name: legend[0], type: 'line', data: dataToShow.selectivityData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 2 } }];
     }
-    
+
     return { series, xAxis: xLabel, yAxis: yLabel, legend };
-  }, [reactorType, molarRatios, temperature, graphType, tempK, reactions, components, simBasis, prodRate, prodMolarMass]);
+  }, [reactorType, molarRatios, temperature, graphType, tempK, reactions, components, simBasis, prodRate]);
 
   const graphData = generateGraphData();
 
@@ -1233,10 +1267,8 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
 
   return (
     <div className={`min-h-screen flex flex-col p-4 ${mainBg} ${mainFg}`}>
-      {/* MODIFICATION: Wrap the grid in a snapping container */}
       <div className="container mx-auto flex-grow">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
-        
             {/* Control Panel Card */}
             <div className={`lg:col-span-1 p-6 rounded-lg shadow-lg flex flex-col space-y-6 ${cardBg} ${cardFg}`}>
             <div className="flex justify-start">
@@ -1245,52 +1277,40 @@ const ReactorSimulator = ({ onBack, reactions, components, simBasis, molarRatios
                 </button>
             </div>
                 
-                {/* MODIFICATION: Add the input boxes back */}
-            <div className="space-y-2">
-                <label className="text-sm font-medium">Desired Production Rate (kta)</label>
-                    <input type="number" value={prodRate} onChange={e => setProdRate(e.target.value)} className="w-full bg-background text-foreground p-2 rounded"/>
+            {molarRatios.map(ratio => {
+                const numeratorName = components.find(c => c.id === ratio.numeratorId)?.name || 'N/A';
+                return (
+                    <div key={ratio.numeratorId} className="pt-4 border-t border-border">
+                        <ParameterSlider
+                            label={`${numeratorName} / ${limitingReactantName}`}
+                            unit="" // Unit is now part of the label
+                            value={ratio.value.toString()}
+                            onValueChange={(value) => handleMolarRatioChange(ratio.numeratorId, value)}
+                            min={parseFloat(molarRatioMin)}
+                            max={parseFloat(molarRatioMax)}
+                            step={1}
+                            maxSliderValue={molarRatioMax}
+                            onMaxSliderChange={setMolarRatioMax}
+                            minSliderValue={molarRatioMin}
+                            onMinSliderChange={setMolarRatioMin}
+                        />
             </div>
-            <div className="space-y-2">
-                <label className="text-sm font-medium">Product Molar Mass (g/mol)</label>
-                    <input type="number" value={prodMolarMass} onChange={e => setProdMolarMass(e.target.value)} className="w-full bg-background text-foreground p-2 rounded"/>
-            </div>
-                
-                {/* Molar ratio sliders using ParameterSlider */}
-                {molarRatios.map(ratio => {
-                    const numeratorName = components.find(c => c.id === ratio.numeratorId)?.name || 'N/A';
-                    return (
-                        <div key={ratio.numeratorId} className="pt-4 border-t border-border">
-                            <ParameterSlider
-                                label={`${numeratorName} / ${limitingReactantName}`}
-                                unit="" // Unit is now part of the label
-                                value={ratio.value.toString()}
-                                onValueChange={(value) => handleMolarRatioChange(ratio.numeratorId, value)}
-                                min={parseFloat(molarRatioMin)}
-                                max={parseFloat(molarRatioMax)}
-                                step={1}
-                                maxSliderValue={molarRatioMax}
-                                onMaxSliderChange={setMolarRatioMax}
-                                minSliderValue={molarRatioMin}
-                                onMinSliderChange={setMolarRatioMin}
-                            />
-                </div>
-                    );
-                })}
+                );
+            })}
 
-                {/* Temperature slider using ParameterSlider */}
-                <ParameterSlider
-                    label="Temperature"
-                    unit="°C"
-                    value={temperature.toString()}
-                    onValueChange={(value) => setTemperature(value)}
-                    min={parseFloat(tempMin)}
-                    max={parseFloat(tempMax)}
-                    step={1}
-                    maxSliderValue={tempMax}
-                    onMaxSliderChange={setTempMax}
-                    minSliderValue={tempMin}
-                    onMinSliderChange={setTempMin}
-                />
+            <ParameterSlider
+                label="Temperature"
+                unit="°C"
+                value={temperature.toString()}
+                onValueChange={(value) => setTemperature(value)}
+                min={parseFloat(tempMin)}
+                max={parseFloat(tempMax)}
+                step={1}
+                maxSliderValue={tempMax}
+                onMaxSliderChange={setTempMax}
+                minSliderValue={tempMin}
+                onMinSliderChange={setTempMin}
+            />
             </div>
 
             {/* Graph Card */}
@@ -1522,6 +1542,9 @@ export default function Home() {
   });
 
   const [molarRatios, setMolarRatios] = useState<Array<{numeratorId: string, value: number}>>([]);
+  
+  // State for production rate now lives in the parent component
+  const [prodRate, setProdRate] = useState('100'); 
 
   // --- MODIFICATION START ---
   // This function now correctly identifies ONLY primary reactants (chemicals that are
@@ -1600,9 +1623,9 @@ export default function Home() {
               reactions={reactionsSetup} 
               components={componentsSetup} 
               simBasis={simBasis}
-              // Pass the new molar ratio state down
               molarRatios={molarRatios}
               setMolarRatios={setMolarRatios}
+              prodRate={prodRate} // Pass state down
             />
   } else {
     return <KineticsInput 
@@ -1613,6 +1636,8 @@ export default function Home() {
               setComponentsSetup={setComponentsSetup}
               simBasis={simBasis}
               setSimBasis={setSimBasis}
+              prodRate={prodRate} // Pass state and setter down
+              setProdRate={setProdRate}
             />
   }
 }
