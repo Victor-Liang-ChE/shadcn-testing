@@ -1591,28 +1591,45 @@ const calculatePfrDataByTau = (
             return acc;
         }, {} as { [key: string]: number });
 
-        const reactionRates = reactions.map(reactionInfo => {
-            const A = parseFloat(reactionInfo.AValue);
-            const Ea = parseFloat(reactionInfo.EaValue);
-            const k = A * Math.exp(-Ea / (8.314 * tempK));
-            
-            let rate = k;
+        // --- CORRECTED RATE CALCULATION ---
+        const reactionNetRates = reactions.map(reactionInfo => {
+            // Forward reaction rate calculation
+            const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+            let rate_f = k_f;
             components.forEach(comp => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
                 const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
-                if (order > 0) {
-                    rate *= Math.pow(Math.max(0, C_dict[comp.name]), order);
+                if (stoich < 0 && order > 0) { // It's a reactant
+                    rate_f *= Math.pow(Math.max(0, C_dict[comp.name]), order);
                 }
             });
-            return rate;
+
+            if (!reactionInfo.isEquilibrium) {
+                return rate_f; // Return only forward rate if not reversible
+            }
+
+            // Reverse reaction rate calculation
+            const k_r = parseFloat(reactionInfo.AValueBackward || '0') * Math.exp(-parseFloat(reactionInfo.EaValueBackward || '0') / (R * tempK));
+            let rate_r = k_r;
+            components.forEach(comp => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                const reverseOrder = parseFloat(comp.reactionData[reactionInfo.id]?.orderReverse || '0');
+                if (stoich > 0 && reverseOrder > 0) { // It's a product
+                    rate_r *= Math.pow(Math.max(0, C_dict[comp.name]), reverseOrder);
+                }
+            });
+
+            return rate_f - rate_r; // Return the net rate
         });
+        // --- END CORRECTION ---
 
         return componentNames.map(name => {
-            let netRateOfFormation = 0;
+            let netRateOfFormation = 0; // r_i
             reactions.forEach((reactionInfo, j) => {
                 const stoich = parseFloat(components.find(c => c.name === name)?.reactionData[reactionInfo.id]?.stoichiometry || '0');
-                netRateOfFormation += stoich * reactionRates[j];
+                netRateOfFormation += stoich * reactionNetRates[j];
             });
-            return netRateOfFormation; // dC/dτ = r
+            return netRateOfFormation; // dC/dτ = r_i
         });
     };
     
@@ -1684,78 +1701,76 @@ const solveCSTR_by_tau = (
     const componentNames = components.map(c => c.name).filter(name => initialConcentrations[name] !== undefined);
     const C0_vec = componentNames.map(name => initialConcentrations[name] || 0);
 
-    // Initial guess for the solver
     let C_vec = initialGuess ? [...initialGuess] : [...C0_vec];
     const n = C_vec.length;
     
-    // The function we want to find the root of: G(C) = C₀ - C + τ * r(C) = 0
     const G = (current_C_vec: number[]): number[] => {
         const C_dict = componentNames.reduce((acc, name, i) => {
             acc[name] = current_C_vec[i];
             return acc;
         }, {} as { [key: string]: number });
 
-        // Calculate reaction rates based on current concentration guess
-        const reactionRates = reactions.map(reactionInfo => {
-            const A = parseFloat(reactionInfo.AValue);
-            const Ea = parseFloat(reactionInfo.EaValue);
-            const k = A * Math.exp(-Ea / (8.314 * tempK));
-            
-            let rate = k;
+        // --- CORRECTED RATE CALCULATION ---
+        const reactionNetRates = reactions.map(reactionInfo => {
+            const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+            let rate_f = k_f;
             components.forEach(comp => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
                 const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
-                if (order > 0) {
-                    rate *= Math.pow(Math.max(0, C_dict[comp.name]), order);
+                if (stoich < 0 && order > 0) {
+                    rate_f *= Math.pow(Math.max(0, C_dict[comp.name]), order);
                 }
             });
-            return rate;
-        });
 
-        // Calculate the value of G for each component
+            if (!reactionInfo.isEquilibrium) {
+                return rate_f;
+            }
+
+            const k_r = parseFloat(reactionInfo.AValueBackward || '0') * Math.exp(-parseFloat(reactionInfo.EaValueBackward || '0') / (R * tempK));
+            let rate_r = k_r;
+            components.forEach(comp => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                const reverseOrder = parseFloat(comp.reactionData[reactionInfo.id]?.orderReverse || '0');
+                if (stoich > 0 && reverseOrder > 0) {
+                    rate_r *= Math.pow(Math.max(0, C_dict[comp.name]), reverseOrder);
+                }
+            });
+
+            return rate_f - rate_r;
+        });
+        // --- END CORRECTION ---
+
         return componentNames.map((name, i) => {
             let netRateOfFormation = 0; // r_i
             reactions.forEach((reactionInfo, j) => {
                 const stoich = parseFloat(components.find(c => c.name === name)?.reactionData[reactionInfo.id]?.stoichiometry || '0');
-                netRateOfFormation += stoich * reactionRates[j];
+                netRateOfFormation += stoich * reactionNetRates[j];
             });
             return C0_vec[i] - current_C_vec[i] + tau * netRateOfFormation;
         });
     };
 
-    // --- Newton-Raphson Solver Loop ---
     const max_iter = 50;
     const tol = 1e-9;
     for (let iter = 0; iter < max_iter; iter++) {
         const G_current = G(C_vec);
-        const errorNorm = Math.sqrt(G_current.reduce((s, v) => s + v * v, 0));
+        if (Math.sqrt(G_current.reduce((s, v) => s + v * v, 0)) < tol) break;
         
-        if (errorNorm < tol) {
-            break; // Converged
-        }
-        
-        // Numerically calculate the Jacobian matrix J_G
         const J_G: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
         for (let j = 0; j < n; j++) {
             const C_plus_h = [...C_vec];
             const h = (Math.abs(C_vec[j]) || 1e-8) * 1e-7;
             C_plus_h[j] += h;
             const G_plus_h = G(C_plus_h);
-            for (let i = 0; i < n; i++) {
-                J_G[i][j] = (G_plus_h[i] - G_current[i]) / h;
-            }
+            for (let i = 0; i < n; i++) J_G[i][j] = (G_plus_h[i] - G_current[i]) / h;
         }
 
-        // Solve the linear system J_G * ΔC = -G
         const delta_C = solveLinearSystem(J_G, G_current.map(val => -val));
+        if (!delta_C) break;
         
-        if (!delta_C) {
-            break; // Solver failed
-        }
-        
-        // Update the guess with a damping factor for stability
         const dampingFactor = 0.8;
         C_vec = C_vec.map((val, i) => val + dampingFactor * delta_C[i]);
-        C_vec = C_vec.map(val => Math.max(0, val)); // Ensure no negative concentrations
+        C_vec = C_vec.map(val => Math.max(0, val));
     }
 
     return C_vec;
