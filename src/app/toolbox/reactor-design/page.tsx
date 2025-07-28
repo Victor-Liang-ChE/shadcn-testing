@@ -797,7 +797,7 @@ const KineticsInput = ({
                     const preview = generatePreview(r)
                     return (
                         <div key={r.id} className="p-3 bg-card rounded-md">
-                          <p className="font-bold text-primary">Rxn {r.id}:</p>
+                          <p className="font-bold text-primary text-center">Reaction {r.id}</p>
                             <p className="font-medium text-center mb-1">{preview.equation}</p>
                           <p className="font-mono text-sm text-center text-muted-foreground w-full">
                             Rate = k
@@ -1002,7 +1002,7 @@ const KineticsInput = ({
 
                             {componentsSetup.map((comp, index) => (
                                 <div key={comp.id} className="grid gap-2 items-center py-2" style={{gridTemplateColumns: componentsGridCols}}>
-                                    {index > 0 ? (
+                                    {index > 1 ? (
                                         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeComponentSetup(comp.id)}>
                                             <Trash2 className="h-4 w-4 text-red-500" />
                                         </Button>
@@ -1185,11 +1185,11 @@ const ReactorSimulator = ({
     if (graphType === 'volume') {
       yLabel = 'Reactor Volume (m³)';
       legend = ['Volume'];
-      series = [{ name: legend[0], type: 'line', data: dataToShow.volumeData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 2 } }];
+      series = [{ name: legend[0], type: 'line', data: dataToShow.volumeData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 4, color: '#22c55e' } }];
     } else { 
       yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`;
       legend = [desiredProduct?.name || 'Product'];
-      series = [{ name: legend[0], type: 'line', data: dataToShow.selectivityData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 2 } }];
+      series = [{ name: legend[0], type: 'line', data: dataToShow.selectivityData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 4, color: '#22c55e' } }];
     }
     
     return { series, xAxis: xLabel, yAxis: yLabel, legend };
@@ -1214,7 +1214,7 @@ const ReactorSimulator = ({
         nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
         min: 0, max: 1,
         axisLine: { lineStyle: { color: textColor } },
-        axisLabel: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        axisLabel: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
         splitLine: { show: false },
     },
     yAxis: {
@@ -1231,9 +1231,9 @@ const ReactorSimulator = ({
         axisLine: { lineStyle: { color: textColor } },
         axisLabel: { 
             color: textColor, 
-            fontSize: 12, 
+            fontSize: 14, 
             fontFamily: 'Merriweather Sans',
-            formatter: (value: number) => value.toPrecision(3), // Use toPrecision for better formatting
+            formatter: (value: number) => graphType === 'volume' ? value.toPrecision(3) : value.toString(), // Only use toPrecision for volume graphs
             showMaxLabel: true 
         },
         splitLine: { show: false },
@@ -1255,6 +1255,9 @@ const ReactorSimulator = ({
         type: 'cross',
         label: {
           backgroundColor: isDark ? '#374151' : '#e5e7eb', // A dark grey color
+          color: textColor,
+          fontFamily: 'Merriweather Sans',
+          fontSize: 12,
           formatter: function (params) {
             // Use toPrecision(3) for 3 significant figures
             return parseFloat(params.value as string).toPrecision(3);
@@ -1278,8 +1281,9 @@ const ReactorSimulator = ({
         params.forEach((p: any) => {
             const seriesName = p.seriesName;
             const seriesValue = parseFloat(p.value[1]).toPrecision(3);
-            const marker = p.marker; // The colored dot icon
-            tooltipContent += `${marker} ${seriesName}: <strong>${seriesValue}</strong>`;
+            // Use green circle marker instead of the default colored dot
+            const greenMarker = '<span style="color: #22c55e;">●</span>';
+            tooltipContent += `${greenMarker} ${seriesName}: <strong>${seriesValue}</strong>`;
         });
 
         return tooltipContent;
@@ -1373,10 +1377,15 @@ const ReactorSimulator = ({
                     </div>
                 </div>
                 <div className="absolute top-0 right-0 z-10">
-                        <select onChange={(e) => setGraphType(e.target.value as GraphType)} value={graphType} className={`p-1 rounded-md text-xs ${isDark ? 'bg-muted' : 'bg-muted'}`}> 
-                        <option value="selectivity">Selectivity vs. Conversion</option>
-                        <option value="volume">Volume vs. Conversion</option>
-                    </select>
+                    <Select value={graphType} onValueChange={(value) => setGraphType(value as GraphType)}>
+                        <SelectTrigger className="w-[200px] h-8 text-xs">
+                            <SelectValue placeholder="Select graph type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="selectivity">Selectivity vs. Conversion</SelectItem>
+                            <SelectItem value="volume">Volume vs. Conversion</SelectItem>
+                        </SelectContent>
+                    </Select>
                 </div>
             </div>
           <ReactECharts
