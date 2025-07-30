@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useTheme } from "next-themes";
 
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
@@ -119,15 +120,7 @@ interface CompoundInputState {
     suggestionsRef: React.RefObject<HTMLDivElement | null>;  // <-- allow null here
 }
 
-// Debounce function
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<F>) => {
-    if (timeout !== null) { clearTimeout(timeout); timeout = null; }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
-  return debounced as (...args: Parameters<F>) => void;
-}
+// Debounce function removed for instantaneous suggestions
 
 // Helper function to render property name with optional symbol and subscripts/superscripts
 const renderPropertyName = (displayName: string, symbol?: string): React.ReactNode => {
@@ -266,6 +259,11 @@ interface AppLineSeriesOption extends LineSeriesOption {
 }
 
 export default function CompoundPropertiesPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
+  // Add cache reference for efficient data handling
+  const propertiesCache = useRef(new Map<string, FetchedCompoundData | null>());
+  
   const nextCompoundId = useRef(0); 
 
   const createNewCompoundState = (name: string = ''): CompoundInputState => {
@@ -318,6 +316,11 @@ export default function CompoundPropertiesPage() {
   };
   const [manualTempPointsData, setManualTempPointsData] = useState<ManualTempPoint[]>([]);
 
+  // State to control when auto-updates should happen
+  const [shouldAutoUpdate, setShouldAutoUpdate] = useState(true);
+  
+  // State to track if user explicitly clicked fetch button (to show empty compound errors)
+  const [userClickedFetch, setUserClickedFetch] = useState(false);
 
   // useEffect for initial data fetching (e.g., for 'Water')
   useEffect(() => {
@@ -375,7 +378,20 @@ export default function CompoundPropertiesPage() {
         throw new Error("Compound name cannot be empty.");
     }
 
-    console.log(`CompoundProperties: Fetching data for "${trimmedCompoundName}"...`); // Use trimmed name in log
+    const cacheKey = trimmedCompoundName.toLowerCase();
+    
+    // 1. Check cache before fetching
+    if (propertiesCache.current.has(cacheKey)) {
+        console.log(`CompoundProperties: Cache HIT for ${trimmedCompoundName}.`);
+        const cachedData = propertiesCache.current.get(cacheKey);
+        // Handle the case where a previous fetch for this name failed
+        if (cachedData === null) {
+            throw new Error(`Compound '${trimmedCompoundName}' not found in the database.`);
+        }
+        return cachedData || null;
+    }
+
+    console.log(`CompoundProperties: Cache MISS for ${trimmedCompoundName}. Fetching from DB.`); // Use trimmed name in log
 
     try {
       const { data: compoundDbData, error: compoundError } = await supabase
@@ -423,9 +439,16 @@ export default function CompoundPropertiesPage() {
       const criticalTemp = parseCoefficient(properties["Critical temperature"]?.value ?? properties["Critical temperature"]);
       console.log(`DEBUG_FETCH_MW: Final molarWeight for "${foundName}" being returned: ${molarWeight}, CriticalTemp: ${criticalTemp}`);
 
-      return { properties, molarWeight, criticalTemp, name: foundName }; // Return canonical name
+      const finalData = { properties, molarWeight, criticalTemp, name: foundName }; // Return canonical name
+      
+      // 3. Store the successful result in the cache
+      propertiesCache.current.set(cacheKey, finalData);
+      return finalData;
     } catch (err: any) {
       console.error(`Error fetching data for "${trimmedCompoundName}":`, err.message); // Use trimmed name
+      
+      // 4. Cache the failure to avoid repeated invalid requests
+      propertiesCache.current.set(cacheKey, null);
       throw err; // Re-throw to be caught by caller
     }
   };
@@ -439,7 +462,20 @@ export default function CompoundPropertiesPage() {
     setOverallError(null);
     if (!propertyKey) {
       setEchartsOptions({});
-      setOverallError(plotMode === 'tempDependent' ? "Please select a temperature-dependent property to plot." : "Please select a constant property to plot.");
+      
+      // Count compounds with data
+      const compoundsWithData = allCompoundsData.filter(c => c.data && c.name.trim());
+      
+      if (compoundsWithData.length === 0) {
+        // No compounds with data
+        setOverallError(plotMode === 'tempDependent' ? "Please select a temperature-dependent property to plot." : "Please select a constant property to plot.");
+      } else if (compoundsWithData.length === 1) {
+        // Only one compound
+        setOverallError(plotMode === 'tempDependent' ? "No temperature-dependent properties available to display for this compound." : "No constant properties available to display for this compound.");
+      } else {
+        // Multiple compounds but no common properties
+        setOverallError(plotMode === 'tempDependent' ? "No common temperature-dependent properties found between the selected compounds." : "No common constant properties found between the selected compounds.");
+      }
       return;
     }
 
@@ -680,10 +716,7 @@ export default function CompoundPropertiesPage() {
                 const loopEndCelsius = (finalPlotTmaxKelvin !== undefined) ? (finalPlotTmaxKelvin - 273.15) : (Tmax_compound_K - 273.15);
                 
                 const numDataPointsForLoop = 200; // Desired number of points over the range
-                let dataPointCelsiusStep = (loopEndCelsius - loopStartCelsius) / numDataPointsForLoop;
-                
-                if (dataPointCelsiusStep <= 0) dataPointCelsiusStep = 0.5; // Fallback if range is zero or negative
-                dataPointCelsiusStep = Math.max(dataPointCelsiusStep, 0.01); // Minimum step
+                let dataPointCelsiusStep = 1; // Fixed 1°C increment for data points
 
                 for (let currentC = loopStartCelsius; currentC <= loopEndCelsius + 1e-9; currentC += dataPointCelsiusStep) {
                     const T = currentC + 273.15; // T is in Kelvin for calculations
@@ -847,6 +880,10 @@ export default function CompoundPropertiesPage() {
         // yAxisUnitRef.current stores X-axis unit for Boiling Point (pressure unit), or Y-axis unit for others.
         yAxisUnitRef.current = isBoilingPointPlot ? displayUnit : yAxisUnit; 
 
+        // Theme-dependent colors
+        const isDark = resolvedTheme === 'dark';
+        const textColor = isDark ? 'white' : '#000000';
+
         let yAxisTickFormatter = isBoilingPointPlot 
             ? (val: number) => val.toFixed(0) // Temp C
             : (val: number) => formatNumberToPrecision(val, 7); // Property value
@@ -868,15 +905,16 @@ export default function CompoundPropertiesPage() {
           nameLocation: 'middle' as const,
           nameGap: calculatedNameGap, 
           position: 'left' as const,
-          axisLine: { show: true, lineStyle: { color: propDef.color, width: 2 } },
+          axisLine: { show: true, lineStyle: { color: 'white', width: 2 } },
+          axisTick: { show: true, lineStyle: { color: 'white' }, length: 12 },
           axisLabel: { 
             formatter: yAxisTickFormatter, 
-            color: '#e0e6f1', 
+            color: 'white', 
             fontSize: 16, 
             fontFamily: 'Merriweather Sans',
             margin: dynamicAxisLabelMargin, 
           },
-          nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' }, 
+          nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' }, 
           splitLine: { show: false },
           scale: true, // Y-axis always auto-scales
           min: undefined, 
@@ -889,17 +927,29 @@ export default function CompoundPropertiesPage() {
             nameLocation: 'middle',
             nameGap: 30,
             axisLabel: {
-                color: '#e0e6f1', // Corrected from #e6e6e6 to #e0e6f1 for consistency
+                color: textColor, // Corrected from #e6e6e6 to #e0e6f1 for consistency
                 fontFamily: 'Merriweather Sans',
                 fontSize: 16,
-                formatter: isBoilingPointPlot 
-                    // Dynamic precision for pressure labels
-                    // Ensure precision is at least 1 (changed from 0 to 1 for val >= 10)
-                    ? (val: number) => formatNumberToPrecision(val, val < 0.1 ? 3 : (val < 1 ? 2 : (val < 10 ? 1 : 1))) 
+                formatter: isBoilingPointPlot
+                    ? (val: number) => {
+                        // pressureAxisInterval should be defined here if isBoilingPointPlot is true
+                        // and the axis is being configured.
+                        if (typeof pressureAxisInterval === 'number') {
+                            let dp = 0; // Default decimal places for intervals >= 1
+                            if (pressureAxisInterval < 0.1) { // For intervals like 0.01, 0.05
+                                dp = 2;
+                            } else if (pressureAxisInterval < 1) { // For intervals like 0.1, 0.2, 0.5
+                                dp = 1;
+                            }
+                            return val.toFixed(dp);
+                        }
+                        return val.toString(); // Fallback
+                      }
                     : (val: number) => (val - 273.15).toFixed(0) // Temp Kelvin to Celsius for display
             },
-            nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
-            axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
+            nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+            axisLine: { lineStyle: { color: textColor, width: 2 } },
+            axisTick: { show: true, lineStyle: { color: textColor }, length: 12 },
             splitLine: { show: false },
             // Apply calculated range and interval for Boiling Point X-axis
             scale: isBoilingPointPlot ? false : (finalPlotTminKelvin !== undefined ? false : true),
@@ -908,7 +958,6 @@ export default function CompoundPropertiesPage() {
             interval: isBoilingPointPlot ? pressureAxisInterval : xAxisKelvinInterval,
         };
 
-
         setEchartsOptions({
           backgroundColor: 'transparent', 
           title: {
@@ -916,14 +965,14 @@ export default function CompoundPropertiesPage() {
                 ? `Boiling Point (Temperature vs. Pressure): ${titleCompoundNames || 'Selected Compounds'}` 
                 : `${propDef.displayName}: ${titleCompoundNames || 'Selected Compounds'}`,
             left: 'center',
-            textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
+            textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' },
           },
           tooltip: {
             trigger: 'axis',
             axisPointer: { 
               type: 'cross',
               label: {
-                backgroundColor: '#ffffff', // Background of the label box
+                backgroundColor: isDark ? '#1e293b' : '#ffffff', // Theme-aware background of the label box
                 formatter: function (params: { value: number | string | Date; axisDimension: string; }) { 
                   let valueAsNumber: number;
                   const paramValue = params.value; 
@@ -961,31 +1010,38 @@ export default function CompoundPropertiesPage() {
                   return formatNumberToPrecision(valueAsNumber, 3); // Fallback
                 },
                 fontFamily: 'Merriweather Sans', // Font for the text inside the label
-                color: '#333' // Color of the text inside the label
+                color: textColor // Color of the text inside the label
               }
             },
-            backgroundColor: '#1e293b', // Background of the main tooltip box
-            borderColor: '#3b82f6',
-            textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
+            backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff', // Background of the main tooltip box
+            borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
+            textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
             formatter: (params: any) => {
                 if (!Array.isArray(params) || params.length === 0) return '';
+                
+                // Sort params by property value in descending order (highest to lowest)
+                const sortedParams = [...params].sort((a: any, b: any) => {
+                    const valueA = isBoilingPointPlot ? a.value[1] : a.value[1]; // For both cases, value[1] is the property value
+                    const valueB = isBoilingPointPlot ? b.value[1] : b.value[1];
+                    return valueB - valueA; // Descending order
+                });
                 
                 let tooltipHtml = '';
                 if (isBoilingPointPlot) {
                     const pressureVal = params[0].axisValue; // Pressure from X-axis
                     tooltipHtml = `Pressure: <b>${formatNumberToPrecision(pressureVal, 3)} ${displayUnit}</b><br/>`;
-                    params.forEach((param: any) => {
+                    sortedParams.forEach((param: any) => {
                         const seriesFullname = param.seriesName;
                         // param.value is [Pressure_DisplayUnit, TempC]
-                        tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 3)} °C</b><br/>`;
+                        tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 3)} °C</b></span><br/>`;
                     });
                 } else {
                     const tempInCelsius = params[0].axisValue - 273.15; // TempK from X-axis
                     tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
-                    params.forEach((param: any) => {
+                    sortedParams.forEach((param: any) => {
                         const seriesFullname = param.seriesName;
                         // param.value is [TempK, Value]
-                        tooltipHtml += `${param.marker} ${seriesFullname}: <b>${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b><br/>`;
+                        tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b></span><br/>`;
                     });
                 }
                 return tooltipHtml;
@@ -993,10 +1049,12 @@ export default function CompoundPropertiesPage() {
           },
           legend: {
             data: finalSeriesToPlot.map(s => s.name as string), // Use filtered series for legend data
-            bottom: 5, // Reduced gap to x-axis
-            textStyle: { color: '#9ca3af', fontFamily: 'Merriweather Sans', fontSize: 11 },
+            bottom: 40, // Closer to x-axis
+            textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 },
             inactiveColor: '#4b5563',
             type: 'scroll',
+            itemWidth: 25,
+            itemHeight: 2,
             formatter: (name) => {
                 const series = seriesData.find(s => s.name === name) as any;
                 if (series && series._internal_legend_equation) {
@@ -1021,20 +1079,15 @@ export default function CompoundPropertiesPage() {
           yAxis: yAxisConfig,
           series: finalSeriesToPlot as any, // Use type assertion here
           toolbox: {
-            show: true, 
-            orient: 'horizontal', 
-            right: 20,            
-            bottom: 20,           
-            top: 'auto',          
-            left: 'auto',         
-            feature: { 
-              saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' },
-            },
-            iconStyle: { borderColor: '#9ca3af' }
+            show: false,
           },
         });
 
     } else if (plotMode === 'constants') {
+        // Theme-dependent colors
+        const isDark = resolvedTheme === 'dark';
+        const textColor = isDark ? 'white' : '#000000';
+        
         const constDef = constantPropertiesConfig.find(c => c.jsonKey === propertyKey);
         if (!constDef) {
           console.warn(`Constant definition for key ${propertyKey} not found.`);
@@ -1110,7 +1163,7 @@ export default function CompoundPropertiesPage() {
         
         const yAxisDisplayName = constDef.displayName;
 
-        const originalBaseTotalGapConst = 100; 
+        const originalBaseTotalGapConst = (constDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75);
         const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGapConst);
         console.log('[DebugYAxis] Constants Plot - Applied:', { yAxisDisplayName, displayUnit, dataMinY, dataMaxY, originalBaseTotalGapConst, dynamicAxisLabelMargin, calculatedNameGap });
 
@@ -1119,16 +1172,16 @@ export default function CompoundPropertiesPage() {
             name: displayUnit === '-' ? yAxisDisplayName : `${yAxisDisplayName} (${displayUnit})`,
             nameLocation: 'middle' as const,
             nameGap: calculatedNameGap, 
-            axisLine: { show: true, lineStyle: { color: constDef.color || '#EE6666', width: 2 } },
-            axisTick: { show: true, lineStyle: { color: '#e0e6f1' } }, // Added Y-axis tick marks
+            axisLine: { show: true, lineStyle: { color: 'white', width: 2 } },
+            axisTick: { show: true, lineStyle: { color: 'white' }, length: 12 },
             axisLabel: { 
               formatter: (val: number) => formatNumberToPrecision(val, 4), 
-              color: '#e0e6f1', 
+              color: 'white', 
               fontSize: 16, 
               fontFamily: 'Merriweather Sans',
               margin: dynamicAxisLabelMargin, 
             },
-            nameTextStyle: { color: '#e0e6f1', fontSize: 15, fontFamily: 'Merriweather Sans' },
+            nameTextStyle: { color: 'white', fontSize: 15, fontFamily: 'Merriweather Sans' },
             splitLine: { show: false },
             scale: true, // Reverted: Ensure auto-scaling
             min: undefined, // Reverted: Let ECharts determine min
@@ -1136,28 +1189,23 @@ export default function CompoundPropertiesPage() {
         };
 
         setEchartsOptions({
-            backgroundColor: '#08306b',
+            backgroundColor: 'transparent',
             title: {
                 text: `${constDef.displayName} for ${allCompoundsData.filter(c => c.data && c.name.trim()).map(c => c.data!.name).join(' vs ')}`, // Updated title format
                 left: 'center',
-                textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' },
+                textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' },
             },
             tooltip: {
-                trigger: 'item', 
-                formatter: (params: any) => {
-                    return `${params.name}<br/>${constDef.displayName}: <b>${formatNumberToPrecision(params.value, 4)}${displayUnit !== '-' ? ' ' + displayUnit : ''}</b>`;
-                },
-                backgroundColor: '#1e293b',
-                borderColor: '#3b82f6',
-                textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
+                show: false,
             },
             legend: { show: false }, 
-            grid: { left: '17%', right: '4%', bottom: '3%', containLabel: true }, 
+            grid: { left: '5%', right: '5%', bottom: '12%', top: '10%', containLabel: true }, 
             xAxis: {
                 type: 'category',
                 data: compoundNames,
-                axisLabel: { color: '#e0e6f1', fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, 
-                axisLine: { lineStyle: { color: '#4b5563', width: 2 } },
+                axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, interval: 0, rotate: compoundNames.length > 4 ? 30 : 0 }, 
+                axisLine: { lineStyle: { color: textColor, width: 2 } },
+                axisTick: { show: true, lineStyle: { color: textColor }, length: 12 },
             },
             yAxis: yAxisConfig,
             series: [{
@@ -1170,36 +1218,30 @@ export default function CompoundPropertiesPage() {
                 label: {
                     show: true,
                     position: 'top',
-                    formatter: (params: any) => formatNumberToPrecision(params.value, 3),
-                    color: '#e0e6f1',
+                    formatter: (params: any) => `${formatNumberToPrecision(params.value, 3)}${displayUnit !== '-' ? ' ' + displayUnit : ''}`,
+                    color: textColor,
+                    fontSize: Math.max(12, 30 - compoundNames.length * 4),
                     fontFamily: 'Merriweather Sans' // Added font family for bar labels
                 }
             }] as any, // Use type assertion here for consistency
             toolbox: { 
-              show: true, 
-              orient: 'horizontal', 
-              right: 20,            
-              bottom: 20,           
-              top: 'auto',          
-              left: 'auto',         
-              feature: { 
-                saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' }, 
-              }, 
-              iconStyle: { borderColor: '#9ca3af' } 
+              show: false,
             },
         });
     }
-  }, [plotMode]);
+  }, [plotMode, resolvedTheme]);
 
-  const handleFetchAndPlot = useCallback(async () => {
+  const handleFetchAndPlot = useCallback(async (isUserInitiated = false) => {
     setLoading(true);
     setOverallError(null);
     setManualTempInput(''); // Clear manual input
     setManualTempPointsData([]); // Clear manual points
+    // Re-enable auto-updates when fetch button is pressed
+    setShouldAutoUpdate(true);
     console.log("handleFetchAndPlot: Starting fetch and plot process.");
     const fetchedCompoundStates = await Promise.all(compounds.map(async (compound) => {
         if (!compound.name.trim()) {
-            return { ...compound, data: null, error: compound.error || "Compound name is empty." };
+            return { ...compound, data: null, error: (isUserInitiated ? "Compound name is empty." : null) };
         }
         try {
             const data = await fetchCompoundPropertiesLocal(compound.name);
@@ -1327,6 +1369,12 @@ export default function CompoundPropertiesPage() {
     setLoading(false);
   }, [compounds, selectedPropertyKey, selectedUnit, fetchCompoundPropertiesLocal, plotMode, selectedConstantKey, selectedConstantUnit]);
 
+  // Separate handler for button click
+  const handleFetchButtonClick = () => {
+    setUserClickedFetch(true);
+    handleFetchAndPlot(true);
+  };
+
   const handleExportCSV = useCallback(() => {
     if (!echartsOptions || !echartsOptions.series || (echartsOptions.series as AppLineSeriesOption[]).length === 0) { // Use AppLineSeriesOption here
       console.warn("No data to export.");
@@ -1425,7 +1473,7 @@ export default function CompoundPropertiesPage() {
     }
   }, [echartsOptions, plotMode, selectedPropertyKey, selectedConstantKey]); // adjust deps accordingly
 
-  const fetchSuggestionsForCompound = useCallback(debounce(async (compoundId: string, inputValue: string) => {
+  const fetchSuggestionsForCompound = useCallback(async (compoundId: string, inputValue: string) => {
     const trimmedInputValue = inputValue.trim(); 
     if (!trimmedInputValue || trimmedInputValue.length < 2 || !supabase) {
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: [], showSuggestions: false } : c));
@@ -1441,10 +1489,12 @@ export default function CompoundPropertiesPage() {
       if (fetchError) { console.error("Supabase suggestion fetch error:", fetchError); return; }
       setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: data ? data.map(item => item.name) : [], showSuggestions: data && data.length > 0 } : c));
     } catch (err) { console.error("Error fetching suggestions:", err); }
-  }, 300), [supabase]); 
+  }, [supabase]); 
 
   const handleCompoundNameChange = (id: string, value: string) => {
-    setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, data: null, error: null } : c)); 
+    setCompounds(prev => prev.map(c => c.id === id ? { ...c, name: value, error: null } : c)); 
+    // Disable auto-updates when user is typing compound names
+    setShouldAutoUpdate(false);
     if (value.trim() === "") { 
       setCompounds(prev => prev.map(c => c.id === id ? { ...c, suggestions: [], showSuggestions: false } : c));
     } else {
@@ -1456,7 +1506,7 @@ export default function CompoundPropertiesPage() {
     setCompounds(prev => prev.map(c => {
       if (c.id === compoundId) {
         c.inputRef.current?.focus();
-        return { ...c, name: suggestion, suggestions: [], showSuggestions: false, data: null, error: null };
+        return { ...c, name: suggestion, suggestions: [], showSuggestions: false, error: null };
       }
       return c;
     }));
@@ -1472,10 +1522,9 @@ export default function CompoundPropertiesPage() {
   };
 
   const removeCompoundInput = (idToRemove: string) => {
+    // Remove the compound from state and re-enable auto-updates
     setCompounds(prev => prev.filter(c => c.id !== idToRemove));
-    const remainingCompounds = compounds.filter(c => c.id !== idToRemove);
-    if (!remainingCompounds.some(c => c.data)) {
-    }
+    setShouldAutoUpdate(true);
   };
 
 
@@ -1493,11 +1542,19 @@ export default function CompoundPropertiesPage() {
   }, [compounds]);
 
   useEffect(() => {
-    if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading) {
-      handleFetchAndPlot();
+    if (supabase && compounds.length > 0 && compounds[0].name && !compounds[0].data && !loading && shouldAutoUpdate) {
+      handleFetchAndPlot(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supabase, compounds[0]?.name, compounds[0]?.data]);
+  }, [supabase, compounds[0]?.name, compounds[0]?.data, shouldAutoUpdate]);
+
+  // useEffect to handle compound removal/addition - triggers when compounds array length changes
+  useEffect(() => {
+    if (shouldAutoUpdate && compounds.length > 0 && compounds.some(c => c.data)) {
+      handleFetchAndPlot(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compounds.length, shouldAutoUpdate]);
 
   useEffect(() => {
     if (plotMode === 'constants' || plotMode === 'tempDependent') {
@@ -1505,7 +1562,9 @@ export default function CompoundPropertiesPage() {
         // Clear manual temp data when plot mode changes or initial fetch for mode
         setManualTempInput('');
         setManualTempPointsData([]);
-        handleFetchAndPlot();
+        // Enable auto-updates when plot mode changes
+        setShouldAutoUpdate(true);
+        handleFetchAndPlot(false);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1513,7 +1572,7 @@ export default function CompoundPropertiesPage() {
 
 
   useEffect(() => {
-    if (loading) return; 
+    if (loading || !shouldAutoUpdate) return; 
 
     const currentKey = plotMode === 'tempDependent' ? selectedPropertyKey : selectedConstantKey;
     const currentUnit = plotMode === 'tempDependent' ? selectedUnit : selectedConstantUnit;
@@ -1536,7 +1595,7 @@ export default function CompoundPropertiesPage() {
         }
        } else if (!compounds.some(c => c.data) && Object.keys(echartsOptions).length > 0 && !overallError) {
     }
-  }, [compounds, selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData]); 
+  }, [compounds.filter(c => c.data).map(c => c.data?.name).join(','), selectedPropertyKey, selectedUnit, selectedConstantKey, selectedConstantUnit, plotMode, loading, availablePropertiesForSelection, availableConstantsForSelection, processAndPlotProperties, overallError, manualTempPointsData, resolvedTheme, shouldAutoUpdate]); 
 
   const canExportCSV = echartsOptions && 
                        echartsOptions.series && 
@@ -1545,8 +1604,10 @@ export default function CompoundPropertiesPage() {
 
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
-      event.preventDefault(); 
-      handleFetchAndPlot();
+      event.preventDefault();
+      // Re-enable auto-updates when Enter is pressed
+      setShouldAutoUpdate(true); 
+      handleFetchAndPlot(true);
     }
   };
 
@@ -1775,7 +1836,11 @@ export default function CompoundPropertiesPage() {
             <Card>
               <CardContent className="space-y-4 pt-6">
                 <div className="flex items-center space-x-2 mb-4">
-                  <Tabs value={plotMode} onValueChange={(value) => setPlotMode(value as 'tempDependent' | 'constants')} className="w-full">
+                  <Tabs value={plotMode} onValueChange={(value) => {
+                    setPlotMode(value as 'tempDependent' | 'constants');
+                    // Enable auto-updates when switching plot modes
+                    setShouldAutoUpdate(true);
+                  }} className="w-full">
                     <TabsList className="grid w-full grid-cols-2">
                       <TabsTrigger value="tempDependent">Temp. Dependent</TabsTrigger>
                       <TabsTrigger value="constants">Constants</TabsTrigger>
@@ -1807,7 +1872,7 @@ export default function CompoundPropertiesPage() {
                                     </Button>
                                 )}
                                 {compound.showSuggestions && compound.suggestions.length > 0 && (
-                                    <div ref={compound.suggestionsRef} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 top-full max-h-48 overflow-y-auto">
+                                    <div ref={compound.suggestionsRef} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 top-full">
                                     {compound.suggestions.map((s, i) => <div key={i} onClick={() => handleSuggestionClick(compound.id, s)} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>)}
                                     </div>
                                 )}
@@ -1836,6 +1901,8 @@ export default function CompoundPropertiesPage() {
                               const newPropDef = availablePropertiesForSelection.find(p => p.displayName === value); // Find by displayName
                               const newUnit = newPropDef?.availableUnits?.[0]?.unit || newPropDef?.targetUnitName || '';
                               setSelectedUnit(newUnit);
+                              // Enable auto-updates when changing properties
+                              setShouldAutoUpdate(true);
                           }}
                           disabled={availablePropertiesForSelection.length === 0}
                         >
@@ -1858,10 +1925,14 @@ export default function CompoundPropertiesPage() {
                         if (unitsForCurrentProp && unitsForCurrentProp.length > 1) {
                           return (
                             <div className="flex-grow space-y-2 max-w-[224px]"> 
-                              <Select
-                                value={selectedUnit}
-                                onValueChange={(value) => setSelectedUnit(value)}
-                              >
+                                                              <Select
+                                  value={selectedUnit}
+                                  onValueChange={(value) => {
+                                    setSelectedUnit(value);
+                                    // Enable auto-updates when changing units
+                                    setShouldAutoUpdate(true);
+                                  }}
+                                >
                                 <SelectTrigger id="unitSelect" className="w-full">
                                   <SelectValue placeholder="Unit" />
                                 </SelectTrigger>
@@ -1890,6 +1961,8 @@ export default function CompoundPropertiesPage() {
                               const newConstDef = availableConstantsForSelection.find(c => c.jsonKey === value);
                               const newUnit = newConstDef?.availableUnits?.[0]?.unit || newConstDef?.targetUnitName || '';
                               setSelectedConstantUnit(newUnit);
+                              // Enable auto-updates when changing constants
+                              setShouldAutoUpdate(true);
                           }}
                           disabled={availableConstantsForSelection.length === 0}
                         >
@@ -1912,10 +1985,14 @@ export default function CompoundPropertiesPage() {
                         if (unitsForCurrentConst && (unitsForCurrentConst.length > 1 || (unitsForCurrentConst.length === 1 && unitsForCurrentConst[0].unit !== "-"))) {
                           return (
                             <div className="flex-grow space-y-2 max-w-[224px]"> 
-                              <Select
-                                value={selectedConstantUnit}
-                                onValueChange={(value) => setSelectedConstantUnit(value)}
-                              >
+                                                              <Select
+                                  value={selectedConstantUnit}
+                                  onValueChange={(value) => {
+                                    setSelectedConstantUnit(value);
+                                    // Enable auto-updates when changing constant units
+                                    setShouldAutoUpdate(true);
+                                  }}
+                                >
                                 <SelectTrigger id="constantUnitSelect" className="w-full">
                                   <SelectValue placeholder="Unit" />
                                 </SelectTrigger>
@@ -1937,7 +2014,7 @@ export default function CompoundPropertiesPage() {
                 </div>
 
 
-                <Button onClick={handleFetchAndPlot} disabled={loading} className="w-full">
+                <Button onClick={handleFetchButtonClick} disabled={loading} className="w-full">
                   {loading ? 'Fetching...' : 'Fetch & Plot Properties'}
                 </Button>
                 {canExportCSV && !loading && (
@@ -1945,7 +2022,7 @@ export default function CompoundPropertiesPage() {
                         Export Data as CSV
                     </Button>
                 )}
-                {overallError && ! loading && <Alert variant="destructive" className="mt-2"><Terminal className="h-4 w-4" /><AlertTitle>Error</AlertTitle><AlertDescription>{overallError}</AlertDescription></Alert>}
+
               </CardContent>
             </Card>
 
@@ -1964,9 +2041,17 @@ export default function CompoundPropertiesPage() {
                       type="number"
                       value={manualTempInput}
                       onChange={(e) => {
-                        setManualTempInput(e.target.value);
-                        if (e.target.value === '') {
-                          setManualTempPointsData([]); // Clear points if input is cleared
+                        const raw = e.target.value;
+                        const num = parseFloat(raw);
+                        const CLAMP_MAX = 2000;
+                        if (raw === '' || isNaN(num)) {
+                          setManualTempInput(raw);
+                        } else {
+                          const clamped = Math.min(Math.abs(num), CLAMP_MAX) * Math.sign(num);
+                          setManualTempInput(String(clamped));
+                        }
+                        if (raw === '') {
+                          setManualTempPointsData([]);
                         }
                       }}
                       onKeyDown={handleManualTempInputKeyDown}
@@ -1991,16 +2076,22 @@ export default function CompoundPropertiesPage() {
                   </div>
                   {manualTempPointsData.length > 0 && (
                     <div className="space-y-1 text-sm mt-2">
-                      {manualTempPointsData.map((point, idx) => (
-                        <div key={idx} className={`pl-2 ${point.isValid ? '' : 'text-red-500'}`}>
-                          <strong>{point.compoundName}:</strong>{' '}
-                          {point.isValid && point.value !== null
-                            ? (propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
-                                ? `${formatNumberToPrecision(point.value, 2)} °C (at ${formatNumberToPrecision(point.tempCelsius, 3)} ${point.unit})` // value is Temp C, tempCelsius is Pressure, unit is Pressure unit
-                                : `${formatNumberToPrecision(point.value, 3)} ${point.unit} (at ${formatNumberToPrecision(point.tempCelsius, 2)} °C)`) // value is Prop Val, unit is Prop unit, tempCelsius is Temp C
-                            : (point.message || "N/A")}
-                        </div>
-                      ))}
+                      {manualTempPointsData.map((point, idx) => {
+                        // Find the compound index to get the matching color
+                        const compoundIndex = compounds.findIndex(c => c.data?.name === point.compoundName);
+                        const compoundColor = compoundIndex >= 0 ? compoundColors[compoundIndex % compoundColors.length] : '#666';
+                        
+                        return (
+                          <div key={idx} className={`pl-2 ${point.isValid ? '' : 'text-red-500'}`} style={{ color: point.isValid ? compoundColor : undefined }}>
+                            <strong>{point.compoundName}:</strong>{' '}
+                            {point.isValid && point.value !== null
+                              ? (propertiesToPlotConfig.find(p => p.displayName === selectedPropertyKey)?.isValueAtPressure
+                                  ? `${formatNumberToPrecision(point.value, 2)} °C (at ${formatNumberToPrecision(point.tempCelsius, 3)} ${point.unit})` // value is Temp C, tempCelsius is Pressure, unit is Pressure unit
+                                  : `${formatNumberToPrecision(point.value, 3)} ${point.unit} (at ${formatNumberToPrecision(point.tempCelsius, 2)} °C)`) // value is Prop Val, unit is Prop unit, tempCelsius is Temp C
+                              : (point.message || "N/A")}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
@@ -2011,18 +2102,15 @@ export default function CompoundPropertiesPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2">
-                <div className="relative h-[600px] md:h-[700px] rounded-md bg-[#08306b]">
-                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Loading Properties...</div></div></div>)}
-                  {!loading && compounds.every(c => !c.data && !c.error) && !overallError && (<div className="absolute inset-0 flex items-center justify-center text-white">Please enter compound(s) and fetch properties.</div>)}
+                <div className="relative aspect-square rounded-md">
+                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Loading Properties...</div></div></div>)}
+                  {!loading && compounds.every(c => !c.data && !c.error) && !overallError && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please enter compound(s) and fetch properties.</div>)}
                   {overallError && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400 px-4 text-center">Error: {overallError}</div>)}
                   {!loading && Object.keys(echartsOptions).length > 0 && compounds.some(c=>c.data) && !overallError && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Note: Property correlations are from database (ChemSep, DWSIM, etc.) and have specific temperature ranges and accuracies.
-                    <br/>Hover over legend items for the full equation.
-                </p>
+
               </CardContent>
             </Card>
           </div>

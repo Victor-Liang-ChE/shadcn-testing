@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 
 // Description text for the page - Added newline character \n
-const pageDescription = "Just a collection of various side projects, tools, and experiments I've worked on.\nDon't take them too seriously!";
+const pageDescription = "Just a collection of various side projects, tools, and experiments I've worked on.";
 
 export default function Page() {
 const projects = [
@@ -13,9 +13,7 @@ const projects = [
     { name: "Portola Menu", path: "/misc/portola-menu" },
     { name: "Chemical Engineering Economics", path: "/misc/cheme-econ" },
     { name: "LaTeX Constructor & Converter", path: "/misc/latex" },
-    { name: "Sandbox", path: "/misc/sandbox" },
     { name: "Chemistry Tools", path: "/misc/chemistry-tools" },
-    { name: "Video/Audio Downloader", path: "/misc/downloader" },
     { name: "UFC Championship Lineage", path: "/misc/ufc-champions" },
     { name: "Fast .csv Plotter", path: "/misc/csv-to-plot" }, // Added this line
   ];

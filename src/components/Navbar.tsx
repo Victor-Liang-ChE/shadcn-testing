@@ -52,6 +52,21 @@ function Navbar() {
       case "/toolbox/residue-curve-map":
         return "Residue Curve Map";
 
+      case "/toolbox/reactor-design":
+        return "Reactor Design Simulator";
+
+      case "/toolbox/isotherms":
+        return "Isotherm Simulator";
+
+      case "/toolbox/binary-phase-diagrams":
+        return "Binary Phase Diagram";
+
+      case "/toolbox/unary-phase-diagrams":
+        return "Unary Phase Diagram";
+
+      case "/toolbox/1d-heat-transfer":
+        return "1D Heat Transfer";
+
       case "/misc":
           return "Miscellaneous Projects";
   
@@ -102,8 +117,12 @@ function Navbar() {
     >
       {/* Left: Brand */}
       <div>
-        <Link href="/" className={`text-xl font-semibold ${brandLinkHoverStyle} inline-block`}>
-            Victor Liang
+        <Link href="/" className={`${brandLinkHoverStyle} inline-block`}>
+          <img 
+            src="/favicon.ico" 
+            alt="Victor Liang" 
+            className="w-8 h-8"
+          />
         </Link>
       </div>
       {/* Center: Page Title */}
@@ -129,10 +148,6 @@ function Navbar() {
         <Link href="/toolbox" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Toolbox
         </Link>
-        {/* Add LearnChemE Link */}
-        <Link href="/LearnChemE" className={`text-xl font-semibold ${linkHoverStyle}`}>
-          LearnChemE 2.0
-        </Link>
         {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
         <Link href="/misc" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Misc
@@ -153,10 +168,6 @@ function Navbar() {
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
            <Link href="/toolbox" className={`block text-xl font-semibold ${linkHoverStyle}`}>
              Toolbox
-           </Link>
-           {/* Add LearnChemE Link */}
-           <Link href="/LearnChemE" className={`block text-xl font-semibold ${linkHoverStyle}`}>
-             LearnChemE 2.0
            </Link>
            {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
            <Link href="/misc" className={`block text-xl font-semibold ${linkHoverStyle}`}>

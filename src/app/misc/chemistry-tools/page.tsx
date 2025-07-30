@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +16,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Terminal, Info } from "lucide-react";
+
+// Global type declaration for JSMol
+declare global {
+  interface Window {
+    Jmol: any;
+    jQuery: any;
+  }
+}
 
 // --- Interfaces ---
 interface ChemicalFormulaPart { text: string; isSubscript: boolean; }
@@ -98,8 +106,81 @@ const StoichiometryCalculator: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [inputModes, setInputModes] = useState<Record<string, 'moles' | 'grams'>>({});
   const [hasCalculated, setHasCalculated] = useState<boolean>(false);
-  const [reactants, setReactants] = useState<string>('');
-  const [products, setProducts] = useState<string>('');
+  const [reactants, setReactants] = useState<string>('2H2 + O2');
+  const [products, setProducts] = useState<string>('2H2O');
+
+  // Initialize with default reaction on component mount
+  useEffect(() => {
+    const initializeDefaultReaction = async () => {
+      const fullEquation = `${reactants} → ${products}`;
+      setEquation(fullEquation);
+      setErrorMessage('');
+      setIsLoading(true);
+      
+      try {
+        const parsed = parseReactionEquation(fullEquation);
+        
+        if (!parsed) {
+          console.warn('Failed to parse default reaction:', fullEquation);
+          return; // Silently fail for default reaction
+        }
+        
+        const compoundsList = [...parsed.reactants, ...parsed.products];
+        const molarMassesData: MolarMasses = {};
+        const initialInputData: InputData = {};
+        const initialModes: Record<string, 'moles' | 'grams'> = {};
+        
+        for (const compound of compoundsList) {
+          try {
+            const molarMass = calculateMolarMassLocal(compound.compound, elementMasses);
+            molarMassesData[compound.compound] = molarMass;
+            initialInputData[compound.compound] = { molar_mass: molarMass };
+            initialModes[compound.compound] = 'moles';
+          } catch (error) {
+            console.error(`Molar mass calculation error for ${compound.compound}:`, error);
+            return; // Silently fail for default reaction
+          }
+        }
+        
+        // Set default input values: 2 mol H2 and 3 mol O2
+        initialInputData['H2'] = {
+          ...initialInputData['H2'],
+          moles: 2,
+          moles_display: '2'
+        };
+        initialInputData['O2'] = {
+          ...initialInputData['O2'],
+          moles: 3,
+          moles_display: '3'
+        };
+        
+        setMolarMasses(molarMassesData);
+        setInputData(initialInputData);
+        setInputModes(initialModes);
+        setReactionData(parsed);
+        
+        // Auto-calculate with default values
+        setTimeout(() => {
+          try {
+            const newResults = calculateStoichiometry(parsed, initialInputData, 100);
+            setResults(newResults);
+            setHasCalculated(true);
+          } catch (calcError) {
+            console.error('Default calculation error:', calcError);
+            // Don't show error for default calculation
+          }
+        }, 100);
+        
+      } catch (error) {
+        console.error('Default reaction initialization error:', error);
+        // Don't show error message for default reaction failures
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    initializeDefaultReaction();
+  }, []); // Only run on mount
 
   // --- Calculation Logic (Unchanged) ---
    const calculateStoichiometry = (reaction: ReactionData, currentInputData: InputData, convPercentage: number): StoichiometryResults => {
@@ -246,19 +327,20 @@ const StoichiometryCalculator: React.FC = () => {
           {/* Product Cards */}
           <Card>
             <CardHeader>
-                <div className="flex flex-col sm:flex-row justify-start items-center gap-4">
-                    {hasCalculated && (<div className="flex items-center space-x-2"><Checkbox id="conversion-check" checked={showConversion} onCheckedChange={(checked) => { setShowConversion(Boolean(checked)); }} aria-label="Enable reaction conversion percentage" /><Label htmlFor="conversion-check" className="text-sm font-medium whitespace-nowrap cursor-pointer">Set Conversion ({conversionPercentage}%)</Label></div>)}
-                </div>
-                 {hasCalculated && (
-                    <div className="pt-4 min-h-[40px]">
+                {hasCalculated && (
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                        <div className="flex items-center space-x-2">
+                            <Checkbox id="conversion-check" checked={showConversion} onCheckedChange={(checked) => { setShowConversion(Boolean(checked)); }} aria-label="Enable reaction conversion percentage" />
+                            <Label htmlFor="conversion-check" className="text-sm font-medium whitespace-nowrap cursor-pointer">Set Conversion ({conversionPercentage}%)</Label>
+                        </div>
                         {showConversion && (
-                            <>
+                            <div className="flex-1">
                                 <Label htmlFor="conversion-slider" className="sr-only">Conversion Percentage Slider</Label>
                                 <Slider id="conversion-slider" min={0} max={100} step={1} value={[conversionPercentage]} onValueChange={(value) => setConversionPercentage(value[0])} aria-label={`Conversion percentage: ${conversionPercentage}%`} />
-                            </>
+                            </div>
                         )}
                     </div>
-                 )}
+                )}
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {reactionData.products.map((product) => {
@@ -288,24 +370,198 @@ const StoichiometryCalculator: React.FC = () => {
 };
 
 // --- Molecular Visualization Component ---
-const MolecularVisualization: React.FC = () => { /* ... (no change) ... */
-  const [chemicalName, setChemicalName] = useState<string>('');
+const MolecularVisualization: React.FC = () => {
+  const [chemicalName, setChemicalName] = useState<string>('aspirin');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
-  const [viewerHtml, setViewerHtml] = useState<string>('');
-  const [actualName, setActualName] = useState<string>('');
+  const [moleculeData, setMoleculeData] = useState<string>('');
+  const jsmolContainerRef = useRef<HTMLDivElement>(null);
+  const [jsmolLoaded, setJsmolLoaded] = useState<boolean>(false);
+  const [jsmolInitialized, setJsmolInitialized] = useState<boolean>(false);
+
+  // Load JSMol library
+  useEffect(() => {
+    const loadJSMol = () => {
+      if (typeof window !== 'undefined' && !window.Jmol) {
+        // First load the jQuery dependency if needed
+        if (!(window as any).jQuery) {
+          const jqueryScript = document.createElement('script');
+          jqueryScript.src = 'https://code.jquery.com/jquery-3.6.0.min.js';
+          jqueryScript.onload = () => {
+            // After jQuery loads, load JSMol
+            const jmolScript = document.createElement('script');
+            jmolScript.src = 'https://chemapps.stolaf.edu/jmol/jsmol/JSmol.min.js';
+            jmolScript.onload = () => {
+              console.log('JSMol library loaded successfully');
+              setJsmolLoaded(true);
+            };
+            jmolScript.onerror = () => {
+              console.error('Failed to load JSMol library');
+              setError('Failed to load molecular viewer library');
+            };
+            document.head.appendChild(jmolScript);
+          };
+          jqueryScript.onerror = () => {
+            setError('Failed to load required dependencies');
+          };
+          document.head.appendChild(jqueryScript);
+        } else {
+          // jQuery already exists, just load JSMol
+          const jmolScript = document.createElement('script');
+          jmolScript.src = 'https://chemapps.stolaf.edu/jmol/jsmol/JSmol.min.js';
+          jmolScript.onload = () => {
+            console.log('JSMol library loaded successfully');
+            setJsmolLoaded(true);
+          };
+          jmolScript.onerror = () => {
+            console.error('Failed to load JSMol library');
+            setError('Failed to load molecular viewer library');
+          };
+          document.head.appendChild(jmolScript);
+        }
+      } else if (window.Jmol) {
+        console.log('JSMol already available');
+        setJsmolLoaded(true);
+      }
+    };
+    
+    loadJSMol();
+  }, []);
+
+  // Auto-load aspirin when JSMol is ready
+  useEffect(() => {
+    if (jsmolLoaded && !moleculeData && chemicalName === 'aspirin') {
+      handleVisualize();
+    }
+  }, [jsmolLoaded]);
 
   const handleVisualize = async () => {
-    if (!chemicalName.trim()) { setError("Please enter a chemical name."); return; }
-    setLoading(true); setError(''); setViewerHtml(''); setActualName('');
+    if (!chemicalName.trim()) { 
+      setError("Please enter a chemical name."); 
+      return; 
+    }
+    
+    setLoading(true); 
+    setError(''); 
+    setMoleculeData(''); 
+    setJsmolInitialized(false);
+    
+    // Try to fetch from PubChem for any molecule
     try {
-      const response = await fetch('/api/chemistry/visualize-molecule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: chemicalName.trim() }) });
-      if (!response.ok) { let errorMessage = `HTTP error! status: ${response.status}`; try { const errorData = await response.json(); errorMessage = errorData.message || errorMessage; } catch (e) { /* ignore */ } throw new Error(errorMessage); }
-      const data = await response.json();
-      if (!data.success) { setError(data.message || 'API returned failure but no message.'); } else { setViewerHtml(data.viewer_html); setActualName(data.chemical_name || chemicalName); }
-    } catch (err) { setError(`Error: ${err instanceof Error ? err.message : String(err)}`); console.error("Visualization fetch error:", err); }
-    finally { setLoading(false); }
+      // First, try to get the compound CID by name
+      const cidResponse = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/${encodeURIComponent(chemicalName)}/cids/JSON`);
+      
+      if (!cidResponse.ok) {
+        throw new Error(`Sorry, "${chemicalName}" couldn't be found in our database. Please try common chemical names like: water, caffeine, aspirin, glucose, benzene, ethanol, or acetone.`);
+      }
+      
+      const cidData = await cidResponse.json();
+      const cid = cidData.IdentifierList.CID[0];
+      
+      // Now get the 3D SDF structure using the CID
+      const sdfResponse = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/SDF?record_type=3d`);
+      
+      if (!sdfResponse.ok) {
+        // Try 2D if 3D is not available
+        const sdf2dResponse = await fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${cid}/SDF`);
+        
+        if (!sdf2dResponse.ok) {
+          throw new Error(`No molecular structure data available for "${chemicalName}".`);
+        }
+        
+        const sdf2dData = await sdf2dResponse.text();
+        setMoleculeData(sdf2dData);
+      } else {
+        const sdfData = await sdfResponse.text();
+        setMoleculeData(sdfData);
+      }
+      
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      setError(`${errorMsg}`);
+      console.error("Visualization fetch error:", err);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // Initialize JSMol viewer when molecule data is available
+  useEffect(() => {
+    if (jsmolLoaded && moleculeData && jsmolContainerRef.current && typeof window !== 'undefined' && window.Jmol && !jsmolInitialized) {
+      try {
+        console.log('Initializing JSMol with data:', moleculeData.substring(0, 50) + '...');
+        
+        // Clear previous content
+        jsmolContainerRef.current.innerHTML = '';
+        
+        // Create a unique container div for this applet
+        const appletContainer = document.createElement('div');
+        appletContainer.id = 'jmol-container-' + Date.now();
+        appletContainer.style.width = '100%';
+        appletContainer.style.height = '600px';
+        jsmolContainerRef.current.appendChild(appletContainer);
+        
+        // JSMol configuration
+        const jmolInfo = {
+          width: '100%',
+          height: 600,
+          color: '#F0F8FF',
+          use: 'HTML5',
+          j2sPath: 'https://chemapps.stolaf.edu/jmol/jsmol/j2s',
+          serverURL: 'https://chemapps.stolaf.edu/jmol/jsmol/php/jsmol.php',
+          readyFunction: () => {
+            console.log('JSMol applet ready');
+            setJsmolInitialized(true);
+          },
+          script: `
+            load data "molecule"
+${moleculeData}
+end "molecule";
+            wireframe 0.15;
+            spacefill 20%;
+            color cpk;
+            spin on;
+            background white;
+            zoom 80;
+            set echo top left;
+            echo "";
+          `,
+          disableJ2SLoadMonitor: true,
+          disableInitialConsole: true,
+          addSelectionOptions: false
+        };
+        
+        // Create unique applet ID
+        const appletId = 'jmolApplet_' + Date.now();
+        
+        // Use JSMol's direct HTML insertion method
+        window.Jmol.setDocument(document);
+        const htmlContent = window.Jmol.getAppletHtml(appletId, jmolInfo);
+        
+        // Insert the HTML content directly
+        appletContainer.innerHTML = htmlContent;
+        
+        // Execute any scripts that JSMol needs
+        const scripts = appletContainer.querySelectorAll('script');
+        scripts.forEach(script => {
+          if (script.innerHTML) {
+            try {
+              eval(script.innerHTML);
+            } catch (e) {
+              console.warn('Script execution warning:', e);
+            }
+          }
+        });
+        
+        console.log('JSMol applet created and added to DOM');
+        
+      } catch (err) {
+        console.error('JSMol initialization error:', err);
+        setError('Failed to initialize molecular viewer: ' + (err instanceof Error ? err.message : String(err)));
+        setJsmolInitialized(false);
+      }
+    }
+  }, [jsmolLoaded, moleculeData, jsmolInitialized]);
 
   return (
     <div className="space-y-6">
@@ -313,21 +569,32 @@ const MolecularVisualization: React.FC = () => { /* ... (no change) ... */
         <CardContent className="pt-6 pb-6 space-y-4">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
              <Label htmlFor="chemical-name-vis" className="sr-only sm:not-sr-only sm:w-auto mb-1 sm:mb-0">Chemical Name:</Label>
-            <Input id="chemical-name-vis" type="text" value={chemicalName} onChange={(e) => setChemicalName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleVisualize()} placeholder="e.g., caffeine, H2O" className="flex-1" aria-label="Chemical name for visualization" />
+            <Input id="chemical-name-vis" type="text" value={chemicalName} onChange={(e) => setChemicalName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleVisualize()} placeholder="e.g., caffeine, aspirin, glucose, benzene" className="flex-1" aria-label="Chemical name for visualization" />
             <Button onClick={handleVisualize} disabled={loading} className="w-full sm:w-auto mt-2 sm:mt-0">{loading ? 'Loading...' : 'Visualize'}</Button>
           </div>
-          {error && (<Alert variant="destructive" className="mt-4"><Terminal className="h-4 w-4" /><AlertTitle>Visualization Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>)}
+          {error && (<Alert variant="destructive" className="mt-4"><Terminal className="h-4 w-4" /><AlertTitle>Visualization Error</AlertTitle><AlertDescription style={{whiteSpace: 'pre-line'}}>{error}</AlertDescription></Alert>)}
         </CardContent>
       </Card>
-      {(loading || viewerHtml || (error && !viewerHtml)) && (
-         <Card className="min-h-[500px] flex flex-col">
-            {actualName && !loading && viewerHtml && <CardHeader><CardTitle className="text-center">{actualName}</CardTitle></CardHeader>}
-            <CardContent className="flex-grow flex items-center justify-center p-1 overflow-hidden relative">
+      {(loading || moleculeData || (error && !moleculeData)) && (
+         <Card className="min-h-[650px] flex flex-col">
+            <CardContent className="flex-grow flex items-center justify-center p-6 overflow-hidden relative">
               {loading && (<div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10"><p>Loading molecule...</p></div>)}
-              {viewerHtml ? (<iframe srcDoc={viewerHtml} title={`3D structure of ${actualName || 'molecule'}`} className="w-full h-full border-0" sandbox="allow-scripts allow-same-origin" />)
-               : !loading && !error ? (<p className="text-muted-foreground">Enter a chemical name above to visualize.</p>) : null }
+              {moleculeData ? (
+                <div className="w-full h-full min-h-[600px] relative rounded-lg overflow-hidden">
+                  <div ref={jsmolContainerRef} className="w-full h-full" />
+                  {!jsmolInitialized && jsmolLoaded && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-background/80">
+                      <div className="text-center">
+                        <p className="mb-2">Initializing 3D viewer...</p>
+                        <p className="text-sm text-muted-foreground">If this takes too long, try refreshing the page</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : !loading && !error ? (
+                <p className="text-muted-foreground">Enter a chemical name above to visualize.</p>
+              ) : null }
             </CardContent>
-            {viewerHtml && !loading && <CardFooter className="text-sm text-muted-foreground justify-center py-2">Rotate, zoom, and pan using your mouse/touch.</CardFooter>}
          </Card>
       )}
     </div>

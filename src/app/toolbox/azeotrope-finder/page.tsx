@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useTheme } from "next-themes";
 
 // ECharts imports (ensure all necessary components are registered as in other pages)
 import ReactECharts from 'echarts-for-react';
@@ -33,26 +34,42 @@ import { TooltipProvider } from "@/components/ui/tooltip"; // Assuming you might
 import { ArrowLeftRight, Terminal } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added Tabs
 
-// VLE Calculation Libraries (ensure all are imported as in test/page.tsx)
+// VLE Calculation Library – consolidated
 import {
     calculatePsat_Pa as libCalculatePsat_Pa,
-    calculateUnifacGamma, calculateBubbleTemperature as calculateBubbleTemperatureUnifac, calculateBubblePressure as calculateBubblePressureUnifac, fetchUnifacInteractionParams, type UnifacParameters,
-} from '@/lib/vle-calculations-unifac';
-import {
-    fetchNrtlParameters, calculateNrtlGamma, calculateBubbleTemperatureNrtl, calculateBubblePressureNrtl, type NrtlInteractionParams
-} from '@/lib/vle-calculations-nrtl';
-import {
-    fetchPrInteractionParams, calculateBubbleTemperaturePr, calculateBubblePressurePr, type PrInteractionParams
-} from '@/lib/vle-calculations-pr';
-import {
-    fetchSrkInteractionParams, calculateBubbleTemperatureSrk, calculateBubblePressureSrk, type SrkInteractionParams
-} from '@/lib/vle-calculations-srk';
-import {
-    fetchUniquacInteractionParams, calculateBubbleTemperatureUniquac, calculateBubblePressureUniquac, type UniquacInteractionParams as LibUniquacInteractionParams
-} from '@/lib/vle-calculations-uniquac';
-import {
-    fetchWilsonInteractionParams, calculateBubbleTemperatureWilson, calculateBubblePressureWilson, type WilsonInteractionParams as LibWilsonInteractionParams
-} from '@/lib/vle-calculations-wilson';
+    // UNIFAC
+    calculateUnifacGamma,
+    calculateBubbleTemperatureUnifac,
+    calculateBubblePressureUnifac,
+    fetchUnifacInteractionParams,
+    type UnifacParameters,
+    // NRTL
+    fetchNrtlParameters,
+    calculateNrtlGamma,
+    calculateBubbleTemperatureNrtl,
+    calculateBubblePressureNrtl,
+    type NrtlInteractionParams,
+    // Peng–Robinson
+    fetchPrInteractionParams,
+    calculateBubbleTemperaturePr,
+    calculateBubblePressurePr,
+    type PrInteractionParams,
+    // SRK
+    fetchSrkInteractionParams,
+    calculateBubbleTemperatureSrk,
+    calculateBubblePressureSrk,
+    type SrkInteractionParams,
+    // UNIQUAC
+    fetchUniquacInteractionParams,
+    calculateBubbleTemperatureUniquac,
+    calculateBubblePressureUniquac,
+    type UniquacInteractionParams as LibUniquacInteractionParams,
+    // Wilson
+    fetchWilsonInteractionParams,
+    calculateBubbleTemperatureWilson,
+    calculateBubblePressureWilson,
+    type WilsonInteractionParams as LibWilsonInteractionParams
+} from '@/lib/vle-calculations';
 
 // Shared VLE Types
 import type {
@@ -77,15 +94,7 @@ if (supabaseUrl && supabaseAnonKey) {
     console.error("Supabase URL or Anon Key is missing for Azeotrope Finder.");
 }
 
-// Debounce function (copy from mccabe-thiele or test page)
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<F>) => {
-    if (timeout !== null) { clearTimeout(timeout); timeout = null; }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
-  return debounced as (...args: Parameters<F>) => void;
-}
+// Debounce function removed for instantaneous suggestions
 
 // formatNumberToPrecision function (copy from mccabe-thiele)
 const formatNumberToPrecision = (num: any, precision: number = 3): string => {
@@ -100,12 +109,18 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 
 
 export default function AzeotropeFinderPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  // NOTE: Caching is disabled to avoid stale data carrying over between
+  // fluid-package switches.  The ref is kept only to prevent type ripples,
+  // but it is no longer read from or written to.
+  const compoundDataCache = useRef(new Map<string, CompoundData | null>());
+  
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
   const [comp2Name, setComp2Name] = useState('Water');   // Default to water
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeAzeotrope>('uniquac'); // Default to uniquac
   const [azeotropeScanType, setAzeotropeScanType] = useState<AzeotropeScanType>('vs_P_find_T'); // Default to Scan Pressure
-  const scanSteps = 50; // Always use 50 scan points, no UI to change this
+  // const scanSteps = 50; // Always use 50 scan points, no UI to change this // REMOVED
 
   // Data & Control States
   const [azeotropeScanData, setAzeotropeScanData] = useState<{ scanVal: number, x_az: number, dependentVal: number }[]>([]);
@@ -133,7 +148,31 @@ export default function AzeotropeFinderPage() {
   const [displayedComp2, setDisplayedComp2] = useState('');
   const [displayedFluidPackage, setDisplayedFluidPackage] = useState<FluidPackageTypeAzeotrope | ''>('');
   const [displayedScanType, setDisplayedScanType] = useState<AzeotropeScanType | ''>('');
+  // Concurrency guard so stale scans don't overwrite newer results
+  const scanGenerationRef = useRef(0);
 
+  // This new useEffect will handle re-scanning when the fluid package changes.
+  const didMountFluidPkg = useRef(false);
+  useEffect(() => {
+    if (didMountFluidPkg.current) {
+      handleAzeotropeScan();
+    } else {
+      didMountFluidPkg.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fluidPackage]);
+
+  // ADD THIS NEW EFFECT
+  // This new useEffect will handle re-scanning when the scan type changes.
+  const didMountScanType = useRef(false);
+  useEffect(() => {
+    if (didMountScanType.current) {
+        handleAzeotropeScan();
+    } else {
+        didMountScanType.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [azeotropeScanType]);
 
   // --- Logging Hook (copy from test/page.tsx or mccabe-thiele) ---
   // Removed logging useEffect and related state
@@ -150,8 +189,10 @@ export default function AzeotropeFinderPage() {
   // --- Data Fetching (fetchCompoundDataLocal - adapt from mccabe-thiele/test page) ---
   // This function needs to be robust to fetch all params for all models.
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
+    // Always hit the DB so that each scan starts with fresh parameters.
+    console.log(`AzeotropeFinder: Fetching data for ${compoundName} from DB...`);
+
     if (!supabase) { throw new Error("Supabase client not initialized."); }
-    console.log(`AzeotropeFinder: Fetching data for ${compoundName}...`);
     try {
         const { data: compoundDbData, error: compoundError } = await supabase.from('compounds').select('id, name, cas_number').ilike('name', compoundName).limit(1).single();
         if (compoundError || !compoundDbData) throw new Error(compoundError?.message || `Compound '${compoundName}' not found.`);
@@ -240,7 +281,8 @@ export default function AzeotropeFinderPage() {
         }
         // Validation for Wilson params will be done in handleAzeotropeScan
 
-        return { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+        const result: CompoundData = { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+        return result;
     } catch (err: any) {
         console.error(`Error fetching data for ${compoundName} in AzeotropeFinder:`, err.message);
         setError(`Data fetch failed for ${compoundName}: ${err.message}`);
@@ -268,14 +310,14 @@ export default function AzeotropeFinderPage() {
     } catch (err) { console.error("Azeo: Error fetching suggestions:", err); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); }
   }, [supabase]);
 
-  const debouncedFetchSuggestions = useCallback(debounce(fetchSuggestions, 300), [fetchSuggestions]);
+  // Removed debouncedFetchSuggestions for instantaneous suggestions
 
   const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp1Name(newValue);
     setActiveSuggestionInput('comp1');
     if (newValue.trim() === "") { setShowComp1Suggestions(false); setComp1Suggestions([]); }
-    else { debouncedFetchSuggestions(newValue, 'comp1'); }
+    else { fetchSuggestions(newValue, 'comp1'); }
   };
 
   const handleComp2NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -283,7 +325,7 @@ export default function AzeotropeFinderPage() {
     setComp2Name(newValue);
     setActiveSuggestionInput('comp2');
     if (newValue.trim() === "") { setShowComp2Suggestions(false); setComp2Suggestions([]); }
-    else { debouncedFetchSuggestions(newValue, 'comp2'); }
+    else { fetchSuggestions(newValue, 'comp2'); }
   };
 
   const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
@@ -308,7 +350,13 @@ export default function AzeotropeFinderPage() {
     return () => { document.removeEventListener("mousedown", handleClickOutside); };
   }, [activeSuggestionInput]);
 
-  const handleSwapComponents = () => { const temp = comp1Name; setComp1Name(comp2Name); setComp2Name(temp); };
+  const handleSwapComponents = () => { 
+    const temp = comp1Name; 
+    setComp1Name(comp2Name); 
+    setComp2Name(temp); 
+    // Auto-trigger azeotrope scan after swap
+    setTimeout(() => handleAzeotropeScan(), 100);
+  };
 
 
   // --- CSV Export Function ---
@@ -415,8 +463,8 @@ export default function AzeotropeFinderPage() {
 
   // --- Main Azeotrope Scan Logic ---
   const handleAzeotropeScan = useCallback(async () => {
-    setLoading(true); setError(null); setAzeotropeScanData([]); 
-    // setLogMessages(prev => ["--- Starting Azeotrope Scan ---", ...prev]); // Logging removed
+    const myScanId = ++scanGenerationRef.current;
+    setLoading(true); setError(null); setAzeotropeScanData([]);
 
     if (!comp1Name || !comp2Name) { setError("Please enter compound names."); setLoading(false); return; }
     if (!supabase) { setError("Supabase not initialized."); setLoading(false); return; }
@@ -424,6 +472,13 @@ export default function AzeotropeFinderPage() {
     try {
         const [data1, data2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
         if (!data1 || !data2) { setLoading(false); return; } // Error set in fetchCompoundDataLocal
+
+        // Check for pure component system
+        if (data1.cas_number && data2.cas_number && data1.cas_number === data2.cas_number) {
+            setError("Cannot find an azeotrope for a pure component. Please select two different compounds.");
+            setLoading(false);
+            return;
+        }
 
         // Validate required parameters based on fluidPackage
         if (fluidPackage === 'unifac' && (!data1.unifacGroups || !data2.unifacGroups)) throw new Error("UNIFAC groups missing.");
@@ -457,18 +512,21 @@ export default function AzeotropeFinderPage() {
 
         const scanResultsArray: { scanVal: number, x_az: number, dependentVal: number }[] = [];
         
-        let currentScanStartValue: number, currentScanEndValue: number;
+        let currentScanStartValue: number, currentScanEndValue: number, stepValue: number;
         if (azeotropeScanType === 'vs_P_find_T') {
-            currentScanStartValue = 0.01; // bar (changed from 1 kPa)
-            currentScanEndValue = 20; // bar (changed from 2000 kPa)
+            currentScanStartValue = 0.1; // bar
+            currentScanEndValue = 20; // bar
+            stepValue = 0.1; // bar increment
         } else { // vs_T_find_P
             currentScanStartValue = 230; // K
             currentScanEndValue = 550; // K
+            stepValue = 1; // K increment
         }
-        const stepValue = (currentScanEndValue - currentScanStartValue) / (scanSteps > 1 ? scanSteps - 1 : 1);
+        // const stepValue = (currentScanEndValue - currentScanStartValue) / (scanSteps > 1 ? scanSteps - 1 : 1); // REMOVED
 
-        for (let i = 0; i < scanSteps; i++) {
-            const currentScanVal = currentScanStartValue + i * stepValue;
+        for (let currentScanVal = currentScanStartValue; currentScanVal <= currentScanEndValue + (stepValue * 0.5); currentScanVal += stepValue) {
+            // The `+ (stepValue * 0.5)` is to handle potential floating point inaccuracies for the loop's end condition
+            // const currentScanVal = currentScanStartValue + i * stepValue; // REPLACED by loop variable
             let x_az_found: number | null = null;
             let dependent_val_found: number | null = null;
 
@@ -497,13 +555,13 @@ export default function AzeotropeFinderPage() {
                     const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
                     const initialPressureGuess = (P_sat1_est && P_sat2_est) ? (x1_guess * P_sat1_est + (1 - x1_guess) * P_sat2_est) : 101325;
                     
-                    if (fluidPackage === 'unifac') bubbleResult = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'nrtl') bubbleResult = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
+                    if (fluidPackage === 'unifac') bubbleResult = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters);
+                    else if (fluidPackage === 'nrtl') bubbleResult = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters);
                     // ... other fluid packages for bubbleP
                     else if (fluidPackage === 'pr') bubbleResult = calculateBubblePressurePr(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
                     else if (fluidPackage === 'srk') bubbleResult = calculateBubblePressureSrk(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'uniquac') bubbleResult = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'wilson') bubbleResult = calculateBubblePressureWilson(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
+                    else if (fluidPackage === 'uniquac') bubbleResult = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters);
+                    else if (fluidPackage === 'wilson') bubbleResult = calculateBubblePressureWilson(components, x1_guess, T_system_K, activityParameters);
                 }
 
                 if (bubbleResult && bubbleResult.error === undefined && typeof bubbleResult.comp1_equilibrium === 'number' && !isNaN(bubbleResult.comp1_equilibrium)) {
@@ -513,6 +571,15 @@ export default function AzeotropeFinderPage() {
             };
 
             x_az_found = bisectionSolve(objectiveFunction, 0.0001, 0.9999, 1e-4, 30);
+
+            if (x_az_found !== null) {
+                // NEW: Filter out solutions that are too close to pure components to be azeotropes.
+                const PURE_COMP_THRESHOLD = 0.001; // Corresponds to 0.1% mole fraction
+                if (x_az_found < PURE_COMP_THRESHOLD || x_az_found > (1.0 - PURE_COMP_THRESHOLD)) {
+                    // This is not a true azeotrope, but a numerical artifact near the boundary.
+                    x_az_found = null;
+                }
+            }
 
             if (x_az_found !== null) {
                 // Recalculate the dependent variable at the found x_az
@@ -539,12 +606,12 @@ export default function AzeotropeFinderPage() {
                     const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
                     const initialPressureGuess = (P_sat1_est && P_sat2_est) ? (x_az_found * P_sat1_est + (1 - x_az_found) * P_sat2_est) : 101325;
 
-                    if (fluidPackage === 'unifac') finalBubbleResult = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'nrtl') finalBubbleResult = calculateBubblePressureNrtl(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
+                    if (fluidPackage === 'unifac') finalBubbleResult = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters);
+                    else if (fluidPackage === 'nrtl') finalBubbleResult = calculateBubblePressureNrtl(components, x_az_found, T_system_K, activityParameters);
                     else if (fluidPackage === 'pr') finalBubbleResult = calculateBubblePressurePr(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
                     else if (fluidPackage === 'srk') finalBubbleResult = calculateBubblePressureSrk(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'uniquac') finalBubbleResult = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
-                    else if (fluidPackage === 'wilson') finalBubbleResult = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters, initialPressureGuess);
+                    else if (fluidPackage === 'uniquac') finalBubbleResult = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters);
+                    else if (fluidPackage === 'wilson') finalBubbleResult = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters);
 
                     if (finalBubbleResult && finalBubbleResult.P_Pa) dependent_val_found = finalBubbleResult.P_Pa / 100000; // Convert to bar
                 }
@@ -561,18 +628,22 @@ export default function AzeotropeFinderPage() {
                 // console.log(`Azeotrope found: ScanVal=${currentScanVal.toFixed(2)}, x_az=${x_az_found.toFixed(4)}, DependentVal=${dependentValFormatted} ${dependentUnit}`); // Logging removed
             }
         }
-        setAzeotropeScanData(scanResultsArray);
-        setDisplayedComp1(comp1Name);
-        setDisplayedComp2(comp2Name);
-        setDisplayedFluidPackage(fluidPackage);
-        setDisplayedScanType(azeotropeScanType);
+        if (myScanId === scanGenerationRef.current) {
+            setAzeotropeScanData(scanResultsArray);
+            setDisplayedComp1(comp1Name);
+            setDisplayedComp2(comp2Name);
+            setDisplayedFluidPackage(fluidPackage);
+            setDisplayedScanType(azeotropeScanType);
+        }
 
     } catch (err: any) {
         console.error("Azeotrope Scan failed:", err);
         setError(`Scan failed: ${err.message}`);
     } finally {
-        setLoading(false);
-        // setLogMessages(prev => ["--- Azeotrope Scan Complete ---", ...prev]); // Logging removed
+        if (myScanId === scanGenerationRef.current) {
+            setLoading(false);
+            // setLogMessages(prev => ["--- Azeotrope Scan Complete ---", ...prev]); // Logging removed
+        }
     }
   }, [comp1Name, comp2Name, fluidPackage, azeotropeScanType, supabase]);
 
@@ -599,19 +670,32 @@ export default function AzeotropeFinderPage() {
     const x_az_data = azeotropeScanData.map(d => [d.scanVal, d.x_az]);
     const dependent_val_data = azeotropeScanData.map(d => [d.scanVal, d.dependentVal]);
 
+    // Theme-dependent colors
+    const isDark = resolvedTheme === 'dark';
+    const textColor = isDark ? 'white' : '#000000';
+
     const options: EChartsOption = {
       title: { 
         text: titleText, 
         left: 'center', 
-        textStyle: { color: '#E5E7EB', fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
       },
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'cross' },
-        backgroundColor: '#1e293b',
-        borderColor: '#3b82f6',
-        textStyle: { color: '#e5e7eb', fontFamily: 'Merriweather Sans' },
+        axisPointer: {
+          type: 'cross',
+          label: {
+            backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff',
+            color: textColor,
+            fontFamily: 'Merriweather Sans',
+            borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
+            borderWidth: 1,
+          }
+        },
+        backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff',
+        borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
+        textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
         formatter: (params: any) => {
             if (!Array.isArray(params) || params.length === 0) return '';
             let tooltipHtml = `${scanParamName}: <b>${formatNumberToPrecision(params[0].axisValue, 4)}</b><br/>`;
@@ -627,7 +711,7 @@ export default function AzeotropeFinderPage() {
                     ? value.toFixed(1) 
                     : formatNumberToPrecision(value, precision);
 
-                tooltipHtml += `${param.marker} ${seriesName}: <b>${formattedValue}</b><br/>`;
+                tooltipHtml += `<span style="color: ${param.color};"><b>${seriesName}: ${formattedValue}</b></span><br/>`;
             });
             return tooltipHtml;
         }
@@ -637,19 +721,18 @@ export default function AzeotropeFinderPage() {
       xAxis: {
         show: true, 
         type: 'value', name: scanParamName, nameLocation: 'middle', nameGap: 30,
-        axisLabel: { color: '#e7e7eb', fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
-        nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
-        axisLine: { lineStyle: { color: '#4b5563', width: 2.5 } }, // Added width
+        axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
+        nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+        axisLine: { lineStyle: { color: textColor, width: 2.5 } }, // Added width
         splitLine: { show: false }, // Removed grid lines
-        scale: true, 
-      },
+        scale: true      },
       yAxis: [
         {
           show: true, 
           type: 'value', name: compositionAxisName, nameLocation: 'middle', nameGap: 50, min: 0, max: 1,
           position: 'left', 
-          axisLabel: { color: '#e7e7eb', formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
-          nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+          axisLabel: { color: textColor, formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
           axisLine: { lineStyle: { color: '#22c55e', width: 2.5 } }, // Changed color to green for composition axis, added width
           splitLine: { show: false }, // Removed grid lines
         },
@@ -657,33 +740,28 @@ export default function AzeotropeFinderPage() {
           show: true, 
           type: 'value', name: dependentParamName, nameLocation: 'middle', nameGap: 60, position: 'right',
           axisLabel: { 
-            color: '#e7e7eb', // Changed color
+            color: textColor, // Changed color
             formatter: (v: number) => (displayedScanType === 'vs_P_find_T') ? v.toFixed(1) : formatNumberToPrecision(v, 3), 
             fontFamily: 'Merriweather Sans',
             fontSize: 16 // Added fontSize
           },
-          nameTextStyle: { color: '#e7e7eb', fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
           axisLine: { lineStyle: { color: '#f59e0b', width: 2.5 } }, // Added width
           splitLine: { show: false }, // Removed grid lines
           scale: true,
         }
       ],
       series: [
-        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#22c55e', width: 2.5 }, itemStyle: { color: '#22c55e' }, symbolSize: 6, symbol: 'circle' }, // Changed color to green
-        { name: dependentParamName, type: 'line', yAxisIndex: 1, data: dependent_val_data, smooth: true, lineStyle: { color: '#f59e0b', width: 2.5 }, itemStyle: { color: '#f59e0b' }, symbolSize: 6, symbol: 'triangle' }
+        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#22c55e', width: 2.5 }, itemStyle: { color: '#22c55e' }, symbolSize: 6, symbol: 'none' }, // Changed color to green, added symbol: 'none'
+        { name: dependentParamName, type: 'line', yAxisIndex: 1, data: dependent_val_data, smooth: true, lineStyle: { color: '#f59e0b', width: 2.5 }, itemStyle: { color: '#f59e0b' }, symbolSize: 6, symbol: 'none' } // Added symbol: 'none'
       ],
       // dataZoom removed
       toolbox: {
-            show: true, 
-            orient: 'horizontal', // Changed from vertical
-            right: 10, 
-            bottom: 10, // Changed from top: 'center'
-            feature: { saveAsImage: { show: true, title: 'Save as Image', backgroundColor: '#0f172a' } },
-            iconStyle: { borderColor: '#9ca3af' }
+            show: false
       },
     };
     setEchartsOptions(options);
-  }, [azeotropeScanData, displayedComp1, displayedComp2, displayedFluidPackage, displayedScanType]);
+  }, [azeotropeScanData, displayedComp1, displayedComp2, displayedFluidPackage, displayedScanType, resolvedTheme]);
 
   useEffect(() => {
     generateAzeotropeEChartsOptions();
@@ -700,7 +778,11 @@ export default function AzeotropeFinderPage() {
             <Card>
               {/* <CardHeader>{/* <CardTitle>Azeotrope Finder Inputs</CardTitle> * /}</CardHeader> */} {/* Removed CardHeader */}
               <CardContent className="p-4 space-y-4"> {/* Added p-4 for consistent padding */}
-                <Tabs value={azeotropeScanType} onValueChange={(value) => setAzeotropeScanType(value as AzeotropeScanType)} className="mb-4">
+                <Tabs value={azeotropeScanType} onValueChange={(value) => {
+                    setAzeotropeScanType(value as AzeotropeScanType);
+                    // The direct call to handleAzeotropeScan has been removed.
+                    // The new useEffect will trigger the scan.
+                }} className="mb-4">
                     <TabsList className="grid w-full grid-cols-2">
                         <TabsTrigger value="vs_P_find_T">Scan Pressure</TabsTrigger>
                         <TabsTrigger value="vs_T_find_P">Scan Temperature</TabsTrigger>
@@ -711,10 +793,10 @@ export default function AzeotropeFinderPage() {
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp1NameAzeo">Component 1</Label> */}
                         <Input ref={input1Ref} id="comp1NameAzeo" value={comp1Name} onChange={handleComp1NameChange} 
-                               onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1Name.trim()) debouncedFetchSuggestions(comp1Name, 'comp1');}}
+                               onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1Name.trim()) fetchSuggestions(comp1Name, 'comp1');}}
                                placeholder="e.g., Ethanol" autoComplete="off" />
                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
-                            <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                            <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                                 {comp1Suggestions.map((s, i) => <div key={i} onClick={() => handleSuggestionClick(s, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>)}
                             </div>
                         )}
@@ -723,10 +805,10 @@ export default function AzeotropeFinderPage() {
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp2NameAzeo">Component 2</Label> */}
                         <Input ref={input2Ref} id="comp2NameAzeo" value={comp2Name} onChange={handleComp2NameChange} 
-                               onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2Name.trim()) debouncedFetchSuggestions(comp2Name, 'comp2');}}
+                               onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2Name.trim()) fetchSuggestions(comp2Name, 'comp2');}}
                                placeholder="e.g., Water" autoComplete="off" />
                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
-                            <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                            <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                                 {comp2Suggestions.map((s, i) => <div key={i} onClick={() => handleSuggestionClick(s, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>)}
                             </div>
                         )}
@@ -735,16 +817,18 @@ export default function AzeotropeFinderPage() {
 
                 <div className="flex items-center gap-2">
                   <Label htmlFor="fluidPackageAzeo" className="whitespace-nowrap">Fluid Package:</Label>
-                  <Select value={fluidPackage} onValueChange={(value) => setFluidPackage(value as FluidPackageTypeAzeotrope)}>
+                  <Select value={fluidPackage} onValueChange={(value) => {
+                    setFluidPackage(value as FluidPackageTypeAzeotrope);
+                  }}>
                     <SelectTrigger id="fluidPackageAzeo" className="flex-1"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="uniquac">UNIQUAC</SelectItem>
-                      <SelectItem value="pr">Peng-Robinson</SelectItem>
-                      <SelectItem value="wilson">Wilson</SelectItem>
-                      <SelectItem value="nrtl">NRTL</SelectItem>
-                      <SelectItem value="srk">SRK</SelectItem>
-                      <SelectItem value="unifac">UNIFAC</SelectItem>
-                    </SelectContent>
+                                              <SelectContent>
+                              <SelectItem value="wilson">Wilson</SelectItem>
+                              <SelectItem value="uniquac">UNIQUAC</SelectItem>
+                              <SelectItem value="nrtl">NRTL</SelectItem>
+                              <SelectItem value="unifac">UNIFAC</SelectItem>
+                              <SelectItem value="pr">Peng-Robinson</SelectItem>
+                              <SelectItem value="srk">SRK</SelectItem>
+                          </SelectContent>
                   </Select>
                 </div>
                 {/* Scan Type Select removed */}
@@ -794,9 +878,9 @@ export default function AzeotropeFinderPage() {
           <div className="lg:col-span-2 space-y-6">
             <Card>
               <CardContent className="py-2"> {/* Minimal padding for graph card content */}
-                <div className="relative h-[600px] md:h-[700px] rounded-md" style={{ backgroundColor: '#08306b' }}> {/* Dark background for plot area */}
-                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-white"><div className="text-center"><div className="mb-2">Scanning for Azeotropes...</div><div className="text-sm text-gray-300">Using {fluidPackage.toUpperCase()} model.</div></div></div>)}
-                  {!loading && !displayedComp1 && !error && (<div className="absolute inset-0 flex items-center justify-center text-white">Please provide inputs and find azeotropes.</div>)}
+                <div className="relative aspect-square rounded-md"> {/* Plot area */}
+                  {loading && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Scanning for Azeotropes...</div><div className="text-sm text-muted-foreground/70">Using {fluidPackage.toUpperCase()} model.</div></div></div>)}
+                  {!loading && !displayedComp1 && !error && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and find azeotropes.</div>)}
                   {error && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div>)}
                   {!loading && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />

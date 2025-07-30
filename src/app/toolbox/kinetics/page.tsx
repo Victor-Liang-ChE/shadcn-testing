@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useCallback, KeyboardEvent, useRef } from 'react';
+import { useTheme } from "next-themes";
 
 // Import ECharts components
 import ReactECharts from 'echarts-for-react';
@@ -113,6 +114,8 @@ function solveODERK45(
 
 // --- KineticsPage Component ---
 export default function KineticsPage() {
+  const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
+  
   // Default reaction setup
   const defaultReaction = '2H2 + O2 -> 2H2O';
   const defaultReactants = '2H2 + O2';
@@ -138,6 +141,10 @@ export default function KineticsPage() {
     products: defaultProducts,
     rateConstant: defaultRateConstant
   }]);
+  
+  // Add state for max slider values
+  const [maxRateConstantSlider, setMaxRateConstantSlider] = useState<string>('10');
+  const [maxConcentrationSlider, setMaxConcentrationSlider] = useState<string>('10');
   const [confirmedReactions, setConfirmedReactions] = useState<boolean>(true);
   const [species, setSpecies] = useState<string[]>(defaultSpecies);
   const [concentrations, setConcentrations] = useState<Record<string, number | ''>>(defaultConcentrations);
@@ -156,6 +163,8 @@ export default function KineticsPage() {
   ): EChartsOption => {
     setLoading(true);
     try {
+      // Theme-aware colors
+      const textColor = resolvedTheme === 'dark' ? '#ffffff' : '#000000';
       if (ks.length !== reactions.length) {
         throw new Error("The number of rate constants does not match the number of reactions.");
       }
@@ -213,36 +222,97 @@ export default function KineticsPage() {
       const xAxisMax = steadyStateTime;
       // -------------------------------
 
+      // Interpolate data for smoother tooltips
+      const interpolateData = (t: number[], y: number[], targetPoints: number = 1000) => {
+        if (t.length < 2) return { t, y };
+        
+        const tMin = t[0];
+        const tMax = t[t.length - 1];
+        const newT: number[] = [];
+        const newY: number[] = [];
+        
+        for (let i = 0; i < targetPoints; i++) {
+          const currentT = tMin + (tMax - tMin) * i / (targetPoints - 1);
+          newT.push(currentT);
+          
+          // Linear interpolation
+          let j = 0;
+          while (j < t.length - 1 && t[j + 1] < currentT) j++;
+          
+          if (j >= t.length - 1) {
+            newY.push(y[y.length - 1]);
+          } else if (j === 0 && currentT <= t[0]) {
+            newY.push(y[0]);
+          } else {
+            const t1 = t[j], t2 = t[j + 1];
+            const y1 = y[j], y2 = y[j + 1];
+            const interpolatedY = y1 + (y2 - y1) * (currentT - t1) / (t2 - t1);
+            newY.push(interpolatedY);
+          }
+        }
+        
+        return { t: newT, y: newY };
+      };
 
-      const seriesData: SeriesOption[] = orderedSpecies.map((species, i) => ({
-        name: species, // Use plain species name
-        type: 'line', smooth: true, symbol: 'none',
-        data: solution.t.map((time, timeIndex) => [time, solution.y[i][timeIndex]]),
-        itemStyle: { color: currentSpeciesColors[species] || colorPalette[i % colorPalette.length] },
-        emphasis: { focus: 'series' },
-        lineStyle: { width: 2 }
-      }));
+      const seriesData: SeriesOption[] = orderedSpecies.map((species, i) => {
+        const interpolated = interpolateData(solution.t, solution.y[i], 1000);
+        return {
+          name: species, // Use plain species name
+          type: 'line', smooth: true, symbol: 'none',
+          data: interpolated.t.map((time, timeIndex) => [time, interpolated.y[timeIndex]]),
+          itemStyle: { color: currentSpeciesColors[species] || colorPalette[i % colorPalette.length] },
+          emphasis: { focus: 'series' },
+          lineStyle: { width: 3.5 }
+        };
+      });
 
       return {
-        backgroundColor: '#08306b',
+        backgroundColor: 'transparent',
         animation: false,
         title: {
-            text: 'Concentration Profiles', left: 'center',
-            textStyle: { color: '#fff', fontSize: 18, fontFamily: 'Merriweather Sans' }
+            text: 'Concentration Profiles', left: 'center', top: '0%',
+            textStyle: { 
+              fontSize: 18, 
+              fontFamily: 'Merriweather Sans',
+              color: textColor
+            }
         },
         tooltip: {
           trigger: 'axis',
+          backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+          borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+          borderWidth: 1,
+          textStyle: {
+            color: textColor,
+            fontSize: 12,
+            fontFamily: 'Merriweather Sans'
+          },
+          axisPointer: {
+            type: 'cross',
+            label: {
+              show: true,
+              backgroundColor: resolvedTheme === 'dark' ? '#08306b' : '#ffffff',
+              color: textColor,
+              borderColor: resolvedTheme === 'dark' ? '#55aaff' : '#333333',
+              borderWidth: 1,
+              fontFamily: 'Merriweather Sans',
+              formatter: function (params: any) {
+                if (params.axisDimension === 'x') {
+                  return `Time: ${params.value.toFixed(2)}`;
+                } else {
+                  return `Conc: ${params.value.toFixed(3)}`;
+                }
+              }
+            }
+          },
           formatter: (params: any) => {
              let tooltipText = `Time: ${params[0].axisValueLabel}<br/>`;
              params.forEach((param: any) => {
                  // Manually format the plain seriesName to HTML for the tooltip
                  const formattedName = param.seriesName.replace(/(\d+)/g, '<sub>$1</sub>');
-                 tooltipText += `${param.marker}${formattedName}: ${param.value[1].toPrecision(3)}<br/>`;
+                 tooltipText += `<span style="color: ${param.color};">${formattedName}: ${param.value[1].toPrecision(3)}</span><br/>`;
              });
              return tooltipText;
-          },
-          textStyle: { // Font only, no rich text needed here
-              fontFamily: 'Merriweather Sans',
           }
         },
         legend: {
@@ -253,25 +323,27 @@ export default function KineticsPage() {
               return name.replace(/(\d+)/g, '{sub|$1}');
           },
           textStyle: {
-             color: '#fff',
+             color: textColor,
              fontSize: 12,
              fontFamily: 'Merriweather Sans',
              rich: { // Keep rich text config for legend rendering
                 sub: {
                     fontSize: 9,
-                    verticalAlign: 'bottom'
+                    verticalAlign: 'bottom',
+                    fontFamily: 'Merriweather Sans'
                 }
              }
           },
-          top: 'bottom',
+          top: '96%',
           type: 'scroll',
+          itemWidth: 25,
+          itemHeight: 2
         },
-        grid: { // Keep grid settings using containLabel or fixed values as preferred
-          left: '5%', right: '5%', bottom: '10%', top: '12%', containLabel: true
+        grid: { // Reduce top spacing to bring graph closer to title
+          left: '5%', right: '5%', bottom: '10%', top: '3%', containLabel: true
         },
         toolbox: {
-          feature: { saveAsImage: { name: 'kinetics-plot', backgroundColor: '#08306b' } },
-          iconStyle: { borderColor: '#fff' }, orient: 'vertical', right: 10, bottom: 15
+          show: false
         },
         xAxis: {
           type: 'value', name: 'Time', nameLocation: 'middle', nameGap: 30,
@@ -279,15 +351,15 @@ export default function KineticsPage() {
           max: xAxisMax,
           axisLabel: {
             showMaxLabel: false, // <<< HIDE MAX LABEL for X-axis
-            color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans',
+            color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans',
             formatter: (value: number) => { // Keep formatter for non-max labels
                 if (Math.abs(value) < 1e-6) return '0';
                 return value.toFixed(2);
             }
           },
-          nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: '#fff', width: 2 } },
-          axisTick: { lineStyle: { color: '#fff', width: 2 } },
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor, width: 2 } },
+          axisTick: { lineStyle: { color: textColor, width: 2 } },
           splitLine: { show: false }
         },
         yAxis: {
@@ -296,15 +368,15 @@ export default function KineticsPage() {
           max: yAxisMax,
           axisLabel: {
             showMaxLabel: false, // <<< HIDE MAX LABEL for Y-axis
-            color: '#fff', fontSize: 14, fontFamily: 'Merriweather Sans',
+            color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans',
             formatter: (value: number) => { // Keep formatter for non-max labels
                 if (Math.abs(value) < 1e-6) return '0';
                 return value.toPrecision(3);
             }
           },
-          nameTextStyle: { color: '#fff', fontSize: 15, fontFamily: 'Merriweather Sans' },
-          axisLine: { lineStyle: { color: '#fff', width: 2 } },
-          axisTick: { lineStyle: { color: '#fff', width: 2 } },
+          nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+          axisLine: { lineStyle: { color: textColor, width: 2 } },
+          axisTick: { lineStyle: { color: textColor, width: 2 } },
           splitLine: { show: false }
         },
         series: seriesData, // series.name is now plain
@@ -315,7 +387,7 @@ export default function KineticsPage() {
     } finally {
       setLoading(false);
     }
-  }, []); // Dependencies remain empty
+  }, [resolvedTheme]); // Dependencies include resolvedTheme
 
   // --- submitForm, useEffect, and event handlers remain the same ---
   const submitForm = useCallback((
@@ -336,6 +408,13 @@ export default function KineticsPage() {
 
   useEffect(() => { submitForm(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-generate chart when theme changes (if reactions are confirmed)
+  useEffect(() => {
+    if (confirmedReactions && species.length > 0) {
+      submitForm();
+    }
+  }, [resolvedTheme, confirmedReactions, species.length, submitForm]);
 
   const addReactionInput = () => { setReactionInputs([...reactionInputs, { reaction: '', reactants: '', products: '', rateConstant: 1 }]); setConfirmedReactions(false); };
   const removeReactionInput = () => { if (reactionInputs.length > 1) { setReactionInputs(reactionInputs.slice(0, -1)); setConfirmedReactions(false); } };
@@ -382,14 +461,14 @@ export default function KineticsPage() {
 
   return (
     <TooltipProvider>
-      <div className="container mx-auto p-4 md:p-8">
+      <div className="container mx-auto p-4 md:p-8 px-8 md:px-16">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
           {/* Column 1: Controls */}
           <div className="lg:col-span-1 space-y-6">
             {/* Reactions Card */}
             <Card>
-              <CardContent className="space-y-6 pt-4">
+              <CardContent className="space-y-8 pt-6 pb-3">
                 {reactionInputs.map((input, index) => (
                   <div key={index} className="space-y-6 border-b pb-6 last:border-b-0 last:pb-0">
                     <div className="flex items-center gap-2">
@@ -397,9 +476,35 @@ export default function KineticsPage() {
                       <span className="font-bold text-lg">→</span>
                       <Input value={input.products} onChange={(e) => handleReactionChange(index, 'products', e.target.value)} onKeyDown={handleReactionKeyDown} placeholder="e.g., 2H2O" className="flex-1"/>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor={`rate-${index}`}><span dangerouslySetInnerHTML={{ __html: `Rate Constant (k<sub>${index + 1}</sub>): ${formatSliderValue(input.rateConstant)}` }} /></Label>
-                      <Slider id={`rate-${index}`} min={0} max={10} step={0.01} value={[Number(input.rateConstant || 0)]} onValueChange={(val) => handleSliderChange('rateConstant', index, val[0])} style={{ '--primary': 'hsl(var(--primary))' } as React.CSSProperties}/>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <Label htmlFor={`rate-${index}`} className="flex-1">
+                          <span dangerouslySetInnerHTML={{ __html: `Rate Constant (k<sub>${index + 1}</sub>): ${formatSliderValue(input.rateConstant)}` }} />
+                        </Label>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Slider 
+                          id={`rate-${index}`} 
+                          min={0} 
+                          max={parseFloat(maxRateConstantSlider)} 
+                          step={0.01} 
+                          value={[Number(input.rateConstant || 0)]} 
+                          onValueChange={(val) => handleSliderChange('rateConstant', index, val[0])} 
+                          style={{ '--primary': 'hsl(var(--primary))' } as React.CSSProperties}
+                          className="flex-1"
+                        />
+                        <div className="flex items-center gap-1">
+                          <Label htmlFor={`maxRateInput-${index}`} className="text-xs text-muted-foreground">Max:</Label>
+                          <Input
+                            id={`maxRateInput-${index}`}
+                            type="number"
+                            value={maxRateConstantSlider}
+                            onChange={(e) => setMaxRateConstantSlider(e.target.value)}
+                            className="w-20 h-8 text-xs"
+                            min="0.01"
+                          />
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -415,20 +520,38 @@ export default function KineticsPage() {
             {species.length > 0 && (
               <Card>
                 <CardHeader><CardTitle>Initial Concentrations</CardTitle></CardHeader>
-                <CardContent className="space-y-6">
+                <CardContent className="space-y-8 pt-2 pb-3">
                   {species.map((sp) => (
-                    <div key={sp} className="space-y-2">
-                      <Label htmlFor={`conc-${sp}`}><span dangerouslySetInnerHTML={{ __html: `[${formatLabelHtml(sp)}]₀: ${formatSliderValue(concentrations[sp])}` }} /></Label>
-                      <Slider
-                        id={`conc-${sp}`}
-                        min={0}
-                        max={10}
-                        step={0.01}
-                        value={[Number(concentrations[sp] || 0)]}
-                        onValueChange={(val) => handleSliderChange('concentration', sp, val[0])}
-                        onKeyDown={handleConcentrationKeyDown}
-                        style={{ '--primary': speciesColors[sp] || 'hsl(var(--primary))' } as React.CSSProperties}
-                      />
+                    <div key={sp} className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <Label htmlFor={`conc-${sp}`} className="flex-1">
+                          <span dangerouslySetInnerHTML={{ __html: `[${formatLabelHtml(sp)}]₀: ${formatSliderValue(concentrations[sp])}` }} />
+                        </Label>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Slider
+                          id={`conc-${sp}`}
+                          min={0}
+                          max={parseFloat(maxConcentrationSlider)}
+                          step={0.01}
+                          value={[Number(concentrations[sp] || 0)]}
+                          onValueChange={(val) => handleSliderChange('concentration', sp, val[0])}
+                          onKeyDown={handleConcentrationKeyDown}
+                          style={{ '--primary': speciesColors[sp] || 'hsl(var(--primary))' } as React.CSSProperties}
+                          className="flex-1"
+                        />
+                        <div className="flex items-center gap-1">
+                          <Label htmlFor={`maxConcInput-${sp}`} className="text-xs text-muted-foreground">Max:</Label>
+                          <Input
+                            id={`maxConcInput-${sp}`}
+                            type="number"
+                            value={maxConcentrationSlider}
+                            onChange={(e) => setMaxConcentrationSlider(e.target.value)}
+                            className="w-20 h-8 text-xs"
+                            min="0.01"
+                          />
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </CardContent>
@@ -439,13 +562,13 @@ export default function KineticsPage() {
           {/* Column 2: Plot */}
           <div className="lg:col-span-2">
             <Card>
-              <CardContent className="pt-6">
-                <div className="relative h-[500px] md:h-[600px] rounded-md overflow-hidden" style={{ backgroundColor: '#08306b' }}>
-                  {loading && ( <div className="absolute inset-0 flex items-center justify-center text-white z-10 bg-opacity-50 backdrop-blur-sm">Generating plot...</div> )}
+              <CardContent className="p-1">
+                <div className="relative aspect-square rounded-md overflow-hidden">
+                  {loading && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground z-10 bg-opacity-50 backdrop-blur-sm">Generating plot...</div> )}
                   {showGraph && Object.keys(echartsOptions).length > 0 ? (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={false}/>
                   ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-gray-400"> {species.length > 0 ? "Adjust parameters..." : "Enter reactions..."} </div>
+                    <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"> {species.length > 0 ? "Adjust parameters..." : "Enter reactions..."} </div>
                   )}
                 </div>
               </CardContent>

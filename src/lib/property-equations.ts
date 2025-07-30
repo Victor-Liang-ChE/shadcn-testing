@@ -249,6 +249,83 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   }
 ];
 
+//
+// All other exports (PropertyDefinition, baseColors, propertiesToPlotConfig) remain the same
+//
+
+// NEW: Master dispatcher function
+/**
+ * Calculates a property by dynamically calling the correct equation function based on eqno.
+ * @param eqno The equation number as a string.
+ * @param T Temperature in Kelvin.
+ * @param coeffs An object containing the coefficients (A, B, C, D, E).
+ * @param Tc Critical Temperature in Kelvin (required for some equations).
+ * @returns The calculated property value, or null if the equation is not supported or calculation fails.
+ */
+export function calculatePropertyByEquation(
+  eqno: string,
+  T: number,
+  coeffs: { [key: string]: number | null | undefined },
+  Tc?: number | null
+): number | null {
+  const A = coeffs.A ?? 0;
+  const B = coeffs.B ?? 0;
+  const C = coeffs.C ?? 0;
+  const D = coeffs.D ?? 0;
+  const E = coeffs.E ?? 0;
+  const eq = parseInt(eqno, 10);
+
+  // A Tr value that is safe to calculate even if Tc is not provided for all equations.
+  const Tr = (Tc && T) ? T / Tc : 0;
+
+  switch (eq) {
+    case 1: return A;
+    case 2: return A + B * T;
+    case 3: return A + B * T + C * Math.pow(T, 2);
+    case 4: return A + B * T + C * Math.pow(T, 2) + D * Math.pow(T, 3);
+    case 5: return A + B * T + C * Math.pow(T, 2) + D * Math.pow(T, 3) + E * Math.pow(T, 4);
+    case 6: return A + B * T + C * Math.pow(T, 2) + D * Math.pow(T, 3) + E / Math.pow(T, 2);
+    case 10: return Math.exp(A - B / (T + C));
+    case 11: return Math.exp(A);
+    case 12: return Math.exp(A + B * T);
+    case 13: return Math.exp(A + B * T + C * Math.pow(T, 2));
+    case 14: return Math.exp(A + B * T + C * Math.pow(T, 2) + D * Math.pow(T, 3));
+    case 15: return Math.exp(A + B * T + C * Math.pow(T, 2) + D * Math.pow(T, 3) + E * Math.pow(T, 4));
+    case 16: return A + Math.exp(B / T + C + D * T + E * Math.pow(T, 2));
+    case 17: return A + Math.exp(B + C * T + D * Math.pow(T, 2) + E * Math.pow(T, 3));
+    case 45: return A * T + B * Math.pow(T, 2) / 2 + C * Math.pow(T, 3) / 3 + D * Math.pow(T, 4) / 4 + E * Math.pow(T, 5) / 5;
+    case 75: return B + 2 * C * T + 3 * D * Math.pow(T, 2) + 4 * E * Math.pow(T, 3);
+    case 100: return A + B * T + C * Math.pow(T, 2) + D * Math.pow(T, 3) + E * Math.pow(T, 4);
+    case 101: return Math.exp(A + B / T + C * Math.log(T) + D * Math.pow(T, E));
+    case 102: return A * Math.pow(T, B) / (1 + C / T + D / Math.pow(T, 2));
+    case 103: return A + B * Math.exp(-C / Math.pow(T, D));
+    case 104: return A + B / T + C / Math.pow(T, 2) + D / Math.pow(T, 8) + E / Math.pow(T, 9);
+    case 105: return (Tc) ? A / Math.pow(B, 1 + Math.pow(1 - T / Tc, D)) : null; // Tc is required
+    case 106: return (Tc) ? A * Math.pow(1 - Tr, B + C * Tr + D * Math.pow(Tr, 2) + E * Math.pow(Tr, 3)) : null; // Tc is required
+    case 107: return A + B * Math.pow(C / T / Math.sinh(C / T), 2) + D * Math.pow(E / T / Math.cosh(E / T), 2);
+    case 114: return A * T + B * Math.pow(T, 2) / 2 + C * Math.pow(T, 3) / 3 + D * Math.pow(T, 4) / 4;
+    case 115: return Math.exp(A + B / T + C * Math.log(T) + D * Math.pow(T, 2) + E / Math.pow(T, 2));
+    case 116: return (Tc) ? A + B * Math.pow(1 - Tr, 0.35) + C * Math.pow(1 - Tr, 2 / 3) + D * (1 - Tr) + E * Math.pow(1 - Tr, 4 / 3) : null;
+    case 117: return A * T + B * (C / T) / Math.tanh(C / T) - D * (E / T) / Math.tanh(E / T);
+    case 119: return Math.exp(A / T + B + C * T + D * Math.pow(T, 2) + E * Math.log(T));
+    case 207: return Math.exp(A - B / (T + C));
+    case 208: return Math.pow(10, A - B / (T + C));
+    case 209: return Math.pow(10, A * (1 / T - 1 / B));
+    case 210: return Math.pow(10, A + B / T + C * T + D * Math.pow(T, 2));
+    case 211: return A * Math.pow((B - T) / (B - C), D);
+    case 212: return (E) ? Math.exp((E / T) * (A * (1 - T / E) + B * Math.pow(1 - T / E, 1.5) + C * Math.pow(1 - T / E, 3) + D * Math.pow(1 - T / E, 6))) : null;
+    case 213: return (E) ? (E / T) * (A * (1 - T / E) + B * Math.pow(1 - T / E, 1.5) + C * Math.pow(1 - T / E, 3) + D * Math.pow(1 - T / E, 6)) : null;
+    case 221: return -B / Math.pow(T, 2) + C / T + D * E * Math.pow(T, E - 1);
+    case 230: return -B / Math.pow(T, 2) + C / T + D - 2 * E / Math.pow(T, 3);
+    case 231: return B - C / Math.pow(T - D, 2);
+    default:
+        console.warn(`Equation number ${eqno} is not supported.`);
+        return null;
+  }
+}
+
+// ... (keep all the original calculation functions like calculateEq101, calculatePolynomial, etc.)
+
 /**
  * Calculates property using equation 101: P = exp(A + B/T + C*ln(T) + D*T^E)
  * Commonly used for Vapor Pressure.

@@ -10,9 +10,15 @@ module.exports = {
     ignoreDuringBuilds: true,
   },
   images: {
-    domains: [
-      "web.archive.org",
-      'ufc.com',
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'web.archive.org',
+      },
+      {
+        protocol: 'https',
+        hostname: 'ufc.com',
+      },
     ],
   },
 };
