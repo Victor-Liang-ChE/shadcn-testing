@@ -27,8 +27,14 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <Navbar />
-          <main>{children}</main>
+          <div className="flex h-screen flex-col overflow-hidden">
+            <header className="flex-shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+              <Navbar />
+            </header>
+            <main className="flex-1 overflow-y-auto">
+              {children}
+            </main>
+          </div>
         </ThemeProvider>
         {/* Change strategy to 'afterInteractive' */}
         <Script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js" strategy="afterInteractive" />
