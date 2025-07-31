@@ -986,7 +986,7 @@ const calculatePfrGasPhase = (
     let V_current = 0;
 
     const logV_min = -8;
-    const logV_max = 3;
+    const logV_max = 8; // Previously 3
     const n_steps = 500; // Use more steps for higher resolution raw data
     const v_points: number[] = []
     for (let i = 0; i <= n_steps; i++) {
