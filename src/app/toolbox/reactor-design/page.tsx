@@ -77,6 +77,53 @@ const interpolate = (
   return p1.y + ((targetX - p1.x) * (p2.y - p1.y)) / (p2.x - p1.x);
 };
 
+// Helper function to perform linear interpolation from an array of data points
+const interpolateFromData = (
+  targetX: number,
+  dataPoints: { x: number; y: number }[]
+): number => {
+  if (dataPoints.length < 2) {
+    return NaN // Not enough data to interpolate
+  }
+
+  // Ensure data is sorted by x-value for reliable searching
+  const sortedPoints = [...dataPoints].sort((a, b) => a.x - b.x)
+
+  // Find the two points that bracket the targetX
+  let p1: { x: number; y: number } | null = null
+  let p2: { x: number; y: number } | null = null
+
+  if (targetX < sortedPoints[0].x) {
+    // If target is before the first point, we can't reliably get a value
+    return NaN
+  }
+  
+  if (targetX > sortedPoints[sortedPoints.length - 1].x) {
+    // If target is after the last point, also return NaN
+    return NaN
+  }
+
+  for (let i = 0; i < sortedPoints.length - 1; i++) {
+    if (sortedPoints[i].x <= targetX && sortedPoints[i + 1].x >= targetX) {
+      p1 = sortedPoints[i]
+      p2 = sortedPoints[i + 1]
+      break
+    }
+  }
+
+  if (!p1 || !p2) {
+    return NaN // Should not happen if logic is correct
+  }
+
+  // Handle vertical line case to prevent division by zero
+  if (p1.x === p2.x) {
+    return p1.y
+  }
+
+  // Standard linear interpolation formula
+  return p1.y + ((targetX - p1.x) * (p2.y - p1.y)) / (p2.x - p1.x)
+}
+
 const calculateKinetics = (reactions: ReactionSetup[], tempK: number) => {
   // This assumes the first two reactions are the key ones for the model.
   const k1 = parseFloat(reactions[0]?.AValue || '0') * Math.exp(-parseFloat(reactions[0]?.EaValue || '0') / (R * tempK))
@@ -210,22 +257,37 @@ const solveForInitialFlows = (
   return null;
 };
 
-// --- Update calculateCstrData to return outletFlowsAtV ---
+// Replace your existing calculateCstrData function with this one.
 const calculateCstrData = (
     reactions: ReactionSetup[],
     components: ComponentSetup[],
-    initialFlowRates: { [key: string]: number },
+    initialFlowRates: { [key: string]: number }, // This will be treated as a basis
     tempK: number,
     simBasis: { limitingReactantId: string; desiredProductId: string },
-    V_max?: number
+    reactionPhase: 'Liquid' | 'Gas',
+    pressure_bar: number,
+    targetProduction_kta: number
 ) => {
-    const allInvolvedComponents = components.filter(c => Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0));
+    // This function also follows the same pattern:
+    // 1. Run the CSTR simulation loop with high resolution to generate raw data.
+    // 2. Interpolate that raw data onto the common conversion grid.
     
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
+    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] }
+
+    // --- 1. Generate high-resolution raw data from the simulation ---
+    const rawSelectivityData: { x: number; y: number }[] = []
+    const rawVolumeData: { x: number; y: number }[] = []
+    
+    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
+    const P_C_target_mols = (targetProduction_kta * 1e9) / productMolarMass / (365 * 24 * 3600);
+
     const parsedReactions = {
         reactions: reactions.map(reactionInfo => {
             const reactants: any[] = [];
             const products: any[] = [];
-            allInvolvedComponents.forEach(comp => {
+            components.forEach(comp => {
                 const reactionData = comp.reactionData?.[reactionInfo.id];
                 if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
                     const parsedComp = { name: comp.name, stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)), reactionOrderNum: parseFloat(reactionData.order || '0') };
@@ -234,62 +296,126 @@ const calculateCstrData = (
                 }
             });
             const A = parseFloat(reactionInfo.AValue); const Ea = parseFloat(reactionInfo.EaValue);
-            return { reactants, products, rateConstantAtT: A * Math.exp(-Ea / (R * tempK)) };
+            return { 
+                id: reactionInfo.id,
+                reactants, 
+                products, 
+                rateConstantAtT: A * Math.exp(-Ea / (8.314 * tempK)) 
+            };
         }),
-        allInvolvedComponents: allInvolvedComponents.map(c => ({ name: c.name, id: c.id })),
+        allInvolvedComponents: components.map(c => ({ name: c.name, id: c.id })),
     };
 
-    let solverGuess: number[] | undefined = undefined;
-    const nPoints = 100;
-    const maxVolume = V_max || 2000;
-    const minVolume = 0.01;
-    const logMinV = Math.log10(minVolume);
-    const logMaxV = Math.log10(maxVolume);
-    const logStep = (logMaxV - logMinV) / (nPoints - 1);
-    const selectivityData: { x: number; y: number }[] = [];
-    const volumeData: { x: number; y: number }[] = [];
-    
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
-
-    if (!limitingReactant || !desiredProduct) return { selectivityData, volumeData };
-
-    const F_A0 = initialFlowRates[limitingReactant.name] || 0;
-    if (F_A0 <= 1e-9) return { selectivityData, volumeData };
-
-    // Start loop from the largest volume and go backwards
-    for (let i = nPoints - 1; i >= 0; i--) {
-        const logV = logMinV + i * logStep;
-        const V = Math.pow(10, logV);
+    const getRateOfFormation = (current_F: { [key: string]: number }): number => {
+        let concentrations: { [key: string]: number } = {};
+        const F_vec = parsedReactions.allInvolvedComponents.map((c:any) => current_F[c.name] || 0)
         
-        // Use the result from the previous (larger V) iteration as the guess
-        const outletFlowRates = solveCSTRParallel(
-            parsedReactions, components, V, initialFlowRates, 'Liquid', 1, tempK, solverGuess
+        if (reactionPhase === 'Liquid') {
+            let v = 0;
+            components.forEach(comp => {
+                const molarMass = parseFloat(comp.molarMass || '1');
+                const density = parseFloat(comp.density || '1000');
+                if (density > 0) v += (current_F[comp.name] * molarMass) / density;
+            });
+            if (v < 1e-9) v = 1e-9;
+            parsedReactions.allInvolvedComponents.forEach((c:any) => concentrations[c.name] = Math.max(0, current_F[c.name]) / v);
+        } else { // Gas Phase
+            const F_total = F_vec.reduce((sum, f) => sum + f, 0);
+            if (F_total < 1e-9) return 0;
+            const P_Pa = pressure_bar * 1e5;
+            parsedReactions.allInvolvedComponents.forEach((c:any) => concentrations[c.name] = Math.max(0, current_F[c.name]) / F_total * P_Pa / (R * tempK));
+        }
+
+        const reactionRates = parsedReactions.reactions.map((reaction: any) => {
+            let rate = reaction.rateConstantAtT || 0;
+            reaction.reactants.forEach((reactant: any) => {
+                rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
+            });
+            return rate;
+        });
+
+        let r_C = 0; // Net rate of formation for the desired product
+        parsedReactions.reactions.forEach((reaction: any, j: number) => {
+            const stoich = parseFloat(desiredProduct.reactionData[reaction.id]?.stoichiometry || '0');
+            r_C += stoich * reactionRates[j];
+        });
+        return r_C;
+    };
+
+    // **FIX START**: Calculate initial selectivity and initialize data arrays correctly.
+    const initialRates = calculateNetFormationRates(initialFlowRates, reactions, components, tempK, reactionPhase, pressure_bar);
+    const r_P_initial = initialRates[desiredProduct.name] || 0;
+    const r_A_initial = initialRates[limitingReactant.name] || 0;
+    const initialSelectivity = (r_A_initial < -1e-9) ? (r_P_initial / -r_A_initial) : 1.0;
+
+    rawSelectivityData.push({ x: 0, y: Math.max(0, initialSelectivity) });
+    rawVolumeData.push({ x: 0, y: 0 });
+    // **FIX END**
+
+    const F_A0_basis = initialFlowRates[limitingReactant.name] || 0;
+    let solverGuess = parsedReactions.allInvolvedComponents.map((c:any) => initialFlowRates[c.name] || 0);
+
+    const logV_min = -8;
+    const logV_max = 8;
+    const n_steps = 500; // Use more steps for higher resolution raw data
+    const step_size = (logV_max - logV_min) / n_steps;
+
+    for (let i = 0; i <= n_steps; i++) {
+        const logV_basis = logV_min + i * step_size;
+        const V_basis = Math.pow(10, logV_basis);
+
+        const outletFlows_basis = solveCSTR_Robust(
+            parsedReactions, components, V_basis, initialFlowRates, 
+            reactionPhase, pressure_bar, tempK, solverGuess
         );
         
-        // Update the guess for the next (smaller V) iteration
-        solverGuess = parsedReactions.allInvolvedComponents.map((c:any) => outletFlowRates[c.name] || 0);
+        solverGuess = parsedReactions.allInvolvedComponents.map((c:any) => outletFlows_basis[c.name] || 0);
 
-        const F_A_final = outletFlowRates[limitingReactant.name] || 0;
-        const conversion = (F_A0 - F_A_final) / F_A0;
-
-        const molesReactantConsumed = F_A0 - F_A_final;
-        const molesProductFormed = (outletFlowRates[desiredProduct.name] || 0) - (initialFlowRates[desiredProduct.name] || 0);
+        const F_A_final_basis = outletFlows_basis[limitingReactant.name] || 0;
         
-        const selectivity = molesReactantConsumed > 1e-9 ? molesProductFormed / molesReactantConsumed : 0;
-
-        if (conversion >= 0.001 && conversion <= 0.999) {
-            selectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
-            volumeData.push({ x: conversion, y: V });
+        // **FIX START**: Filter out points with negligible conversion to prevent bad data.
+        const molesReactantConsumed = F_A0_basis - F_A_final_basis;
+        if (molesReactantConsumed < 1e-7) {
+            continue;
         }
-    }
-    
-    // Sort the data arrays since they were generated in reverse order
-    selectivityData.sort((a, b) => a.x - b.x);
-    volumeData.sort((a, b) => a.x - b.x);
+        // **FIX END**
 
-    return { selectivityData, volumeData };
-};
+        const conversion = molesReactantConsumed / F_A0_basis;
+        const r_C = getRateOfFormation(outletFlows_basis);
+        let V_true = (r_C > 1e-9) ? P_C_target_mols / r_C : Infinity;
+        if (reactionPhase === 'Liquid') {
+            V_true *= 0.001; // Convert L to m³
+        }
+        
+        const molesProductFormed = (outletFlows_basis[desiredProduct.name] || 0) - (initialFlowRates[desiredProduct.name] || 0);
+        
+        // **FIX START**: Calculate selectivity directly now that we've filtered.
+        const selectivity = molesProductFormed / molesReactantConsumed;
+        // **FIX END**
+
+        if (conversion >= 0 && conversion <= 0.9999 && V_true < Infinity) {
+             rawSelectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
+             rawVolumeData.push({ x: conversion, y: V_true });
+        }
+
+        if (conversion > 0.999) break;
+    }
+
+    // --- 2. Create the common grid and interpolate onto it ---
+    const commonConversionGrid = Array.from({ length: 100 }, (_, i) => i * 0.01)
+    
+    const selectivityData = commonConversionGrid.map(conv => ({
+        x: conv,
+        y: interpolateFromData(conv, rawSelectivityData)
+    })).filter(p => !isNaN(p.y))
+
+    const volumeData = commonConversionGrid.map(conv => ({
+        x: conv,
+        y: interpolateFromData(conv, rawVolumeData)
+    })).filter(p => !isNaN(p.y))
+
+    return { selectivityData, volumeData }
+}
 
 // --- Update calculatePfrData to return outletFlowsAtV ---
 const calculatePfrData = (
@@ -649,6 +775,477 @@ function solveCSTRParallel(
   }, {} as { [key: string]: number });
 }
 
+// Add this new, more robust solver function to your file.
+const solveCSTR_Robust = (
+  parsedReactions: any,
+  components: ComponentSetup[],
+  V: number,
+  initialFlowRates: { [key: string]: number },
+  reactionPhase: 'Liquid' | 'Gas',
+  totalPressure_bar: number,
+  temp_K: number,
+  initialGuess?: number[]
+): { [key: string]: number } => {
+  const componentNames = parsedReactions.allInvolvedComponents.map((c: any) => c.name);
+  let F = initialGuess ? [...initialGuess] : componentNames.map((name: string) => initialFlowRates[name] || 0);
+  const n = F.length;
+  const max_iter = 100;
+  const tol = 1e-9;
+
+  // --- Helper function G(F) = F0 - F + r*V ---
+  const G = (current_F: number[]): number[] => {
+    let concentrations: { [key: string]: number } = {};
+    const F_dict = componentNames.reduce((acc: { [key: string]: number }, name: string, i: number) => { acc[name] = current_F[i]; return acc; }, {} as {[key:string]:number});
+
+    if (reactionPhase === 'Liquid') {
+        let v = 0;
+        componentNames.forEach((name: string) => {
+            const compInfo = components.find(c => c.name === name);
+            const molarMass = parseFloat(compInfo?.molarMass || '1');
+            const density = parseFloat(compInfo?.density || '1000');
+            if (density > 0) v += (F_dict[name] * molarMass) / density;
+        });
+        if (v < 1e-9) v = 1e-9;
+        componentNames.forEach((name: string) => concentrations[name] = Math.max(0, F_dict[name]) / v);
+    } else { // Gas Phase
+        const F_total = current_F.reduce((sum: number, f: number) => sum + Math.max(0, f), 0);
+        if (F_total < 1e-9) {
+            componentNames.forEach((name: string) => concentrations[name] = 0);
+        } else {
+          const P_Pa = totalPressure_bar * 1e5;
+          componentNames.forEach((name: string) => concentrations[name] = (Math.max(0, F_dict[name])) / F_total * P_Pa / (R * temp_K));
+        }
+    }
+
+    const rates = parsedReactions.reactions.map((reaction: any) => {
+      let rate = reaction.rateConstantAtT || 0;
+      reaction.reactants.forEach((reactant: any) => {
+        rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
+      });
+      return rate;
+    });
+
+    return componentNames.map((name: string, i: number) => {
+      let netRateOfFormation = 0;
+      parsedReactions.reactions.forEach((reaction: any, j: number) => {
+        const reactantInfo = reaction.reactants.find((r: any) => r.name === name);
+        const productInfo = reaction.products.find((p: any) => p.name === name);
+        if (reactantInfo) netRateOfFormation -= (reactantInfo.stoichiometricCoefficient || 0) * rates[j];
+        if (productInfo) netRateOfFormation += (productInfo.stoichiometricCoefficient || 0) * rates[j];
+      });
+      return (initialFlowRates[name] || 0) - current_F[i] + netRateOfFormation * V;
+    });
+  };
+  // --- End of G(F) helper ---
+
+  for (let iter = 0; iter < max_iter; iter++) {
+    const G_current = G(F);
+    const errorNorm = Math.sqrt(G_current.reduce((s, v) => s + v * v, 0));
+    
+    if (errorNorm < tol) break;
+    
+    // --- Calculate Jacobian and Newton Step (same as before) ---
+    const J_G: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+    for (let j = 0; j < n; j++) {
+        const F_plus_h = [...F];
+        const h = (Math.abs(F[j]) || 1e-8) * 1e-7;
+        F_plus_h[j] += h;
+        const G_plus_h = G(F_plus_h);
+        for (let i = 0; i < n; i++) J_G[i][j] = (G_plus_h[i] - G_current[i]) / h;
+    }
+
+    const delta_F = solveLinearSystem(J_G, G_current.map((val: number) => -val));
+    if (!delta_F) break; // Jacobian is singular, can't proceed
+    
+    // --- NEW: Backtracking Line Search to ensure stability ---
+    let alpha = 1.0; // Initial step size (full Newton step)
+    const beta = 0.5; // Step reduction factor
+    const c = 1e-4; // Armijo condition constant
+    let F_new = F;
+    let step_accepted = false;
+
+    for (let ls_iter = 0; ls_iter < 10; ls_iter++) { // Max 10 line search steps
+      F_new = F.map((val: number, i: number) => val + alpha * delta_F[i]);
+
+      // Ensure physical solution (no negative flows)
+      if (F_new.some((val: number) => val < 0)) {
+        alpha *= beta;
+        continue;
+      }
+      
+      const G_new = G(F_new);
+      const newErrorNorm = Math.sqrt(G_new.reduce((s, v) => s + v * v, 0));
+
+      // Check for sufficient decrease (Armijo condition)
+      if (newErrorNorm < (1 - c * alpha) * errorNorm) {
+        step_accepted = true;
+        break;
+      }
+      
+      alpha *= beta; // Reduce step size and try again
+    }
+    
+    if (step_accepted) {
+      F = F_new;
+    } else {
+      break; // Line search failed, exit main loop
+    }
+    // --- End of Line Search ---
+  }
+
+  return componentNames.reduce((acc: { [key: string]: number }, name: string, index: number) => {
+    acc[name] = F[index] > 0 ? F[index] : 0;
+    return acc;
+  }, {} as { [key: string]: number });
+};
+
+const calculatePfrGasPhase = (
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    tempK: number,
+    pressure_bar: number,
+    molarRatios: Array<{ numeratorId: string; value: number }>,
+    simBasis: { limitingReactantId: string; desiredProductId: string },
+    targetProduction_kta: number
+) => {
+    // This function follows the exact same pattern as the liquid phase function above:
+    // 1. Run the simulation with high resolution to generate raw data.
+    // 2. Interpolate that raw data onto the common conversion grid.
+    
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
+    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] }
+
+    // --- 1. Generate high-resolution raw data from the simulation ---
+    const rawSelectivityData: { x: number; y: number }[] = []
+    const rawVolumeData: { x: number; y: number }[] = []
+    
+    const P_Pa = pressure_bar * 1e5;
+    const limitingReactantIndex = components.findIndex(c => c.id === simBasis.limitingReactantId);
+    const desiredProductIndex = components.findIndex(c => c.id === simBasis.desiredProductId);
+
+    // --- FIX START: Corrected dF/dV function for gas phase ---
+    const dFdV = (V: number, F_vec: number[]) => {
+        const F_dict = components.reduce((acc, comp, i) => { acc[comp.name] = F_vec[i]; return acc; }, {} as { [key: string]: number });
+        const F_tot = F_vec.reduce((sum, f) => sum + f, 0);
+        if (F_tot < 1e-12) return Array(components.length).fill(0);
+
+        // First, calculate concentrations in standard SI units (mol/m^3).
+        const concentrations_m3 = components.reduce((acc, comp) => {
+            acc[comp.name] = (F_dict[comp.name] * P_Pa) / (F_tot * R * tempK);
+            return acc;
+        }, {} as { [key: string]: number });
+
+        // Since rate constants are in L-based units, convert concentrations to mol/L for calculations.
+        const concentrations_L: { [key: string]: number } = {};
+        for (const key in concentrations_m3) {
+            concentrations_L[key] = concentrations_m3[key] * 1e-3; // Convert mol/m³ to mol/L
+        }
+
+        const reactionRates = reactions.map(reactionInfo => {
+            // k is in L-based units (e.g., L/mol/s)
+            const k_Liters = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+            let rate = k_Liters;
+            components.forEach(comp => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
+                
+                // Rate law must only use reactant concentrations and L-based units.
+                if (order > 0 && stoich < 0) {
+                     rate *= Math.pow(Math.max(0, concentrations_L[comp.name]), order);
+                }
+            });
+            return rate; // The rate is now correctly in mol/(L*s).
+        });
+        
+        return components.map(comp => {
+            let netRateOfFormation = 0;
+            reactions.forEach((reactionInfo, j) => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                netRateOfFormation += stoich * reactionRates[j];
+            });
+            // With rate in mol/(L*s), the integrated volume will be in Liters.
+            return netRateOfFormation;
+        });
+    };
+    // --- FIX END ---
+
+    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
+    const P_C_mol_s = (targetProduction_kta * 1e6) / productMolarMass / (365 * 24 * 3600);
+
+    const F0_basis_dict: { [key: string]: number } = { [limitingReactant.name]: 1.0 };
+    molarRatios.forEach(ratio => {
+        const compName = components.find(c => c.id === ratio.numeratorId)?.name;
+        if (compName) F0_basis_dict[compName] = ratio.value;
+    });
+    const F0_basis_vec = components.map(c => F0_basis_dict[c.name] || 0);
+    const F_tot0_basis = F0_basis_vec.reduce((sum, f) => sum + f, 0);
+
+    // --- Start of existing simulation loop ---
+    let F_current = F0_basis_vec;
+    let V_current = 0;
+
+    const logV_min = -8;
+    const logV_max = 3;
+    const n_steps = 500; // Use more steps for higher resolution raw data
+    const v_points: number[] = []
+    for (let i = 0; i <= n_steps; i++) {
+        const logV = logV_min + i * (logV_max - logV_min) / n_steps
+        v_points.push(Math.pow(10, logV))
+    }
+
+    for (const V_next of v_points) {
+        if (V_next <= V_current) continue;
+        
+        const odeResults = solveODE_BDF(dFdV, F_current, [V_current, V_next]);
+        
+        if (!odeResults.y || odeResults.y[0].length < 2) continue;
+        
+        F_current = odeResults.y.map(comp_y => comp_y[comp_y.length - 1]);
+        V_current = V_next;
+        
+        const F_A_current_val = F_current[limitingReactantIndex];
+        const F_P_current_val = F_current[desiredProductIndex];
+        
+        const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_current_val) / F0_basis_vec[limitingReactantIndex];
+        const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_current_val;
+        const selectivity = molesConsumed > 1e-9 ? F_P_current_val / molesConsumed : 0;
+        
+        if (conversion >= 0 && conversion < 0.9999 && selectivity > 1e-6) {
+            // --- correct Eq. F-35 scaling ---
+            const F_tot0_basis = F0_basis_vec.reduce((s,f)=>s+f,0);          // ΣF₀,basis
+            const F_A0_true   = P_C_mol_s / (selectivity*conversion);  // Eq.F-10
+            const F_tot0_true = F_A0_true*(1 + molarRatios
+                                                 .reduce((s,r)=>s+r.value,0)); // Eq.F-11 + others
+            const V_true      = 1e-3 * V_current * (F_tot0_true / F_tot0_basis);    // L → m³, Eq.F-35
+            // --- correct Eq. F-35 scaling ---
+            
+            rawSelectivityData.push({ x: conversion, y: selectivity });
+            rawVolumeData.push({ x: conversion, y: V_true });
+        }
+        
+        if (conversion >= 0.999) break;
+    }
+    // --- End of existing simulation loop ---
+
+    // --- 2. Create the common grid and interpolate onto it ---
+    const commonConversionGrid = Array.from({ length: 100 }, (_, i) => i * 0.01)
+    
+    const selectivityData = commonConversionGrid.map(conv => ({
+        x: conv,
+        y: interpolateFromData(conv, rawSelectivityData)
+    })).filter(p => !isNaN(p.y))
+
+    const volumeData = commonConversionGrid.map(conv => ({
+        x: conv,
+        y: interpolateFromData(conv, rawVolumeData)
+    })).filter(p => !isNaN(p.y))
+
+    return { selectivityData, volumeData }
+}
+
+const calculatePfrLiquidPhase = (
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    tempK: number,
+    molarRatios: Array<{ numeratorId: string; value: number }>,
+    simBasis: { limitingReactantId: string; desiredProductId: string },
+    targetProduction_kta: number
+) => {
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
+    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] };
+
+    const rawSelectivityData: { x: number; y: number }[] = [];
+    const rawVolumeData: { x: number; y: number }[] = [];
+    
+    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
+    const P_C_target_mols = (targetProduction_kta * 1e9) / productMolarMass / (365 * 24 * 3600);
+
+    const limitingReactantIndex = components.findIndex(c => c.id === simBasis.limitingReactantId);
+    const desiredProductIndex = components.findIndex(c => c.id === simBasis.desiredProductId);
+
+    // --- Basis Calculation Setup ---
+    const F0_basis_dict: { [key: string]: number } = { [limitingReactant.name]: 1.0 };
+    molarRatios.forEach(ratio => {
+        const compName = components.find(c => c.id === ratio.numeratorId)?.name;
+        if (compName) F0_basis_dict[compName] = ratio.value;
+    });
+    const F0_basis_vec = components.map(c => F0_basis_dict[c.name] || 0);
+
+    // --- Calculate volumetric flow 'q' for the basis run (L/s) ---
+    let q_basis = 0;
+    components.forEach(comp => {
+        const flow = F0_basis_dict[comp.name] || 0;
+        if (flow > 0) {
+            const molarMass = parseFloat(comp.molarMass || '1');
+            const density = parseFloat(comp.density || '1000'); // g/L
+            q_basis += (flow * molarMass) / density;
+        }
+    });
+    if (q_basis < 1e-9) q_basis = 1e-9;
+    const q_basis_L  = q_basis;
+
+    // --- PFR Differential Equations (dF/dV = r) ---
+    const dFdV = (V: number, F_vec: number[]) => {
+        const concentrations = F_vec.map(f => f / q_basis_L); // mol/L
+        const C_dict = components.reduce((acc, comp, i) => { acc[comp.name] = concentrations[i]; return acc; }, {} as { [key: string]: number });
+
+        const reactionRates = reactions.map(reactionInfo => {
+            const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+            let rate = k_f;
+            components.forEach(comp => {
+                const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
+                if (order > 0 && parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0') < 0) {
+                     rate *= Math.pow(Math.max(0, C_dict[comp.name]), order);
+                }
+            });
+            return rate; // mol/(L*s)
+        });
+
+        return components.map(comp => {
+            let netRateOfFormation = 0;
+            reactions.forEach((reactionInfo, j) => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                netRateOfFormation += stoich * reactionRates[j];
+            });
+            return netRateOfFormation; // r_j in mol/(L*s)
+        });
+    };
+    
+    // --- Simulation Loop ---
+    let F_current = F0_basis_vec;
+    let V_current = 0;
+    const logV_min = -8;
+    const logV_max = 8;
+    const n_steps = 500;
+    const v_points: number[] = [];
+    for (let i = 0; i <= n_steps; i++) {
+        const logV = logV_min + i * (logV_max - logV_min) / n_steps;
+        v_points.push(Math.pow(10, logV));
+    }
+
+    for (const V_next of v_points) {
+        if (V_next <= V_current) continue;
+        const odeResults = solveODE_BDF(dFdV, F_current, [V_current, V_next]);
+        if (!odeResults.y || odeResults.y[0].length < 2) continue;
+        
+        F_current = odeResults.y.map(comp_y => comp_y[comp_y.length - 1]);
+        V_current = V_next;
+        
+        const F_A_out_basis = F_current[limitingReactantIndex];
+        const P_C_out_basis = F_current[desiredProductIndex];
+        const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_out_basis) / F0_basis_vec[limitingReactantIndex];
+        const P_C_basis_mols = P_C_out_basis - (F0_basis_vec[desiredProductIndex] || 0);
+        
+        const selectivity = (F0_basis_vec[limitingReactantIndex] - F_A_out_basis > 1e-9) ? P_C_basis_mols / (F0_basis_vec[limitingReactantIndex] - F_A_out_basis) : 0;
+        
+        // --- Correct Volume Scaling Logic ---
+        // 1. Calculate the true molar flow rate of the limiting reactant into the reactor.
+        const F_A0_true = (selectivity > 1e-9 && conversion > 1e-9) ? P_C_target_mols / (selectivity * conversion) : 0;
+
+        // 2. Calculate the true total volumetric flow rate into the reactor.
+        let q_true = 0;
+        const F0_true_dict: {[key: string]: number} = { [limitingReactant.name]: F_A0_true };
+         molarRatios.forEach(ratio => {
+            const compName = components.find(c => c.id === ratio.numeratorId)?.name;
+            if (compName) F0_true_dict[compName] = F_A0_true * ratio.value;
+        });
+
+        components.forEach(comp => {
+            const flow = F0_true_dict[comp.name] || 0;
+            if (flow > 0) {
+                const molarMass = parseFloat(comp.molarMass || '1');
+                const density = parseFloat(comp.density || '1000');
+                q_true += (flow * molarMass) / density;
+            }
+        });
+
+        // 3. Scale the volume by the ratio of volumetric flows and convert from Liters to m³.
+        const V_true = (q_basis > 1e-9 && q_true > 0) ? (1e-3 * V_current * (q_true / q_basis)) : Infinity;
+        
+        if (conversion >= 0.001 && conversion < 0.9999 && V_true < Infinity && selectivity > 0) {
+            rawSelectivityData.push({ x: conversion, y: selectivity });
+            rawVolumeData.push({ x: conversion, y: V_true });
+        }
+        if (conversion >= 0.999) break;
+    }
+
+    const commonConversionGrid = Array.from({ length: 101 }, (_, i) => i * 0.01);
+    
+    const selectivityData = commonConversionGrid.map(conv => ({
+        x: conv,
+        y: interpolateFromData(conv, rawSelectivityData)
+    })).filter(p => !isNaN(p.y) && p.y >= 0);
+
+    const volumeData = commonConversionGrid.map(conv => ({
+        x: conv,
+        y: interpolateFromData(conv, rawVolumeData)
+    })).filter(p => !isNaN(p.y) && p.y >= 0);
+
+    return { selectivityData, volumeData };
+};
+
+const calculateNetFormationRates = (
+    current_F: { [key: string]: number },
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    tempK: number,
+    reactionPhase: 'Liquid' | 'Gas',
+    pressure_bar: number
+): { [key: string]: number } => {
+    let concentrations: { [key: string]: number } = {};
+    const R = 8.314;
+
+    if (reactionPhase === 'Liquid') {
+        let v_Liters = 0;
+        components.forEach(comp => {
+            const molarMass = parseFloat(comp.molarMass || '1');
+            const density = parseFloat(comp.density || '1000');
+            if (density > 0 && current_F[comp.name]) {
+                v_Liters += (current_F[comp.name] * molarMass) / density;
+            }
+        });
+        if (v_Liters < 1e-9) v_Liters = 1e-9;
+        const v_m3 = v_Liters / 1000;
+        components.forEach(comp => {
+            concentrations[comp.name] = Math.max(0, current_F[comp.name] || 0) / v_m3;
+        });
+    } else { // Gas Phase
+        const F_total = Object.values(current_F).reduce((sum, f) => sum + (f || 0), 0);
+        if (F_total < 1e-9) return components.reduce((acc, c) => ({...acc, [c.name]: 0}), {});
+        const P_Pa = pressure_bar * 1e5;
+        components.forEach(comp => {
+            concentrations[comp.name] = Math.max(0, current_F[comp.name] || 0) / F_total * P_Pa / (R * tempK);
+        });
+    }
+
+    const reactionNetRates = reactions.map(reactionInfo => {
+        const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+        let rate_f = k_f;
+        components.forEach(comp => {
+            const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+            const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
+            if (stoich < 0 && order > 0) {
+                rate_f *= Math.pow(Math.max(0, concentrations[comp.name]), order);
+            }
+        });
+        return rate_f;
+    });
+
+    const componentRates: { [key: string]: number } = {};
+    components.forEach(comp => {
+        let netRateOfFormation = 0;
+        reactions.forEach((reactionInfo, j) => {
+            const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+            netRateOfFormation += stoich * reactionNetRates[j];
+        });
+        componentRates[comp.name] = netRateOfFormation;
+    });
+
+    return componentRates;
+};
+
 // --- React Components ---
 
 const KineticsInput = ({ 
@@ -656,6 +1253,7 @@ const KineticsInput = ({
     reactionsSetup, setReactionsSetup, 
     componentsSetup, setComponentsSetup, 
     simBasis, setSimBasis,
+    reactionPhase, setReactionPhase, // New props for reaction phase
     prodRate, setProdRate // New props for production rate
 }: { 
     onNext: () => void,
@@ -665,6 +1263,8 @@ const KineticsInput = ({
     setComponentsSetup: React.Dispatch<React.SetStateAction<ComponentSetup[]>>,
     simBasis: any,
     setSimBasis: any,
+    reactionPhase: 'Liquid' | 'Gas',
+    setReactionPhase: React.Dispatch<React.SetStateAction<'Liquid' | 'Gas'>>,
     prodRate: string,
     setProdRate: React.Dispatch<React.SetStateAction<string>>
 }) => {
@@ -900,6 +1500,27 @@ const KineticsInput = ({
                     <CardTitle>Simulation Basis</CardTitle>
                 </div>
                 <div className="space-y-4">
+                    {/* The Reaction Phase toggle is now at the top without a title */}
+                    <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
+                        <Button
+                            onClick={() => setReactionPhase('Liquid')}
+                            variant={reactionPhase === 'Liquid' ? 'default' : 'ghost'}
+                            size="sm"
+                            className="flex-1 text-xs px-3 py-1 h-auto"
+                        >
+                            Liquid
+                        </Button>
+                        <Button
+                            onClick={() => setReactionPhase('Gas')}
+                            variant={reactionPhase === 'Gas' ? 'default' : 'ghost'}
+                            size="sm"
+                            className="flex-1 text-xs px-3 py-1 h-auto"
+                        >
+                            Gas
+                        </Button>
+                    </div>
+
+                    {/* The rest of the controls remain the same */}
                     <div>
                         <Label>Limiting Reactant</Label>
                         <Select 
@@ -942,7 +1563,6 @@ const KineticsInput = ({
                             </SelectContent>
                         </Select>
                     </div>
-                    {/* Production rate input moved here */}
                     <div>
                         <Label>Desired Production Rate (kta)</Label>
                         <Input
@@ -1072,6 +1692,7 @@ const ReactorSimulator = ({
     reactions, components, 
     simBasis, 
     molarRatios, setMolarRatios,
+    reactionPhase, // Receive reactionPhase as a prop
     prodRate // Receive prodRate as a prop
 }: { 
     onBack: () => void, 
@@ -1080,6 +1701,7 @@ const ReactorSimulator = ({
     simBasis: any,
     molarRatios: MolarRatio[],
     setMolarRatios: React.Dispatch<React.SetStateAction<MolarRatio[]>>,
+    reactionPhase: 'Liquid' | 'Gas',
     prodRate: string 
 }) => {
   const { resolvedTheme } = useTheme();
@@ -1090,9 +1712,27 @@ const ReactorSimulator = ({
   const mainBg = 'bg-background';
   const mainFg = 'text-foreground';
 
-  const [reactorType, setReactorType] = useState<ReactorType>('PFR')
+  const [reactorTypes, setReactorTypes] = useState({ pfr: true, cstr: false })
+
+  // Add this handler function to manage toggling
+  const handleReactorTypeChange = (type: 'pfr' | 'cstr') => {
+      setReactorTypes(prev => {
+          const newState = { ...prev, [type]: !prev[type] }
+          
+          // This logic prevents deselecting both buttons
+          if (!newState.pfr && !newState.cstr) {
+              return prev // Return the previous state if the user tries to deselect the last active button
+          }
+          
+          return newState
+      })
+  }
   const [graphType, setGraphType] = useState<GraphType>('selectivity')
   const [temperature, setTemperature] = useState(4)
+  
+  const [pressure, setPressure] = useState(5); // Initial pressure in bar
+  const [pressureMin, setPressureMin] = useState('1');
+  const [pressureMax, setPressureMax] = useState('50');
   
   const [molarRatioMin, setMolarRatioMin] = useState('2');
   const [molarRatioMax, setMolarRatioMax] = useState('20');
@@ -1103,97 +1743,121 @@ const ReactorSimulator = ({
   const tempK = temperature + 273.15
   
   const generateGraphData = useCallback(() => {
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
 
-    if (!limitingReactant || !desiredProduct) return { series: [], xAxis: '', yAxis: '', legend: [] };
-
-    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
-    if (productMolarMass <= 0) return { series: [], xAxis: '', yAxis: '', legend: [] };
-
-    const targetProduction_mol_s = (parseFloat(prodRate) * 1e6) / productMolarMass / (365 * 24 * 3600);
-
-    // --- STEP 1: Calculate Inlet Concentrations ---
-    // [cite: 215, 216]
-    const rho_A_molar = parseFloat(limitingReactant.density || '1') / parseFloat(limitingReactant.molarMass || '1');
-    let denominator = 1 / rho_A_molar;
-    molarRatios.forEach(ratio => {
-        const comp = components.find(c => c.id === ratio.numeratorId);
-        if (comp) {
-            const rho_B_molar = parseFloat(comp.density || '1') / parseFloat(comp.molarMass || '1');
-            if (rho_B_molar > 0) denominator += ratio.value / rho_B_molar;
-        }
-    });
-
-    const C_A0 = 1 / denominator;
-    const initialConcentrations: { [key: string]: number } = { [limitingReactant.name]: C_A0 };
-    molarRatios.forEach(ratio => {
-        const compName = components.find(c => c.id === ratio.numeratorId)?.name;
-        if (compName) initialConcentrations[compName] = C_A0 * ratio.value;
-    });
-    components.forEach(c => {
-        if (initialConcentrations[c.name] === undefined) initialConcentrations[c.name] = 0;
-    });
-
-    // --- STEP 2: Dynamically Determine Simulation Range (t_max) ---
-    // This is a simplified way to estimate the required residence time.
-    // A more robust method would use a root-finder.
-    const { k1, k2 } = calculateKinetics(reactions, tempK);
-    const estimated_t_max = 5 / (k1 * C_A0); // Estimate based on pseudo-first order kinetics
-
-    // --- STEP 3: Run Concentration-Based Simulation ---
-    let performanceVsTau;
-    if (reactorType === 'PFR') {
-        performanceVsTau = calculatePfrDataByTau(reactions, components, initialConcentrations, tempK, estimated_t_max);
-    } else { // CSTR
-        performanceVsTau = calculateCstrDataByTau(reactions, components, initialConcentrations, tempK, estimated_t_max * 10); // CSTRs often need larger tau
+    if (!limitingReactant || !desiredProduct) {
+        return { series: [], xAxis: '', yAxis: '', legend: [], yMax: 'dataMax' }
     }
 
-    const selectivityData: { x: number; y: number }[] = [];
-    const volumeData: { x: number; y: number }[] = [];
+    const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`
+    let yLabel = ''
+    const legend: string[] = []
+    const series: any[] = []
+    
+    const colors = {
+        pfr: '#22c55e', // green
+        cstr: '#3b82f6'  // blue
+    }
 
-    // --- STEP 4: Calculate Final Volume from Performance Data ---
-    for (const point of performanceVsTau) {
-        const { tau, concentrations } = point;
-        const C_A_out = concentrations[limitingReactant.name] || 0;
-        const C_product_out = concentrations[desiredProduct.name] || 0;
+    let overallReasonableMax = -1 // Used to find a good axis limit across all visible curves
 
-        const conversion = (C_A0 - C_A_out) / C_A0;
-        const molesReactantConsumed = C_A0 - C_A_out;
-        const molesProductFormed = C_product_out;
-        const selectivity = molesReactantConsumed > 1e-9 ? molesProductFormed / molesReactantConsumed : 1;
+    // Loop through the selected reactor types
+    for (const type in reactorTypes) {
+        if (reactorTypes[type as keyof typeof reactorTypes]) {
+            let dataToShow: {
+                selectivityData: { x: number; y: number }[];
+                volumeData: { x: number; y: number }[];
+            } = { selectivityData: [], volumeData: [] }
 
-        if (conversion > 0.001 && conversion < 0.999) {
-            selectivityData.push({ x: conversion, y: selectivity });
+            const reactorType = type.toUpperCase() as 'PFR' | 'CSTR'
 
-            if (C_product_out > 1e-9) {
-                const q = targetProduction_mol_s / C_product_out; // Required volumetric flow rate
-                const V = q * tau; // Required reactor volume
-                volumeData.push({ x: conversion, y: V });
+            // --- Calculation for each type (logic is unchanged) ---
+            if (reactorType === 'PFR') {
+                if (reactionPhase === 'Gas') {
+                    dataToShow = calculatePfrGasPhase(
+                        reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate)
+                    )
+                } else {
+                    dataToShow = calculatePfrLiquidPhase(
+                        reactions, components, tempK, molarRatios, simBasis, parseFloat(prodRate)
+                    )
+                }
+            } else { // CSTR
+                const F_A0_guess = 10.0
+                const initialFlowRates = { [limitingReactant.name]: F_A0_guess }
+                molarRatios.forEach(ratio => {
+                    const compName = components.find(c => c.id === ratio.numeratorId)?.name
+                    if (compName) initialFlowRates[compName] = F_A0_guess * ratio.value
+                })
+                components.forEach(c => {
+                    if (initialFlowRates[c.name] === undefined) initialFlowRates[c.name] = 0
+                })
+                
+                dataToShow = calculateCstrData(
+                    reactions, components, initialFlowRates, tempK, simBasis, 
+                    reactionPhase,
+                    pressure,
+                    parseFloat(prodRate)
+                )
+            }
+
+            // --- **FIX START**: Determine a reasonable Y-axis max for volume graphs ---
+            if (graphType === 'volume') {
+                const volumeData = dataToShow.volumeData;
+                const reasonablePoints = volumeData.filter(p => p.x < 0.95); // Find all points below 98% conversion
+                if (reasonablePoints.length > 0) {
+                    const lastReasonablePoint = reasonablePoints[reasonablePoints.length - 1];
+                    // If this curve's reasonable max is higher, it becomes the new overall max
+                    if (lastReasonablePoint.y > overallReasonableMax) {
+                        overallReasonableMax = lastReasonablePoint.y;
+                    }
+                }
+            }
+            // --- **FIX END** ---
+
+            const seriesName = `${reactorType.toUpperCase()} - ${desiredProduct?.name || 'Product'}`
+            legend.push(seriesName)
+            
+            if (graphType === 'volume') {
+                yLabel = 'Reactor Volume (m³)'
+
+                const finalVolumeData = dataToShow.volumeData
+                                            .map(d => [d.x, d.y]); // already in m³
+
+                series.push({ 
+                    name: seriesName, 
+                    type: 'line', 
+                    data: finalVolumeData, 
+                    smooth: true, 
+                    showSymbol: false, 
+                    color: colors[type as keyof typeof colors],
+                    lineStyle: { width: 4 } 
+                })
+            } else { 
+                yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`
+                series.push({ 
+                    name: seriesName, 
+                    type: 'line', 
+                    data: dataToShow.selectivityData.map(d => [d.x, d.y]), 
+                    smooth: true, 
+                    showSymbol: false, 
+                    color: colors[type as keyof typeof colors],
+                    lineStyle: { width: 4 }
+                })
             }
         }
     }
     
-    // --- STEP 5: Format for Charting ---
-    // (This part of your code remains unchanged)
-    const dataToShow = { selectivityData, volumeData };
-    const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`;
-    let yLabel = '';
-    let legend: string[] = [];
-    let series: any[] = [];
-    
-    if (graphType === 'volume') {
-      yLabel = 'Reactor Volume (m³)';
-      legend = ['Volume'];
-      series = [{ name: legend[0], type: 'line', data: dataToShow.volumeData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 4, color: '#22c55e' } }];
-    } else { 
-      yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`;
-      legend = [desiredProduct?.name || 'Product'];
-      series = [{ name: legend[0], type: 'line', data: dataToShow.selectivityData.map(d => [d.x, d.y]), smooth: true, showSymbol: false, lineStyle: { width: 4, color: '#22c55e' } }];
+    // Set the final Y-axis max value
+    let yAxisMax: number | 'dataMax' = 'dataMax';
+    if (graphType === 'volume' && overallReasonableMax > 0) {
+        yAxisMax = overallReasonableMax * 1.1; // Add a 10% buffer for better appearance
     }
-    
-    return { series, xAxis: xLabel, yAxis: yLabel, legend };
-  }, [reactorType, molarRatios, temperature, graphType, tempK, reactions, components, simBasis, prodRate]);
+
+    return { series, xAxis: xLabel, yAxis: yLabel, legend, yMax: yAxisMax }
+
+}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, tempK, reactions, components, simBasis, prodRate])
 
   const graphData = generateGraphData();
 
@@ -1201,7 +1865,7 @@ const ReactorSimulator = ({
     animation: false,
     backgroundColor: 'transparent',
     title: {
-        text: `${reactorType} Performance`,
+        text: `${reactorTypes.pfr ? 'PFR' : 'CSTR'} Performance`,
         left: 'center',
         top: '2%',
         textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
@@ -1223,18 +1887,18 @@ const ReactorSimulator = ({
         nameLocation: 'middle',
         nameGap: 50,
         nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
-        min: 0, 
+        min: 0,
         
-        // MODIFICATION: Set max to 1 for selectivity/conversion, otherwise auto-scale
-        max: ['selectivity', 'selectivityVsConversion', 'conversion'].includes(graphType) ? 1 : 'dataMax',
-        
+        // **FIX START**: Use the dynamic max value for volume graphs
+        max: graphType === 'selectivity' ? 1 : graphData.yMax,
+        // **FIX END**
+
         axisLine: { lineStyle: { color: textColor } },
-        axisLabel: { 
-            color: textColor, 
-            fontSize: 14, 
+        axisLabel: {
+            color: textColor,
+            fontSize: 14,
             fontFamily: 'Merriweather Sans',
-            formatter: (value: number) => graphType === 'volume' ? value.toPrecision(3) : value.toString(), // Only use toPrecision for volume graphs
-            showMaxLabel: true 
+            formatter: (value: number) => graphType === 'volume' ? value.toPrecision(3) : value.toString(),
         },
         splitLine: { show: false },
     },
@@ -1250,43 +1914,44 @@ const ReactorSimulator = ({
       borderColor: isDark ? '#4B5563' : '#d1d5db',
       textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
       
-      // 1. Format the tooltips that appear on the axes
       axisPointer: {
         type: 'cross',
         label: {
-          backgroundColor: isDark ? '#374151' : '#e5e7eb', // A dark grey color
+          backgroundColor: isDark ? '#374151' : '#e5e7eb',
           color: textColor,
           fontFamily: 'Merriweather Sans',
           fontSize: 12,
           formatter: function (params) {
-            // Use toPrecision(3) for 3 significant figures
-            return parseFloat(params.value as string).toPrecision(3);
+            return parseFloat(params.value as string).toPrecision(3)
           }
         }
       },
 
-      // 2. Format the main data tooltip that appears on hover
+      // This formatter function creates the custom tooltip content
       formatter: (params: any) => {
         if (!params || params.length === 0) {
-            return '';
+            return ''
         }
 
-        // Get the x-axis name (e.g., "Conversion") and format its value
-        const xAxisLabel = graphData.xAxis.split(' ')[0]; 
-        const xAxisValue = parseFloat(params[0].axisValue).toPrecision(3);
-        
-        let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}<br/>`;
+        // 1. Format the X-axis label (e.g., "Conversion: 0.540")
+        const xAxisLabel = graphData.xAxis.split(' ')[0]
+        const xAxisValue = parseFloat(params[0].axisValue).toPrecision(3)
+        let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}`
 
-        // Add a line for each data series (e.g., Volume)
+        // 2. Create a new line for each series (PFR, CSTR)
         params.forEach((p: any) => {
-            const seriesName = p.seriesName;
-            const seriesValue = parseFloat(p.value[1]).toPrecision(3);
-            // Use green circle marker instead of the default colored dot
-            const greenMarker = '<span style="color: #22c55e;">●</span>';
-            tooltipContent += `${greenMarker} ${seriesName}: <strong>${seriesValue}</strong>`;
-        });
+            const seriesName = p.seriesName
+            const seriesValue = parseFloat(p.value[1]).toPrecision(3)
+            const seriesColor = p.color // Get the color of the line from the chart
 
-        return tooltipContent;
+            // Add a line break before each series' data
+            tooltipContent += `<br/>`
+            
+            // Format the series name with its color, and keep the value in the default color
+            tooltipContent += `<span style="color: ${seriesColor}; font-weight: bold;">${seriesName}:</span> <strong>${seriesValue}</strong>`
+        })
+
+        return tooltipContent
       }
     },
     series: graphData.series
@@ -1349,6 +2014,25 @@ const ReactorSimulator = ({
                 minSliderValue={tempMin}
                 onMinSliderChange={setTempMin}
             />
+
+
+
+            {/* Pressure Slider (only for Gas phase) */}
+            {reactionPhase === 'Gas' && (
+                <ParameterSlider
+                    label="Pressure"
+                    unit="bar"
+                    value={pressure.toString()}
+                    onValueChange={(value) => setPressure(value)}
+                    min={parseFloat(pressureMin)}
+                    max={parseFloat(pressureMax)}
+                    step={0.5}
+                    maxSliderValue={pressureMax}
+                    onMaxSliderChange={setPressureMax}
+                    minSliderValue={pressureMin}
+                    onMinSliderChange={setPressureMin}
+                />
+            )}
             </div>
 
             {/* Graph Card */}
@@ -1359,16 +2043,16 @@ const ReactorSimulator = ({
                         {/* Wrap the buttons in a muted background for a nice toggle effect */}
                         <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
                             <Button
-                                onClick={() => setReactorType('PFR')}
-                                variant={reactorType === 'PFR' ? 'default' : 'ghost'}
+                                onClick={() => handleReactorTypeChange('pfr')}
+                                variant={reactorTypes.pfr ? 'default' : 'ghost'}
                                 size="sm"
                                 className="text-xs px-3 py-1 h-auto"
                             >
                                 PFR
                             </Button>
                             <Button
-                                onClick={() => setReactorType('CSTR')}
-                                variant={reactorType === 'CSTR' ? 'default' : 'ghost'}
+                                onClick={() => handleReactorTypeChange('cstr')}
+                                variant={reactorTypes.cstr ? 'default' : 'ghost'}
                                 size="sm"
                                 className="text-xs px-3 py-1 h-auto"
                             >
@@ -1389,7 +2073,7 @@ const ReactorSimulator = ({
                 </div>
             </div>
           <ReactECharts
-            key={`${resolvedTheme}-${reactorType}`}
+            key={`${resolvedTheme}-${reactorTypes.pfr ? 'pfr' : 'cstr'}`}
             option={chartOptions}
             style={{ height: '100%', width: '100%', minHeight: '450px' }}
             notMerge={true}
@@ -1509,80 +2193,7 @@ const findVolumeForConversion_PFR = (
     return high * 1.1; // Return a safe upper bound if bisection doesn't converge
 };
 
-const findVolumeForConversion_CSTR = (
-    targetConversion: number,
-    reactions: ReactionSetup[],
-    components: ComponentSetup[],
-    initialFlowRates: { [key: string]: number },
-    tempK: number,
-    simBasis: { limitingReactantId: string; desiredProductId: string }
-): number => {
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
-    if (!limitingReactant) return 2000;
 
-    const allInvolvedComponents = components.filter(c => Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0));
-    const parsedReactions = {
-        reactions: reactions.map(reactionInfo => {
-            const reactants: any[] = [];
-            const products: any[] = [];
-            allInvolvedComponents.forEach(comp => {
-                const reactionData = comp.reactionData?.[reactionInfo.id];
-                if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
-                    const parsedComp = { name: comp.name, stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)), reactionOrderNum: parseFloat(reactionData.order || '0') };
-                    if (parseFloat(reactionData.stoichiometry) < 0) reactants.push(parsedComp);
-                    else products.push(parsedComp);
-                }
-            });
-            const A = parseFloat(reactionInfo.AValue); const Ea = parseFloat(reactionInfo.EaValue);
-            return { reactants, products, rateConstantAtT: A * Math.exp(-Ea / (8.314 * tempK)) };
-        }),
-        allInvolvedComponents: allInvolvedComponents.map(c => ({ name: c.name, id: c.id })),
-    };
-
-    // This function now returns both conversion and the full outlet flow solution
-    const solveAndGetConversion = (volumeGuess: number, initialGuess?: number[]): { conversion: number, outletFlows: {[key:string]: number} } => {
-        const debugSolver = false;
-        const outletFlows = solveCSTRParallel(parsedReactions, components, volumeGuess, initialFlowRates, 'Liquid', 1, tempK, initialGuess, debugSolver);
-        const F_A0 = initialFlowRates[limitingReactant.name] || 0;
-        const F_A_final = outletFlows[limitingReactant.name] || 0;
-        const currentConversion = (F_A0 > 1e-9) ? (F_A0 - F_A_final) / F_A0 : 0;
-        return { conversion: currentConversion, outletFlows: outletFlows };
-    };
-
-    let low = 0.1;
-    let high = 100.0;
-    const maxBracketingIter = 10;
-    let lastSolverResult: number[] | undefined = undefined;
-
-    // Step 1: Bracket the root using continuation.
-    for (let i = 0; i < maxBracketingIter; i++) {
-        const result = solveAndGetConversion(high, lastSolverResult);
-        
-        // Use the successful result as the guess for the next, larger volume
-        lastSolverResult = parsedReactions.allInvolvedComponents.map((c: any) => result.outletFlows[c.name] || 0);
-
-        if (result.conversion >= targetConversion) break; // Root is bracketed
-
-        low = high;
-        high *= 10;
-        if (i === maxBracketingIter - 1) return high;
-    }
-
-    // Step 2: Bisection to refine. Continuation is less critical here.
-    const maxIter = 50;
-    for (let i = 0; i < maxIter; i++) {
-        const mid = (low + high) / 2;
-        if (mid === low || mid === high) break;
-        const error = solveAndGetConversion(mid).conversion - targetConversion;
-        if (Math.abs(error) < 0.01) return mid * 1.05;
-        if (error < 0) {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    return high * 1.1;
-};
 
 // Add this new helper function to your file
 const calculatePfrDataByTau = (
@@ -1799,7 +2410,10 @@ export default function Home() {
   const [molarRatios, setMolarRatios] = useState<Array<{numeratorId: string, value: number}>>([]);
   
   // State for production rate now lives in the parent component
-  const [prodRate, setProdRate] = useState('100'); 
+  const [prodRate, setProdRate] = useState('100');
+
+  // Add reactionPhase to your state declarations
+  const [reactionPhase, setReactionPhase] = useState<'Liquid' | 'Gas'>('Liquid'); 
 
   // --- MODIFICATION START ---
   // This function now correctly identifies ONLY primary reactants (chemicals that are
@@ -1880,7 +2494,8 @@ export default function Home() {
               simBasis={simBasis}
               molarRatios={molarRatios}
               setMolarRatios={setMolarRatios}
-              prodRate={prodRate} // Pass state down
+              reactionPhase={reactionPhase} // Pass the phase state down
+              prodRate={prodRate}
             />
   } else {
     return <KineticsInput 
@@ -1891,6 +2506,8 @@ export default function Home() {
               setComponentsSetup={setComponentsSetup}
               simBasis={simBasis}
               setSimBasis={setSimBasis}
+              reactionPhase={reactionPhase}      // Pass state down
+              setReactionPhase={setReactionPhase} // Pass setter down
               prodRate={prodRate} // Pass state and setter down
               setProdRate={setProdRate}
             />
