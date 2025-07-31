@@ -348,8 +348,6 @@ const calculateCstrData = (
     const r_A_initial = initialRates[limitingReactant.name] || 0;
     const initialSelectivity = (r_A_initial < -1e-9) ? (r_P_initial / -r_A_initial) : 1.0;
 
-    rawSelectivityData.push({ x: 0, y: Math.max(0, initialSelectivity) });
-    rawVolumeData.push({ x: 0, y: 0 });
     // **FIX END**
 
     const F_A0_basis = initialFlowRates[limitingReactant.name] || 0;
@@ -393,7 +391,7 @@ const calculateCstrData = (
         const selectivity = molesProductFormed / molesReactantConsumed;
         // **FIX END**
 
-        if (conversion >= 0 && conversion <= 0.9999 && V_true < Infinity) {
+        if (conversion >= 1e-6 && conversion <= 0.9999 && V_true < Infinity) {
              rawSelectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
              rawVolumeData.push({ x: conversion, y: V_true });
         }
@@ -981,6 +979,12 @@ const calculatePfrGasPhase = (
     const F0_basis_vec = components.map(c => F0_basis_dict[c.name] || 0);
     const F_tot0_basis = F0_basis_vec.reduce((sum, f) => sum + f, 0);
 
+    // --- Calculate initial selectivity ---
+    const initialRates = calculateNetFormationRates(F0_basis_dict, reactions, components, tempK, 'Gas', pressure_bar);
+    const r_P_initial = initialRates[desiredProduct.name] || 0;
+    const r_A_initial = initialRates[limitingReactant.name] || 0;
+    const initialSelectivity = (r_A_initial < -1e-9) ? (r_P_initial / -r_A_initial) : 1.0;
+
     // --- Start of existing simulation loop ---
     let F_current = F0_basis_vec;
     let V_current = 0;
@@ -1011,7 +1015,7 @@ const calculatePfrGasPhase = (
         const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_current_val;
         const selectivity = molesConsumed > 1e-9 ? F_P_current_val / molesConsumed : 0;
         
-        if (conversion >= 0 && conversion < 0.9999 && selectivity > 1e-6) {
+        if (conversion >= 1e-6 && conversion < 0.9999 && selectivity > 1e-6) {
             // --- correct Eq. F-35 scaling ---
             const F_tot0_basis = F0_basis_vec.reduce((s,f)=>s+f,0);          // ΣF₀,basis
             const F_A0_true   = P_C_mol_s / (selectivity*conversion);  // Eq.F-10
@@ -1072,6 +1076,12 @@ const calculatePfrLiquidPhase = (
         if (compName) F0_basis_dict[compName] = ratio.value;
     });
     const F0_basis_vec = components.map(c => F0_basis_dict[c.name] || 0);
+
+    // --- Calculate initial selectivity ---
+    const initialRates = calculateNetFormationRates(F0_basis_dict, reactions, components, tempK, 'Liquid', 1); // Pressure=1 is arbitrary for liquid
+    const r_P_initial = initialRates[desiredProduct.name] || 0;
+    const r_A_initial = initialRates[limitingReactant.name] || 0;
+    const initialSelectivity = (r_A_initial < -1e-9) ? (r_P_initial / -r_A_initial) : 1.0;
 
     // --- Calculate volumetric flow 'q' for the basis run (L/s) ---
     let q_basis = 0;
@@ -1164,7 +1174,7 @@ const calculatePfrLiquidPhase = (
         // 3. Scale the volume by the ratio of volumetric flows and convert from Liters to m³.
         const V_true = (q_basis > 1e-9 && q_true > 0) ? (1e-3 * V_current * (q_true / q_basis)) : Infinity;
         
-        if (conversion >= 0.001 && conversion < 0.9999 && V_true < Infinity && selectivity > 0) {
+        if (conversion >= 1e-6 && conversion < 0.9999 && V_true < Infinity && selectivity > 0) {
             rawSelectivityData.push({ x: conversion, y: selectivity });
             rawVolumeData.push({ x: conversion, y: V_true });
         }
@@ -1740,9 +1750,9 @@ const ReactorSimulator = ({
   const [tempMax, setTempMax] = useState('20');
   // Removed local prodRate state
 
-  const tempK = temperature + 273.15
-  
   const generateGraphData = useCallback(() => {
+    const tempK = temperature + 273.15
+    
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
 
@@ -1857,7 +1867,7 @@ const ReactorSimulator = ({
 
     return { series, xAxis: xLabel, yAxis: yLabel, legend, yMax: yAxisMax }
 
-}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, tempK, reactions, components, simBasis, prodRate])
+}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate])
 
   const graphData = generateGraphData();
 
