@@ -3,6 +3,7 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import Navbar from "@/components/Navbar";
 import Script from 'next/script';
+import 'leaflet/dist/leaflet.css';
 
 
 export default function RootLayout({
