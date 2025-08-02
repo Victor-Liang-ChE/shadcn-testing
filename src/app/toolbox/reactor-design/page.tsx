@@ -1916,16 +1916,23 @@ const ReactorSimulator = ({
 }, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate])
 
   const graphData = generateGraphData();
+    // --- MODIFICATION: Set chart title based on selection ---
+    let chartTitle = 'Reactor Performance'; // Default title
+    if (reactorTypes.pfr && !reactorTypes.cstr) {
+        chartTitle = 'PFR Performance';
+    } else if (!reactorTypes.pfr && reactorTypes.cstr) {
+        chartTitle = 'CSTR Performance';
+    }
 
-  const chartOptions: EChartsOption = {
-    animation: false,
-    backgroundColor: 'transparent',
-    title: {
-        text: `${reactorTypes.pfr ? 'PFR' : 'CSTR'} Performance`,
-        left: 'center',
-        top: '2%',
-        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
-    },
+    const chartOptions: EChartsOption = {
+        animation: false,
+        backgroundColor: 'transparent',
+        title: {
+                text: chartTitle, // Use the new dynamic title
+                left: 'center',
+                top: '2%',
+                textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
+        },
     grid: { left: '5%', right: '3%', bottom: '8%', top: '10%', containLabel: true },
     xAxis: {
         type: 'value',
