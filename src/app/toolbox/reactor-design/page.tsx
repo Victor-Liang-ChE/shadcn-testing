@@ -1767,7 +1767,7 @@ const ReactorSimulator = ({
     
     const colors = {
         pfr: '#22c55e', // green
-        cstr: '#3b82f6'  // blue
+        cstr: '#E53E3E'  // red
     }
 
     let overallReasonableMax = -1 // Used to find a good axis limit across all visible curves
@@ -1825,8 +1825,53 @@ const ReactorSimulator = ({
                 }
             }
             // --- **FIX END** ---
+// This formatter function creates the custom tooltip content
+      formatter: (params: any) => {
+        if (!params || params.length === 0) {
+            return ''
+        }
 
-            const seriesName = `${reactorType.toUpperCase()} - ${desiredProduct?.name || 'Product'}`
+        const xAxisLabel = graphData.xAxis.split(' ')[0]
+        const xAxisValue = parseFloat(parseFloat(params[0].axisValue).toPrecision(6))
+        let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}`
+
+        params.forEach((p: any) => {
+            const seriesName = p.seriesName
+            const rawValue = parseFloat(p.value[1])
+            let formattedValue = ''
+
+            if (graphType === 'selectivity') {
+                formattedValue = rawValue.toPrecision(3)
+            } else { // 'volume'
+                if (rawValue === 0) {
+                    formattedValue = '0';
+                } else if (rawValue < 1) {
+                    formattedValue = rawValue.toPrecision(3);
+                } else {
+                    const magnitude = Math.floor(Math.log10(rawValue));
+                    const scale = Math.pow(10, magnitude - 2);
+                    formattedValue = (Math.round(rawValue / scale) * scale).toLocaleString('en-US', {useGrouping: true, maximumFractionDigits: 20});
+                }
+                // --- MODIFICATION: Add units to the volume string ---
+                formattedValue += ' m³';
+            }
+            
+            const seriesColor = p.color
+
+            tooltipContent += `<br/>`
+            tooltipContent += `<span style="color: ${seriesColor}; font-weight: bold;">${seriesName}:</span> <strong>${formattedValue}</strong>`
+        })
+
+        return tooltipContent
+      }
+            // --- MODIFICATION: Check how many reactors are active ---
+            const activeReactorCount = (reactorTypes.pfr ? 1 : 0) + (reactorTypes.cstr ? 1 : 0);
+
+            // --- MODIFICATION: Set the series name conditionally ---
+            const baseName = graphType === 'volume' ? 'Reactor Volume' : 'Selectivity';
+            const seriesName = activeReactorCount > 1
+                ? `${reactorType.toUpperCase()} - ${baseName}`
+                : baseName;
             legend.push(seriesName)
             
             if (graphType === 'volume') {
@@ -1862,7 +1907,8 @@ const ReactorSimulator = ({
     // Set the final Y-axis max value
     let yAxisMax: number | 'dataMax' = 'dataMax';
     if (graphType === 'volume' && overallReasonableMax > 0) {
-        yAxisMax = overallReasonableMax * 1.1; // Add a 10% buffer for better appearance
+        // --- MODIFICATION: Set max directly. ECharts will handle the scaling. ---
+        yAxisMax = overallReasonableMax;
     }
 
     return { series, xAxis: xLabel, yAxis: yLabel, legend, yMax: yAxisMax }
@@ -1884,6 +1930,8 @@ const ReactorSimulator = ({
     xAxis: {
         type: 'value',
         name: graphData.xAxis,
+    // --- MODIFICATION: Add the scale property ---
+    scale: true,
         nameLocation: 'middle', nameGap: 30,
         nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
         min: 0, max: 1,
@@ -1903,12 +1951,34 @@ const ReactorSimulator = ({
         max: graphType === 'selectivity' ? 1 : graphData.yMax,
         // **FIX END**
 
+        axisTick: {
+            show: true
+        },
+
         axisLine: { lineStyle: { color: textColor } },
         axisLabel: {
             color: textColor,
             fontSize: 14,
             fontFamily: 'Merriweather Sans',
-            formatter: (value: number) => graphType === 'volume' ? value.toPrecision(3) : value.toString(),
+            // This formatter hides the label for the maximum tick
+            formatter: (value: number) => {
+                if (
+                    graphType === 'volume' &&
+                    typeof graphData.yMax === 'number' &&
+                    value >= graphData.yMax
+                ) {
+                    return '';
+                }
+                // Formatting for all other labels remains the same
+                if (graphType === 'volume') {
+                    if (value === 0) return '0';
+                    if (value < 1) return value.toPrecision(3);
+                    const magnitude = Math.floor(Math.log10(value));
+                    const scale = Math.pow(10, magnitude - 2);
+                    return (Math.round(value / scale) * scale).toString();
+                }
+                return value.toString();
+            }
         },
         splitLine: { show: false },
     },
@@ -1937,31 +2007,48 @@ const ReactorSimulator = ({
         }
       },
 
-      // This formatter function creates the custom tooltip content
-      formatter: (params: any) => {
-        if (!params || params.length === 0) {
-            return ''
-        }
-
-        // 1. Format the X-axis label (e.g., "Conversion: 0.540")
-        const xAxisLabel = graphData.xAxis.split(' ')[0]
-        const xAxisValue = parseFloat(params[0].axisValue).toPrecision(3)
-        let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}`
-
-        // 2. Create a new line for each series (PFR, CSTR)
-        params.forEach((p: any) => {
-            const seriesName = p.seriesName
-            const seriesValue = parseFloat(p.value[1]).toPrecision(3)
-            const seriesColor = p.color // Get the color of the line from the chart
-
-            // Add a line break before each series' data
-            tooltipContent += `<br/>`
-            
-            // Format the series name with its color, and keep the value in the default color
-            tooltipContent += `<span style="color: ${seriesColor}; font-weight: bold;">${seriesName}:</span> <strong>${seriesValue}</strong>`
-        })
-
-        return tooltipContent
+      // This formatter function creates the custom tooltip content 
+       formatter: (params: any) => { 
+         if (!params || params.length === 0) { 
+             return '' 
+         } 
+ 
+         const xAxisLabel = graphData.xAxis.split(' ')[0] 
+         const xAxisValue = parseFloat(parseFloat(params[0].axisValue).toPrecision(6)) 
+         let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}` 
+ 
+         params.forEach((p: any) => { 
+             const seriesName = p.seriesName // This name is now updated 
+             const rawValue = parseFloat(p.value[1]) 
+             let formattedValue = '' 
+ 
+             // --- MODIFICATION: Conditional Value Formatting --- 
+             if (graphType === 'selectivity') { 
+                 // Format selectivity to 3 significant figures 
+                 formattedValue = rawValue.toPrecision(3) 
+             } else { // 'volume' 
+                 if (rawValue === 0) { 
+                     formattedValue = '0'; 
+                 } else if (rawValue < 1) { 
+                     // For values < 1, use scientific notation with 3 sig figs 
+                     formattedValue = rawValue.toPrecision(3); 
+                 } else { 
+                     // For values >= 1, round to 3 sig figs without scientific notation 
+                     const magnitude = Math.floor(Math.log10(rawValue)); 
+                     const scale = Math.pow(10, magnitude - 2); // Adjust scale for 3 sig figs 
+                     formattedValue = (Math.round(rawValue / scale) * scale).toLocaleString('en-US', {useGrouping: true, maximumFractionDigits: 20}); 
+                 } 
+                 // --- MODIFICATION: Add units to the volume string --- 
+                 formattedValue += ' m³'; 
+             } 
+             // --- END MODIFICATION ---
+             const seriesColor = p.color 
+ 
+            tooltipContent += `<br/>` 
+             tooltipContent += `<span style="color: ${seriesColor}; font-weight: bold;">${seriesName}:</span> <strong>${formattedValue}</strong>` 
+         }) 
+ 
+         return tooltipContent
       }
     },
     series: graphData.series
