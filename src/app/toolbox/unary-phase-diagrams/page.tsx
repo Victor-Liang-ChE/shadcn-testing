@@ -1,4 +1,3 @@
-
 'use client';
 const convertTempToK = (value: number, unit: 'C' | 'K' | 'F'): number => {
   if (unit === 'C') return value + 273.15;
@@ -44,7 +43,7 @@ import {
 } from '@/lib/property-equations';
 
 // --- Annotation Placement Helpers ---
-interface NormalizationBox { width: number; height: number; xMin: number; yMin: number; }
+interface NormalizationBox { width: number; height: number; xMin: number; yMin: number; xMax: number; yMax: number; }
 
 const distanceSqNormalized = (p1: number[], p2: number[], norm: NormalizationBox): number => {
   if (norm.width === 0 || norm.height === 0) { return (p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2; }
@@ -172,6 +171,45 @@ export default function PhaseDiagramPage() {
     switch (unit) { case 'Pa': return 1; case 'kPa': return 1 / 1000; case 'bar': return 1 / 100000; case 'atm': return 1 / 101325; default: return 1 / 100000; }
   }, []);
 
+  const findBestSpot = useCallback((regionName: string, searchBox: any, boundaries: any[], isPointInRegion: (x: number, y: number) => boolean, breakTiesByCentroid: boolean) => {
+    let bestPoints: number[][] = []; let maxMinDistSq = -1;
+    const gridDensity = 100; 
+    const normBox: NormalizationBox = { xMin: searchBox.xMin, xMax: searchBox.xMax, yMin: searchBox.yMin, yMax: searchBox.yMax, width: searchBox.xMax - searchBox.xMin, height: searchBox.yMax - searchBox.yMin };
+    
+    for (let i = 0; i <= gridDensity; i++) {
+        const x = searchBox.xMin + (searchBox.xMax - searchBox.xMin) * i / gridDensity;
+        for (let j = 0; j <= gridDensity; j++) {
+            const y = searchBox.yMin + (searchBox.yMax - searchBox.yMin) * j / gridDensity;
+            if (!isPointInRegion(x, y)) continue;
+            const normDistToLeft = ((x - searchBox.xMin) / normBox.width)**2; 
+            const normDistToRight = ((searchBox.xMax - x) / normBox.width)**2; 
+            const normDistToBottom = ((y - searchBox.yMin) / normBox.height)**2; 
+            const normDistToTop = ((searchBox.yMax - y) / normBox.height)**2;
+            let minBoundaryDistSq = Math.min(normDistToLeft, normDistToRight, normDistToBottom, normDistToTop);
+            for (const curve of boundaries) { 
+                minBoundaryDistSq = Math.min(minBoundaryDistSq, minDistToCurveSqNormalized([x,y], curve, normBox)); 
+            }
+            if (minBoundaryDistSq > maxMinDistSq) { 
+                maxMinDistSq = minBoundaryDistSq; 
+                bestPoints = [[x, y]]; 
+            } else if (Math.abs(minBoundaryDistSq - maxMinDistSq) < 1e-9) { 
+                bestPoints.push([x, y]); 
+            }
+        }
+    }
+    let finalBestPoint: number[] | null = null;
+    if (bestPoints.length > 0) {
+        if (breakTiesByCentroid && bestPoints.length > 1) { 
+            const sumX = bestPoints.reduce((acc, p) => acc + p[0], 0); 
+            const sumY = bestPoints.reduce((acc, p) => acc + p[1], 0); 
+            finalBestPoint = [sumX / bestPoints.length, sumY / bestPoints.length]; 
+        } else { 
+            finalBestPoint = bestPoints[0]; 
+        }
+    }
+    return finalBestPoint;
+  }, []);
+
   const fetchCompoundData = useCallback(async (name: string): Promise<FetchedPhaseData | null> => {
     if (!supabase) throw new Error("Supabase client not initialized.");
     const trimmedName = name.trim();
@@ -184,9 +222,27 @@ export default function PhaseDiagramPage() {
         if (compoundError || !compoundDbData) { throw new Error(compoundError?.message || `Compound '${trimmedName}' not found.`); }
         const { data: propsData, error: propsError } = await supabase.from('compound_properties').select('properties').eq('compound_id', compoundDbData.id).limit(1).single();
         if (propsError || !propsData) { throw new Error(`No properties found for ${compoundDbData.name}.`); }
-        const heatOfFusionKmol = parseCoefficient(propsData.properties["Heat of fusion at melting point"]);
-        const fetchedData: FetchedPhaseData = { name: compoundDbData.name, criticalTemp: parseCoefficient(propsData.properties["Critical temperature"]), criticalPressure: parseCoefficient(propsData.properties["Critical pressure"]), triplePointTemp: parseCoefficient(propsData.properties["Triple point temperature"]), triplePointPressure: parseCoefficient(propsData.properties["Triple point pressure"]), normalBoilingPoint: parseCoefficient(propsData.properties["Normal boiling point"]), normalMeltingPoint: parseCoefficient(propsData.properties["Melting point"]), molarWeight: compoundDbData.molecular_weight, heatOfFusion: heatOfFusionKmol ? heatOfFusionKmol / 1000 : null, heatOfVaporization: propsData.properties["Heat of vaporization"], vapourPressure: propsData.properties["Vapour pressure"], liquidDensity: propsData.properties["Liquid density"], solidDensity: propsData.properties["Solid density"], };
-        dataCache.current.set(cacheKey, fetchedData); return fetchedData;
+        const heatOfFusionValue = parseCoefficient(propsData.properties["Heat of fusion at melting point"]);
+        
+        const fetchedData: FetchedPhaseData = {
+            name: compoundDbData.name,
+            criticalTemp: parseCoefficient(propsData.properties["Critical temperature"]),
+            criticalPressure: parseCoefficient(propsData.properties["Critical pressure"]),
+            triplePointTemp: parseCoefficient(propsData.properties["Triple point temperature"]),
+            triplePointPressure: parseCoefficient(propsData.properties["Triple point pressure"]),
+            normalBoilingPoint: parseCoefficient(propsData.properties["Normal boiling point"]),
+            normalMeltingPoint: parseCoefficient(propsData.properties["Melting point"]),
+            molarWeight: compoundDbData.molecular_weight,
+            // --- FIX IS HERE ---
+            // Store the value directly. The units are handled in the plotting function.
+            heatOfFusion: heatOfFusionValue, 
+            heatOfVaporization: propsData.properties["Heat of vaporization"],
+            vapourPressure: propsData.properties["Vapour pressure"],
+            liquidDensity: propsData.properties["Liquid density"],
+            solidDensity: propsData.properties["Solid density"],
+        };
+        dataCache.current.set(cacheKey, fetchedData);
+        return fetchedData;
     } catch (err: any) { dataCache.current.set(cacheKey, null); throw err; } finally { setLoading(false); }
   }, []);
 
@@ -197,178 +253,156 @@ export default function PhaseDiagramPage() {
   useEffect(() => { if (!hasInitialLoaded.current) { hasInitialLoaded.current = true; handleFetchAndPlot(); } }, [handleFetchAndPlot]);
 
   const plotPhaseDiagram = useCallback((data: FetchedPhaseData | null) => {
-    if (!data || !data.criticalTemp || !data.criticalPressure || !data.triplePointTemp || !data.triplePointPressure) { setEchartsOptions({}); return; }
+  if (!data || !data.criticalTemp || !data.criticalPressure || !data.triplePointTemp || !data.triplePointPressure) { setEchartsOptions({}); return; }
     
-    const { criticalTemp, criticalPressure, triplePointTemp, triplePointPressure, vapourPressure, heatOfFusion, heatOfVaporization } = data;
-    const isDark = resolvedTheme === 'dark';
-    const textColor = isDark ? 'white' : '#000000';
-    const factor = getUnitFactor(pressureUnit);
-    const series: (LineSeriesOption | ScatterSeriesOption | any)[] = [];
-    let vaporizationData: [number, number][] = [], fusionData: [number, number][] = [], sublimationData: [number, number][] = [];
+  const { criticalTemp, criticalPressure, triplePointTemp, triplePointPressure, vapourPressure, heatOfFusion, heatOfVaporization } = data;
+  const isDark = resolvedTheme === 'dark';
+  const textColor = isDark ? 'white' : '#000000';
+  const factor = getUnitFactor(pressureUnit);
+  const series: (LineSeriesOption | ScatterSeriesOption | any)[] = [];
+  let vaporizationData: [number, number][] = [], fusionData: [number, number][] = [], sublimationData: [number, number][] = [];
 
-    const transformPressure = (p: number | null): number => {
-        if (p === null) return -Infinity;
-        const value = p * factor;
-        return logScaleY ? (value > 0 ? Math.log10(value) : -Infinity) : value;
-    };
+  const transformPressure = (p: number | null): number => {
+    if (p === null) return -Infinity;
+    const value = p * factor;
+    return logScaleY ? (value > 0 ? Math.log10(value) : -Infinity) : value;
+  };
 
-    // 0. Define Axis Ranges Manually using the helper
   const T_c_unit = convertTempFromK(criticalTemp, tempUnit);
   const T_t_unit = convertTempFromK(triplePointTemp, tempUnit);
-
-  const minTempInC = -273.15;
-  const minTempInK = minTempInC + 273.15; // 0 K (Absolute Zero)
+  const minTempInK = 0;
   const axisXMin = convertTempFromK(minTempInK, tempUnit);
-
-  // Calculate the range from absolute zero to the critical temperature
   const tempRange = T_c_unit - axisXMin;
-  // Add 25% of that range to the critical temperature for the new max
   const preliminaryMax = T_c_unit + 0.25 * tempRange;
-
   const { max: axisXMax } = getNiceAxisBounds(axisXMin, preliminaryMax, 8);
   let axisYMin: number, axisYMax: number;
 
-    if (logScaleY) {
-        axisYMin = Math.floor(transformPressure(triplePointPressure / 10000));
-        axisYMax = Math.ceil(transformPressure(criticalPressure * 2));
-    } else {
-        const { min: niceYMin, max: niceYMax } = getNiceAxisBounds(0, transformPressure(criticalPressure * 1.5));
-        axisYMin = niceYMin;
-        axisYMax = niceYMax;
-    }
+  if (logScaleY) {
+    const triplePointExponent = Math.floor(Math.log10(Math.max(triplePointPressure, 1e-10) * factor));
+    axisYMin = triplePointExponent - 5;
+    axisYMax = Math.ceil(transformPressure(criticalPressure * 2));
+  } else {
+    const { min: niceYMin, max: niceYMax } = getNiceAxisBounds(0, transformPressure(criticalPressure * 1.5));
+    axisYMin = niceYMin;
+    axisYMax = niceYMax;
+  }
     
-    // 1. Generate Curve Data
-    if (vapourPressure) {
-        const vpCoeffs = { A: parseCoefficient(vapourPressure.A), B: parseCoefficient(vapourPressure.B), C: parseCoefficient(vapourPressure.C), D: parseCoefficient(vapourPressure.D), E: parseCoefficient(vapourPressure.E) };
-        if (vapourPressure['eqno'] && Object.values(vpCoeffs).every(c => c !== null)) {
-            const numPoints = Math.max(Math.floor(Math.abs(criticalTemp - triplePointTemp)), 2) || 100;
-            for (let i = 0; i <= numPoints; i++) {
-                const tempK = triplePointTemp + (criticalTemp - triplePointTemp) * (i / numPoints);
-                const pPa = calculatePropertyByEquation(vapourPressure['eqno'], tempK, vpCoeffs, criticalTemp);
-                if (pPa !== null && pPa > 0) vaporizationData.push([convertTempFromK(tempK, tempUnit), transformPressure(pPa)]);
-            }
-        }
-    }
-    // Corrected Fusion Line Logic
-    if (triplePointTemp && triplePointPressure && criticalPressure && criticalTemp) {
-        const startTempK = triplePointTemp, startPressPa = triplePointPressure;
-        let highPressurePa;
-        if (logScaleY) {
-            highPressurePa = Math.pow(10, axisYMax) / factor;
-        } else {
-            highPressurePa = axisYMax / factor;
-        }
-        let endTempK = data.name.toLowerCase() === 'water' ? startTempK - (criticalTemp - startTempK) * 0.1 : startTempK + (criticalTemp - startTempK) * 0.2;
-        for (let i = 0; i <= 50; i++) {
-            const fraction = i / 50;
-            fusionData.push([convertTempFromK(startTempK + (endTempK - startTempK) * fraction, tempUnit), transformPressure(startPressPa + (highPressurePa - startPressPa) * fraction)]);
-        }
-    }
-    if (heatOfFusion && heatOfVaporization) {
-        const hvCoeffs = { A: parseCoefficient(heatOfVaporization.A), B: parseCoefficient(heatOfVaporization.B), C: parseCoefficient(heatOfVaporization.C), D: parseCoefficient(heatOfVaporization.D), E: parseCoefficient(heatOfVaporization.E) };
-        if (heatOfVaporization['eqno'] && Object.values(hvCoeffs).every(c => c !== null)) {
-            const hVapKm = calculatePropertyByEquation(heatOfVaporization['eqno'], triplePointTemp, hvCoeffs, criticalTemp);
-            if (hVapKm !== null && heatOfFusion !== null) {
-                const deltaH_sub = heatOfFusion + (hVapKm / 1000);
-                // Convert axisXMin from display unit to Kelvin for calculations
-                const startTempK = convertTempToK(axisXMin, tempUnit);
-                for (let i = 0; i <= 100; i++) {
-                    const T2 = startTempK + (triplePointTemp - startTempK) * i / 100;
-                    if (T2 > 0) {
-                        const pPa = triplePointPressure * Math.exp((-deltaH_sub / 8.314) * (1 / T2 - 1 / triplePointTemp));
-                        if (pPa > 0) sublimationData.push([convertTempFromK(T2, tempUnit), transformPressure(pPa)]);
-                    }
-                }
-            }
-        }
-    }
-    if (vaporizationData.length > 0) series.push({ name: 'Vaporization', type: 'line', data: vaporizationData, symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 2 });
-    if (fusionData.length > 0) series.push({ name: 'Fusion', type: 'line', data: fusionData, symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 2 });
-    if (sublimationData.length > 0) series.push({ name: 'Sublimation', type: 'line', data: sublimationData, symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 2 });
-    
-    // 2. Add Key Points and Supercritical Lines
-    const T_c = convertTempFromK(criticalTemp, tempUnit), P_c = transformPressure(criticalPressure);
-    const T_t = convertTempFromK(triplePointTemp, tempUnit), P_t = transformPressure(triplePointPressure);
-  series.push({ name: 'Critical Point', type: 'scatter', data: [{ value: [T_c, P_c], itemStyle: { color: 'green' } }], symbolSize: 10, z: 10 });
-    series.push({ name: 'Supercritical Boundary', type: 'line',
-        markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)', width: 1.5 }, data: [[{ coord: [T_c, P_c] }, { yAxis: axisYMax, xAxis: T_c }], [{ coord: [T_c, P_c] }, { xAxis: axisXMax, yAxis: P_c }]], z: 1 },
-    });
-  series.push({ name: 'Triple Point', type: 'scatter', data: [{ value: [T_t, P_t], itemStyle: { color: 'red' } }], symbolSize: 10, z: 10 });
+  // --- START: UNIFIED DATA GENERATION ---
 
-    // 3. Annotation Placement
-    const debugSeries: any[] = [];
-    const annotationPoints = [];
-    const chartBox = { xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax };
-    const normBox: NormalizationBox = { ...chartBox, width: chartBox.xMax - chartBox.xMin, height: chartBox.yMax - chartBox.yMin };
+  // 1. Create a single, high-resolution master array of temperatures for the entire chart.
+  const axisMinTempK = convertTempToK(axisXMin, tempUnit);
+  const axisMaxTempK = convertTempToK(axisXMax, tempUnit);
+  const totalPointsForChart = 300;
+  let masterTemperaturesK: number[] = [];
+
+  for (let i = 0; i <= totalPointsForChart; i++) {
+    const tempK = axisMinTempK + (axisMaxTempK - axisMinTempK) * i / totalPointsForChart;
+    masterTemperaturesK.push(tempK);
+  }
+  masterTemperaturesK.push(triplePointTemp, criticalTemp);
+  masterTemperaturesK = [...new Set(masterTemperaturesK)].sort((a, b) => a - b);
+    
+  // 2. Calculate all three curves using the master temperature array to ensure alignment.
+    
+  // Vaporization Curve Data
+  if (vapourPressure) {
+    const vpCoeffs = { A: parseCoefficient(vapourPressure.A), B: parseCoefficient(vapourPressure.B), C: parseCoefficient(vapourPressure.C), D: parseCoefficient(vapourPressure.D), E: parseCoefficient(vapourPressure.E) };
+    if (vapourPressure['eqno'] && Object.values(vpCoeffs).every(c => c !== null)) {
+      for (const tempK of masterTemperaturesK) {
+        if (tempK >= triplePointTemp && tempK <= criticalTemp) {
+          const pPa = calculatePropertyByEquation(vapourPressure['eqno'], tempK, vpCoeffs, criticalTemp);
+          if (pPa !== null && pPa > 0) {
+            vaporizationData.push([convertTempFromK(tempK, tempUnit), transformPressure(pPa)]);
+          }
+        }
+      }
+    }
+  }
+
+  // Fusion Curve Data
+  if (triplePointTemp && triplePointPressure && criticalPressure && criticalTemp) {
+    const startTempK = triplePointTemp;
+    const startPressPa = triplePointPressure;
+    let highPressurePa = logScaleY ? Math.pow(10, axisYMax) / factor : axisYMax / factor;
+    let endTempK = data.name.toLowerCase() === 'water' 
+      ? startTempK - (criticalTemp - startTempK) * 0.1 
+      : startTempK + (criticalTemp - startTempK) * 0.2;
+
+    const minFusionTemp = Math.min(startTempK, endTempK);
+    const maxFusionTemp = Math.max(startTempK, endTempK);
+        
+    for (const tempK of masterTemperaturesK) {
+      if (tempK >= minFusionTemp && tempK <= maxFusionTemp) {
+        const totalTempRange = endTempK - startTempK;
+        if (Math.abs(totalTempRange) > 1e-9) {
+          const fraction = (tempK - startTempK) / totalTempRange;
+          const fusionPressPa = startPressPa + (highPressurePa - startPressPa) * fraction;
+          fusionData.push([convertTempFromK(tempK, tempUnit), transformPressure(fusionPressPa)]);
+        }
+      }
+    }
+  }
+    
+  // Sublimation Curve Data
+  if (heatOfFusion && heatOfVaporization && triplePointPressure > 0) {
+    const hvCoeffs = { A: parseCoefficient(heatOfVaporization.A), B: parseCoefficient(heatOfVaporization.B), C: parseCoefficient(heatOfVaporization.C), D: parseCoefficient(heatOfVaporization.D), E: parseCoefficient(heatOfVaporization.E) };
+    if (heatOfVaporization['eqno'] && Object.values(hvCoeffs).every(c => c !== null)) {
+      const hVap_J_per_kmol = calculatePropertyByEquation(heatOfVaporization['eqno'], triplePointTemp, hvCoeffs, criticalTemp);
             
-    const findBestSpot = (regionName: string, searchBox: any, boundaries: any[], isPointInRegion: (x: number, y: number) => boolean, breakTiesByCentroid: boolean) => {
-        let bestPoints: number[][] = []; let maxMinDistSq = -1;
-        let dbgGrid: number[][] = [], dbgValid: number[][] = [];
-        const gridDensity = 100; 
-        for (let i = 0; i <= gridDensity; i++) {
-            const x = searchBox.xMin + (searchBox.xMax - searchBox.xMin) * i / gridDensity;
-            for (let j = 0; j <= gridDensity; j++) {
-                const y = searchBox.yMin + (searchBox.yMax - searchBox.yMin) * j / gridDensity;
-                if (!isPointInRegion(x, y)) continue;
-                const normDistToLeft = ((x - searchBox.xMin) / normBox.width)**2; const normDistToRight = ((searchBox.xMax - x) / normBox.width)**2; const normDistToBottom = ((y - searchBox.yMin) / normBox.height)**2; const normDistToTop = ((searchBox.yMax - y) / normBox.height)**2;
-                let minBoundaryDistSq = Math.min(normDistToLeft, normDistToRight, normDistToBottom, normDistToTop);
-                for (const curve of boundaries) { minBoundaryDistSq = Math.min(minBoundaryDistSq, minDistToCurveSqNormalized([x,y], curve, normBox)); }
-                if (minBoundaryDistSq > maxMinDistSq) { maxMinDistSq = minBoundaryDistSq; bestPoints = [[x, y]]; } else if (Math.abs(minBoundaryDistSq - maxMinDistSq) < 1e-9) { bestPoints.push([x, y]); }
+      if (hVap_J_per_kmol !== null && heatOfFusion !== null) {
+        const deltaH_sub_J_per_kmol = heatOfFusion + hVap_J_per_kmol;
+        const deltaH_sub_J_per_mol = deltaH_sub_J_per_kmol / 1000;
+                
+        for (const tempK of masterTemperaturesK) {
+          if (tempK > 0 && tempK < triplePointTemp) {
+            const pPa = triplePointPressure * Math.exp((-deltaH_sub_J_per_mol / 8.314) * (1 / tempK - 1 / triplePointTemp));
+            if (pPa > 0) {
+              sublimationData.push([convertTempFromK(tempK, tempUnit), transformPressure(pPa)]);
             }
-        }
-        let finalBestPoint: number[] | null = null;
-        if (bestPoints.length > 0) {
-            if (breakTiesByCentroid && bestPoints.length > 1) { const sumX = bestPoints.reduce((acc, p) => acc + p[0], 0); const sumY = bestPoints.reduce((acc, p) => acc + p[1], 0); finalBestPoint = [sumX / bestPoints.length, sumY / bestPoints.length]; } 
-            else { finalBestPoint = bestPoints[0]; }
-        }
-        return finalBestPoint;
-    };
-    
-    const verticalCritLine = [[T_c, P_c], [T_c, axisYMax]];
-    const horizontalCritLine = [[T_c, P_c], [axisXMax, P_c]];
-    const spotSolid = findBestSpot("Solid", chartBox, [fusionData, sublimationData], (x,y) => { if(x > T_t && y < P_t) return false; const fusionT = getBoundaryValue(y, fusionData, false); const subT = getBoundaryValue(y, sublimationData, false); return (fusionT !== null && x < fusionT) || (subT !== null && x < subT); }, false);
-    if(spotSolid) annotationPoints.push({ name: 'Solid', value: spotSolid });
-    const spotLiquid = findBestSpot("Liquid", chartBox, [fusionData, vaporizationData], (x,y) => { if (x >= T_c || y >= P_c || y < P_t) return false; const fusionT = getBoundaryValue(y, fusionData, false); const vapP = getBoundaryValue(x, vaporizationData, true); return fusionT !== null && vapP !== null && x > fusionT && y > vapP; }, false);
-    if(spotLiquid) annotationPoints.push({ name: 'Liquid', value: spotLiquid });
-    const spotGas = findBestSpot("Gas", chartBox, [sublimationData, vaporizationData, horizontalCritLine], (x,y) => { if (x < T_t) { const subP = getBoundaryValue(x, sublimationData, true); return subP !== null && y < subP; } else if (x >= T_t && x < T_c) { const vapP = getBoundaryValue(x, vaporizationData, true); return vapP !== null && y < vapP; } else { return y < P_c; } }, false);
-    if(spotGas) annotationPoints.push({ name: 'Gas', value: spotGas });
-    const spotSuper = findBestSpot("Supercritical", chartBox, [verticalCritLine, horizontalCritLine], (x,y) => x > T_c && y > P_c, true);
-    if(spotSuper) annotationPoints.push({ name: 'Supercritical', value: spotSuper });
-    series.push({ name: 'Phases', type: 'scatter', data: annotationPoints, symbol: 'circle', symbolSize: 0, label: { show: true, position: 'inside', formatter: '{b}', color: textColor, fontSize: 16, fontWeight: 'bold', fontFamily: 'Merriweather Sans', opacity: 0.6 }, z: 5, silent: true });
-    
-    // 4. ECharts Options
-    setEchartsOptions({
-        backgroundColor: 'transparent',
-        title: { text: `Phase Diagram for ${data.name}`, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
-        grid: { left: '8%', right: '5%', bottom: '10%', top: '5%', containLabel: true },
-        tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', color: textColor, fontFamily: 'Merriweather Sans', formatter: (params: any) => { if (params.axisDimension === 'x') { return `${formatNumber(params.value, 3)} ${getTempUnitSymbol(tempUnit)}`; } else if (params.axisDimension === 'y') { const realP = logScaleY ? Math.pow(10, params.value) : params.value; return `${formatNumber(realP, 3)} ${pressureUnit}`; } return params.value; } } }, backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', textStyle: { color: textColor, fontFamily: 'Merriweather Sans' }, formatter: (params: any) => { if (!params || params.length === 0) return ''; const temp = params[0].axisValue; let tooltipContent = `Temperature: <b>${formatNumber(temp, 3)} ${getTempUnitSymbol(tempUnit)}</b><br/>`; params.forEach((param: any) => { if (param.seriesName && !['Phases', 'Supercritical Boundary'].includes(param.seriesName) && !param.seriesName.includes('Grid') && !param.seriesName.includes('Valid') && !param.seriesName.includes('Best') && !param.seriesName.includes('Circle')) { const chartP = param.value[1]; const realP = logScaleY ? Math.pow(10, chartP) : chartP; tooltipContent += `${param.seriesName}: <b>${formatNumber(realP, 3)} ${pressureUnit}</b><br/>`; } }); return tooltipContent.slice(0, -5); } },
-    legend: {
-      data: [
-        'Vaporization',
-        'Fusion',
-        'Sublimation',
-        {
-          name: 'Critical Point',
-          itemStyle: {
-            color: 'green'
-          }
-        },
-        {
-          name: 'Triple Point',
-          itemStyle: {
-            color: 'red'
           }
         }
-      ],
-      bottom: 5,
-      textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 },
-      inactiveColor: '#4b5563'
-    },
+        sublimationData.push([T_t_unit, transformPressure(triplePointPressure)]);
+      }
+    }
+  }
+    
+  // --- END: UNIFIED DATA GENERATION --- 
+  if (vaporizationData.length > 0) series.push({ name: 'Vaporization', type: 'line', data: vaporizationData, symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 2 });
+  if (fusionData.length > 0) series.push({ name: 'Fusion', type: 'line', data: fusionData, symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 2 });
+  if (sublimationData.length > 0) series.push({ name: 'Sublimation', type: 'line', data: sublimationData, symbol: 'none', lineStyle: { width: 2.5 }, showSymbol: false, z: 2 });
+    
+  // ... (rest of the function is unchanged)
+  const T_c = convertTempFromK(criticalTemp, tempUnit), P_c = transformPressure(criticalPressure);
+  const T_t = convertTempFromK(triplePointTemp, tempUnit), P_t = transformPressure(triplePointPressure);
+  series.push({ name: 'Critical Point', type: 'scatter', data: [{ value: [T_c, P_c], itemStyle: { color: 'green' } }], symbolSize: 10, z: 10 });
+  series.push({ name: 'Supercritical Boundary', type: 'line', markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)', width: 1.5 }, data: [[{ coord: [T_c, P_c] }, { yAxis: axisYMax, xAxis: T_c }], [{ coord: [T_c, P_c] }, { xAxis: axisXMax, yAxis: P_c }]], z: 1 }, });
+  series.push({ name: 'Triple Point', type: 'scatter', data: [{ value: [T_t, P_t], itemStyle: { color: 'red' } }], symbolSize: 10, z: 10 });
+    
+  const normBox: NormalizationBox = { xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax, width: axisXMax - axisXMin, height: axisYMax - axisYMin };
+  const annotationPoints = [];
+  const verticalCritLine = [[T_c, P_c], [T_c, axisYMax]];
+  const horizontalCritLine = [[T_c, P_c], [axisXMax, P_c]];
+  const spotSolid = findBestSpot("Solid", {xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax}, [fusionData, sublimationData], (x: number, y: number) => { if(x > T_t && y < P_t) return false; const fusionT = getBoundaryValue(y, fusionData, false); const subT = getBoundaryValue(y, sublimationData, false); return (fusionT !== null && x < fusionT) || (subT !== null && x < subT); }, false);
+  if(spotSolid) annotationPoints.push({ name: 'Solid', value: spotSolid });
+  const spotLiquid = findBestSpot("Liquid", {xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax}, [fusionData, vaporizationData], (x: number, y: number) => { if (x >= T_c || y >= P_c || y < P_t) return false; const fusionT = getBoundaryValue(y, fusionData, false); const vapP = getBoundaryValue(x, vaporizationData, true); return fusionT !== null && vapP !== null && x > fusionT && y > vapP; }, false);
+  if(spotLiquid) annotationPoints.push({ name: 'Liquid', value: spotLiquid });
+  const spotGas = findBestSpot("Gas", {xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax}, [sublimationData, vaporizationData, horizontalCritLine], (x: number, y: number) => { if (x < T_t) { const subP = getBoundaryValue(x, sublimationData, true); return subP !== null && y < subP; } else if (x >= T_t && x < T_c) { const vapP = getBoundaryValue(x, vaporizationData, true); return vapP !== null && y < vapP; } else { return y < P_c; } }, false);
+  if(spotGas) annotationPoints.push({ name: 'Gas', value: spotGas });
+  const spotSuper = findBestSpot("Supercritical", {xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax}, [verticalCritLine, horizontalCritLine], (x: number, y: number) => x > T_c && y > P_c, true);
+  if(spotSuper) annotationPoints.push({ name: 'Supercritical', value: spotSuper });
+  series.push({ name: 'Phases', type: 'scatter', data: annotationPoints, symbol: 'circle', symbolSize: 0, label: { show: true, position: 'inside', formatter: '{b}', color: textColor, fontSize: 16, fontWeight: 'bold', fontFamily: 'Merriweather Sans', opacity: 0.6 }, z: 5, silent: true });
+    
+  setEchartsOptions({
+    backgroundColor: 'transparent',
+    title: { text: `Phase Diagram for ${data.name}`, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
+    grid: { left: '8%', right: '5%', bottom: '10%', top: '5%', containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', color: textColor, fontFamily: 'Merriweather Sans', formatter: (params: any) => { if (params.axisDimension === 'x') { return `${formatNumber(params.value, 3)} ${getTempUnitSymbol(tempUnit)}`; } else if (params.axisDimension === 'y') { const realP = logScaleY ? Math.pow(10, params.value) : params.value; return `${formatNumber(realP, 3)} ${pressureUnit}`; } return params.value; } } }, backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', textStyle: { color: textColor, fontFamily: 'Merriweather Sans' }, formatter: (params: any) => { if (!Array.isArray(params) || params.length === 0) return ''; const header = `Temperature: <b>${formatNumber(params[0].axisValue, 3)} ${getTempUnitSymbol(tempUnit)}</b>`; const lines = params.filter(param => param.seriesName && !['Phases', 'Supercritical Boundary', 'Critical Point', 'Triple Point'].includes(param.seriesName)).map(param => { const chartP = param.value[1]; const realP = logScaleY ? Math.pow(10, chartP) : chartP; return `<span style="color: ${param.color};">${param.seriesName}: <b>${formatNumber(realP, 3)} ${pressureUnit}</b></span>`; }); return [header, ...lines].join('<br/>');} },
+  legend: { data: [ 'Vaporization', 'Fusion', 'Sublimation', { name: 'Critical Point', itemStyle: { color: 'green' } }, { name: 'Triple Point', itemStyle: { color: 'red' } } ], bottom: 5, textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 }, inactiveColor: '#4b5563' },
   xAxis: { type: 'value', name: `Temperature (${getTempUnitSymbol(tempUnit)})`, nameLocation: 'middle', nameGap: 30, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16, showMinLabel: false, showMaxLabel: false }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 12 }, splitLine: { show: false }, scale: false, min: axisXMin, max: axisXMax },
   yAxis: logScaleY ? { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 50, min: axisYMin, max: axisYMax, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, hideOverlap: false, showMaxLabel: true, showMinLabel: true, interval: 1, formatter: (val: number) => `1e${val.toFixed(0)}` }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, minorTick: { show: true, splitNumber: 9, length: 5 }, splitLine: { show: false }, minorSplitLine: { show: false }, scale: false, } as any : { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 50, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, formatter: (val: number) => { if (Math.abs(val) >= 1e6 || (Math.abs(val) < 1e-3 && val !== 0)) { return val.toExponential(1); } return val.toString(); } }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, splitLine: { show: false }, scale: false, min: axisYMin, max: axisYMax } as any,
-        series: series,
+    series: series,
     });
-  }, [pressureUnit, tempUnit, logScaleY, resolvedTheme, getUnitFactor]);
+  }, [pressureUnit, tempUnit, logScaleY, resolvedTheme, getUnitFactor, findBestSpot]);
 
   useEffect(() => {
       plotPhaseDiagram(compoundData);
@@ -383,8 +417,8 @@ export default function PhaseDiagramPage() {
     try {
         const { data, error } = await supabase.from('compounds').select('name').ilike('name', `${value}%`).limit(5);
         if (error) throw error;
-        setCompoundSuggestions(data.map(d => d.name));
-        setShowSuggestions(data.length > 0);
+        setCompoundSuggestions(data?.map(d => d.name) || []);
+        setShowSuggestions((data?.length || 0) > 0);
     } catch (err) { console.error("Suggestion fetch error:", err); }
   }, []);
 
@@ -393,10 +427,12 @@ export default function PhaseDiagramPage() {
       setCompoundName(value);
       handleFetchSuggestions(value);
   };
+  
   const handleSuggestionClick = (name: string) => {
-  setCompoundName(name);
-  setShowSuggestions(false);
+    setCompoundName(name);
+    setShowSuggestions(false);
   };
+  
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
       event.preventDefault();
