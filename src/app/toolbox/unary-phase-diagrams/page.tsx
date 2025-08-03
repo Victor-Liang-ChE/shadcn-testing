@@ -1,4 +1,10 @@
+
 'use client';
+const convertTempToK = (value: number, unit: 'C' | 'K' | 'F'): number => {
+  if (unit === 'C') return value + 273.15;
+  if (unit === 'F') return (value - 32) * 5/9 + 273.15;
+  return value;
+};
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
@@ -207,10 +213,20 @@ export default function PhaseDiagramPage() {
     };
 
     // 0. Define Axis Ranges Manually using the helper
-    const T_c_unit = convertTempFromK(criticalTemp, tempUnit);
-    const T_t_unit = convertTempFromK(triplePointTemp, tempUnit);
-    const { min: axisXMin, max: axisXMax } = getNiceAxisBounds(T_t_unit - 200, T_c_unit + 150, 8);
-    let axisYMin: number, axisYMax: number;
+  const T_c_unit = convertTempFromK(criticalTemp, tempUnit);
+  const T_t_unit = convertTempFromK(triplePointTemp, tempUnit);
+
+  const minTempInC = -273.15;
+  const minTempInK = minTempInC + 273.15; // 0 K (Absolute Zero)
+  const axisXMin = convertTempFromK(minTempInK, tempUnit);
+
+  // Calculate the range from absolute zero to the critical temperature
+  const tempRange = T_c_unit - axisXMin;
+  // Add 25% of that range to the critical temperature for the new max
+  const preliminaryMax = T_c_unit + 0.25 * tempRange;
+
+  const { max: axisXMax } = getNiceAxisBounds(axisXMin, preliminaryMax, 8);
+  let axisYMin: number, axisYMax: number;
 
     if (logScaleY) {
         axisYMin = Math.floor(transformPressure(triplePointPressure / 10000));
@@ -254,7 +270,8 @@ export default function PhaseDiagramPage() {
             const hVapKm = calculatePropertyByEquation(heatOfVaporization['eqno'], triplePointTemp, hvCoeffs, criticalTemp);
             if (hVapKm !== null && heatOfFusion !== null) {
                 const deltaH_sub = heatOfFusion + (hVapKm / 1000);
-                const startTempK = convertTempFromK(axisXMin, tempUnit) + 273.15;
+                // Convert axisXMin from display unit to Kelvin for calculations
+                const startTempK = convertTempToK(axisXMin, tempUnit);
                 for (let i = 0; i <= 100; i++) {
                     const T2 = startTempK + (triplePointTemp - startTempK) * i / 100;
                     if (T2 > 0) {
@@ -272,11 +289,11 @@ export default function PhaseDiagramPage() {
     // 2. Add Key Points and Supercritical Lines
     const T_c = convertTempFromK(criticalTemp, tempUnit), P_c = transformPressure(criticalPressure);
     const T_t = convertTempFromK(triplePointTemp, tempUnit), P_t = transformPressure(triplePointPressure);
-    series.push({ name: 'Critical Point', type: 'scatter', data: [{ value: [T_c, P_c], itemStyle: { color: '#d62728' } }], symbolSize: 10, z: 10 });
+  series.push({ name: 'Critical Point', type: 'scatter', data: [{ value: [T_c, P_c], itemStyle: { color: 'green' } }], symbolSize: 10, z: 10 });
     series.push({ name: 'Supercritical Boundary', type: 'line',
         markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)', width: 1.5 }, data: [[{ coord: [T_c, P_c] }, { yAxis: axisYMax, xAxis: T_c }], [{ coord: [T_c, P_c] }, { xAxis: axisXMax, yAxis: P_c }]], z: 1 },
     });
-    series.push({ name: 'Triple Point', type: 'scatter', data: [{ value: [T_t, P_t], itemStyle: { color: '#ff7f0e' } }], symbolSize: 10, z: 10 });
+  series.push({ name: 'Triple Point', type: 'scatter', data: [{ value: [T_t, P_t], itemStyle: { color: 'red' } }], symbolSize: 10, z: 10 });
 
     // 3. Annotation Placement
     const debugSeries: any[] = [];
@@ -325,9 +342,30 @@ export default function PhaseDiagramPage() {
         title: { text: `Phase Diagram for ${data.name}`, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
         grid: { left: '8%', right: '5%', bottom: '10%', top: '5%', containLabel: true },
         tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', color: textColor, fontFamily: 'Merriweather Sans', formatter: (params: any) => { if (params.axisDimension === 'x') { return `${formatNumber(params.value, 3)} ${getTempUnitSymbol(tempUnit)}`; } else if (params.axisDimension === 'y') { const realP = logScaleY ? Math.pow(10, params.value) : params.value; return `${formatNumber(realP, 3)} ${pressureUnit}`; } return params.value; } } }, backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', textStyle: { color: textColor, fontFamily: 'Merriweather Sans' }, formatter: (params: any) => { if (!params || params.length === 0) return ''; const temp = params[0].axisValue; let tooltipContent = `Temperature: <b>${formatNumber(temp, 3)} ${getTempUnitSymbol(tempUnit)}</b><br/>`; params.forEach((param: any) => { if (param.seriesName && !['Phases', 'Supercritical Boundary'].includes(param.seriesName) && !param.seriesName.includes('Grid') && !param.seriesName.includes('Valid') && !param.seriesName.includes('Best') && !param.seriesName.includes('Circle')) { const chartP = param.value[1]; const realP = logScaleY ? Math.pow(10, chartP) : chartP; tooltipContent += `${param.seriesName}: <b>${formatNumber(realP, 3)} ${pressureUnit}</b><br/>`; } }); return tooltipContent.slice(0, -5); } },
-        legend: { data: ['Vaporization', 'Fusion', 'Sublimation', 'Critical Point', 'Triple Point'], bottom: 5, textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 }, inactiveColor: '#4b5563' },
-        xAxis: { type: 'value', name: `Temperature (${getTempUnitSymbol(tempUnit)})`, nameLocation: 'middle', nameGap: 30, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 12 }, splitLine: { show: false }, scale: false, min: axisXMin, max: axisXMax },
-        yAxis: logScaleY ? { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 75, min: axisYMin, max: axisYMax, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, hideOverlap: false, showMaxLabel: true, showMinLabel: true, interval: 1, formatter: (val: number) => `1e${val.toFixed(0)}` }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, minorTick: { show: true, splitNumber: 9, length: 5 }, splitLine: { show: false }, minorSplitLine: { show: false }, scale: false, } as any : { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 75, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, formatter: (val: number) => { if (Math.abs(val) >= 1e6 || (Math.abs(val) < 1e-3 && val !== 0)) { return val.toExponential(1); } return val.toString(); } }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, splitLine: { show: false }, scale: false, min: axisYMin, max: axisYMax } as any,
+    legend: {
+      data: [
+        'Vaporization',
+        'Fusion',
+        'Sublimation',
+        {
+          name: 'Critical Point',
+          itemStyle: {
+            color: 'green'
+          }
+        },
+        {
+          name: 'Triple Point',
+          itemStyle: {
+            color: 'red'
+          }
+        }
+      ],
+      bottom: 5,
+      textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 },
+      inactiveColor: '#4b5563'
+    },
+  xAxis: { type: 'value', name: `Temperature (${getTempUnitSymbol(tempUnit)})`, nameLocation: 'middle', nameGap: 30, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16, showMinLabel: false, showMaxLabel: false }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 12 }, splitLine: { show: false }, scale: false, min: axisXMin, max: axisXMax },
+  yAxis: logScaleY ? { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 50, min: axisYMin, max: axisYMax, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, hideOverlap: false, showMaxLabel: true, showMinLabel: true, interval: 1, formatter: (val: number) => `1e${val.toFixed(0)}` }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, minorTick: { show: true, splitNumber: 9, length: 5 }, splitLine: { show: false }, minorSplitLine: { show: false }, scale: false, } as any : { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 50, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, formatter: (val: number) => { if (Math.abs(val) >= 1e6 || (Math.abs(val) < 1e-3 && val !== 0)) { return val.toExponential(1); } return val.toString(); } }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, splitLine: { show: false }, scale: false, min: axisYMin, max: axisYMax } as any,
         series: series,
     });
   }, [pressureUnit, tempUnit, logScaleY, resolvedTheme, getUnitFactor]);
@@ -356,9 +394,8 @@ export default function PhaseDiagramPage() {
       handleFetchSuggestions(value);
   };
   const handleSuggestionClick = (name: string) => {
-      setCompoundName(name);
-      setShowSuggestions(false);
-      inputRef.current?.focus();
+  setCompoundName(name);
+  setShowSuggestions(false);
   };
   const handleInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
