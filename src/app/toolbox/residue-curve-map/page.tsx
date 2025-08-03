@@ -405,7 +405,6 @@ export default function TernaryResidueMapPage() {
             updated[index] = [];
             return updated;
         });
-        inputRefs.current[index]?.focus();
     };
 
     useEffect(() => {

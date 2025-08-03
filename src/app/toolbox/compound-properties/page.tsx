@@ -1505,7 +1505,6 @@ export default function CompoundPropertiesPage() {
   const handleSuggestionClick = (compoundId: string, suggestion: string) => {
     setCompounds(prev => prev.map(c => {
       if (c.id === compoundId) {
-        c.inputRef.current?.focus();
         return { ...c, name: suggestion, suggestions: [], showSuggestions: false, error: null };
       }
       return c;

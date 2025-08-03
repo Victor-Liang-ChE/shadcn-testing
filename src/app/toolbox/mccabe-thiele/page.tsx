@@ -430,12 +430,10 @@ export default function McCabeThielePage() {
       setComp1Name(suggestion);
       setShowComp1Suggestions(false);
       setComp1Suggestions([]);
-      input1Ref.current?.focus(); // Keep focus on the input
     } else {
       setComp2Name(suggestion);
       setShowComp2Suggestions(false);
       setComp2Suggestions([]);
-      input2Ref.current?.focus(); // Keep focus on the input
     }
     // setActiveSuggestionInput(null); // Don't reset active input here, let blur handle it or next focus
   };

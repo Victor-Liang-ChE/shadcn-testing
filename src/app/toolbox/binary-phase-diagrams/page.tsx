@@ -773,11 +773,9 @@ export default function VleDiagramPage() {
         if (inputTarget === 'comp1') {
             setComp1Name(suggestion);
             setShowComp1Suggestions(false);
-            input1Ref.current?.focus();
         } else {
             setComp2Name(suggestion);
             setShowComp2Suggestions(false);
-            input2Ref.current?.focus();
         }
     };
 

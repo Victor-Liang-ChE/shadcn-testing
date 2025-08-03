@@ -330,9 +330,9 @@ export default function AzeotropeFinderPage() {
 
   const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
     if (inputTarget === 'comp1') {
-      setComp1Name(suggestion); setShowComp1Suggestions(false); setComp1Suggestions([]); input1Ref.current?.focus();
+      setComp1Name(suggestion); setShowComp1Suggestions(false); setComp1Suggestions([]);
     } else {
-      setComp2Name(suggestion); setShowComp2Suggestions(false); setComp2Suggestions([]); input2Ref.current?.focus();
+      setComp2Name(suggestion); setShowComp2Suggestions(false); setComp2Suggestions([]);
     }
   };
 
