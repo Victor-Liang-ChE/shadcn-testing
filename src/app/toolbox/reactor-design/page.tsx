@@ -1,9 +1,12 @@
+
 "use client"
+
+let concentrations: { [key: string]: number } = {};
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { EChartsOption } from 'echarts'
-import { PlusCircle, Trash2, ArrowLeft } from 'lucide-react'
+import { PlusCircle, Trash2, ArrowLeft, ArrowRight } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -18,15 +21,81 @@ import { SelectValue } from '@/components/ui/select';
 import { SelectContent } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 
+// ==================================================================
+// ▼▼▼ PLACE THE UNIT CONVERSION UTILITY HERE ▼▼▼
+// ==================================================================
+
+const units = {
+    YEAR_IN_SECONDS: 365 * 24 * 3600,
+    PASCALS_PER_BAR: 1e5,
+    CUBIC_METERS_PER_LITER: 0.001,
+    GRAMS_PER_KILOTONNE: 1e9,
+    KELVIN_OFFSET: 273.15,
+}
+
+const convertUnit = {
+    kinetics: {
+        kcToKp: (kc: number, tempK: number, totalOrder: number): number => {
+            // Converts a rate constant from a concentration basis (kc) to a pressure basis (kp).
+            // kc is based on mol/L, kp is based on Pascals.
+            // The conversion is: kp = kc * (R*T)^(-n) where n is the total reactant order.
+            // R must be in (L·Pa)/(mol·K) to match the units.
+            // R = 8.314 m³·Pa/mol·K * 1000 L/m³ = 8314 L·Pa/mol·K.
+            const R_LITERS_PASCALS = 8314;
+            return kc * Math.pow(R_LITERS_PASCALS * tempK, -totalOrder);
+        }
+    },
+    pressure: {
+        barToPa: (bar: number): number => bar * units.PASCALS_PER_BAR,
+    },
+    volume: {
+        litersToCubicMeters: (liters: number): number => liters * units.CUBIC_METERS_PER_LITER,
+    },
+    concentration: {
+        molPerCubicMeterToMolPerLiter: (molPerM3: number): number => molPerM3 * units.CUBIC_METERS_PER_LITER,
+    },
+    temperature: {
+        celsiusToKelvin: (celsius: number): number => celsius + units.KELVIN_OFFSET,
+    },
+    flowRate: {
+        ktaToGramsPerSecond: (kta: number): number => (kta * units.GRAMS_PER_KILOTONNE) / units.YEAR_IN_SECONDS,
+        ktaToMolPerSecond: (kta: number, molarMass_g_per_mol: number): number => {
+            if (molarMass_g_per_mol <= 0) return 0
+            const gramsPerSecond = convertUnit.flowRate.ktaToGramsPerSecond(kta)
+            return gramsPerSecond / molarMass_g_per_mol
+        }
+    },
+    energy: {
+        convertEaToJules: (Ea: number, unit: string): number => {
+            switch (unit) {
+                case 'kcal/mol': return Ea * 4184;
+                case 'cal/mol': return Ea * 4.184;
+                case 'kJ/mol': return Ea * 1000;
+                case 'J/mol':
+                default:
+                    return Ea;
+            }
+        }
+    }
+}
+
+// ==================================================================
+// ▲▲▲ END OF UTILITY SECTION ▲▲▲
+// ==================================================================
+
 // --- Type Definitions ---
 interface ReactionSetup {
     id: string
     AValue: string
+    AUnit: string // New
     EaValue: string
+    EaUnit: string // New
     isEquilibrium: boolean
     AValueBackward?: string
+    AUnitBackward?: string // New
     EaValueBackward?: string
-    rateLawBasis?: 'concentration' | 'partialPressure' // Add this field
+    EaUnitBackward?: string // New
+    rateLawBasis?: 'concentration' | 'partialPressure'
 }
 
 interface ComponentSetup {
@@ -48,8 +117,9 @@ type GraphType = 'selectivity' | 'volume' | 'conversion' | 'flowrates' | 'compos
 
 // Default Data (now used as initial state for the editable form)
 const initialReactions: ReactionSetup[] = [
-    { id: '1', AValue: '3.66e14', EaValue: '101600', isEquilibrium: false, rateLawBasis: 'concentration' },
-    { id: '2', AValue: '4.77e16', EaValue: '110850', isEquilibrium: false, rateLawBasis: 'concentration' },
+    // Butane Alkylation (Liquid phase -> simple units)
+    { id: '1', AValue: '3.66e14', AUnit: 'mol,L,s', EaValue: '101600', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+    { id: '2', AValue: '4.77e16', AUnit: 'mol,L,s', EaValue: '110850', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
 ]
 
 const initialComponents: ComponentSetup[] = [
@@ -110,135 +180,130 @@ const interpolateFromData = (
   return p1.y + ((targetX - p1.x) * (p2.y - p1.y)) / (p2.x - p1.x)
 }
 
-// Replace your existing calculateCstrData function with this one.
 const calculateCstrData = (
     reactions: ReactionSetup[],
     components: ComponentSetup[],
-    initialFlowRates: { [key: string]: number },
+    initialFlowRates: { [key: string]: number }, // Molar flows based on F_A0=1.0
     tempK: number,
     simBasis: { limitingReactantId: string; desiredProductId: string },
     reactionPhase: 'Liquid' | 'Gas',
     pressure_bar: number,
     targetProduction_kta: number
 ) => {
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
-    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] }
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
 
-    const rawSelectivityData: { x: number; y: number }[] = []
-    const rawVolumeData: { x: number; y: number }[] = []
-    
-    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
-    const P_C_target_mols = (targetProduction_kta * 1e9) / productMolarMass / (365 * 24 * 3600);
+    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] };
 
-    // Pass the rate law basis to the parsed object
+    const rawSelectivityData: { x: number; y: number }[] = [];
+    const rawVolumeData: { x: number; y: number }[] = [];
+
+    // --- Prepare inputs for the robust solver ---
+    const allInvolvedComponents = components.filter(c => 
+        Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0)
+    );
     const parsedReactions = {
         reactions: reactions.map(reactionInfo => {
             const reactants: any[] = [];
             const products: any[] = [];
-            components.forEach(comp => {
+            allInvolvedComponents.forEach(comp => {
                 const reactionData = comp.reactionData?.[reactionInfo.id];
                 if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
-                    const parsedComp = { name: comp.name, stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)), reactionOrderNum: parseFloat(reactionData.order || '0') };
+                    const parsedComp = {
+                        name: comp.name,
+                        stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)),
+                        reactionOrderNum: parseFloat(reactionData.order || '0')
+                    };
                     if (parseFloat(reactionData.stoichiometry) < 0) reactants.push(parsedComp);
                     else products.push(parsedComp);
                 }
             });
-            const A = parseFloat(reactionInfo.AValue); const Ea = parseFloat(reactionInfo.EaValue);
+            const A = parseFloat(reactionInfo.AValue);
+            const Ea = parseFloat(reactionInfo.EaValue);
             return { 
-                id: reactionInfo.id,
                 reactants, 
                 products, 
-                rateConstantAtT: A * Math.exp(-Ea / (8.314 * tempK)),
-                rateLawBasis: reactionInfo.rateLawBasis || 'concentration' // Pass basis
+                rateConstantAtT: A * Math.exp(-Ea / (R * tempK)),
+                rateLawBasis: reactionInfo.rateLawBasis // Pass basis to solver
             };
         }),
-        allInvolvedComponents: components.map(c => ({ name: c.name, id: c.id })),
+        allInvolvedComponents: allInvolvedComponents,
     };
-    
-    // The rest of the function remains unchanged...
-    const getRateOfFormation = (current_F: { [key: string]: number }): number => {
-        let concentrations: { [key: string]: number } = {};
-        const F_vec = parsedReactions.allInvolvedComponents.map((c:any) => current_F[c.name] || 0)
-        
-        if (reactionPhase === 'Liquid') {
-            let v = 0;
-            components.forEach(comp => {
-                const molarMass = parseFloat(comp.molarMass || '1');
-                const density = parseFloat(comp.density || '1000');
-                if (density > 0) v += (current_F[comp.name] * molarMass) / density;
-            });
-            if (v < 1e-9) v = 1e-9;
-            parsedReactions.allInvolvedComponents.forEach((c:any) => concentrations[c.name] = Math.max(0, current_F[c.name]) / v);
-        } else { // Gas Phase
-            const F_total = F_vec.reduce((sum, f) => sum + f, 0);
-            if (F_total < 1e-9) return 0;
-            const P_Pa = pressure_bar * 1e5;
-            parsedReactions.allInvolvedComponents.forEach((c:any) => {
-                const concentration_molPerM3 = Math.max(0, current_F[c.name]) / F_total * P_Pa / (R * tempK);
-                concentrations[c.name] = concentration_molPerM3 * 1e-3; // Convert to mol/L for rate calculations
-            });
+
+    // --- Basis Calculation Setup ---
+    const F_A0_basis = 1.0;
+    const F_in_basis: { [key: string]: number } = { [limitingReactant.name]: F_A0_basis };
+    const F_A_in_basis_for_ratio = initialFlowRates[limitingReactant.name] || 1.0;
+    for (const comp of components) {
+        if (comp.id !== limitingReactant.id) {
+            const ratio = (initialFlowRates[comp.name] || 0) / F_A_in_basis_for_ratio;
+            F_in_basis[comp.name] = F_A0_basis * ratio;
         }
-
-        const reactionRates = parsedReactions.reactions.map((reaction: any) => {
-            let rate = reaction.rateConstantAtT || 0;
-            reaction.reactants.forEach((reactant: any) => {
-                // Check if we should use partial pressure or concentration basis
-                if (reactionPhase === 'Gas' && reaction.rateLawBasis === 'partialPressure') {
-                    // Calculate partial pressure in Pa for this reactant
-                    const F_total = F_vec.reduce((sum, f) => sum + f, 0);
-                    const partialPressure_Pa = Math.max(0, current_F[reactant.name]) / F_total * pressure_bar * 1e5;
-                    rate *= Math.pow(partialPressure_Pa, reactant.reactionOrderNum || 0);
-                } else {
-                    // Use concentration basis (default)
-                    rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
-                }
-            });
-            return rate;
-        });
-
-        let r_C = 0; // Net rate of formation for the desired product
-        parsedReactions.reactions.forEach((reaction: any, j: number) => {
-            const stoich = parseFloat(desiredProduct.reactionData[reaction.id]?.stoichiometry || '0');
-            r_C += stoich * reactionRates[j];
-        });
-        return r_C;
-    };
-    const F_A0_basis = initialFlowRates[limitingReactant.name] || 0;
-    let solverGuess = parsedReactions.allInvolvedComponents.map((c:any) => initialFlowRates[c.name] || 0);
-    const logV_min = -8;
-    const logV_max = 8;
-    const n_steps = 500;
-    const step_size = (logV_max - logV_min) / n_steps;
+    }
+    components.forEach(c => { if (F_in_basis[c.name] === undefined) F_in_basis[c.name] = 0; });
+    
+    // --- Iterate across a logarithmic range of basis volumes ---
+    const logV_min = -8; // from 1e-8 Liters
+    const logV_max = 12;  // to 1e12 Liters
+    // MODIFICATION: Increased steps from 100 to 500 for a smoother curve
+    const n_steps = 500; 
+    let last_F_out_basis: number[] | undefined = undefined;
 
     for (let i = 0; i <= n_steps; i++) {
-        const logV_basis = logV_min + i * step_size;
-        const V_basis = Math.pow(10, logV_basis);
-        const outletFlows_basis = solveCSTR_Robust(parsedReactions, components, V_basis, initialFlowRates, reactionPhase, pressure_bar, tempK, solverGuess);
-        solverGuess = parsedReactions.allInvolvedComponents.map((c:any) => outletFlows_basis[c.name] || 0);
-        const F_A_final_basis = outletFlows_basis[limitingReactant.name] || 0;
-        const molesReactantConsumed = F_A0_basis - F_A_final_basis;
-        if (molesReactantConsumed < 1e-7) continue;
-        const conversion = molesReactantConsumed / F_A0_basis;
-        const r_C = getRateOfFormation(outletFlows_basis);
-        let V_true = (r_C > 1e-9) ? P_C_target_mols / r_C : Infinity;
-        if (reactionPhase === 'Liquid') V_true *= 0.001; // L to m³
-        const molesProductFormed = (outletFlows_basis[desiredProduct.name] || 0) - (initialFlowRates[desiredProduct.name] || 0);
-        const selectivity = molesProductFormed / molesReactantConsumed;
-        if (conversion >= 1e-6 && conversion <= 0.9999 && V_true < Infinity) {
-             rawSelectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
-             rawVolumeData.push({ x: conversion, y: V_true });
+        const logV = logV_min + i * (logV_max - logV_min) / n_steps;
+        const V_basis_liters = Math.pow(10, logV);
+        
+        // 1. Solve the CSTR equations for the current basis volume
+        const F_out_basis = solveCSTR_Robust(
+            parsedReactions,
+            components,
+            V_basis_liters,
+            F_in_basis,
+            reactionPhase,
+            pressure_bar,
+            tempK,
+            last_F_out_basis // Pass the last result as the initial guess
+        );
+
+        // After successfully getting F_out_basis, update the guess for the next iteration
+        const F_out_vec = parsedReactions.allInvolvedComponents.map((c: any) => F_out_basis[c.name] || 0);
+        if (F_out_vec.some(f => !isNaN(f))) {
+            last_F_out_basis = F_out_vec;
         }
-        if (conversion > 0.999) break;
+
+        // 2. Calculate conversion and selectivity from the solver's results
+        const F_A_out = F_out_basis[limitingReactant.name] || 0;
+        const F_P_out = F_out_basis[desiredProduct.name] || 0;
+
+        const conversion = (F_A0_basis - F_A_out) / F_A0_basis;
+        const molesConsumed_A = F_A0_basis - F_A_out;
+        const molesFormed_P = F_P_out - (F_in_basis[desiredProduct.name] || 0);
+
+        const selectivity = molesConsumed_A > 1e-9 ? molesFormed_P / molesConsumed_A : 0;
+        
+        if (conversion < 0.001 || conversion > 0.999 || selectivity <= 0) continue;
+
+        // 3. Scale the volume to meet the true production target
+        const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
+        const P_target_mols = convertUnit.flowRate.ktaToMolPerSecond(targetProduction_kta, productMolarMass);
+        
+        const F_A0_true = P_target_mols / (conversion * selectivity);
+        const V_true_liters = V_basis_liters * (F_A0_true / F_A0_basis);
+        const V_true_m3 = convertUnit.volume.litersToCubicMeters(V_true_liters);
+
+        if (isFinite(V_true_m3)) {
+            rawVolumeData.push({ x: conversion, y: V_true_m3 });
+            rawSelectivityData.push({ x: conversion, y: selectivity });
+        }
     }
 
-    const commonConversionGrid = Array.from({ length: 100 }, (_, i) => i * 0.01)
-    const selectivityData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawSelectivityData)})).filter(p => !isNaN(p.y))
-    const volumeData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawVolumeData)})).filter(p => !isNaN(p.y))
-    return { selectivityData, volumeData }
-}
+    // 4. Interpolate results for a smooth curve (this part is unchanged)
+    const commonConversionGrid = Array.from({ length: 100 }, (_, i) => i * 0.01);
+    const selectivityData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawSelectivityData)})).filter(p => !isNaN(p.y));
+    const volumeData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawVolumeData)})).filter(p => !isNaN(p.y));
 
-// --- Update calculatePfrData to return outletFlowsAtV ---
+    return { selectivityData, volumeData };
+}// --- Update calculatePfrData to return outletFlowsAtV ---
 const calculatePfrData = (
     reactions: ReactionSetup[],
     components: ComponentSetup[],
@@ -513,18 +578,36 @@ const solveCSTR_Robust = (
                 partialPressures_Pa[name] = 0;
             });
         } else {
-            const P_Pa = totalPressure_bar * 1e5;
-            componentNames.forEach((name: string) => {
-                const mole_fraction = Math.max(0, F_dict[name]) / F_total;
-                const C_m3 = (mole_fraction * P_Pa) / (R * temp_K);
-                concentrations_L[name] = C_m3 * 1e-3; // mol/L
-                partialPressures_Pa[name] = mole_fraction * P_Pa; // Pa
-            });
+            const P_Pa = convertUnit.pressure.barToPa(totalPressure_bar);
+
+            // First, calculate concentration in mol/m³
+            const concentrations_m3 = componentNames.reduce((acc: { [key: string]: number }, name: string) => {
+                acc[name] = (Math.max(0, F_dict[name]) / F_total) * P_Pa / (R * temp_K);
+                return acc;
+            }, {} as { [key: string]: number });
+
+            // Now, correctly calculate and assign the values needed for the rate law
+            for (const name of componentNames) {
+                concentrations_L[name] = convertUnit.concentration.molPerCubicMeterToMolPerLiter(concentrations_m3[name]);
+                partialPressures_Pa[name] = concentrations_m3[name] * R * temp_K;
+            }
         }
         
+        // --- START: Replace the 'rates' calculation with this corrected block ---
         rates = parsedReactions.reactions.map((reaction: any) => {
-            let rate = reaction.rateConstantAtT || 0;
+            const k_c = reaction.rateConstantAtT || 0;
+            let rate: number;
             const usePartialPressure = reaction.rateLawBasis === 'partialPressure';
+
+            if (usePartialPressure) {
+                let totalOrder = 0;
+                reaction.reactants.forEach((r: any) => { totalOrder += r.reactionOrderNum || 0; });
+                const k_p = convertUnit.kinetics.kcToKp(k_c, temp_K, totalOrder);
+                rate = k_p;
+            } else {
+                rate = k_c;
+            }
+
             reaction.reactants.forEach((reactant: any) => {
                 if (usePartialPressure) {
                     rate *= Math.pow(partialPressures_Pa[reactant.name], reactant.reactionOrderNum || 0);
@@ -532,8 +615,9 @@ const solveCSTR_Robust = (
                     rate *= Math.pow(concentrations_L[reactant.name], reactant.reactionOrderNum || 0);
                 }
             });
-            return rate; // mol/(L*s)
+            return rate;
         });
+        // --- END: Replacement block ---
     }
 
     return componentNames.map((name: string, i: number) => {
@@ -611,6 +695,92 @@ const solveCSTR_Robust = (
   }, {} as { [key: string]: number });
 };
 
+const calculateNetReactionRates = (
+    reactions: ReactionSetup[],
+    components: ComponentSetup[],
+    concentrations_L: { [key: string]: number },
+    partialPressures_Pa: { [key: string]: number },
+    tempK: number
+) => {
+    return reactions.map(reactionInfo => {
+        // --- Time Unit Conversion for A-Value ---
+        let A_f = parseFloat(reactionInfo.AValue);
+        if (reactionInfo.AUnit.includes('h')) {
+            A_f /= 3600.0; // Convert hours to seconds
+        }
+        
+        // --- Forward Rate Calculation ---
+        const Ea_f_J = convertUnit.energy.convertEaToJules(parseFloat(reactionInfo.EaValue), reactionInfo.EaUnit);
+        const k_f_c = A_f * Math.exp(-Ea_f_J / (R * tempK));
+        
+        const usePartialPressure = reactionInfo.rateLawBasis === 'partialPressure';
+        let k_f: number;
+
+        // MODIFICATION: Skip kcToKp conversion if basis is already partial pressure
+        if (usePartialPressure) {
+            k_f = k_f_c;
+        } else {
+            k_f = k_f_c;
+        }
+        
+        let rate_f = k_f;
+        components.forEach(comp => {
+            const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+            const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
+            
+            if (order > 0 && stoich < 0) {
+                 if (usePartialPressure) {
+                    rate_f *= Math.pow(Math.max(0, partialPressures_Pa[comp.name]), order);
+                 } else {
+                    rate_f *= Math.pow(Math.max(0, concentrations_L[comp.name]), order);
+                 }
+            }
+        });
+
+        // --- Reverse Rate Calculation (only if reaction is reversible) ---
+        let rate_r = 0;
+        if (reactionInfo.isEquilibrium) {
+            // --- Time Unit Conversion for Reverse A-Value ---
+            let A_r = parseFloat(reactionInfo.AValueBackward || '0');
+            if (reactionInfo.AUnitBackward?.includes('h')) {
+                A_r /= 3600.0; // Convert hours to seconds
+            }
+            const Ea_r_J = convertUnit.energy.convertEaToJules(parseFloat(reactionInfo.EaValueBackward || '0'), reactionInfo.EaUnitBackward || 'J/mol');
+            const k_r_c = A_r * Math.exp(-Ea_r_J / (R * tempK));
+            
+            let k_r: number;
+            if (usePartialPressure) {
+                let totalOrderReverse = 0;
+                components.forEach(comp => {
+                    const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                    if (stoich > 0) { // It's a product
+                        totalOrderReverse += parseFloat(comp.reactionData[reactionInfo.id]?.orderReverse || '0');
+                    }
+                });
+                k_r = convertUnit.kinetics.kcToKp(k_r_c, tempK, totalOrderReverse);
+            } else {
+                k_r = k_r_c;
+            }
+            
+            rate_r = k_r;
+            components.forEach(comp => {
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                const orderReverse = parseFloat(comp.reactionData[reactionInfo.id]?.orderReverse || '0');
+                
+                if (orderReverse > 0 && stoich > 0) { // Product with non-zero reverse order
+                     if (usePartialPressure) {
+                        rate_r *= Math.pow(Math.max(0, partialPressures_Pa[comp.name]), orderReverse);
+                     } else {
+                        rate_r *= Math.pow(Math.max(0, concentrations_L[comp.name]), orderReverse);
+                     }
+                }
+            });
+        }
+
+        return rate_f - rate_r; // Returns the net rate for the reaction
+    });
+};
+
 const calculatePfrGasPhase = (
     reactions: ReactionSetup[],
     components: ComponentSetup[],
@@ -651,34 +821,18 @@ const calculatePfrGasPhase = (
             concentrations_L[key] = concentrations_m3[key] * 1e-3;
         }
 
-        const reactionRates = reactions.map(reactionInfo => {
-            const k = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
-            let rate = k;
-            
-            const usePartialPressure = reactionInfo.rateLawBasis === 'partialPressure';
-
-            components.forEach(comp => {
-                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
-                const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
-                
-                if (order > 0 && stoich < 0) {
-                     if (usePartialPressure) {
-                        rate *= Math.pow(Math.max(0, partialPressures_Pa[comp.name]), order);
-                     } else {
-                        rate *= Math.pow(Math.max(0, concentrations_L[comp.name]), order);
-                     }
-                }
-            });
-            return rate; // mol/(L*s)
-        });
+        // The function now calls the new helper to get rates
+        const reactionNetRates = calculateNetReactionRates(reactions, components, concentrations_L, partialPressures_Pa, tempK);
         
         return components.map(comp => {
-            let netRateOfFormation = 0;
+            let netRateOfFormation = 0; // This will be in mol/(L*s)
             reactions.forEach((reactionInfo, j) => {
                 const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
-                netRateOfFormation += stoich * reactionRates[j];
+                netRateOfFormation += stoich * reactionNetRates[j];
             });
-            return netRateOfFormation;
+            
+            // MODIFICATION: Convert rate from per-Liter to per-m³ for the solver
+            return netRateOfFormation * 1000;
         });
     };
 
@@ -751,7 +905,7 @@ const calculatePfrLiquidPhase = (
     const rawVolumeData: { x: number; y: number }[] = [];
     
     const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
-    const P_C_target_mols = (targetProduction_kta * 1e9) / productMolarMass / (365 * 24 * 3600);
+    const P_C_target_mols = convertUnit.flowRate.ktaToMolPerSecond(targetProduction_kta, productMolarMass);
 
     const limitingReactantIndex = components.findIndex(c => c.id === simBasis.limitingReactantId);
     const desiredProductIndex = components.findIndex(c => c.id === simBasis.desiredProductId);
@@ -789,7 +943,11 @@ const calculatePfrLiquidPhase = (
         const C_dict = components.reduce((acc, comp, i) => { acc[comp.name] = concentrations[i]; return acc; }, {} as { [key: string]: number });
 
         const reactionRates = reactions.map(reactionInfo => {
-            const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+            const Ea_J_per_mol = convertUnit.energy.convertEaToJules(
+                parseFloat(reactionInfo.EaValue), 
+                reactionInfo.EaUnit
+            );
+            const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-Ea_J_per_mol / (R * tempK));
             let rate = k_f;
             components.forEach(comp => {
                 const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
@@ -858,8 +1016,9 @@ const calculatePfrLiquidPhase = (
             }
         });
 
-        // 3. Scale the volume by the ratio of volumetric flows and convert from Liters to m³.
-        const V_true = (q_basis > 1e-9 && q_true > 0) ? (1e-3 * V_current * (q_true / q_basis)) : Infinity;
+    // 3. Scale the volume by the ratio of volumetric flows and convert from Liters to m³.
+    const scaled_volume_liters = V_current * (q_true / q_basis);
+    const V_true = (q_basis > 1e-9 && q_true > 0) ? convertUnit.volume.litersToCubicMeters(scaled_volume_liters) : Infinity;
         
         if (conversion >= 1e-6 && conversion < 0.9999 && V_true < Infinity && selectivity > 0) {
             rawSelectivityData.push({ x: conversion, y: selectivity });
@@ -918,7 +1077,11 @@ const calculateNetFormationRates = (
     }
 
     const reactionNetRates = reactions.map(reactionInfo => {
-        const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-parseFloat(reactionInfo.EaValue) / (R * tempK));
+        const Ea_J_per_mol = convertUnit.energy.convertEaToJules(
+            parseFloat(reactionInfo.EaValue), 
+            reactionInfo.EaUnit
+        );
+        const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-Ea_J_per_mol / (R * tempK));
         let rate_f = k_f;
         components.forEach(comp => {
             const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
@@ -950,8 +1113,10 @@ const KineticsInput = ({
     reactionsSetup, setReactionsSetup, 
     componentsSetup, setComponentsSetup, 
     simBasis, setSimBasis,
-    reactionPhase, setReactionPhase, // New props for reaction phase
-    prodRate, setProdRate // New props for production rate
+    reactionPhase, setReactionPhase,
+    prodRate, setProdRate,
+    setTemperature, // New Prop
+    setPressure,    // New Prop
 }: { 
     onNext: () => void,
     reactionsSetup: ReactionSetup[],
@@ -963,15 +1128,16 @@ const KineticsInput = ({
     reactionPhase: 'Liquid' | 'Gas',
     setReactionPhase: React.Dispatch<React.SetStateAction<'Liquid' | 'Gas'>>,
     prodRate: string,
-    setProdRate: React.Dispatch<React.SetStateAction<string>>
+    setProdRate: React.Dispatch<React.SetStateAction<string>>,
+    setTemperature: React.Dispatch<React.SetStateAction<number>>, // New Prop Type
+    setPressure: React.Dispatch<React.SetStateAction<number>>,    // New Prop Type
 }) => {
   const { resolvedTheme } = useTheme();
   
   const addReactionSetup = () => {
     if (reactionsSetup.length >= 4) return
     const newId = (Math.max(0, ...reactionsSetup.map(r => parseInt(r.id))) + 1).toString()
-    // Add new reactions with a default rate law basis
-    setReactionsSetup([...reactionsSetup, { id: newId, AValue: '1e6', EaValue: '50000', isEquilibrium: false, rateLawBasis: 'concentration' }])
+    setReactionsSetup([...reactionsSetup, { id: newId, AValue: '1e6', AUnit: 'mol/(L*s)', EaValue: '50000', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' }])
   }
 
   const removeReactionSetup = (idToRemove: string) => {
@@ -988,6 +1154,59 @@ const KineticsInput = ({
     setReactionsSetup(reactionsSetup.map(reaction =>
       reaction.id === id ? { ...reaction, [field]: value } : reaction
     ))
+  }
+
+  // --- HDA Preset Data ---
+  const loadHdaPreset = () => {
+    setReactionsSetup([
+        // HDA Rxn 1 (Gas phase, Concentration basis -> simple units)
+        { id: '1', AValue: '1.188e14', AUnit: 'mol,L,h', EaValue: '52.0', EaUnit: 'kcal/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+        // HDA Rxn 2 (Gas phase, Pressure basis -> pressure units)
+        { id: '2', AValue: '1.1647e-5', AUnit: 'mol,L,Pa,h', EaValue: '30.19', EaUnit: 'kcal/mol', isEquilibrium: true, AValueBackward: '4.56e-7', AUnitBackward: 'mol,L,Pa,h', EaValueBackward: '23.35', EaUnitBackward: 'kcal/mol', rateLawBasis: 'partialPressure'}
+    ]);
+    setComponentsSetup([
+        { id: 'comp-T', name: 'Toluene', molarMass: '92.14', density: '867', reactionData: { '1': { stoichiometry: '-1', order: '1' } } },
+        { id: 'comp-H2', name: 'Hydrogen', molarMass: '2.016', density: '89.9', reactionData: { '1': { stoichiometry: '-1', order: '0.5' }, '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
+        { id: 'comp-B', name: 'Benzene', molarMass: '78.11', density: '876', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-2', order: '2' } } },
+        { id: 'comp-CH4', name: 'Methane', molarMass: '16.04', density: '717', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
+        { id: 'comp-D', name: 'Diphenyl', molarMass: '154.21', density: '1080', reactionData: { '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
+    ]);
+    setSimBasis({ limitingReactantId: 'comp-T', desiredProductId: 'comp-B' });
+    setReactionPhase('Gas');
+    setProdRate('100');
+        setTemperature(650); // MODIFICATION: Set default temperature to 650 C
+        setPressure(30);    // MODIFICATION: Set default pressure to 30 bar
+  };
+
+  const loadAlkylationPreset = () => {
+    setReactionsSetup(initialReactions);
+    setComponentsSetup(initialComponents);
+    setSimBasis({ limitingReactantId: 'comp-A', desiredProductId: 'comp-C' });
+    setReactionPhase('Liquid');
+    setProdRate('100');
+    setTemperature(4); // MODIFICATION: Corrected from 10 to 4
+    setPressure(10);
+  }
+  
+  const loadDmcPreset = () => {
+      setReactionsSetup([
+          // DMC Synthesis (Liquid phase -> simple units)
+          { id: '1', AValue: '1.6e11', AUnit: 'mol,L,s', EaValue: '104600', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+          { id: '2', AValue: '6.7e12', AUnit: 'mol,L,s', EaValue: '98750', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+      ]);
+      setComponentsSetup([
+          { id: 'comp-MeOH', name: 'Methanol', molarMass: '32.04', density: '792', reactionData: { '1': { stoichiometry: '-2', order: '2' } } },
+          { id: 'comp-CO', name: 'Carbon Monoxide', molarMass: '28.01', density: '789', reactionData: { '1': { stoichiometry: '-1', order: '0' }, '2': { stoichiometry: '-1', order: '0' } } },
+          { id: 'comp-O2', name: 'Oxygen', molarMass: '32.00', density: '1141', reactionData: { '1': { stoichiometry: '-0.5', order: '0.5' }, '2': { stoichiometry: '-0.5', order: '0.5' } } },
+          { id: 'comp-DMC', name: 'DMC', molarMass: '90.08', density: '1069', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
+          { id: 'comp-H2O', name: 'Water', molarMass: '18.02', density: '1000', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
+          { id: 'comp-CO2', name: 'Carbon Dioxide', molarMass: '44.01', density: '1101', reactionData: { '2': { stoichiometry: '1', order: '0' } } },
+      ]);
+      setSimBasis({ limitingReactantId: 'comp-O2', desiredProductId: 'comp-DMC' });
+      setReactionPhase('Liquid');
+      setProdRate('50');
+      setTemperature(80); // Set default temperature for next screen
+      setPressure(25);    // Set default pressure for next screen
   }
 
   const addComponentSetup = () => {
@@ -1029,8 +1248,7 @@ const KineticsInput = ({
     return { isValid: true, message: '' };
   }, [reactionsSetup, componentsSetup]);
   
-  const ReactionPreview = useMemo(() => {
-    const generatePreview = (reaction: ReactionSetup) => {
+  const generatePreview = (reaction: ReactionSetup) => {
         const reactants = componentsSetup
             .filter(c => c.name && parseFloat(c.reactionData[reaction.id]?.stoichiometry || '0') < 0)
             .map(c => {
@@ -1081,82 +1299,65 @@ const KineticsInput = ({
             rateLawReverse: rateLawProducts
         };
     };
-    
-    return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Parsed Reactions & Rate Laws</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-                {reactionsSetup.map(r => {
-                    const preview = generatePreview(r)
-                    return (
-                        <div key={r.id} className="p-3 bg-card rounded-md border">
-                          <div className="flex justify-between items-center mb-1">
-                            <p className="font-bold text-primary">Reaction {r.id}</p>
-                            
-                            {/* The switch container is now always rendered but conditionally invisible */}
-                            <div className={`flex items-center gap-2 ${reactionPhase !== 'Gas' ? 'invisible' : ''}`}>
-                                <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
-                                    <Button
-                                        onClick={() => updateReactionSetup(r.id, 'rateLawBasis', 'concentration')}
-                                        variant={(r.rateLawBasis === 'concentration' || !r.rateLawBasis) ? 'default' : 'ghost'}
-                                        size="sm"
-                                        className="text-xs px-2 py-1 h-auto"
-                                    >
-                                        Conc.
-                                    </Button>
-                                    <Button
-                                        onClick={() => updateReactionSetup(r.id, 'rateLawBasis', 'partialPressure')}
-                                        variant={r.rateLawBasis === 'partialPressure' ? 'default' : 'ghost'}
-                                        size="sm"
-                                        className="text-xs px-2 py-1 h-auto"
-                                    >
-                                        Pressure
-                                    </Button>
-                                </div>
-                            </div>
-
-                          </div>
-                          <p className="font-medium text-center mb-1">{preview.equation}</p>
-                          <p className="font-mono text-sm text-center text-muted-foreground w-full">
-                            Rate = k
-                            <sub>{r.id}{r.isEquilibrium ? ',f' : ''}</sub>
-                            {preview.rateLaw}
-                            {r.isEquilibrium && preview.rateLawReverse.length > 0 && (
-                                <> - k<sub>{r.id},r</sub>{preview.rateLawReverse}</>
-                            )}
-                            </p>
-                        </div>
-                    )
-                })}
-            </CardContent>
-        </Card>
-    )
-  }, [reactionsSetup, componentsSetup, reactionPhase])
 
   const componentsGridCols = `40px 1fr 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
 
   return (
     <div className={`min-h-screen flex flex-col p-4 bg-background text-foreground`}>
       <div className="container mx-auto space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* --- NEW HEADER ROW --- */}
+        <div className="relative flex justify-center items-center py-2 mb-4">
+            {/* Centered Preset Buttons */}
+            <div className="flex justify-center items-center gap-4">
+                <Label className="text-sm font-semibold text-muted-foreground">Load a Preset:</Label>
+                <Button variant="outline" onClick={loadAlkylationPreset}>Butane Alkylation</Button>
+                <Button variant="outline" onClick={loadHdaPreset}>HDA</Button>
+                <Button variant="outline" onClick={loadDmcPreset}>DMC Synthesis</Button>
+            </div>
+            
+            {/* Right-aligned Next Button */}
+                    <div className="absolute right-0">
+                        <div title={!validationResult.isValid ? validationResult.message : undefined} className="inline-block">
+                            <Button 
+                                onClick={onNext} 
+                                disabled={!validationResult.isValid}
+                                variant="secondary" // This variant is theme-aware
+                                className="px-4 py-2 rounded-lg font-bold flex items-center"
+                                aria-label="Next"
+                            >
+                                Next <ArrowRight className="h-4 w-4" />
+                            </Button>
+                        </div>
+                    </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Reactions & Kinetics Card */}
-            <div className={`p-6 rounded-lg shadow-lg bg-card text-card-foreground`}> 
-                <div className="mb-6">
-                  <CardTitle className="flex items-center justify-between">
-                    Reactions & Kinetics
-                    <Button variant="outline" size="sm" onClick={addReactionSetup} disabled={reactionsSetup.length >= 6}>
-                        <PlusCircle className="mr-2 h-4 w-4" />
-                        Add Reaction
-                    </Button>
-                  </CardTitle>
-                </div>
+            <div className={`lg:col-span-6`}> 
+                {/* MODIFICATION: Added h-full to the Card component */}
+                <Card className="p-6 h-full">
+                    <div className="mb-0">
+                      <CardTitle className="flex items-center justify-between">
+                        Reactions & Kinetics
+                        <Button variant="outline" size="sm" onClick={addReactionSetup} disabled={reactionsSetup.length >= 6}>
+                            <PlusCircle className="mr-2 h-4 w-4" />
+                            Add Reaction
+                        </Button>
+                      </CardTitle>
+                    </div>
                 <div className="space-y-6">
                     {reactionsSetup.map((reaction, index) => (
                     <div key={reaction.id} className={`space-y-4 ${index > 0 ? 'border-t pt-6' : ''}`}> 
                         <div className="flex items-center justify-between">
-                            <Label className="font-bold">Reaction {reaction.id}</Label>
+                            {/* MODIFICATION: Displaying new reaction names */}
+                            <Label className="font-bold">
+                                {(() => {
+                                    const numSideReactions = reactionsSetup.length - 1;
+                                    if (index === 0) return 'Primary Reaction';
+                                    return numSideReactions === 1 ? 'Side Reaction' : `Side Reaction ${index}`;
+                                })()}
+                            </Label>
                             <div className='flex items-center gap-4'>
                             <div className='flex items-center gap-2'>
                                 <Label htmlFor={`reversible-switch-${reaction.id}`} className="text-sm">Reversible</Label>
@@ -1178,47 +1379,135 @@ const KineticsInput = ({
                             </div>
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* A Value Input with Unit Selector */}
                             <div className="flex items-center gap-2">
-                            <Label className="w-16 text-sm" htmlFor={`a-value-${reaction.id}`}> 
-                                <span>A<sub className="font-medium relative -left-px">{reaction.id}{reaction.isEquilibrium ? ',f' : ''}</sub>:</span>
-                            </Label>
-                            <Input id={`a-value-${reaction.id}`} type="text" value={reaction.AValue} onChange={(e) => updateReactionSetup(reaction.id, 'AValue', e.target.value)} />
+                                <Label className="w-16 text-sm">
+                                    <span>A<sub className="font-medium relative -left-px">{reaction.id}{reaction.isEquilibrium ? ',f' : ''}</sub>:</span>
+                                </Label>
+                                <Input type="text" value={reaction.AValue} onChange={(e) => updateReactionSetup(reaction.id, 'AValue', e.target.value)} />
+                                
+                                {/* --- MODIFICATION: Conditional Rendering of the Select Menu --- */}
+                                {(() => {
+                                    const showPressureUnits = reactionPhase === 'Gas' && reaction.rateLawBasis === 'partialPressure';
+                                    return showPressureUnits ? (
+                                        <Select value={reaction.AUnit} onValueChange={(value) => updateReactionSetup(reaction.id, 'AUnit', value)}>
+                                            <SelectTrigger className="w-[180px] text-xs"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                {/* Pressure-based units */}
+                                                <SelectItem value="mol,L,Pa,s">mol, L, Pa, s</SelectItem>
+                                                <SelectItem value="mol,m^3,Pa,s">mol, m³, Pa, s</SelectItem>
+                                                <SelectItem value="mol,L,Pa,h">mol, L, Pa, h</SelectItem>
+                                                <SelectItem value="mol,m^3,Pa,h">mol, m³, Pa, h</SelectItem>
+                                                <SelectItem value="mol,L,bar,s">mol, L, bar, s</SelectItem>
+                                                <SelectItem value="mol,m^3,bar,s">mol, m³, bar, s</SelectItem>
+                                                <SelectItem value="mol,L,bar,h">mol, L, bar, h</SelectItem>
+                                                <SelectItem value="mol,m^3,bar,h">mol, m³, bar, h</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    ) : (
+                                        <Select value={reaction.AUnit} onValueChange={(value) => updateReactionSetup(reaction.id, 'AUnit', value)}>
+                                            <SelectTrigger className="w-[180px] text-xs"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                {/* Simple units */}
+                                                <SelectItem value="mol,L,s">mol, L, s</SelectItem>
+                                                <SelectItem value="mol,m^3,s">mol, m³, s</SelectItem>
+                                                <SelectItem value="mol,L,h">mol, L, h</SelectItem>
+                                                <SelectItem value="mol,m^3,h">mol, m³, h</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    );
+                                })()}
                             </div>
+                            {/* Ea Value Input with Unit Selector */}
                             <div className="flex items-center gap-2">
-                            <Label className="w-16 text-sm" htmlFor={`ea-value-${reaction.id}`}> 
-                                <span>Ea<sub className="font-medium relative -left-px">{reaction.id}{reaction.isEquilibrium ? ',f' : ''}</sub>:</span>
-                            </Label>
-                            <Input id={`ea-value-${reaction.id}`} type="text" value={reaction.EaValue} onChange={(e) => updateReactionSetup(reaction.id, 'EaValue', e.target.value)} />
-                            <span className="text-xs text-muted-foreground">J/mol</span>
+                                <Label className="w-16 text-sm">
+                                    <span>Ea<sub className="font-medium relative -left-px">{reaction.id}{reaction.isEquilibrium ? ',f' : ''}</sub>:</span>
+                                </Label>
+                                <Input type="text" value={reaction.EaValue} onChange={(e) => updateReactionSetup(reaction.id, 'EaValue', e.target.value)} />
+                                <Select value={reaction.EaUnit} onValueChange={(value) => updateReactionSetup(reaction.id, 'EaUnit', value)}>
+                                    <SelectTrigger className="w-[120px] text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="J/mol">J/mol</SelectItem>
+                                        <SelectItem value="kJ/mol">kJ/mol</SelectItem>
+                                        <SelectItem value="cal/mol">cal/mol</SelectItem>
+                                        <SelectItem value="kcal/mol">kcal/mol</SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
                         </div>
-                        {/* Conditionally show reverse reaction inputs */}
+                        {/* Conditionally show reverse reaction inputs with unit selectors */}
                         {reaction.isEquilibrium && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-dashed">
+                                {/* A Value Reverse */}
                                 <div className="flex items-center gap-2">
-                                <Label className="w-16 text-sm" htmlFor={`a-value-rev-${reaction.id}`}> 
-                                    <span>A<sub className="font-medium relative -left-px">{reaction.id},r</sub>:</span>
-                                </Label>
-                                <Input id={`a-value-rev-${reaction.id}`} type="text" value={reaction.AValueBackward || ''} placeholder='e.g. 1e12' onChange={(e) => updateReactionSetup(reaction.id, 'AValueBackward', e.target.value)} />
+                                    <Label className="w-16 text-sm">
+                                        <span>A<sub className="font-medium relative -left-px">{reaction.id},r</sub>:</span>
+                                    </Label>
+                                    <Input type="text" value={reaction.AValueBackward || ''} placeholder='e.g. 1e12' onChange={(e) => updateReactionSetup(reaction.id, 'AValueBackward', e.target.value)} />
+                                    
+                                    {/* --- MODIFICATION: Conditional Rendering of the Select Menu --- */}
+                                    {(() => {
+                                        const showPressureUnits = reactionPhase === 'Gas' && reaction.rateLawBasis === 'partialPressure';
+                                        return showPressureUnits ? (
+                                            <Select value={reaction.AUnitBackward} onValueChange={(value) => updateReactionSetup(reaction.id, 'AUnitBackward', value)}>
+                                                <SelectTrigger className="w-[180px] text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {/* Pressure-based units */}
+                                                    <SelectItem value="mol,L,Pa,s">mol, L, Pa, s</SelectItem>
+                                                    <SelectItem value="mol,m^3,Pa,s">mol, m³, Pa, s</SelectItem>
+                                                    <SelectItem value="mol,L,Pa,h">mol, L, Pa, h</SelectItem>
+                                                    <SelectItem value="mol,m^3,Pa,h">mol, m³, Pa, h</SelectItem>
+                                                    <SelectItem value="mol,L,bar,s">mol, L, bar, s</SelectItem>
+                                                    <SelectItem value="mol,m^3,bar,s">mol, m³, bar, s</SelectItem>
+                                                    <SelectItem value="mol,L,bar,h">mol, L, bar, h</SelectItem>
+                                                    <SelectItem value="mol,m^3,bar,h">mol, m³, bar, h</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        ) : (
+                                            <Select value={reaction.AUnitBackward} onValueChange={(value) => updateReactionSetup(reaction.id, 'AUnitBackward', value)}>
+                                                <SelectTrigger className="w-[180px] text-xs"><SelectValue /></SelectTrigger>
+                                                <SelectContent>
+                                                    {/* Simple units */}
+                                                    <SelectItem value="mol,L,s">mol, L, s</SelectItem>
+                                                    <SelectItem value="mol,m^3,s">mol, m³, s</SelectItem>
+                                                    <SelectItem value="mol,L,h">mol, L, h</SelectItem>
+                                                    <SelectItem value="mol,m^3,h">mol, m³, h</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        );
+                                    })()}
                                 </div>
+                                {/* Ea Value Reverse */}
                                 <div className="flex items-center gap-2">
-                                <Label className="w-16 text-sm" htmlFor={`ea-value-rev-${reaction.id}`}> 
-                                    <span>Ea<sub className="font-medium relative -left-px">{reaction.id},r</sub>:</span>
-                                </Label>
-                                <Input id={`ea-value-rev-${reaction.id}`} type="text" value={reaction.EaValueBackward || ''} placeholder='e.g. 80000' onChange={(e) => updateReactionSetup(reaction.id, 'EaValueBackward', e.target.value)} />
-                                <span className="text-xs text-muted-foreground">J/mol</span>
+                                    <Label className="w-16 text-sm">
+                                        <span>Ea<sub className="font-medium relative -left-px">{reaction.id},r</sub>:</span>
+                                    </Label>
+                                    <Input type="text" value={reaction.EaValueBackward || ''} placeholder='e.g. 80000' onChange={(e) => updateReactionSetup(reaction.id, 'EaValueBackward', e.target.value)} />
+                                    <Select value={reaction.EaUnitBackward} onValueChange={(value) => updateReactionSetup(reaction.id, 'EaUnitBackward', value)}>
+                                        <SelectTrigger className="w-[120px] text-xs"><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="J/mol">J/mol</SelectItem>
+                                            <SelectItem value="kJ/mol">kJ/mol</SelectItem>
+                                            <SelectItem value="cal/mol">cal/mol</SelectItem>
+                                            <SelectItem value="kcal/mol">kcal/mol</SelectItem>
+                                        </SelectContent>
+                                    </Select>
                                 </div>
                             </div>
                         )}
                     </div>
                     ))}
                 </div>
+                </Card>
             </div>
+
             {/* Simulation Basis Card */}
-            <div className={`p-6 rounded-lg shadow-lg bg-card text-card-foreground`}>
-                <div className="mb-6">
-                    <CardTitle>Simulation Basis</CardTitle>
-                </div>
+            <div className={`lg:col-span-3`}>
+                {/* MODIFICATION: Added h-full to the Card component */}
+                <Card className="p-6 h-full">
+                    <div className="mb-0">
+                        <CardTitle>Simulation Basis</CardTitle>
+                    </div>
                 <div className="space-y-4">
                     <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
                         <Button
@@ -1249,12 +1538,9 @@ const KineticsInput = ({
                                 <SelectValue placeholder="Select a reactant" />
                             </SelectTrigger>
                             <SelectContent>
+                                {/* Only show reactants from the Primary Reaction */}
                                 {componentsSetup
-                                    .filter(c => {
-                                        const isReactant = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') < 0);
-                                        const isProduct = Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0);
-                                        return isReactant && !isProduct;
-                                    })
+                                    .filter(c => parseFloat(c.reactionData[reactionsSetup[0]?.id]?.stoichiometry || '0') < 0)
                                     .map(c => (
                                         <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                                     ))
@@ -1273,8 +1559,9 @@ const KineticsInput = ({
                                 <SelectValue placeholder="Select a product" />
                             </SelectTrigger>
                             <SelectContent>
+                                {/* Only show products from the Primary Reaction */}
                                 {componentsSetup
-                                    .filter(c => Object.values(c.reactionData).some(d => parseFloat(d.stoichiometry || '0') > 0))
+                                    .filter(c => parseFloat(c.reactionData[reactionsSetup[0]?.id]?.stoichiometry || '0') > 0)
                                     .map(c => (
                                         <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
                                     ))
@@ -1293,10 +1580,68 @@ const KineticsInput = ({
                         />
                     </div>
                 </div>
+                </Card>
             </div>
-            
-            {/* Parsed Reactions Card */}
-            {ReactionPreview}
+
+            {/* Parsed Reactions & Rate Laws Card */}
+            <div className="lg:col-span-3 flex flex-col">
+                {/* MODIFICATION: Added h-full to the Card component */}
+                <Card className="h-full flex flex-col"> 
+                    <CardHeader>
+                        <CardTitle>Parsed Reactions & Rate Laws</CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-grow space-y-4">
+                        {reactionsSetup.map((r, index) => {
+                            const preview = generatePreview(r)
+                            return (
+                                <div key={r.id} className="p-3 bg-card rounded-md border">
+                                  <div className="flex justify-between items-center mb-1">
+                                    <p className="font-bold text-primary">
+                                        {(() => {
+                                            const numSideReactions = reactionsSetup.length - 1;
+                                            if (index === 0) return 'Primary Reaction';
+                                            return numSideReactions === 1 ? 'Side Reaction' : `Side Reaction ${index}`;
+                                        })()}
+                                    </p>
+                                    
+                                    {/* The switch container is now always rendered but conditionally invisible */}
+                                    <div className={`flex items-center gap-2 ${reactionPhase !== 'Gas' ? 'invisible' : ''}`}>
+                                        <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
+                                            <Button
+                                                onClick={() => updateReactionSetup(r.id, 'rateLawBasis', 'concentration')}
+                                                variant={(r.rateLawBasis === 'concentration' || !r.rateLawBasis) ? 'default' : 'ghost'}
+                                                size="sm"
+                                                className="text-xs px-2 py-1 h-auto"
+                                            >
+                                                Conc.
+                                            </Button>
+                                            <Button
+                                                onClick={() => updateReactionSetup(r.id, 'rateLawBasis', 'partialPressure')}
+                                                variant={r.rateLawBasis === 'partialPressure' ? 'default' : 'ghost'}
+                                                size="sm"
+                                                className="text-xs px-2 py-1 h-auto"
+                                            >
+                                                Pressure
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                  </div>
+                                  <p className="font-medium text-center mb-1">{preview.equation}</p>
+                                  <p className="font-mono text-sm text-center text-muted-foreground w-full">
+                                    Rate = k
+                                    <sub>{r.id}{r.isEquilibrium ? ',f' : ''}</sub>
+                                    {preview.rateLaw}
+                                    {r.isEquilibrium && preview.rateLawReverse.length > 0 && (
+                                        <> - k<sub>{r.id},r</sub>{preview.rateLawReverse}</>
+                                    )}
+                                    </p>
+                                </div>
+                            )
+                        })}
+                    </CardContent>
+                </Card>
+            </div>
         </div>
 
         {/* Components Card (unchanged) */}
@@ -1304,7 +1649,7 @@ const KineticsInput = ({
               <div className="mb-4">
                 <CardTitle className="flex items-center justify-between">
                   Components
-                  <Button variant="secondary" size="sm" onClick={addComponentSetup}>
+                  <Button variant="outline" size="sm" onClick={addComponentSetup}>
                       <PlusCircle className="mr-2 h-4 w-4" />Add Component
                   </Button>
                 </CardTitle>
@@ -1320,9 +1665,18 @@ const KineticsInput = ({
                                 <div className="text-center">Name</div>
                                 <div className="text-center">Molar Mass</div>
                                 <div className="text-center">Density</div>
-                                {reactionsSetup.map(r => (
-                                    <div key={r.id} className="text-center col-span-2">{`Reaction ${r.id}`}</div>
-                                ))}
+                                {reactionsSetup.map((r, index) => {
+                                    const numSideReactions = reactionsSetup.length - 1;
+                                    let reactionTitle = 'Primary Reaction';
+                                    if (index > 0) {
+                                        reactionTitle = numSideReactions === 1 ? 'Side Reaction' : `Side Reaction ${index}`;
+                                    }
+                                    return (
+                                        <div key={r.id} className="text-center col-span-2">
+                                            {reactionTitle}
+                                        </div>
+                                    );
+                                })}
                             </div>
                             {/* Header Row 2: Units and Sub-headers */}
                             <div className="grid items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: componentsGridCols}}>
@@ -1388,14 +1742,6 @@ const KineticsInput = ({
                   })()}
               </div>
           </div>
-
-        <div className="text-right mt-2">
-            <div title={!validationResult.isValid ? validationResult.message : undefined} className="inline-block">
-                <Button onClick={onNext} disabled={!validationResult.isValid}>
-                Next: Configure Simulation →
-                </Button>
-            </div>
-        </div>
       </div>
     </div>
   )
@@ -1407,13 +1753,26 @@ interface MolarRatio {
     value: number;
 }
 
+const formatTooltipNumber = (num: number | string, sigFigs: number = 3): string => {
+    const numFloat = typeof num === 'string' ? parseFloat(num) : num;
+    if (isNaN(numFloat) || numFloat === 0) return '0';
+
+    // Get the number to 3 significant figures
+    const preparedNum = numFloat.toPrecision(sigFigs);
+
+    // Convert back to a number to drop trailing zeros, then back to a string
+    return Number(preparedNum).toString();
+}
+
 const ReactorSimulator = ({ 
     onBack, 
     reactions, components, 
     simBasis, 
     molarRatios, setMolarRatios,
-    reactionPhase, // Receive reactionPhase as a prop
-    prodRate // Receive prodRate as a prop
+    reactionPhase,
+    prodRate,
+    temperature, setTemperature, // Now receives state and setter
+    pressure, setPressure,       // Now receives state and setter
 }: { 
     onBack: () => void, 
     reactions: ReactionSetup[], 
@@ -1422,7 +1781,11 @@ const ReactorSimulator = ({
     molarRatios: MolarRatio[],
     setMolarRatios: React.Dispatch<React.SetStateAction<MolarRatio[]>>,
     reactionPhase: 'Liquid' | 'Gas',
-    prodRate: string 
+    prodRate: string,
+    temperature: number,
+    setTemperature: React.Dispatch<React.SetStateAction<number>>,
+    pressure: number,
+    setPressure: React.Dispatch<React.SetStateAction<number>>,
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -1448,20 +1811,18 @@ const ReactorSimulator = ({
       })
   }
   const [graphType, setGraphType] = useState<GraphType>('selectivity')
-  const [temperature, setTemperature] = useState(4)
   
-  const [pressure, setPressure] = useState(5); // Initial pressure in bar
   const [pressureMin, setPressureMin] = useState('1');
   const [pressureMax, setPressureMax] = useState('50');
   
-  const [molarRatioMin, setMolarRatioMin] = useState('2');
-  const [molarRatioMax, setMolarRatioMax] = useState('20');
-  const [tempMin, setTempMin] = useState('4');
-  const [tempMax, setTempMax] = useState('20');
+  const [molarRatioMin, setMolarRatioMin] = useState('1');
+  const [molarRatioMax, setMolarRatioMax] = useState('25');
+  const [tempMin, setTempMin] = useState('0');
+  const [tempMax, setTempMax] = useState('100');
   // Removed local prodRate state
 
   const generateGraphData = useCallback(() => {
-    const tempK = temperature + 273.15
+    const tempK = convertUnit.temperature.celsiusToKelvin(temperature)
     
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
@@ -1525,12 +1886,25 @@ const ReactorSimulator = ({
             // --- **FIX START**: Determine a reasonable Y-axis max for volume graphs ---
             if (graphType === 'volume') {
                 const volumeData = dataToShow.volumeData;
-                const reasonablePoints = volumeData.filter(p => p.x < 0.95); // Find all points below 98% conversion
-                if (reasonablePoints.length > 0) {
-                    const lastReasonablePoint = reasonablePoints[reasonablePoints.length - 1];
-                    // If this curve's reasonable max is higher, it becomes the new overall max
-                    if (lastReasonablePoint.y > overallReasonableMax) {
-                        overallReasonableMax = lastReasonablePoint.y;
+                if (volumeData.length > 1) { // Need at least 2 points to interpolate
+                    // Interpolate to get volume at both low (5%) and high (95%) conversion
+                    const volAt5Percent = interpolateFromData(0.05, volumeData);
+                    const volAt95Percent = interpolateFromData(0.95, volumeData);
+
+                    // Determine the larger of the two volumes, ignoring any non-finite results
+                    let curveReasonableMax = -1;
+                    if (isFinite(volAt5Percent) && isFinite(volAt95Percent)) {
+                        curveReasonableMax = Math.max(volAt5Percent, volAt95Percent);
+                    } else if (isFinite(volAt5Percent)) {
+                        curveReasonableMax = volAt5Percent;
+                    } else if (isFinite(volAt95Percent)) {
+                        curveReasonableMax = volAt95Percent;
+                    }
+                    
+                    // If this curve's reasonable max is higher than the overall max we've seen so far,
+                    // it becomes the new overall max for the chart's Y-axis.
+                    if (curveReasonableMax > overallReasonableMax) {
+                        overallReasonableMax = curveReasonableMax;
                     }
                 }
             }
@@ -1576,11 +1950,18 @@ const ReactorSimulator = ({
         }
     }
     
-    // Set the final Y-axis max value
+    // Set the final Y-axis max value with a hard cap
     let yAxisMax: number | 'dataMax' = 'dataMax';
-    if (graphType === 'volume' && overallReasonableMax > 0) {
-        // --- MODIFICATION: Set max directly. ECharts will handle the scaling. ---
-        yAxisMax = overallReasonableMax;
+    if (graphType === 'volume') {
+        const hardCap = 5000; // The maximum practical volume
+        if (overallReasonableMax > 0) {
+            // The axis maximum will be the smaller of the calculated max or the hard cap.
+            // This keeps the graph nicely scaled for smaller volumes but caps it for large ones.
+            yAxisMax = Math.min(overallReasonableMax, hardCap);
+        } else {
+            // If all calculated volumes are enormous, just default the axis to the cap.
+            yAxisMax = hardCap;
+        }
     }
 
     return { series, xAxis: xLabel, yAxis: yLabel, legend, yMax: yAxisMax }
@@ -1687,47 +2068,34 @@ const ReactorSimulator = ({
       },
 
       // This formatter function creates the custom tooltip content 
-       formatter: (params: any) => { 
+      formatter: (params: any) => { 
          if (!params || params.length === 0) { 
              return '' 
          } 
- 
-         const xAxisLabel = graphData.xAxis.split(' ')[0] 
-         const xAxisValue = parseFloat(parseFloat(params[0].axisValue).toPrecision(6)) 
-         let tooltipContent = `<strong>${xAxisLabel}</strong>: ${xAxisValue}` 
- 
+
+         // MODIFICATION: Using the new helper for all numbers
+         const xAxisValue = formatTooltipNumber(params[0].axisValue);
+         let tooltipContent = `<strong>Conversion</strong>: ${xAxisValue}`; 
+
          params.forEach((p: any) => { 
-             const seriesName = p.seriesName // This name is now updated 
-             const rawValue = parseFloat(p.value[1]) 
-             let formattedValue = '' 
- 
-             // --- MODIFICATION: Conditional Value Formatting --- 
+             const seriesName = p.seriesName;
+             const rawValue = parseFloat(p.value[1]);
+             let formattedValue = ''; 
+
              if (graphType === 'selectivity') { 
-                 // Format selectivity to 3 significant figures 
-                 formattedValue = rawValue.toPrecision(3) 
+                 formattedValue = formatTooltipNumber(rawValue);
              } else { // 'volume' 
-                 if (rawValue === 0) { 
-                     formattedValue = '0'; 
-                 } else if (rawValue < 1) { 
-                     // For values < 1, use scientific notation with 3 sig figs 
-                     formattedValue = rawValue.toPrecision(3); 
-                 } else { 
-                     // For values >= 1, round to 3 sig figs without scientific notation 
-                     const magnitude = Math.floor(Math.log10(rawValue)); 
-                     const scale = Math.pow(10, magnitude - 2); // Adjust scale for 3 sig figs 
-                     formattedValue = (Math.round(rawValue / scale) * scale).toLocaleString('en-US', {useGrouping: true, maximumFractionDigits: 20}); 
-                 } 
-                 // --- MODIFICATION: Add units to the volume string --- 
+                 formattedValue = formatTooltipNumber(rawValue);
                  formattedValue += ' m³'; 
-             } 
-             // --- END MODIFICATION ---
-             const seriesColor = p.color 
- 
-            tooltipContent += `<br/>` 
-             tooltipContent += `<span style="color: ${seriesColor}; font-weight: bold;">${seriesName}:</span> <strong>${formattedValue}</strong>` 
-         }) 
- 
-         return tooltipContent
+             }
+             
+             const seriesColor = p.color;
+
+            tooltipContent += `<br/>`;
+             tooltipContent += `<span style="color: ${seriesColor}; font-weight: bold;">${seriesName}:</span> <strong>${formattedValue}</strong>`;
+         });
+
+         return tooltipContent;
       }
     },
     series: graphData.series
@@ -1759,7 +2127,8 @@ const ReactorSimulator = ({
             {molarRatios.map(ratio => {
                 const numeratorName = components.find(c => c.id === ratio.numeratorId)?.name || 'N/A';
                 return (
-                    <div key={ratio.numeratorId} className="pt-4 border-t border-border">
+                    // MODIFICATION: Removed pt-4 for consistent spacing
+                    <div key={ratio.numeratorId}>
                         <ParameterSlider
                             label={`${numeratorName} / ${limitingReactantName}`}
                             unit="" // Unit is now part of the label
@@ -1777,6 +2146,7 @@ const ReactorSimulator = ({
                 );
             })}
 
+            {/* MODIFICATION: Removed wrapper divs with borders for the sliders below */}
             <ParameterSlider
                 label="Temperature"
                 unit="°C"
@@ -1790,8 +2160,6 @@ const ReactorSimulator = ({
                 minSliderValue={tempMin}
                 onMinSliderChange={setTempMin}
             />
-
-
 
             {/* Pressure Slider (only for Gas phase) */}
             {reactionPhase === 'Gas' && (
@@ -1931,11 +2299,11 @@ export default function Home() {
 
   const [molarRatios, setMolarRatios] = useState<Array<{numeratorId: string, value: number}>>([]);
   
-  // State for production rate now lives in the parent component
+  // State for parameters now lives in the parent component
   const [prodRate, setProdRate] = useState('100');
-
-  // Add reactionPhase to your state declarations
   const [reactionPhase, setReactionPhase] = useState<'Liquid' | 'Gas'>('Liquid'); 
+  const [temperature, setTemperature] = useState(4); // State lifted here
+  const [pressure, setPressure] = useState(25);       // State lifted here 
 
   // --- MODIFICATION START ---
   // This function now correctly identifies ONLY primary reactants (chemicals that are
@@ -1971,27 +2339,50 @@ export default function Home() {
 
   // 4. Effect to automatically manage the molar ratios based on the limiting reactant
   useEffect(() => {
-    const allReactants = getReactants(componentsSetup, reactionsSetup);
-    const otherReactants = allReactants.filter(r => r.id !== simBasis.limitingReactantId);
+    if (!reactionsSetup || reactionsSetup.length === 0 || !componentsSetup || componentsSetup.length === 0) {
+        return;
+    }
 
-    // Update the molarRatios state, preserving existing values where possible
-    setMolarRatios(prevRatios => {
-        const newRatios = otherReactants.map(reactant => {
-            const existingRatio = prevRatios.find(r => r.numeratorId === reactant.id);
-            return {
-                numeratorId: reactant.id,
-                value: existingRatio ? existingRatio.value : 12.0 // Default value for new ratios
-            };
-        });
-        
-        // Prevents unnecessary re-renders if the ratios haven't changed
-        if (JSON.stringify(newRatios) !== JSON.stringify(prevRatios)) {
-             return newRatios;
-        }
-        return prevRatios;
+    // Identify the Primary Reaction (always the first one)
+    const primaryReactionId = reactionsSetup[0].id;
+
+    // Find all reactants ONLY in the Primary Reaction
+    const primaryReactants = componentsSetup.filter(comp => {
+        const stoich = parseFloat(comp.reactionData[primaryReactionId]?.stoichiometry || '0');
+        return stoich < 0;
     });
 
-  }, [componentsSetup, reactionsSetup, simBasis.limitingReactantId, getReactants]);
+    // Filter out the selected limiting reactant to find the others
+    const otherPrimaryReactants = primaryReactants.filter(r => r.id !== simBasis.limitingReactantId);
+
+    // Create a slider for each remaining primary reactant
+    const newRatios = otherPrimaryReactants.map(reactant => {
+        const existingRatio = molarRatios.find(r => r.numeratorId === reactant.id);
+        let defaultValue = 1.0;
+
+        // --- MODIFICATION: Set default ratios based on preset ---
+        const limitingReactantName = componentsSetup.find(c => c.id === simBasis.limitingReactantId)?.name;
+
+        if (limitingReactantName === 'Toluene' && reactant.name === 'Hydrogen') {
+            defaultValue = 5.0; // HDA Preset
+        } else if (limitingReactantName === '1-Butene' && reactant.name === 'Isobutane') {
+            defaultValue = 6.0; // Butane Alkylation Preset
+        } else if (limitingReactantName === 'Oxygen') {
+            if (reactant.name === 'Methanol') defaultValue = 12.0; // DMC Preset
+            if (reactant.name === 'Carbon Monoxide') defaultValue = 24.0; // DMC Preset
+        }
+
+        return {
+            numeratorId: reactant.id,
+            value: existingRatio ? existingRatio.value : defaultValue 
+        };
+    });
+
+    if (JSON.stringify(newRatios) !== JSON.stringify(molarRatios)) {
+        setMolarRatios(newRatios);
+    }
+
+  }, [reactionsSetup, componentsSetup, simBasis.limitingReactantId, molarRatios]);
 
 
   // 5. Updated effect to handle component deletion
@@ -2008,6 +2399,56 @@ export default function Home() {
     }
   }, [componentsSetup, simBasis.limitingReactantId, simBasis.desiredProductId, getReactants, reactionsSetup]);
 
+  // 6. Context-aware validation of AUnit selection based on phase and rate law basis
+    // 6. Context-aware validation and auto-swap of AUnit selection based on rateLawBasis changes
+    useEffect(() => {
+        if (!reactionsSetup || reactionsSetup.length === 0) return;
+
+        const swapUnit = (unit: string, toPressure: boolean) => {
+            // Only swap if unit is in the expected set
+            if (toPressure) {
+                // concentration → pressure
+                if (unit === 'mol,L,s') return 'mol,L,Pa,s';
+                if (unit === 'mol,L,h') return 'mol,L,Pa,h';
+                if (unit === 'mol,m^3,s') return 'mol,m^3,Pa,s';
+                if (unit === 'mol,m^3,h') return 'mol,m^3,Pa,h';
+            } else {
+                // pressure → concentration
+                if (unit === 'mol,L,Pa,s' || unit === 'mol,L,bar,s') return 'mol,L,s';
+                if (unit === 'mol,L,Pa,h' || unit === 'mol,L,bar,h') return 'mol,L,h';
+                if (unit === 'mol,m^3,Pa,s' || unit === 'mol,m^3,bar,s') return 'mol,m^3,s';
+                if (unit === 'mol,m^3,Pa,h' || unit === 'mol,m^3,bar,h') return 'mol,m^3,h';
+            }
+            return unit;
+        };
+
+        const updatedReactions = reactionsSetup.map(reaction => {
+            let updated = { ...reaction };
+            // Only swap for gas phase
+            if (reactionPhase === 'Gas') {
+                // Forward
+                if (reaction.rateLawBasis === 'partialPressure') {
+                    updated.AUnit = swapUnit(reaction.AUnit, true);
+                } else if (reaction.rateLawBasis === 'concentration') {
+                    updated.AUnit = swapUnit(reaction.AUnit, false);
+                }
+                // Reverse (if equilibrium)
+                        if (reaction.isEquilibrium) {
+                            if (reaction.rateLawBasis === 'partialPressure') {
+                                updated.AUnitBackward = swapUnit(reaction.AUnitBackward ?? '', true);
+                            } else if (reaction.rateLawBasis === 'concentration') {
+                                updated.AUnitBackward = swapUnit(reaction.AUnitBackward ?? '', false);
+                            }
+                        }
+            }
+            return updated;
+        });
+        // Only update if something changed
+        if (JSON.stringify(updatedReactions) !== JSON.stringify(reactionsSetup)) {
+            setReactionsSetup(updatedReactions);
+        }
+    }, [reactionPhase, reactionsSetup]);
+
   if (showSimulator) {
     return <ReactorSimulator 
               onBack={() => setShowSimulator(false)} 
@@ -2016,8 +2457,12 @@ export default function Home() {
               simBasis={simBasis}
               molarRatios={molarRatios}
               setMolarRatios={setMolarRatios}
-              reactionPhase={reactionPhase} // Pass the phase state down
+              reactionPhase={reactionPhase}
               prodRate={prodRate}
+              temperature={temperature}     // Pass state down
+              setTemperature={setTemperature} // Pass setter down
+              pressure={pressure}           // Pass state down
+              setPressure={setPressure}       // Pass setter down
             />
   } else {
     return <KineticsInput 
@@ -2028,10 +2473,12 @@ export default function Home() {
               setComponentsSetup={setComponentsSetup}
               simBasis={simBasis}
               setSimBasis={setSimBasis}
-              reactionPhase={reactionPhase}      // Pass state down
-              setReactionPhase={setReactionPhase} // Pass setter down
-              prodRate={prodRate} // Pass state and setter down
+              reactionPhase={reactionPhase}      
+              setReactionPhase={setReactionPhase}
+              prodRate={prodRate}
               setProdRate={setProdRate}
+              setTemperature={setTemperature} // Pass setter down
+              setPressure={setPressure}       // Pass setter down
             />
   }
 }
