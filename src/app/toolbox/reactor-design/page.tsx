@@ -1620,18 +1620,18 @@ const KineticsInput = ({
                         {reactionsSetup.map((r, index) => {
                             const preview = generatePreview(r)
                             return (
-                                <div key={r.id} className="p-3 bg-card rounded-md border">
-                                  <div className="flex justify-between items-center mb-1">
-                                    <p className="font-bold text-primary">
-                                        {(() => {
-                                            const numSideReactions = reactionsSetup.length - 1;
-                                            if (index === 0) return 'Primary Reaction';
-                                            return numSideReactions === 1 ? 'Side Reaction' : `Side Reaction ${index}`;
-                                        })()}
-                                    </p>
+                                                                <div key={r.id} className="p-3 bg-card rounded-md">
+                                                                                                        <div className={`flex w-full ${reactionPhase === 'Gas' ? 'flex-row justify-between items-center' : 'flex-col items-center'}`}>
+                                                                                                            <p className={`font-bold text-primary ${reactionPhase === 'Gas' ? 'text-left' : 'text-center'} mb-0`}>
+                                                                                {(() => {
+                                                                                        const numSideReactions = reactionsSetup.length - 1;
+                                                                                        if (index === 0) return 'Primary Reaction';
+                                                                                        return numSideReactions === 1 ? 'Side Reaction' : `Side Reaction ${index}`;
+                                                                                })()}
+                                                                        </p>
                                     
-                                    {/* The switch container is now always rendered but conditionally invisible */}
-                                    <div className={`flex items-center gap-2 ${reactionPhase !== 'Gas' ? 'invisible' : ''}`}>
+                                    {/* The switch container is now always rendered but conditionally hidden */}
+                                    <div className={`${reactionPhase !== 'Gas' ? 'hidden' : 'flex items-center gap-2'}`}>
                                         <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
                                             <Button
                                                 onClick={() => updateReactionSetup(r.id, 'rateLawBasis', 'concentration')}
