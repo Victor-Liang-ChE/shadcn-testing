@@ -195,6 +195,12 @@ const calculateCstrData = (
 
     if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] };
 
+    // --- START: ADD THIS SECTION ---
+    const primaryReactionId = reactions[0].id;
+    const stoichCoeffStr = limitingReactant.reactionData[primaryReactionId]?.stoichiometry;
+    const stoichFactor = Math.abs(parseFloat(stoichCoeffStr || '0'));
+    // --- END: ADD THIS SECTION ---
+
     const rawSelectivityData: { x: number; y: number }[] = [];
     const rawVolumeData: { x: number; y: number }[] = [];
 
@@ -272,14 +278,16 @@ const calculateCstrData = (
         }
 
         // 2. Calculate conversion and selectivity from the solver's results
-        const F_A_out = F_out_basis[limitingReactant.name] || 0;
-        const F_P_out = F_out_basis[desiredProduct.name] || 0;
+    const F_A_out = F_out_basis[limitingReactant.name] || 0;
+    const F_P_out = F_out_basis[desiredProduct.name] || 0;
 
-        const conversion = (F_A0_basis - F_A_out) / F_A0_basis;
-        const molesConsumed_A = F_A0_basis - F_A_out;
-        const molesFormed_P = F_P_out - (F_in_basis[desiredProduct.name] || 0);
+    const conversion = (F_A0_basis - F_A_out) / F_A0_basis;
+    const molesConsumed_A = F_A0_basis - F_A_out;
+    const molesFormed_P = F_P_out - (F_in_basis[desiredProduct.name] || 0);
 
-        const selectivity = molesConsumed_A > 1e-9 ? molesFormed_P / molesConsumed_A : 0;
+    // --- START: MODIFY THIS LINE ---
+    const selectivity = molesConsumed_A > 1e-9 ? (stoichFactor * molesFormed_P) / molesConsumed_A : 0;
+    // --- END: MODIFY THIS LINE ---
         
         if (conversion < 0.001 || conversion > 0.999 || selectivity <= 0) continue;
 
@@ -794,6 +802,12 @@ const calculatePfrGasPhase = (
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
     if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] }
 
+    // --- START: ADD THIS SECTION ---
+    const primaryReactionId = reactions[0].id;
+    const stoichCoeffStr = limitingReactant.reactionData[primaryReactionId]?.stoichiometry;
+    const stoichFactor = Math.abs(parseFloat(stoichCoeffStr || '0'));
+    // --- END: ADD THIS SECTION ---
+
     const rawSelectivityData: { x: number; y: number }[] = []
     const rawVolumeData: { x: number; y: number }[] = []
     
@@ -838,7 +852,7 @@ const calculatePfrGasPhase = (
 
     // The rest of the function remains unchanged...
     const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
-    const P_C_mol_s = (targetProduction_kta * 1e6) / productMolarMass / (365 * 24 * 3600);
+    const P_C_mol_s = convertUnit.flowRate.ktaToMolPerSecond(targetProduction_kta, productMolarMass);
 
     const F0_basis_dict: { [key: string]: number } = { [limitingReactant.name]: 1.0 };
     molarRatios.forEach(ratio => {
@@ -865,18 +879,20 @@ const calculatePfrGasPhase = (
         if (!odeResults.y || odeResults.y[0].length < 2) continue;
         F_current = odeResults.y.map(comp_y => comp_y[comp_y.length - 1]);
         V_current = V_next;
-        const F_A_current_val = F_current[limitingReactantIndex];
-        const F_P_current_val = F_current[desiredProductIndex];
-        const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_current_val) / F0_basis_vec[limitingReactantIndex];
-        const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_current_val;
-        const molesFormed = F_P_current_val - (F0_basis_vec[desiredProductIndex] || 0)
-        const selectivity = molesConsumed > 1e-9 ? molesFormed / molesConsumed : 0;
+    const F_A_current_val = F_current[limitingReactantIndex];
+    const F_P_current_val = F_current[desiredProductIndex];
+    const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_current_val) / F0_basis_vec[limitingReactantIndex];
+    const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_current_val;
+    const molesFormed = F_P_current_val - (F0_basis_vec[desiredProductIndex] || 0)
+    // --- START: MODIFY THIS LINE ---
+    const selectivity = molesConsumed > 1e-9 ? (stoichFactor * molesFormed) / molesConsumed : 0;
+    // --- END: MODIFY THIS LINE ---
         
         if (conversion >= 1e-6 && conversion < 0.9999 && selectivity > 1e-6) {
             const F_A0_true   = P_C_mol_s / (selectivity*conversion);
             const F_tot0_basis = F0_basis_vec.reduce((s,f)=>s+f,0);
             const F_tot0_true = F_A0_true / (F0_basis_vec[limitingReactantIndex] / F_tot0_basis);
-            const V_true = 1e-3 * V_current * (F_tot0_true / F_tot0_basis);
+            const V_true = V_current * (F_tot0_true / F_tot0_basis); // Corrected Line
             rawSelectivityData.push({ x: conversion, y: selectivity });
             rawVolumeData.push({ x: conversion, y: V_true });
         }
@@ -900,6 +916,13 @@ const calculatePfrLiquidPhase = (
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
     if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] };
+
+    // --- START: ADD THIS SECTION ---
+    // Find the stoichiometric coefficient of the limiting reactant in the primary reaction (reaction[0])
+    const primaryReactionId = reactions[0].id;
+    const stoichCoeffStr = limitingReactant.reactionData[primaryReactionId]?.stoichiometry;
+    const stoichFactor = Math.abs(parseFloat(stoichCoeffStr || '0'));
+    // --- END: ADD THIS SECTION ---
 
     const rawSelectivityData: { x: number; y: number }[] = [];
     const rawVolumeData: { x: number; y: number }[] = [];
@@ -988,12 +1011,15 @@ const calculatePfrLiquidPhase = (
         F_current = odeResults.y.map(comp_y => comp_y[comp_y.length - 1]);
         V_current = V_next;
         
-        const F_A_out_basis = F_current[limitingReactantIndex];
-        const P_C_out_basis = F_current[desiredProductIndex];
-        const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_out_basis) / F0_basis_vec[limitingReactantIndex];
-        const P_C_basis_mols = P_C_out_basis - (F0_basis_vec[desiredProductIndex] || 0);
-        
-        const selectivity = (F0_basis_vec[limitingReactantIndex] - F_A_out_basis > 1e-9) ? P_C_basis_mols / (F0_basis_vec[limitingReactantIndex] - F_A_out_basis) : 0;
+    const F_A_out_basis = F_current[limitingReactantIndex];
+    const P_C_out_basis = F_current[desiredProductIndex];
+    const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_out_basis) / F0_basis_vec[limitingReactantIndex];
+    const P_C_basis_mols = P_C_out_basis - (F0_basis_vec[desiredProductIndex] || 0);
+
+    // --- START: MODIFY THIS LINE ---
+    const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_out_basis;
+    const selectivity = (molesConsumed > 1e-9) ? (stoichFactor * P_C_basis_mols) / molesConsumed : 0;
+    // --- END: MODIFY THIS LINE ---
         
         // --- Correct Volume Scaling Logic ---
         // 1. Calculate the true molar flow rate of the limiting reactant into the reactor.
