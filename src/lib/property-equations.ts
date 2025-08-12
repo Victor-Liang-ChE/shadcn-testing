@@ -595,8 +595,8 @@ export function calculateEq106(T: number, A: number, B: number, C: number, D: nu
   try {
     const Tr = T / Tc;
     const exponent = B + C * Tr + D * Math.pow(Tr, 2) + E * Math.pow(Tr, 3);
-    const Hv_J_kmol = A * Math.pow(1 - Tr, exponent);
-    return Hv_J_kmol / 1000; // Convert to J/mol
+  const Hv_J_kmol = A * Math.pow(1 - Tr, exponent);
+  return Hv_J_kmol; // REMOVE the division by 1000 - already in J/kmol
   } catch (e) {
     console.error("Error in calculateEq106:", e);
     return null;
