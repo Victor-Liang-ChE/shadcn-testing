@@ -40,20 +40,11 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added for plot mode toggle
 
 import {
-    calculateEq101,
-    calculateBoilingPointEq101, // Added import
-    calculateEq105,
-    calculatePolynomial,
-    calculateEq106,
-    calculateEq102_conductivity_viscosity,
-    calculateEq104_virial,
-    calculateEq16Complex, // Added import
-    calculateEq105_molar, // Added import
+    calculatePropertyByEquation, // The only direct calculator you need now
+    calculateBoilingPointEq101, // Keep for the special boiling point solver
     parseCoefficient,
-    propertiesToPlotConfig, // Import from property-equations
-    type PropertyDefinition, // Import type from property-equations
-    calculateEq121, // Added import for eq121
-    calculateEq13 // Added import for eq13
+    propertiesToPlotConfig,
+    type PropertyDefinition,
 } from '@/lib/property-equations';
 import {
     type ConstantPropertyDefinition,
@@ -243,7 +234,6 @@ function calculateDynamicAxisParams(
     // Ensure nameGap doesn't become too small or negative
     calculatedNameGap = Math.max(10, calculatedNameGap); // Minimum 10px gap
 
-    console.log('[DebugYAxis] calculateDynamicAxisParams:', { dataMinY, dataMaxY, baseTotalGapForName, dynamicAxisLabelMargin, calculatedNameGap });
     return { dynamicAxisLabelMargin, calculatedNameGap };
 }
 
@@ -340,7 +330,6 @@ export default function CompoundPropertiesPage() {
         }
 
         const fetchInitialDataForCompound = async (cmpdToFetch: CompoundInputState) => {
-          console.log(`Attempting initial fetch for ${cmpdToFetch.name}`);
           try {
             const fetchedData = await fetchCompoundPropertiesLocal(cmpdToFetch.name);
             setCompounds(prev =>
@@ -350,7 +339,6 @@ export default function CompoundPropertiesPage() {
                   : c
               )
             );
-            console.log(`Initial fetch successful for ${cmpdToFetch.name}`);
           } catch (err: any) {
             console.error(`Initial fetch failed for ${cmpdToFetch.name}:`, err.message);
             setCompounds(prev =>
@@ -382,7 +370,6 @@ export default function CompoundPropertiesPage() {
     
     // 1. Check cache before fetching
     if (propertiesCache.current.has(cacheKey)) {
-        console.log(`CompoundProperties: Cache HIT for ${trimmedCompoundName}.`);
         const cachedData = propertiesCache.current.get(cacheKey);
         // Handle the case where a previous fetch for this name failed
         if (cachedData === null) {
@@ -391,21 +378,16 @@ export default function CompoundPropertiesPage() {
         return cachedData || null;
     }
 
-    console.log(`CompoundProperties: Cache MISS for ${trimmedCompoundName}. Fetching from DB.`); // Use trimmed name in log
-
     try {
       const { data: compoundDbData, error: compoundError } = await supabase
-        .from('compounds').select('id, name, cas_number, molecular_weight').ilike('name', trimmedCompoundName).limit(1).single(); // Use trimmed name
-      
-      console.log(`DEBUG_FETCH_MW: For compound "${trimmedCompoundName}", compoundDbData:`, JSON.stringify(compoundDbData)); // Use trimmed name in log
+        .from('compounds').select('id, name, cas_number, molecular_weight').ilike('name', trimmedCompoundName).limit(1).single();
 
       if (compoundError || !compoundDbData) {
-        console.error(`DEBUG_FETCH_MW: Error or no data for compound "${trimmedCompoundName}" from 'compounds' table. Error:`, compoundError); // Use trimmed name
-        throw new Error(compoundError?.message || `Compound '${trimmedCompoundName}' not found in 'compounds' table.`); // Use trimmed name
+        throw new Error(compoundError?.message || `Compound '${trimmedCompoundName}' not found in 'compounds' table.`);
       }
       
       const compoundId = compoundDbData.id;
-      const foundName = compoundDbData.name; // This is the name from DB, should be canonical
+      const foundName = compoundDbData.name;
 
       const sourcesToTry = ['chemsep1', 'DWSIM', 'chemsep2', 'biod_db'];
       let properties: any = null;
@@ -417,39 +399,32 @@ export default function CompoundPropertiesPage() {
       if (!properties) {
         const { data: anyPropsData, error: anyPropsError } = await supabase
           .from('compound_properties').select('properties').eq('compound_id', compoundId).limit(1).single();
-        if (anyPropsError || !anyPropsData) throw new Error(`No properties found for ${foundName}.`); // Use foundName (canonical)
+        if (anyPropsError || !anyPropsData) throw new Error(`No properties found for ${foundName}.`);
         properties = anyPropsData.properties;
       }
-      if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid properties format for ${foundName}.`); // Use foundName
+      if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid properties format for ${foundName}.`);
 
-      const directMolarWeight = compoundDbData.molecular_weight; 
-      console.log(`DEBUG_FETCH_MW: For compound "${foundName}" (ID: ${compoundId}), directMolarWeight from DB: ${directMolarWeight} (type: ${typeof directMolarWeight})`);
+      const directMolarWeight = compoundDbData.molecular_weight;
 
       let molarWeight: number | null = null;
       if (directMolarWeight !== null && typeof directMolarWeight === 'number') {
         molarWeight = directMolarWeight;
-        console.log(`DEBUG_FETCH_MW: Using directMolarWeight for "${foundName}": ${molarWeight}`);
       } else {
         const mwFromProps = properties["Molecular weight"];
-        console.log(`DEBUG_FETCH_MW: directMolarWeight for "${foundName}" is null or not a number (value: ${directMolarWeight}). Fallback to properties["Molecular weight"]:`, mwFromProps);
         molarWeight = parseCoefficient(mwFromProps?.value ?? mwFromProps);
-        console.log(`DEBUG_FETCH_MW: Parsed molarWeight from properties for "${foundName}": ${molarWeight}`);
       }
       
       const criticalTemp = parseCoefficient(properties["Critical temperature"]?.value ?? properties["Critical temperature"]);
-      console.log(`DEBUG_FETCH_MW: Final molarWeight for "${foundName}" being returned: ${molarWeight}, CriticalTemp: ${criticalTemp}`);
 
-      const finalData = { properties, molarWeight, criticalTemp, name: foundName }; // Return canonical name
+      const finalData = { properties, molarWeight, criticalTemp, name: foundName };
       
-      // 3. Store the successful result in the cache
       propertiesCache.current.set(cacheKey, finalData);
       return finalData;
     } catch (err: any) {
-      console.error(`Error fetching data for "${trimmedCompoundName}":`, err.message); // Use trimmed name
+      console.error(`Error fetching data for "${trimmedCompoundName}":`, err.message);
       
-      // 4. Cache the failure to avoid repeated invalid requests
       propertiesCache.current.set(cacheKey, null);
-      throw err; // Re-throw to be caught by caller
+      throw err;
     }
   };
 
@@ -480,9 +455,8 @@ export default function CompoundPropertiesPage() {
     }
 
     if (plotMode === 'tempDependent') {
-        const propDef = propertiesToPlotConfig.find(p => p.displayName === propertyKey); // Changed to find by displayName
+        const propDef = propertiesToPlotConfig.find(p => p.displayName === propertyKey);
         if (!propDef) {
-          console.warn(`Property definition for key ${propertyKey} not found.`);
           setEchartsOptions({});
           setOverallError(`Property definition for ${propertyKey} not found.`);
           return;
@@ -565,10 +539,6 @@ export default function CompoundPropertiesPage() {
             });
 
             if (commonTminK_forPlot === null || commonTmaxK_forPlot === null || commonTminK_forPlot >= commonTmaxK_forPlot) {
-                if (allCompoundsData.some(c => c.data && c.data.properties[propDef.jsonKey])) {
-                     console.warn(`No overlapping temperature range found for property: ${propDef.displayName}. CommonTminK: ${commonTminK_forPlot}, CommonTmaxK: ${commonTmaxK_forPlot}. Plot will auto-scale.`);
-                     // setOverallError(`No overlapping temperature range for ${propDef.displayName}.`); // Optionally set error
-                }
                 // finalPlotTmin/maxKelvin remain undefined, xAxisKelvinInterval remains undefined. Axis will auto-scale.
             } else {
                 const commonTminCelsius_plot = commonTminK_forPlot - 273.15;
@@ -612,13 +582,11 @@ export default function CompoundPropertiesPage() {
             const currentCompoundData = compoundState.data;
             const propData = currentCompoundData.properties[propDef.jsonKey];
             if (!propData) {
-                console.warn(`Property ${propDef.displayName} (${propDef.jsonKey}) not found for ${currentCompoundData.name}.`);
                 return;
             }
             const Tmin_compound_K = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
             const Tmax_compound_K = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
             if (Tmin_compound_K === null || Tmax_compound_K === null || Tmin_compound_K >= Tmax_compound_K) {
-                console.warn(`Invalid Tmin/Tmax for ${propDef.displayName} for ${currentCompoundData.name}. Tmin: ${Tmin_compound_K}, Tmax: ${Tmax_compound_K}`);
                 return;
             }
 
@@ -727,50 +695,30 @@ export default function CompoundPropertiesPage() {
                     }
                         
                     let rawValue: number | null = null;
-                    switch (propDef.equationType) {
-                      case 'eq101':
-                        if (passedCoeffs.length >= 5) rawValue = calculateEq101(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4] ?? undefined);
-                        break;
-                      case 'eq105':
-                        if (passedCoeffs.length >= 4 && Tc_K_series !== null && mw_kg_kmol_series !== null) {
-                             rawValue = calculateEq105(T, passedCoeffs[0]!, passedCoeffs[1]!, Tc_K_series, passedCoeffs[3]!, mw_kg_kmol_series);
-                        } else if (passedCoeffs.length >=3 && Tc_K_series === null && parseCoefficient(propData.C) !== null && mw_kg_kmol_series !== null) {
-                             const tcFromCoeffC = parseCoefficient(propData.C)!; 
-                             rawValue = calculateEq105(T, passedCoeffs[0]!, passedCoeffs[1]!, tcFromCoeffC, passedCoeffs[2]!, mw_kg_kmol_series);
-                        }
-                        break;
-                      case 'eq105_molar':
-                        if (passedCoeffs.length >= 4 && Tc_K_series !== null) { 
-                            const coeffA = passedCoeffs[0]!
-                            const coeffB = passedCoeffs[1]!
-                            const coeffD_for_eq105_molar = passedCoeffs[3];
-                            if (coeffD_for_eq105_molar !== null && coeffD_for_eq105_molar !== undefined) {
-                                 rawValue = calculateEq105_molar(T, coeffA, coeffB, Tc_K_series, coeffD_for_eq105_molar);
-                            }
-                        }
-                        break;
-                      case 'polynomial':
-                        rawValue = calculatePolynomial(T, passedCoeffs[0]!, passedCoeffs[1] ?? undefined, passedCoeffs[2] ?? undefined, passedCoeffs[3] ?? undefined, passedCoeffs[4] ?? undefined); 
-                        break;
-                      case 'eq16_complex': 
-                        if (passedCoeffs.length >= 5) rawValue = calculateEq16Complex(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
-                        break;
-                      case 'eq106':
-                        if (passedCoeffs.length >= 5 && Tc_K_series !== null) rawValue = calculateEq106(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!, Tc_K_series);
-                        break;
-                      case 'eq102_cv':
-                        if (passedCoeffs.length >= 4) rawValue = calculateEq102_conductivity_viscosity(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
-                        break;
-                      case 'eq104_virial':
-                        if (passedCoeffs.length >= 5) rawValue = calculateEq104_virial(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
-                        break;
-                      case 'eq121':
-                        if (passedCoeffs.length >= 4) rawValue = calculateEq121(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
-                        break;
-                      case 'eq13':
-                        if (passedCoeffs.length >= 3) rawValue = calculateEq13(T, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!);
-                        break;
-                    }
+
+                const eqno = propData?.eqno;
+                if (eqno === undefined || eqno === null) {
+                    console.warn(`Equation number (eqno) not found for property ${propDef.displayName} for ${currentCompoundData.name}.`);
+                    continue; // Skips this iteration of the forEach loop
+                }
+
+                const coeffsForCalc = {
+                    A: parseCoefficient(propData.A),
+                    B: parseCoefficient(propData.B),
+                    C: parseCoefficient(propData.C),
+                    D: parseCoefficient(propData.D),
+                    E: parseCoefficient(propData.E),
+                };
+
+                // Tc is required for some equations, so we pass it if available.
+                const Tc_K_for_calc = currentCompoundData.criticalTemp ?? undefined;
+
+                rawValue = calculatePropertyByEquation(
+                    eqno,
+                    T, // Temperature in Kelvin
+                    coeffsForCalc,
+                    Tc_K_for_calc
+                );
 
                     let valueInBaseUnit = rawValue;
                     if (valueInBaseUnit !== null && isFinite(valueInBaseUnit)) {
@@ -812,8 +760,6 @@ export default function CompoundPropertiesPage() {
                 color: compoundColors[compoundIndex % compoundColors.length],
                 symbol: 'none',
                 emphasis: { lineStyle: { width: 3.5 } },
-                animationDuration: 500,
-                animationEasing: 'cubicInOut',
                 large: true, 
                 sampling: 'lttb', 
                 _internal_legend_equation: equationString,
@@ -822,9 +768,6 @@ export default function CompoundPropertiesPage() {
         });
 
         const finalSeriesToPlot = seriesData.filter(s => (s.data as any[]).length > 0);
-        if (seriesData.length > 0 && finalSeriesToPlot.length === 0 && atLeastOneCompoundHasData) {
-            console.warn("All series ended up with no data points after processing. This might be due to Tmin/Tmax issues or all points being skipped during calculation/conversion.");
-        }
 
         // Add manual annotations if any
         if (manualPointsToAnnotate && manualPointsToAnnotate.length > 0) {
@@ -895,8 +838,6 @@ export default function CompoundPropertiesPage() {
 
         const originalBaseTotalGap = (propDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75);
         const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(yAxisRangeForGapCalc.min, yAxisRangeForGapCalc.max, originalBaseTotalGap);
-        
-        console.log('[DebugYAxis] TempDependent Plot - Applied:', { yAxisDisplayName, yAxisUnit, dataMinY: yAxisRangeForGapCalc.min, dataMaxY: yAxisRangeForGapCalc.max, originalBaseTotalGap, dynamicAxisLabelMargin, calculatedNameGap });
         // --- End dynamic parameter calculation ---
 
         const yAxisConfig: any = {
@@ -959,6 +900,11 @@ export default function CompoundPropertiesPage() {
         };
 
         setEchartsOptions({
+          // Disable all chart animations when swapping properties
+          animation: false,
+          animationDuration: 0,
+          animationDurationUpdate: 0,
+          // Base chart styling
           backgroundColor: 'transparent', 
           title: {
             text: isBoilingPointPlot 
@@ -1090,7 +1036,6 @@ export default function CompoundPropertiesPage() {
         
         const constDef = constantPropertiesConfig.find(c => c.jsonKey === propertyKey);
         if (!constDef) {
-          console.warn(`Constant definition for key ${propertyKey} not found.`);
           setEchartsOptions({});
           setOverallError(`Constant definition for ${propertyKey} not found.`);
           return;
@@ -1165,7 +1110,6 @@ export default function CompoundPropertiesPage() {
 
         const originalBaseTotalGapConst = (constDef.jsonKey === "Liquid viscosity (RPS)" ? 85 : 75);
         const { dynamicAxisLabelMargin, calculatedNameGap } = calculateDynamicAxisParams(dataMinY, dataMaxY, originalBaseTotalGapConst);
-        console.log('[DebugYAxis] Constants Plot - Applied:', { yAxisDisplayName, displayUnit, dataMinY, dataMaxY, originalBaseTotalGapConst, dynamicAxisLabelMargin, calculatedNameGap });
 
         const yAxisConfig: any = {
             type: 'value' as const,
@@ -1234,26 +1178,21 @@ export default function CompoundPropertiesPage() {
   const handleFetchAndPlot = useCallback(async (isUserInitiated = false) => {
     setLoading(true);
     setOverallError(null);
-    setManualTempInput(''); // Clear manual input
-    setManualTempPointsData([]); // Clear manual points
-    // Re-enable auto-updates when fetch button is pressed
+    setManualTempInput('');
+    setManualTempPointsData([]);
     setShouldAutoUpdate(true);
-    console.log("handleFetchAndPlot: Starting fetch and plot process.");
     const fetchedCompoundStates = await Promise.all(compounds.map(async (compound) => {
         if (!compound.name.trim()) {
             return { ...compound, data: null, error: (isUserInitiated ? "Compound name is empty." : null) };
         }
         try {
             const data = await fetchCompoundPropertiesLocal(compound.name);
-            console.log(`handleFetchAndPlot: Fetched data for ${compound.name}:`, data ? 'Success' : 'Failed/Null');
             return { ...compound, data, error: null };
         } catch (err: any) {
-            console.log(`handleFetchAndPlot: Error fetching data for ${compound.name}: ${err.message}`);
             return { ...compound, data: null, error: err.message || "Failed to fetch data." };
         }
     }));
     setCompounds(fetchedCompoundStates);
-    console.log("handleFetchAndPlot: All compound data fetched (or attempted):", fetchedCompoundStates.map(c => ({ name: c.name, hasData: !!c.data, error: c.error })));
     
     const activeCompoundsWithData = fetchedCompoundStates.filter(c => c.data && c.name.trim());
     
@@ -1275,17 +1214,12 @@ export default function CompoundPropertiesPage() {
                     if (hasMwDependentUnit && compoundState.data!.molarWeight === null) return false;
                     
                     if (propDef.coeffs.length > 0) {
-                        if (propDef.equationType !== 'polynomial') {
-                            const firstCoeffKey = propDef.coeffs[0];
-                            const firstCoeffVal = parseCoefficient(propData[firstCoeffKey]);
-                            if (firstCoeffVal === null) return false;
-                            if (propDef.equationType === 'eq105_molar') {
-                                const coeffBVal = parseCoefficient(propData['B']);
-                                if (coeffBVal === null || coeffBVal <= 0) return false;
-                            }
-                        } else {
-                            if (!propDef.coeffs.some(cKey => parseCoefficient(propData[cKey]) !== null)) return false;
-                        }
+                        // Check if at least one coefficient is available for calculation
+                        const hasValidCoeff = propDef.coeffs.some(cKey => parseCoefficient(propData[cKey]) !== null);
+                        if (!hasValidCoeff) return false;
+                        
+                        // Check if eqno is available
+                        if (!propData.eqno) return false;
                     }
                     return true;
                 });
@@ -1547,13 +1481,7 @@ export default function CompoundPropertiesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, compounds[0]?.name, compounds[0]?.data, shouldAutoUpdate]);
 
-  // useEffect to handle compound removal/addition - triggers when compounds array length changes
-  useEffect(() => {
-    if (shouldAutoUpdate && compounds.length > 0 && compounds.some(c => c.data)) {
-      handleFetchAndPlot(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compounds.length, shouldAutoUpdate]);
+  // useEffect to handle compound removal - only triggers meaningful changes
 
   useEffect(() => {
     if (plotMode === 'constants' || plotMode === 'tempDependent') {
@@ -1613,8 +1541,7 @@ export default function CompoundPropertiesPage() {
   const propertySelectKey = availablePropertiesForSelection.map(p => p.displayName).join(',') || 'no-props'; // Changed to use displayName
   const constantSelectKey = availableConstantsForSelection.map(c => c.jsonKey).join(',') || 'no-const-props';
 
-  // Function to calculate property at a manual temperature
-  const handleCalculateManualPoint = () => { // Renamed function
+  const handleCalculateManualPoint = () => {
     if (plotMode !== 'tempDependent' || !selectedPropertyKey) {
       setManualTempPointsData([]);
       return;
@@ -1630,14 +1557,10 @@ export default function CompoundPropertiesPage() {
 
     if (isNaN(inputValue)) {
       setManualTempPointsData(compounds.filter(c => c.data).map(c => ({
-        compoundName: c.data!.name,
-        seriesName: c.data!.name,
-        tempCelsius: NaN, // Invalid input
-        tempKelvin: NaN,
-        value: null,
-        unit: isBoilingPointSelected ? selectedUnit : selectedUnit, // selectedUnit is pressure unit for BP
-        isValid: false,
-        message: "Invalid input."
+        compoundName: c.data!.name, seriesName: c.data!.name, tempCelsius: NaN,
+        tempKelvin: NaN, value: null,
+        unit: isBoilingPointSelected ? selectedUnit : selectedUnit,
+        isValid: false, message: "Invalid input."
       })));
       return;
     }
@@ -1645,20 +1568,16 @@ export default function CompoundPropertiesPage() {
     const unitDefToUse = propDef.availableUnits?.find(u => u.unit === selectedUnit) ||
                          propDef.availableUnits?.[0] ||
                          { unit: propDef.targetUnitName, conversionFactorFromBase: 1 };
-    const currentDisplayUnit = unitDefToUse.unit; // For BP, this is the selected pressure unit
+    const currentDisplayUnit = unitDefToUse.unit;
 
     const newPointsData = compounds.filter(c => c.data).map(compoundState => {
       const currentCompoundData = compoundState.data!;
-      const propData = currentCompoundData.properties[propDef.jsonKey]; // For BP, jsonKey is "Vapour pressure"
+      const propData = currentCompoundData.properties[propDef.jsonKey];
       
       let point: ManualTempPoint = {
-        compoundName: currentCompoundData.name,
-        seriesName: currentCompoundData.name,
-        tempCelsius: inputValue, // Stores input pressure for BP, input temp C for others
-        tempKelvin: isBoilingPointSelected ? NaN : inputValue + 273.15, // Temp K for calculation (non-BP)
-        value: null, // Stores calculated temp C for BP, calculated prop value for others
-        unit: currentDisplayUnit, // Stores input pressure unit for BP, prop value unit for others
-        isValid: false,
+        compoundName: currentCompoundData.name, seriesName: currentCompoundData.name,
+        tempCelsius: inputValue, tempKelvin: isBoilingPointSelected ? NaN : inputValue + 273.15,
+        value: null, unit: currentDisplayUnit, isValid: false,
       };
 
       if (!propData) {
@@ -1673,12 +1592,9 @@ export default function CompoundPropertiesPage() {
       if (isBoilingPointSelected) {
         if (passedCoeffs.length >= 5 && passedCoeffs.every(c => c !== null)) {
           const [coeffA, coeffB, coeffC, coeffD, coeffE] = passedCoeffs as [number, number, number, number, number | undefined];
-          
-          // Convert input pressure (inputValue, in currentDisplayUnit) to Pascals
           const pressUnitDef = propDef.availableUnits?.find(u => u.unit === currentDisplayUnit);
-          let pressureInPa = inputValue; // Assume inputValue is already in Pa if no conversion found
+          let pressureInPa = inputValue;
           if (pressUnitDef && typeof pressUnitDef.conversionFactorFromBase === 'number' && pressUnitDef.conversionFactorFromBase !== 0) {
-            // conversionFactorFromBase converts Pa TO currentDisplayUnit. So, divide to go other way.
             pressureInPa = inputValue / pressUnitDef.conversionFactorFromBase;
           } else if (pressUnitDef && currentDisplayUnit === "Pa") {
             pressureInPa = inputValue;
@@ -1704,16 +1620,15 @@ export default function CompoundPropertiesPage() {
 
           const calculatedTempKelvin = calculateBoilingPointEq101(pressureInPa, coeffA, coeffB, coeffC, coeffD, coeffE, initialTempGuessBp);
           if (calculatedTempKelvin !== null && isFinite(calculatedTempKelvin) && calculatedTempKelvin > 0) {
-            point.value = calculatedTempKelvin - 273.15; // Store calculated Temp in Celsius
+            point.value = calculatedTempKelvin - 273.15;
             point.isValid = true;
-            // point.unit remains the input pressure unit. The output is implicitly °C.
           } else {
             point.message = "Boiling temperature calculation failed or out of range.";
           }
         } else {
           point.message = "Insufficient coefficients for boiling point calculation.";
         }
-      } else { // Other temperature-dependent properties
+      } else {
         const tempKelvinForCalc = inputValue + 273.15;
         const Tmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
         const Tmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
@@ -1722,58 +1637,21 @@ export default function CompoundPropertiesPage() {
           point.message = `Temp out of range (${formatNumberToPrecision(Tmin ? Tmin - 273.15 : NaN,1)} to ${formatNumberToPrecision(Tmax ? Tmax - 273.15 : NaN,1)} °C).`;
           return point;
         }
-        let Tc_K_series: number | null = null; // For equations requiring Tc
-        if (propDef.requiresTc) Tc_K_series = currentCompoundData.criticalTemp ?? null;
+        
+        const eqno = propData?.eqno;
+        if (eqno === undefined || eqno === null) {
+          point.message = `Equation number (eqno) not found.`;
+          return point;
+        }
 
-        if (propDef.requiresTc && Tc_K_series === null) {
+        const coeffsForCalc = { A: parseCoefficient(propData.A), B: parseCoefficient(propData.B), C: parseCoefficient(propData.C), D: parseCoefficient(propData.D), E: parseCoefficient(propData.E), };
+        const Tc_K_for_calc = currentCompoundData.criticalTemp ?? undefined;
+
+        if (propDef.requiresTc && Tc_K_for_calc === undefined) {
           point.message = `Critical Temp required but not found.`; return point;
         }
-        // ... (rest of the switch case for other properties, as it was)
-        let rawValue: number | null = null;
-        switch (propDef.equationType) {
-          case 'eq101': // This case should not be hit if isBoilingPointSelected is false and propDef.eqType is eq101
-            if (passedCoeffs.length >= 5) rawValue = calculateEq101(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4] ?? undefined);
-            break;
-          case 'eq105':
-            if (passedCoeffs.length >= 4 && Tc_K_series !== null && mw_kg_kmol_series !== null) {
-                 rawValue = calculateEq105(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, Tc_K_series, passedCoeffs[3]!, mw_kg_kmol_series);
-            } else if (passedCoeffs.length >=3 && Tc_K_series === null && parseCoefficient(propData.C) !== null && mw_kg_kmol_series !== null) {
-                 const tcFromCoeffC = parseCoefficient(propData.C)!; 
-                 rawValue = calculateEq105(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, tcFromCoeffC, passedCoeffs[2]!, mw_kg_kmol_series);
-            }
-            break;
-          case 'eq105_molar':
-            if (passedCoeffs.length >= 4 && Tc_K_series !== null) { 
-                const coeffA = passedCoeffs[0]!
-                const coeffB = passedCoeffs[1]!
-                const coeffD_for_eq105_molar = passedCoeffs[3];
-                if (coeffD_for_eq105_molar !== null && coeffD_for_eq105_molar !== undefined) {
-                     rawValue = calculateEq105_molar(tempKelvinForCalc, coeffA, coeffB, Tc_K_series, coeffD_for_eq105_molar);
-                }
-            }
-            break;
-          case 'polynomial':
-            rawValue = calculatePolynomial(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1] ?? undefined, passedCoeffs[2] ?? undefined, passedCoeffs[3] ?? undefined, passedCoeffs[4] ?? undefined); 
-            break;
-          case 'eq16_complex': 
-            if (passedCoeffs.length >= 5) rawValue = calculateEq16Complex(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
-            break;
-          case 'eq106':
-            if (passedCoeffs.length >= 5 && Tc_K_series !== null) rawValue = calculateEq106(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!, Tc_K_series);
-            break;
-          case 'eq102_cv':
-            if (passedCoeffs.length >= 4) rawValue = calculateEq102_conductivity_viscosity(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
-            break;
-          case 'eq104_virial':
-            if (passedCoeffs.length >= 5) rawValue = calculateEq104_virial(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!, passedCoeffs[4]!);
-            break;
-          case 'eq121':
-            if (passedCoeffs.length >= 4) rawValue = calculateEq121(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!, passedCoeffs[3]!);
-            break;
-          case 'eq13':
-            if (passedCoeffs.length >= 3) rawValue = calculateEq13(tempKelvinForCalc, passedCoeffs[0]!, passedCoeffs[1]!, passedCoeffs[2]!);
-            break;
-        }
+
+        let rawValue = calculatePropertyByEquation(eqno, tempKelvinForCalc, coeffsForCalc, Tc_K_for_calc);
 
         if (rawValue !== null && isFinite(rawValue)) {
           let valueInBaseUnit = rawValue;
@@ -1800,7 +1678,7 @@ export default function CompoundPropertiesPage() {
               finalDisplayValue *= cFactorBase.factor;
             }
           }
-          point.value = finalDisplayValue; // Store calculated property value
+          point.value = finalDisplayValue;
           point.isValid = true;
         } else {
           point.message = "Calculation failed or resulted in non-finite number.";
@@ -2012,6 +1890,15 @@ export default function CompoundPropertiesPage() {
                   )}
                 </div>
 
+                {/* Warning for Second Virial Coefficient */}
+                {plotMode === 'tempDependent' && selectedPropertyKey === 'Second Virial Coefficient' && (
+                  <Alert className="mt-4">
+                    <AlertTitle>Data Quality Warning</AlertTitle>
+                    <AlertDescription>
+                      The Second Virial Coefficient data may be incorrect. Please use these results with caution and verify against other sources.
+                    </AlertDescription>
+                  </Alert>
+                )}
 
                 <Button onClick={handleFetchButtonClick} disabled={loading} className="w-full">
                   {loading ? 'Fetching...' : 'Fetch & Plot Properties'}
