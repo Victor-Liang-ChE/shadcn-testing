@@ -156,7 +156,104 @@ function calculateNumericalJacobian(
 
 
 /**
+ * Solves a system of ODEs using a custom BDF method, ideal for stiff systems.
+ */
+function solveODE_BDF_basic(
+  derivatives: (t: number, y: number[]) => number[],
+  y0: number[],
+  tSpan: [number, number],
+): { t: number[], y: number[][] } {
+  const [t0, tf] = tSpan;
+  let t = t0;
+  let y = [...y0];
+  const t_out = [t0];
+  const y_out = [y0];
+  const n = y0.length;
+
+  // Start with a small, safe step size
+  let h = Math.min((tf - t0) / 1000, 0.01) || 1e-6; 
+  
+  const min_h = 1e-12;
+  const newton_tol = 1e-8;
+  const newton_max_iter = 100;
+  
+  while (t < tf) {
+    if (t + h > tf) h = tf - t;
+    if (h < min_h) {
+        console.warn("BDF solver stopped: Step size is too small.");
+        break;
+    }
+
+    let y_next = [...y];
+    let converged = false;
+
+    // Newton's method to solve the implicit BDF equation
+    for (let iter = 0; iter < newton_max_iter; iter++) {
+        const f_next = derivatives(t + h, y_next);
+        const G = y_next.map((val, i) => val - y[i] - h * f_next[i]);
+        
+        if (Math.sqrt(G.reduce((sum, val) => sum + val*val, 0)) < newton_tol) {
+            converged = true;
+            break;
+        }
+        
+        const J_f: number[][] = Array.from({length: n}, () => Array(n).fill(0));
+        const h_eps = 1e-8;
+        for(let j=0; j<n; j++){
+            const y_h = [...y_next];
+            y_h[j] += h_eps;
+            const fx_h = derivatives(t+h, y_h);
+            for(let i=0; i<n; i++){
+                J_f[i][j] = (fx_h[i] - f_next[i]) / h_eps;
+            }
+        }
+        
+        const J_G = Array.from({length: n}, (_, i) => 
+            Array.from({length: n}, (_, j) => (i === j ? 1 : 0) - h * J_f[i][j])
+        );
+
+        const delta_y = solveLinearSystem(J_G, G.map(val => -val));
+
+        if (!delta_y) {
+            // Jacobian is singular, can't solve.
+            converged = false;
+            break;
+        }
+        
+        y_next = y_next.map((val, i) => val + delta_y[i]);
+        // Enforce non-negativity to improve stability
+        y_next = y_next.map((val: number) => Math.max(0, val));
+    }
+    
+    if (converged) {
+        y = y_next;
+        t += h;
+        t_out.push(t);
+        y_out.push([...y]);
+        // Increase step size cautiously
+        h = Math.min(h * 1.5, tf - t);
+    } else {
+        // Reduce step size if convergence fails and retry the same step
+        h *= 0.5; 
+    }
+  }
+
+  // Transpose results for easier processing
+  const y_transposed: number[][] = Array.from({ length: n }, () => []);
+  for (let i = 0; i < t_out.length; i++) {
+    for (let j = 0; j < n; j++) {
+      y_transposed[j][i] = y_out[i][j];
+    }
+  }
+  return { t: t_out, y: y_transposed };
+}
+
+export { solveODE_BDF_basic, solveODE_BDF, solveLinearSystem };
+
+
+/**
  * Solves a system of stiff ODEs using a variable-step BDF method with a Newton-Raphson solver.
+ * Stores every successful internal step for high-resolution plotting.
  */
 function solveODE_BDF(
   derivatives: (t: number, y: number[]) => number[],
@@ -172,18 +269,22 @@ function solveODE_BDF(
   const y_out = [y0];
 
   const min_h = 1e-12;
-  let h = Math.min(1e-4, tf / 1000); // Smaller initial step size for smoother curves
+  let h = Math.min(1e-4, (tf - t0) / 1000) || 1e-6; // Safe initial step
 
-  const newton_tol = 1e-10; // Tighter tolerance
-  const newton_max_iter = 10; // More iterations
+  const newton_tol = 1e-8; // Relaxed tolerance slightly for speed
+  const newton_max_iter = 15;
   const n = y0.length;
   
-  // Maximum number of output points to prevent excessive memory usage
-  const max_output_points = 2000;
-  let output_interval = (tf - t0) / max_output_points;
-  let next_output_time = t0 + output_interval;
+  // Store every successful step for high-resolution plotting
+  const max_internal_steps = 10000; // Limit to prevent memory issues
+
+  // --- START: OPTIMIZATION ---
+  let J_f: number[][] | null = null; // Stale Jacobian
+  let jacobian_update_counter = 0;
+  const JACOBIAN_UPDATE_FREQUENCY = 5; // Recalculate Jacobian every 5 iterations
+  // --- END: OPTIMIZATION ---
   
-  while (t < tf && t_out.length < max_output_points) {
+  while (t < tf && t_out.length < max_internal_steps) {
     if (t + h > tf) h = tf - t;
     if (h < min_h) break;
 
@@ -200,15 +301,25 @@ function solveODE_BDF(
             break;
         }
 
-        const J_f = calculateNumericalJacobian(derivatives, t + h, y_next);
+        // --- OPTIMIZATION: Re-use the Jacobian ---
+        if (jacobian_update_counter % JACOBIAN_UPDATE_FREQUENCY === 0 || !J_f) {
+            J_f = calculateNumericalJacobian(derivatives, t + h, y_next);
+            jacobian_update_counter = 0; // Reset counter
+        }
+        jacobian_update_counter++;
+        // --- End of Optimization ---
+
         const J_G = Array.from({length: n}, (_, i) => 
-            Array.from({length: n}, (_, j) => (i === j ? 1 : 0) - h * J_f[i][j])
+            Array.from({length: n}, (_, j) => (i === j ? 1 : 0) - h * (J_f![i][j]))
         );
 
         const neg_G = G.map(val => -val);
         const delta_y = solveLinearSystem(J_G, neg_G);
 
-        if (!delta_y) { break; } 
+        if (!delta_y) { 
+            J_f = null; // If solver fails, force Jacobian recalculation on next try
+            break; 
+        } 
         
         y_next = y_next.map((val, i) => val + delta_y[i]);
     }
@@ -217,34 +328,28 @@ function solveODE_BDF(
         y = y_next.map(v => Math.max(0, v));
         t += h;
         
-        // Only store output at specified intervals to keep smooth curves
-        if (t >= next_output_time || t >= tf) {
-          t_out.push(t);
-          y_out.push([...y]);
-          next_output_time += output_interval;
-        }
+        // Store every successful step for high-resolution plotting
+        t_out.push(t);
+        y_out.push([...y]);
 
         if (stoppingCondition) {
             const dy = derivatives(t, y);
-            if (stoppingCondition(t, y, dy)) {
-                break; 
-            }
+            if (stoppingCondition(t, y, dy)) break; 
         }
         
-        // Adaptive step size control for smoothness
-        h = Math.min(h * 1.5, tf - t, output_interval / 2);
+        h = Math.min(h * 1.2, tf - t);
     } else {
-        h *= 0.5; // Step failed, reduce step size
+        h *= 0.5;
+        J_f = null; // Step failed, force Jacobian recalculation
     }
   }
   
-  // Ensure we have the final point
-  if (t_out[t_out.length - 1] < tf) {
+  // Ensure final point is included
+  if (Math.abs(t_out[t_out.length - 1] - tf) > 1e-10) {
     t_out.push(tf);
     y_out.push([...y]);
   }
 
-  // Transpose results for plotting
   const y_transposed: number[][] = Array.from({ length: n }, () => []);
   for (let i = 0; i < t_out.length; i++) {
     for (let j = 0; j < n; j++) {

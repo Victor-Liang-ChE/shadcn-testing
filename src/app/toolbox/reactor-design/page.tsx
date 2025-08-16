@@ -3,10 +3,10 @@
 
 let concentrations: { [key: string]: number } = {};
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react'
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { EChartsOption } from 'echarts'
-import { PlusCircle, Trash2, ArrowLeft, ArrowRight } from 'lucide-react'
+import { PlusCircle, Trash2, ArrowLeft, ArrowRight, Unlink2, Info } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -20,6 +20,85 @@ import { SelectTrigger } from '@/components/ui/select';
 import { SelectValue } from '@/components/ui/select';
 import { SelectContent } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from '@/components/ui/tooltip'
+
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import type { CompoundData } from '@/lib/vle-types';
+
+// Import BDF solver from reactor-solver (aliased to avoid name conflict)
+import { solveODE_BDF as solveODE_BDF_imported, solveLinearSystem as solveLinearSystem_imported } from '@/lib/reactor-solver';
+
+import {
+    NrtlInteractionParams,
+    WilsonInteractionParams,
+    PrInteractionParams,
+    SrkInteractionParams,
+    UniquacInteractionParams,
+    fetchNrtlParameters,
+    fetchWilsonInteractionParams,
+    fetchPrInteractionParams,
+    fetchSrkInteractionParams,
+    fetchUniquacInteractionParams,
+} from '@/lib/vle-calculations'; // adjust path as needed
+
+// --- Supabase Client Initialization ---
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+let supabase: SupabaseClient;
+if (supabaseUrl && supabaseAnonKey) {
+    try {
+        supabase = createClient(supabaseUrl, supabaseAnonKey);
+    } catch (error) {
+        console.error('Error initializing Supabase client:', error);
+    }
+} else {
+    console.error('Supabase URL or Anon Key is missing.');
+}
+
+// --- Property Calculation Utilities ---
+// NOTE: Please replace this placeholder with your actual function from '@/lib/property-equations'.
+// This example implements a simplified version for liquid density (DIPPR 105).
+const calculatePropertyByEquation = (
+    equationNumber: number,
+    tempK: number,
+    coeffs: { [key: string]: number | null },
+    Tc?: number | null
+): number | null => {
+    if (equationNumber === 105) {
+        // DIPPR Equation for Liquid Density (kg/m^3)
+        const { A, B, C } = coeffs;
+        if (
+            typeof A !== 'number' ||
+            typeof B !== 'number' ||
+            typeof C !== 'number' ||
+            typeof Tc !== 'number'
+        )
+            return null;
+        const Tr = tempK / Tc;
+        if (Tr >= 1) return null; // Not valid at or above critical temp
+        return A / Math.pow(B, 1 + Math.pow(1 - Tr, C));
+    }
+    console.warn(
+        `Equation number ${equationNumber} is not implemented in this placeholder.`
+    );
+    return null;
+};
+
+// Utility function to safely parse coefficients
+const parseCoefficient = (value: any): number | null => {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+        const num = parseFloat(value);
+        return isNaN(num) ? null : num;
+    }
+    return null;
+};
 
 // ==================================================================
 // ▼▼▼ PLACE THE UNIT CONVERSION UTILITY HERE ▼▼▼
@@ -110,7 +189,22 @@ interface ComponentSetup {
   }
   molarMass?: string // New
   density?: string // New
+
+    // --- ADD THESE NEW FIELDS ---
+    isDbLocked?: boolean // To disable inputs after fetching
+    liquidDensityData?: any // To store raw Supabase data for density
+    criticalTemp?: number | null // To store critical temperature for density calc
+        // --- ADD THESE NEW FIELDS ---
+        phase?: 'Gas' | 'Liquid'
+    // --- UPDATE: henryData now stores constants keyed by temperature row ID ---
+    henryData?: { [tempId: string]: string } // Stores constants keyed by temperature row ID
+    // --- ADD THIS FIELD ---
+    cas_number?: string;
 }
+
+// --- NEW: Define types for the fluid package and parameters ---
+type VleFluidPackage = 'Ideal' | 'NRTL' | 'Wilson' | 'UNIQUAC' | 'Peng-Robinson' | 'SRK';
+type InteractionParams = NrtlInteractionParams | WilsonInteractionParams | PrInteractionParams | SrkInteractionParams | UniquacInteractionParams;
 
 type ReactorType = 'PFR' | 'CSTR'
 type GraphType = 'selectivity' | 'volume' | 'conversion' | 'flowrates' | 'composition' | 'selectivityVsConversion';
@@ -133,52 +227,133 @@ const initialComponents: ComponentSetup[] = [
 // --- Calculation Engine (Now more generic) ---
 const R = 8.314
 
-// Helper function to perform linear interpolation from an array of data points
+// Helper function to perform linear interpolation (with extrapolation) from an array of data points
 const interpolateFromData = (
-  targetX: number,
-  dataPoints: { x: number; y: number }[]
+    targetX: number,
+    dataPoints: { x: number; y: number }[]
 ): number => {
-  if (dataPoints.length < 2) {
-    return NaN // Not enough data to interpolate
-  }
-
-  // Ensure data is sorted by x-value for reliable searching
-  const sortedPoints = [...dataPoints].sort((a, b) => a.x - b.x)
-
-  // Find the two points that bracket the targetX
-  let p1: { x: number; y: number } | null = null
-  let p2: { x: number; y: number } | null = null
-
-  if (targetX < sortedPoints[0].x) {
-    // If target is before the first point, we can't reliably get a value
-    return NaN
-  }
-  
-  if (targetX > sortedPoints[sortedPoints.length - 1].x) {
-    // If target is after the last point, also return NaN
-    return NaN
-  }
-
-  for (let i = 0; i < sortedPoints.length - 1; i++) {
-    if (sortedPoints[i].x <= targetX && sortedPoints[i + 1].x >= targetX) {
-      p1 = sortedPoints[i]
-      p2 = sortedPoints[i + 1]
-      break
+    if (dataPoints.length === 0) {
+        return NaN; // No data to interpolate from
     }
-  }
+    if (dataPoints.length === 1) {
+        return dataPoints[0].y; // Only one point, return its value
+    }
 
-  if (!p1 || !p2) {
-    return NaN // Should not happen if logic is correct
-  }
+    // Ensure data is sorted by x-value for reliable searching
+    const sortedPoints = [...dataPoints].sort((a, b) => a.x - b.x);
+    const n = sortedPoints.length;
 
-  // Handle vertical line case to prevent division by zero
-  if (p1.x === p2.x) {
-    return p1.y
-  }
+    // If target is before the first point, return the first point's value
+    if (targetX <= sortedPoints[0].x) {
+        return sortedPoints[0].y;
+    }
+  
+    // --- START: MODIFICATION ---
+    // If the target is after the last point, return NaN instead of extrapolating.
+    // This causes the plotting function to filter out the point and end the line naturally.
+    if (targetX > sortedPoints[n - 1].x) {
+        return NaN;
+    }
+    // --- END: MODIFICATION ---
 
-  // Standard linear interpolation formula
-  return p1.y + ((targetX - p1.x) * (p2.y - p1.y)) / (p2.x - p1.x)
-}
+    // Find the two points that bracket the targetX for interpolation
+    let p1: { x: number; y: number } | null = null;
+    let p2: { x: number; y: number } | null = null;
+
+    for (let i = 0; i < sortedPoints.length - 1; i++) {
+        if (sortedPoints[i].x <= targetX && sortedPoints[i + 1].x >= targetX) {
+            p1 = sortedPoints[i];
+            p2 = sortedPoints[i + 1];
+            break;
+        }
+    }
+
+    if (!p1 || !p2) {
+        return NaN; // Should not happen with the new logic, but keep as a fallback
+    }
+
+    // Handle vertical line case to prevent division by zero
+    if (p1.x === p2.x) {
+        return p1.y;
+    }
+
+    // Standard linear interpolation formula
+    return p1.y + ((targetX - p1.x) * (p2.y - p1.y)) / (p2.x - p1.x);
+};
+
+
+/**
+ * Calculates a Henry's Law constant at a target temperature using interpolation
+ * or extrapolation based on a provided set of data points.
+ * Uses a physically meaningful linear relationship between ln(H) and 1/T (Kelvin).
+ *
+ * @param targetTemp_C The temperature (°C) at which to find the constant.
+ * @param henryData The component's map of { tempId: constantValue }.
+ * @param definedTemps The array of { id: tempId, temp: tempValue_C } from the UI.
+ * @returns The calculated Henry's constant, or null if calculation is not possible.
+ */
+const getHenryConstant = (
+    targetTemp_C: number,
+    henryData: { [tempId: string]: string } | undefined,
+    definedTemps: { id: string; temp: string }[]
+): number | null => {
+    if (!henryData) return null;
+
+    const targetTemp_K = targetTemp_C + 273.15;
+
+    // 1. Create a clean, sorted list of valid [1/T_K, ln(H)] data points
+    const dataPoints = definedTemps
+        .map(t => {
+            const tempVal_C = parseFloat(t.temp);
+            const henryVal = parseFloat(henryData[t.id]);
+            if (!isNaN(tempVal_C) && !isNaN(henryVal) && henryVal > 0) {
+                return {
+                    inv_T: 1 / (tempVal_C + 273.15),
+                    ln_H: Math.log(henryVal),
+                };
+            }
+            return null;
+        })
+        .filter((p): p is { inv_T: number; ln_H: number } => p !== null)
+        .sort((a, b) => a.inv_T - b.inv_T); // Sorts from high T to low T
+
+    if (dataPoints.length < 2) {
+        // Cannot interpolate or extrapolate without at least two points
+        return dataPoints.length === 1 ? Math.exp(dataPoints[0].ln_H) : null;
+    }
+
+    const target_inv_T = 1 / targetTemp_K;
+
+    // 2. Determine points for interpolation or extrapolation
+    let p1: { inv_T: number; ln_H: number };
+    let p2: { inv_T: number; ln_H: number };
+
+    if (target_inv_T <= dataPoints[0].inv_T) {
+        // Extrapolate above the highest temperature
+        p1 = dataPoints[1];
+        p2 = dataPoints[0];
+    } else if (target_inv_T >= dataPoints[dataPoints.length - 1].inv_T) {
+        // Extrapolate below the lowest temperature
+        p1 = dataPoints[dataPoints.length - 1];
+        p2 = dataPoints[dataPoints.length - 2];
+    } else {
+        // Interpolate within the temperature range
+        const upperIndex = dataPoints.findIndex(p => p.inv_T > target_inv_T);
+        p1 = dataPoints[upperIndex - 1];
+        p2 = dataPoints[upperIndex];
+    }
+  
+    // 3. Perform linear interpolation/extrapolation
+    if (p1.inv_T === p2.inv_T) {
+        // Avoid division by zero if temperatures are identical
+        return Math.exp(p1.ln_H);
+    }
+
+    const slope = (p2.ln_H - p1.ln_H) / (p2.inv_T - p1.inv_T);
+    const ln_H_target = p1.ln_H + slope * (target_inv_T - p1.inv_T);
+
+    return Math.exp(ln_H_target);
+};
 
 const calculateCstrData = (
     reactions: ReactionSetup[],
@@ -186,7 +361,7 @@ const calculateCstrData = (
     initialFlowRates: { [key: string]: number }, // Molar flows based on F_A0=1.0
     tempK: number,
     simBasis: { limitingReactantId: string; desiredProductId: string },
-    reactionPhase: 'Liquid' | 'Gas',
+    reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
     pressure_bar: number,
     targetProduction_kta: number
 ) => {
@@ -226,11 +401,12 @@ const calculateCstrData = (
             });
             const A = parseFloat(reactionInfo.AValue);
             const Ea = parseFloat(reactionInfo.EaValue);
-            return { 
-                reactants, 
-                products, 
+            // Preserve original reaction metadata (AUnit, EaUnit, etc.) while adding parsed reactants/products
+            return {
+                ...reactionInfo,
+                reactants,
+                products,
                 rateConstantAtT: A * Math.exp(-Ea / (R * tempK)),
-                rateLawBasis: reactionInfo.rateLawBasis // Pass basis to solver
             };
         }),
         allInvolvedComponents: allInvolvedComponents,
@@ -258,6 +434,7 @@ const calculateCstrData = (
     for (let i = 0; i <= n_steps; i++) {
         const logV = logV_min + i * (logV_max - logV_min) / n_steps;
         const V_basis_liters = Math.pow(10, logV);
+    console.log(`[CSTR Tracer] Starting loop step ${i + 1}/${n_steps + 1}, V_basis = ${V_basis_liters.toExponential()}`);
         
         // 1. Solve the CSTR equations for the current basis volume
         const F_out_basis = solveCSTR_Robust(
@@ -285,9 +462,15 @@ const calculateCstrData = (
     const molesConsumed_A = F_A0_basis - F_A_out;
     const molesFormed_P = F_P_out - (F_in_basis[desiredProduct.name] || 0);
 
-    // --- START: MODIFY THIS LINE ---
-    const selectivity = molesConsumed_A > 1e-9 ? (stoichFactor * molesFormed_P) / molesConsumed_A : 0;
-    // --- END: MODIFY THIS LINE ---
+    // --- START: MODIFICATION ---
+    const productStoichFactor = parseFloat(desiredProduct.reactionData[primaryReactionId]?.stoichiometry || '0');
+    const limitingReactantStoichFactor = parseFloat(limitingReactant.reactionData[primaryReactionId]?.stoichiometry || '0');
+
+    // The ratio of stoichiometric coefficients is needed for an accurate selectivity calculation.
+    const stoichRatio = Math.abs(productStoichFactor / limitingReactantStoichFactor);
+
+    const selectivity = molesConsumed_A > 1e-9 ? (molesFormed_P / molesConsumed_A) / stoichRatio : 0;
+    // --- END: MODIFICATION ---
         
         if (conversion < 0.001 || conversion > 0.999 || selectivity <= 0) continue;
 
@@ -378,7 +561,8 @@ const calculatePfrData = (
     const V_span: [number, number] = [0, V_max];
     
     const F0 = allComponentNames.map(name => initialFlowRates[name] || 0);
-    const results = solveODE_BDF(dFdV, F0, V_span);
+    const componentNames = allComponentNames;
+    const results = solveODE_BDF_imported(dFdV, F0, V_span, componentNames);
 
     const selectivityData: { x: number; y: number }[] = [];
     const volumeData: { x: number; y: number }[] = [];
@@ -414,124 +598,7 @@ const calculatePfrData = (
     return { selectivityData, volumeData, outletFlowsAtV };
 };
 
-// --- Linear System Solver ---
-/**
- * Solves a linear system of equations Ax = b using Gaussian elimination.
- */
-function solveLinearSystem(A: number[][], b: number[]): number[] | null {
-    const n = A.length;
-    // Create copies to avoid modifying the original arrays
-    const A_copy = A.map(row => [...row]);
-    const b_copy = [...b];
-
-    for (let i = 0; i < n; i++) {
-        let maxRow = i;
-        for (let k = i + 1; k < n; k++) {
-            if (Math.abs(A_copy[k][i]) > Math.abs(A_copy[maxRow][i])) maxRow = k;
-        }
-        [A_copy[i], A_copy[maxRow]] = [A_copy[maxRow], A_copy[i]];
-        [b_copy[i], b_copy[maxRow]] = [b_copy[maxRow], b_copy[i]];
-        
-        if (Math.abs(A_copy[i][i]) < 1e-12) return null; // System is singular
-
-        for (let k = i + 1; k < n; k++) {
-            const factor = A_copy[k][i] / A_copy[i][i];
-            b_copy[k] -= factor * b_copy[i];
-            for (let j = i; j < n; j++) {
-                A_copy[k][j] -= factor * A_copy[i][j];
-            }
-        }
-    }
-
-    const x = new Array(n).fill(0);
-    for (let i = n - 1; i >= 0; i--) {
-        let sum = 0;
-        for (let j = i + 1; j < n; j++) sum += A_copy[i][j] * x[j];
-        x[i] = (b_copy[i] - sum) / A_copy[i][i];
-    }
-    return x;
-}
-
-/**
- * Solves a system of ODEs using a custom BDF method, ideal for stiff systems.
- */
-function solveODE_BDF(
-  derivatives: (t: number, y: number[]) => number[],
-  y0: number[],
-  tSpan: [number, number],
-): { t: number[], y: number[][] } {
-  const [t0, tf] = tSpan;
-  let t = t0;
-  let y = [...y0];
-  const t_out = [t0];
-  const y_out = [y0];
-  const n = y0.length;
-
-  // MODIFICATION: The initial step 'h' is now capped at 1.0 to prevent a giant first jump.
-  let h = Math.min((tf - t0) / 1000, 1.0) || 1e-5; 
-  
-  const min_h = 1e-12;
-  const newton_tol = 1e-8;
-  const newton_max_iter = 100;
-  
-  while (t < tf) {
-    if (t + h > tf) h = tf - t;
-    if (h < min_h) break;
-
-    let y_next = [...y];
-    let converged = false;
-
-    // Newton's method to solve the implicit BDF equation
-    for (let iter = 0; iter < newton_max_iter; iter++) {
-        const f_next = derivatives(t + h, y_next);
-        const G = y_next.map((val, i) => val - y[i] - h * f_next[i]);
-        
-        if (Math.sqrt(G.reduce((sum, val) => sum + val*val, 0)) < newton_tol) {
-            converged = true;
-            break;
-        }
-        
-        const J_f: number[][] = Array.from({length: n}, () => Array(n).fill(0));
-        const h_eps = 1e-8;
-        for(let j=0; j<n; j++){
-            const y_h = [...y_next];
-            y_h[j] += h_eps;
-            const fx_h = derivatives(t+h, y_h);
-            for(let i=0; i<n; i++){
-                J_f[i][j] = (fx_h[i] - f_next[i]) / h_eps;
-            }
-        }
-        
-        const J_G = Array.from({length: n}, (_, i) => 
-            Array.from({length: n}, (_, j) => (i === j ? 1 : 0) - h * J_f[i][j])
-        );
-
-        const delta_y = solveLinearSystem(J_G, G.map(val => -val));
-
-        if (!delta_y) break;
-        y_next = y_next.map((val, i) => val + delta_y[i]);
-    }
-    
-    if (converged) {
-        y = y_next.map(v => Math.max(0, v)); // Ensure no negative flows
-        t += h;
-        t_out.push(t);
-        y_out.push([...y]);
-        h = Math.min(h * 1.2, tf - t); // Increase step size
-    } else {
-        h *= 0.5; // Reduce step size if convergence fails
-    }
-  }
-
-  // Transpose results for easier processing
-  const y_transposed: number[][] = Array.from({ length: n }, () => []);
-  for (let i = 0; i < t_out.length; i++) {
-    for (let j = 0; j < n; j++) {
-      y_transposed[j][i] = y_out[i][j];
-    }
-  }
-  return { t: t_out, y: y_transposed };
-}
+// Local linear solver and BDF solver removed — using shared implementations from '@/lib/reactor-solver'
 
 // Add this new, more robust solver function to your file.
 const solveCSTR_Robust = (
@@ -539,7 +606,7 @@ const solveCSTR_Robust = (
   components: ComponentSetup[],
   V: number, // Liters
   initialFlowRates: { [key: string]: number },
-  reactionPhase: 'Liquid' | 'Gas',
+    reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
   totalPressure_bar: number,
   temp_K: number,
   initialGuess?: number[]
@@ -575,6 +642,52 @@ const solveCSTR_Robust = (
             return rate; // mol/(L*s)
         });
 
+    } else if (reactionPhase === 'Mixed') {
+        // --- START: MIXED PHASE BLOCK ---
+        let concentrations_L: { [key: string]: number } = {};
+
+        // 1. Calculate properties of the liquid phase
+        let q_liquid_L_per_s = 0;
+        let F_liquid_total = 0;
+        components.filter(c => c.phase === 'Liquid').forEach(comp => {
+            const flow = F_dict[comp.name] || 0;
+            if (flow > 0) {
+                const molarMass = parseFloat(comp.molarMass || '1');
+                const density = parseFloat(comp.density || '1000'); // g/L
+                if (density > 0) {
+                    q_liquid_L_per_s += (flow * molarMass) / density;
+                    F_liquid_total += flow;
+                }
+            }
+        });
+        if (q_liquid_L_per_s < 1e-12) q_liquid_L_per_s = 1e-12;
+        if (F_liquid_total < 1e-12) F_liquid_total = 1e-12;
+        const C_total_liquid_mol_L = F_liquid_total / q_liquid_L_per_s;
+
+        // 2. Set concentrations for liquid components
+        components.filter(c => c.phase === 'Liquid').forEach(comp => {
+            concentrations_L[comp.name] = (F_dict[comp.name] || 0) / q_liquid_L_per_s;
+        });
+        
+        // 3. Calculate concentrations for dissolved gas components
+        const F_total_all = current_F.reduce((sum, f) => sum + Math.max(0, f), 0);
+        if (F_total_all > 1e-12) {
+             components.filter(c => c.phase === 'Gas').forEach(comp => {
+                const partial_pressure_bar = (F_dict[comp.name] / F_total_all) * totalPressure_bar;
+                const H_bar = getHenryConstant(temp_K - 273.15, comp.henryData, (window as any).__HENRY_TEMPS || []); // A bit of a hack to get temps
+                
+                if (H_bar && H_bar > 0) {
+                    const mole_fraction_in_liquid = partial_pressure_bar / H_bar;
+                    concentrations_L[comp.name] = mole_fraction_in_liquid * C_total_liquid_mol_L;
+                } else {
+                    concentrations_L[comp.name] = 0;
+                }
+            });
+        }
+        
+        // 4. Calculate rates based on liquid-phase concentrations
+    rates = calculateNetReactionRates(parsedReactions.reactions, components, concentrations_L, {}, temp_K); // Already in mol/L/s
+        // --- END: MIXED PHASE BLOCK ---
     } else { // Gas Phase
         const F_total = current_F.reduce((sum: number, f: number) => sum + Math.max(0, f), 0);
         let concentrations_L: { [key: string]: number } = {};
@@ -645,6 +758,7 @@ const solveCSTR_Robust = (
   for (let iter = 0; iter < max_iter; iter++) {
     const G_current = G(F);
     const errorNorm = Math.sqrt(G_current.reduce((s, v) => s + v * v, 0));
+    console.log(`[CSTR Solver] Newton Iteration #${iter}, Error Norm = ${errorNorm.toExponential()}`);
     
     if (errorNorm < tol) break;
     
@@ -658,7 +772,7 @@ const solveCSTR_Robust = (
         for (let i = 0; i < n; i++) J_G[i][j] = (G_plus_h[i] - G_current[i]) / h;
     }
 
-    const delta_F = solveLinearSystem(J_G, G_current.map((val: number) => -val));
+    const delta_F = solveLinearSystem_imported(J_G, G_current.map((val: number) => -val));
     if (!delta_F) break; // Jacobian is singular, can't proceed
     
     // --- NEW: Backtracking Line Search to ensure stability ---
@@ -672,10 +786,8 @@ const solveCSTR_Robust = (
       F_new = F.map((val: number, i: number) => val + alpha * delta_F[i]);
 
       // Ensure physical solution (no negative flows)
-      if (F_new.some((val: number) => val < 0)) {
-        alpha *= beta;
-        continue;
-      }
+    // Project candidate to non-negative to avoid rejecting physically-valid small steps
+    F_new = F_new.map((v: number) => Math.max(0, v));
       
       const G_new = G(F_new);
       const newErrorNorm = Math.sqrt(G_new.reduce((s, v) => s + v * v, 0));
@@ -713,8 +825,9 @@ const calculateNetReactionRates = (
     return reactions.map(reactionInfo => {
         // --- Time Unit Conversion for A-Value ---
         let A_f = parseFloat(reactionInfo.AValue);
+        // Convert from hours to seconds if needed
         if (reactionInfo.AUnit.includes('h')) {
-            A_f /= 3600.0; // Convert hours to seconds
+            A_f /= 3600.0; 
         }
         
         // --- Forward Rate Calculation ---
@@ -724,9 +837,16 @@ const calculateNetReactionRates = (
         const usePartialPressure = reactionInfo.rateLawBasis === 'partialPressure';
         let k_f: number;
 
-        // MODIFICATION: Skip kcToKp conversion if basis is already partial pressure
-        if (usePartialPressure) {
-            k_f = k_f_c;
+        const AUnit = reactionInfo.AUnit || '';
+        const AUnitIsPressureBased = /Pa|bar/.test(AUnit);
+        if (usePartialPressure && !AUnitIsPressureBased) {
+            let totalOrder = 0;
+            components.forEach(comp => {
+                const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
+                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
+                if (stoich < 0 && order > 0) totalOrder += order;
+            });
+            k_f = convertUnit.kinetics.kcToKp(k_f_c, tempK, totalOrder);
         } else {
             k_f = k_f_c;
         }
@@ -745,19 +865,20 @@ const calculateNetReactionRates = (
             }
         });
 
+        // --- START: MODIFICATION ---
         // --- Reverse Rate Calculation (only if reaction is reversible) ---
         let rate_r = 0;
         if (reactionInfo.isEquilibrium) {
-            // --- Time Unit Conversion for Reverse A-Value ---
             let A_r = parseFloat(reactionInfo.AValueBackward || '0');
             if (reactionInfo.AUnitBackward?.includes('h')) {
-                A_r /= 3600.0; // Convert hours to seconds
+                A_r /= 3600.0;
             }
             const Ea_r_J = convertUnit.energy.convertEaToJules(parseFloat(reactionInfo.EaValueBackward || '0'), reactionInfo.EaUnitBackward || 'J/mol');
             const k_r_c = A_r * Math.exp(-Ea_r_J / (R * tempK));
             
             let k_r: number;
-            if (usePartialPressure) {
+            const AUnitBackwardIsPressureBased = /Pa|bar/.test(reactionInfo.AUnitBackward || '');
+            if (usePartialPressure && !AUnitBackwardIsPressureBased) {
                 let totalOrderReverse = 0;
                 components.forEach(comp => {
                     const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
@@ -784,296 +905,196 @@ const calculateNetReactionRates = (
                 }
             });
         }
+        // --- END: MODIFICATION ---
 
         return rate_f - rate_r; // Returns the net rate for the reaction
     });
 };
 
-const calculatePfrGasPhase = (
+const calculatePfrData_Optimized = (
     reactions: ReactionSetup[],
     components: ComponentSetup[],
     tempK: number,
     pressure_bar: number,
     molarRatios: Array<{ numeratorId: string; value: number }>,
     simBasis: { limitingReactantId: string; desiredProductId: string },
-    targetProduction_kta: number
+    targetProduction_kta: number,
+    reactionPhase: 'Liquid' | 'Gas'
 ) => {
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
-    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] }
-
-    // --- START: ADD THIS SECTION ---
-    const primaryReactionId = reactions[0].id;
-    const stoichCoeffStr = limitingReactant.reactionData[primaryReactionId]?.stoichiometry;
-    const stoichFactor = Math.abs(parseFloat(stoichCoeffStr || '0'));
-    // --- END: ADD THIS SECTION ---
-
-    const rawSelectivityData: { x: number; y: number }[] = []
-    const rawVolumeData: { x: number; y: number }[] = []
-    
-    const P_Pa = pressure_bar * 1e5;
-    const limitingReactantIndex = components.findIndex(c => c.id === simBasis.limitingReactantId);
-    const desiredProductIndex = components.findIndex(c => c.id === simBasis.desiredProductId);
-
-    const dFdV = (V: number, F_vec: number[]) => {
-        const F_dict = components.reduce((acc, comp, i) => { acc[comp.name] = F_vec[i]; return acc; }, {} as { [key: string]: number });
-        const F_tot = F_vec.reduce((sum, f) => sum + f, 0);
-        if (F_tot < 1e-12) return Array(components.length).fill(0);
-
-        const concentrations_m3 = components.reduce((acc, comp) => {
-            acc[comp.name] = (F_dict[comp.name] * P_Pa) / (F_tot * R * tempK);
-            return acc;
-        }, {} as { [key: string]: number });
-
-        const partialPressures_Pa = components.reduce((acc, comp) => {
-            acc[comp.name] = concentrations_m3[comp.name] * R * tempK;
-            return acc;
-        }, {} as { [key: string]: number });
-        
-        const concentrations_L: { [key: string]: number } = {};
-        for (const key in concentrations_m3) {
-            concentrations_L[key] = concentrations_m3[key] * 1e-3;
-        }
-
-        // The function now calls the new helper to get rates
-        const reactionNetRates = calculateNetReactionRates(reactions, components, concentrations_L, partialPressures_Pa, tempK);
-        
-        return components.map(comp => {
-            let netRateOfFormation = 0; // This will be in mol/(L*s)
-            reactions.forEach((reactionInfo, j) => {
-                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
-                netRateOfFormation += stoich * reactionNetRates[j];
-            });
-            
-            // MODIFICATION: Convert rate from per-Liter to per-m³ for the solver
-            return netRateOfFormation * 1000;
-        });
-    };
-
-    // The rest of the function remains unchanged...
-    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
-    const P_C_mol_s = convertUnit.flowRate.ktaToMolPerSecond(targetProduction_kta, productMolarMass);
-
-    const F0_basis_dict: { [key: string]: number } = { [limitingReactant.name]: 1.0 };
-    molarRatios.forEach(ratio => {
-        const compName = components.find(c => c.id === ratio.numeratorId)?.name;
-        if (compName) F0_basis_dict[compName] = ratio.value;
-    });
-    const F0_basis_vec = components.map(c => F0_basis_dict[c.name] || 0);
-
-    let F_current = F0_basis_vec;
-    let V_current = 0;
-
-    const logV_min = -8;
-    const logV_max = 8;
-    const n_steps = 500;
-    const v_points: number[] = []
-    for (let i = 0; i <= n_steps; i++) {
-        const logV = logV_min + i * (logV_max - logV_min) / n_steps
-        v_points.push(Math.pow(10, logV))
-    }
-
-    for (const V_next of v_points) {
-        if (V_next <= V_current) continue;
-        const odeResults = solveODE_BDF(dFdV, F_current, [V_current, V_next]);
-        if (!odeResults.y || odeResults.y[0].length < 2) continue;
-        F_current = odeResults.y.map(comp_y => comp_y[comp_y.length - 1]);
-        V_current = V_next;
-    const F_A_current_val = F_current[limitingReactantIndex];
-    const F_P_current_val = F_current[desiredProductIndex];
-    const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_current_val) / F0_basis_vec[limitingReactantIndex];
-    const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_current_val;
-    const molesFormed = F_P_current_val - (F0_basis_vec[desiredProductIndex] || 0)
-    // --- START: MODIFY THIS LINE ---
-    const selectivity = molesConsumed > 1e-9 ? (stoichFactor * molesFormed) / molesConsumed : 0;
-    // --- END: MODIFY THIS LINE ---
-        
-        if (conversion >= 1e-6 && conversion < 0.9999 && selectivity > 1e-6) {
-            const F_A0_true   = P_C_mol_s / (selectivity*conversion);
-            const F_tot0_basis = F0_basis_vec.reduce((s,f)=>s+f,0);
-            const F_tot0_true = F_A0_true / (F0_basis_vec[limitingReactantIndex] / F_tot0_basis);
-            const V_true = V_current * (F_tot0_true / F_tot0_basis); // Corrected Line
-            rawSelectivityData.push({ x: conversion, y: selectivity });
-            rawVolumeData.push({ x: conversion, y: V_true });
-        }
-        if (conversion >= 0.999) break;
-    }
-    
-    const commonConversionGrid = Array.from({ length: 100 }, (_, i) => i * 0.01)
-    const selectivityData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawSelectivityData)})).filter(p => !isNaN(p.y))
-    const volumeData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawVolumeData)})).filter(p => !isNaN(p.y))
-    return { selectivityData, volumeData }
-}
-
-const calculatePfrLiquidPhase = (
-    reactions: ReactionSetup[],
-    components: ComponentSetup[],
-    tempK: number,
-    molarRatios: Array<{ numeratorId: string; value: number }>,
-    simBasis: { limitingReactantId: string; desiredProductId: string },
-    targetProduction_kta: number
-) => {
+    // 1. Initial Setup
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
-    if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] };
-
-    // --- START: ADD THIS SECTION ---
-    // Find the stoichiometric coefficient of the limiting reactant in the primary reaction (reaction[0])
-    const primaryReactionId = reactions[0].id;
-    const stoichCoeffStr = limitingReactant.reactionData[primaryReactionId]?.stoichiometry;
-    const stoichFactor = Math.abs(parseFloat(stoichCoeffStr || '0'));
-    // --- END: ADD THIS SECTION ---
-
-    const rawSelectivityData: { x: number; y: number }[] = [];
-    const rawVolumeData: { x: number; y: number }[] = [];
-    
-    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
-    const P_C_target_mols = convertUnit.flowRate.ktaToMolPerSecond(targetProduction_kta, productMolarMass);
-
+    if (!limitingReactant || !desiredProduct) {
+        return { selectivityData: [], volumeData: [] };
+    }
+    const allComponentNames = components.map(c => c.name);
     const limitingReactantIndex = components.findIndex(c => c.id === simBasis.limitingReactantId);
     const desiredProductIndex = components.findIndex(c => c.id === simBasis.desiredProductId);
 
-    // --- Basis Calculation Setup ---
+    const primaryReactionId = reactions[0].id;
+    const limitingReactantStoichInReaction = Math.abs(parseFloat(limitingReactant.reactionData[primaryReactionId]?.stoichiometry || '1'));
+    const desiredProductStoichInReaction = Math.abs(parseFloat(desiredProduct.reactionData[primaryReactionId]?.stoichiometry || '1'));
+    // The stoichiometric ratio is crucial for accurate selectivity
+    const stoichRatio = desiredProductStoichInReaction / limitingReactantStoichInReaction;
+
+    // 2. Pre-calculate all temperature-dependent constants ONCE for performance.
+    const parsedReactions = reactions.map(reactionInfo => {
+        const Ea_f_J = convertUnit.energy.convertEaToJules(parseFloat(reactionInfo.EaValue), reactionInfo.EaUnit);
+        let A_f = parseFloat(reactionInfo.AValue);
+        if (reactionInfo.AUnit.includes('h')) A_f /= 3600.0;
+        const k_f = A_f * Math.exp(-Ea_f_J / (R * tempK));
+
+        let k_r = 0;
+        if (reactionInfo.isEquilibrium) {
+            const Ea_r_J = convertUnit.energy.convertEaToJules(parseFloat(reactionInfo.EaValueBackward || '0'), reactionInfo.EaUnitBackward || 'J/mol');
+            let A_r = parseFloat(reactionInfo.AValueBackward || '0');
+            if (reactionInfo.AUnitBackward?.includes('h')) A_r /= 3600.0;
+            k_r = A_r * Math.exp(-Ea_r_J / (R * tempK));
+        }
+
+        const participants = allComponentNames.map(name => {
+            const comp = components.find(c => c.name === name);
+            const reactionData = comp?.reactionData[reactionInfo.id];
+            return {
+                name: name,
+                stoichiometry: parseFloat(reactionData?.stoichiometry || '0'),
+                order: parseFloat(reactionData?.order || '0'),
+                orderReverse: parseFloat(reactionData?.orderReverse || '0'),
+            };
+        });
+
+        return {
+            rateLawBasis: reactionInfo.rateLawBasis,
+            isEquilibrium: reactionInfo.isEquilibrium,
+            k_f: k_f,
+            k_r: k_r,
+            participants: participants,
+        };
+    });
+
+    // 3. Define a LEANER Rate Law Function (dF/dV = r)
+    const dFdV = (V: number, F_vec: number[]): number[] => {
+        let concentrations_L: { [key: string]: number } = {};
+        let partialPressures_Pa: { [key: string]: number } = {};
+
+        if (reactionPhase === 'Liquid') {
+            let q_basis_L = 0;
+            allComponentNames.forEach((name, i) => {
+                const flow = F_vec[i];
+                if (flow > 0) {
+                    const comp = components[i];
+                    q_basis_L += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
+                }
+            });
+            if (q_basis_L < 1e-9) q_basis_L = 1e-9;
+            allComponentNames.forEach((name, i) => concentrations_L[name] = Math.max(0, F_vec[i]) / q_basis_L);
+        } else { // Gas Phase
+            const F_tot = F_vec.reduce((sum, f) => sum + Math.max(0, f), 0);
+            if (F_tot < 1e-12) return Array(allComponentNames.length).fill(0);
+            const P_Pa = convertUnit.pressure.barToPa(pressure_bar);
+            allComponentNames.forEach((name, i) => {
+                const C_m3 = (Math.max(0, F_vec[i]) / F_tot) * P_Pa / (R * tempK);
+                concentrations_L[name] = convertUnit.concentration.molPerCubicMeterToMolPerLiter(C_m3);
+                partialPressures_Pa[name] = C_m3 * R * tempK;
+            });
+        }
+
+        const reactionNetRates = parsedReactions.map(pReaction => {
+            let rate_f = pReaction.k_f;
+            let rate_r = pReaction.k_r;
+            const usePartialPressure = pReaction.rateLawBasis === 'partialPressure';
+            
+            pReaction.participants.forEach(p => {
+                if (p.stoichiometry < 0 && p.order > 0) {
+                    const basis = usePartialPressure ? partialPressures_Pa[p.name] : concentrations_L[p.name];
+                    rate_f *= Math.pow(Math.max(0, basis), p.order);
+                }
+                if (p.stoichiometry > 0 && p.orderReverse > 0) {
+                    const basis = usePartialPressure ? partialPressures_Pa[p.name] : concentrations_L[p.name];
+                    rate_r *= Math.pow(Math.max(0, basis), p.orderReverse);
+                }
+            });
+            return rate_f - (pReaction.isEquilibrium ? rate_r : 0);
+        });
+
+        const dF_vec = Array(allComponentNames.length).fill(0);
+        parsedReactions.forEach((pReaction, i) => {
+            pReaction.participants.forEach((p, j) => {
+                dF_vec[j] += p.stoichiometry * reactionNetRates[i];
+            });
+        });
+
+        if (reactionPhase === 'Gas') {
+            for (let i = 0; i < dF_vec.length; i++) dF_vec[i] *= 1000;
+        }
+        return dF_vec;
+    };
+
+    // 4. Set up and run the ODE solver ONCE
     const F0_basis_dict: { [key: string]: number } = { [limitingReactant.name]: 1.0 };
     molarRatios.forEach(ratio => {
         const compName = components.find(c => c.id === ratio.numeratorId)?.name;
         if (compName) F0_basis_dict[compName] = ratio.value;
     });
     const F0_basis_vec = components.map(c => F0_basis_dict[c.name] || 0);
+    const F_A_in_basis = F0_basis_vec[limitingReactantIndex];
+    if (F_A_in_basis <= 0) return { selectivityData: [], volumeData: [] };
 
-    // --- Calculate initial selectivity ---
-    const initialRates = calculateNetFormationRates(F0_basis_dict, reactions, components, tempK, 'Liquid', 1); // Pressure=1 is arbitrary for liquid
-    const r_P_initial = initialRates[desiredProduct.name] || 0;
-    const r_A_initial = initialRates[limitingReactant.name] || 0;
-    const initialSelectivity = (r_A_initial < -1e-9) ? (r_P_initial / -r_A_initial) : 1.0;
+    const V_max_basis = 1e8; // A large basis volume to ensure high conversion
+    const V_span: [number, number] = [0, V_max_basis];
 
-    // --- Calculate volumetric flow 'q' for the basis run (L/s) ---
-    let q_basis = 0;
-    components.forEach(comp => {
-        const flow = F0_basis_dict[comp.name] || 0;
-        if (flow > 0) {
-            const molarMass = parseFloat(comp.molarMass || '1');
-            const density = parseFloat(comp.density || '1000'); // g/L
-            q_basis += (flow * molarMass) / density;
+    const rawSolution = solveODE_BDF_imported(dFdV, F0_basis_vec, V_span, allComponentNames);
+
+    // 5. Process the high-quality solver output
+    const rawSelectivityData: { x: number; y: number }[] = [];
+    const rawVolumeData: { x: number; y: number }[] = [];
+
+    const productMolarMass = parseFloat(desiredProduct.molarMass || '1.0');
+    const P_target_mols = convertUnit.flowRate.ktaToMolPerSecond(targetProduction_kta, productMolarMass);
+    const F_P_in_basis = F0_basis_vec[desiredProductIndex] || 0;
+
+    for (let i = 0; i < rawSolution.t.length; i++) {
+        const V_basis_current = rawSolution.t[i];
+        const F_A_out_basis = rawSolution.y[limitingReactantIndex][i];
+        const F_P_out_basis = rawSolution.y[desiredProductIndex][i];
+
+        const conversion = (F_A_in_basis - F_A_out_basis) / F_A_in_basis;
+        const molesReactantConsumed = F_A_in_basis - F_A_out_basis;
+        const netMolesProductFormed = F_P_out_basis - F_P_in_basis;
+        
+        const selectivity = (molesReactantConsumed > 1e-9) ? (netMolesProductFormed / molesReactantConsumed) / stoichRatio : 0;
+        
+        let V_true_m3 = Infinity;
+
+        if (selectivity > 1e-9 && conversion > 1e-9) {
+            const F_A0_true = P_target_mols / (selectivity * conversion);
+            const scaling_factor = F_A0_true / F_A_in_basis;
+            const V_scaled = V_basis_current * scaling_factor;
+            V_true_m3 = (reactionPhase === 'Liquid') ? convertUnit.volume.litersToCubicMeters(V_scaled) : V_scaled;
         }
-    });
-    if (q_basis < 1e-9) q_basis = 1e-9;
-    const q_basis_L  = q_basis;
 
-    // --- PFR Differential Equations (dF/dV = r) ---
-    const dFdV = (V: number, F_vec: number[]) => {
-        const concentrations = F_vec.map(f => f / q_basis_L); // mol/L
-        const C_dict = components.reduce((acc, comp, i) => { acc[comp.name] = concentrations[i]; return acc; }, {} as { [key: string]: number });
-
-        const reactionRates = reactions.map(reactionInfo => {
-            const Ea_J_per_mol = convertUnit.energy.convertEaToJules(
-                parseFloat(reactionInfo.EaValue), 
-                reactionInfo.EaUnit
-            );
-            const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-Ea_J_per_mol / (R * tempK));
-            let rate = k_f;
-            components.forEach(comp => {
-                const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
-                if (order > 0 && parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0') < 0) {
-                     rate *= Math.pow(Math.max(0, C_dict[comp.name]), order);
-                }
-            });
-            return rate; // mol/(L*s)
-        });
-
-        return components.map(comp => {
-            let netRateOfFormation = 0;
-            reactions.forEach((reactionInfo, j) => {
-                const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
-                netRateOfFormation += stoich * reactionRates[j];
-            });
-            return netRateOfFormation; // r_j in mol/(L*s)
-        });
-    };
-    
-    // --- Simulation Loop ---
-    let F_current = F0_basis_vec;
-    let V_current = 0;
-    const logV_min = -8;
-    const logV_max = 8;
-    const n_steps = 500;
-    const v_points: number[] = [];
-    for (let i = 0; i <= n_steps; i++) {
-        const logV = logV_min + i * (logV_max - logV_min) / n_steps;
-        v_points.push(Math.pow(10, logV));
-    }
-
-    for (const V_next of v_points) {
-        if (V_next <= V_current) continue;
-        const odeResults = solveODE_BDF(dFdV, F_current, [V_current, V_next]);
-        if (!odeResults.y || odeResults.y[0].length < 2) continue;
-        
-        F_current = odeResults.y.map(comp_y => comp_y[comp_y.length - 1]);
-        V_current = V_next;
-        
-    const F_A_out_basis = F_current[limitingReactantIndex];
-    const P_C_out_basis = F_current[desiredProductIndex];
-    const conversion = (F0_basis_vec[limitingReactantIndex] - F_A_out_basis) / F0_basis_vec[limitingReactantIndex];
-    const P_C_basis_mols = P_C_out_basis - (F0_basis_vec[desiredProductIndex] || 0);
-
-    // --- START: MODIFY THIS LINE ---
-    const molesConsumed = F0_basis_vec[limitingReactantIndex] - F_A_out_basis;
-    const selectivity = (molesConsumed > 1e-9) ? (stoichFactor * P_C_basis_mols) / molesConsumed : 0;
-    // --- END: MODIFY THIS LINE ---
-        
-        // --- Correct Volume Scaling Logic ---
-        // 1. Calculate the true molar flow rate of the limiting reactant into the reactor.
-        const F_A0_true = (selectivity > 1e-9 && conversion > 1e-9) ? P_C_target_mols / (selectivity * conversion) : 0;
-
-        // 2. Calculate the true total volumetric flow rate into the reactor.
-        let q_true = 0;
-        const F0_true_dict: {[key: string]: number} = { [limitingReactant.name]: F_A0_true };
-         molarRatios.forEach(ratio => {
-            const compName = components.find(c => c.id === ratio.numeratorId)?.name;
-            if (compName) F0_true_dict[compName] = F_A0_true * ratio.value;
-        });
-
-        components.forEach(comp => {
-            const flow = F0_true_dict[comp.name] || 0;
-            if (flow > 0) {
-                const molarMass = parseFloat(comp.molarMass || '1');
-                const density = parseFloat(comp.density || '1000');
-                q_true += (flow * molarMass) / density;
-            }
-        });
-
-    // 3. Scale the volume by the ratio of volumetric flows and convert from Liters to m³.
-    const scaled_volume_liters = V_current * (q_true / q_basis);
-    const V_true = (q_basis > 1e-9 && q_true > 0) ? convertUnit.volume.litersToCubicMeters(scaled_volume_liters) : Infinity;
-        
-        if (conversion >= 1e-6 && conversion < 0.9999 && V_true < Infinity && selectivity > 0) {
+        if (conversion >= 1e-6 && conversion < 1.0 && V_true_m3 < Infinity && selectivity >= 0) {
             rawSelectivityData.push({ x: conversion, y: selectivity });
-            rawVolumeData.push({ x: conversion, y: V_true });
+            rawVolumeData.push({ x: conversion, y: V_true_m3 });
         }
-        if (conversion >= 0.999) break;
     }
 
+    // 6. Interpolate results for a perfectly smooth plot
     const commonConversionGrid = Array.from({ length: 101 }, (_, i) => i * 0.01);
-    
     const selectivityData = commonConversionGrid.map(conv => ({
-        x: conv,
-        y: interpolateFromData(conv, rawSelectivityData)
+        x: conv, y: interpolateFromData(conv, rawSelectivityData)
     })).filter(p => !isNaN(p.y) && p.y >= 0);
-
     const volumeData = commonConversionGrid.map(conv => ({
-        x: conv,
-        y: interpolateFromData(conv, rawVolumeData)
+        x: conv, y: interpolateFromData(conv, rawVolumeData)
     })).filter(p => !isNaN(p.y) && p.y >= 0);
 
     return { selectivityData, volumeData };
-};
-
-const calculateNetFormationRates = (
+};const calculateNetFormationRates = (
     current_F: { [key: string]: number },
     reactions: ReactionSetup[],
     components: ComponentSetup[],
     tempK: number,
-    reactionPhase: 'Liquid' | 'Gas',
+    reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
     pressure_bar: number
 ): { [key: string]: number } => {
     let concentrations: { [key: string]: number } = {};
@@ -1134,31 +1155,234 @@ const calculateNetFormationRates = (
 
 // --- React Components ---
 
-const KineticsInput = ({ 
-    onNext, 
-    reactionsSetup, setReactionsSetup, 
-    componentsSetup, setComponentsSetup, 
-    simBasis, setSimBasis,
-    reactionPhase, setReactionPhase,
-    prodRate, setProdRate,
-    setTemperature, // New Prop
-    setPressure,    // New Prop
-}: { 
-    onNext: () => void,
-    reactionsSetup: ReactionSetup[],
-    setReactionsSetup: React.Dispatch<React.SetStateAction<ReactionSetup[]>>,
-    componentsSetup: ComponentSetup[],
-    setComponentsSetup: React.Dispatch<React.SetStateAction<ComponentSetup[]>>,
-    simBasis: any,
-    setSimBasis: any,
-    reactionPhase: 'Liquid' | 'Gas',
-    setReactionPhase: React.Dispatch<React.SetStateAction<'Liquid' | 'Gas'>>,
-    prodRate: string,
-    setProdRate: React.Dispatch<React.SetStateAction<string>>,
-    setTemperature: React.Dispatch<React.SetStateAction<number>>, // New Prop Type
-    setPressure: React.Dispatch<React.SetStateAction<number>>,    // New Prop Type
+const KineticsInput = ({
+  onNext,
+  reactionsSetup,
+  setReactionsSetup,
+  componentsSetup,
+  setComponentsSetup,
+  simBasis,
+  setSimBasis,
+  reactionPhase,
+  setReactionPhase,
+  prodRate,
+  setProdRate,
+  setTemperature,
+  setPressure,
+    // ▼▼▼ ADD THIS PROP ▼▼▼
+    setReactorTypes,
+    // ▲▲▲ ADD THIS PROP ▲▲▲
+  fetchComponentProperties,
+  isFetching,
+    fluidPackage,
+    setFluidPackage,
+    // Henry props passed from parent
+    henryTemperatures,
+    setHenryTemperatures,
+    henryUnit,
+    setHenryUnit,
+}: {
+  onNext: () => void
+  reactionsSetup: ReactionSetup[]
+  setReactionsSetup: React.Dispatch<React.SetStateAction<ReactionSetup[]>>
+  componentsSetup: ComponentSetup[]
+  setComponentsSetup: React.Dispatch<React.SetStateAction<ComponentSetup[]>>
+  simBasis: any
+  setSimBasis: any
+    reactionPhase: 'Liquid' | 'Gas' | 'Mixed'
+    setReactionPhase: React.Dispatch<React.SetStateAction<'Liquid' | 'Gas' | 'Mixed'>>
+  prodRate: string
+  setProdRate: React.Dispatch<React.SetStateAction<string>>
+  setTemperature: React.Dispatch<React.SetStateAction<number>>
+  setPressure: React.Dispatch<React.SetStateAction<number>>
+    // ▼▼▼ ADD THIS PROP TYPE ▼▼▼
+    setReactorTypes: React.Dispatch<React.SetStateAction<{ pfr: boolean; cstr: boolean }>>
+    // ▲▲▲ ADD THIS PROP TYPE ▲▲▲
+  fetchComponentProperties: (
+    name: string,
+    componentId: string
+  ) => Promise<void>
+  isFetching: boolean
+    fluidPackage: VleFluidPackage;
+    setFluidPackage: React.Dispatch<React.SetStateAction<VleFluidPackage>>;
+    // Henry's Law table state (managed by parent)
+    henryTemperatures: { id: string; temp: string }[];
+    setHenryTemperatures: React.Dispatch<React.SetStateAction<{ id: string; temp: string }[]>>;
+    henryUnit: 'Pa' | 'kPa' | 'bar';
+    setHenryUnit: React.Dispatch<React.SetStateAction<'Pa' | 'kPa' | 'bar'>>;
+    // interaction parameters are managed at the parent level now
 }) => {
-  const { resolvedTheme } = useTheme();
+  const { resolvedTheme } = useTheme()
+
+  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [activeInputId, setActiveInputId] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const handleFetchSuggestions = useCallback(async (value: string) => {
+    if (!value || value.length < 2 || !supabase) {
+      setSuggestions([])
+      setShowSuggestions(false)
+      return
+    }
+    try {
+      const { data, error } = await supabase
+        .from('compounds')
+        .select('name')
+        .ilike('name', `${value}%`)
+        .limit(5)
+      if (error) throw error
+      const fetchedNames = data?.map(d => d.name) || []
+      setSuggestions(fetchedNames)
+      setShowSuggestions(fetchedNames.length > 0)
+    } catch (err) {
+      console.error('Suggestion fetch error:', err)
+    }
+  }, [])
+
+  const handleNameChange = (
+    e: React.ChangeEvent<HTMLInputElement>,
+    id: string
+  ) => {
+    const value = e.target.value
+    setComponentsSetup(prev =>
+      prev.map(c => (c.id === id ? { ...c, name: value } : c))
+    )
+    setActiveInputId(id)
+    handleFetchSuggestions(value)
+  }
+
+  const handleSuggestionClick = (name: string) => {
+    if (activeInputId) {
+      fetchComponentProperties(name, activeInputId)
+    }
+    setShowSuggestions(false)
+    setActiveInputId(null)
+  }
+
+  const handleUnlockComponent = (id: string) => {
+    setComponentsSetup(prev =>
+      prev.map(c =>
+        c.id === id
+          ? {
+              ...c,
+              isDbLocked: false,
+              liquidDensityData: undefined,
+              criticalTemp: undefined,
+            }
+          : c
+      )
+    )
+  }
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node)
+      ) {
+        setShowSuggestions(false)
+        setActiveInputId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+    // --- NEW: Generic component property change helper ---
+    const handleComponentPropertyChange = (
+        id: string,
+        field: keyof ComponentSetup,
+        value: any
+    ) => {
+        setComponentsSetup(prev =>
+            prev.map(c => (c.id === id ? { ...c, [field]: value } : c))
+        )
+    }
+
+        // --- NEW: Generate unique component pairs for the new card ---
+        const componentPairs = useMemo(() => {
+            const pairs: [ComponentSetup, ComponentSetup][] = [];
+            for (let i = 0; i < componentsSetup.length; i++) {
+                for (let j = i + 1; j < componentsSetup.length; j++) {
+                    pairs.push([componentsSetup[i], componentsSetup[j]]);
+                }
+            }
+            return pairs;
+        }, [componentsSetup]);
+
+    // Interaction parameter fetching is handled at the parent level now.
+
+  // ... (rest of the component logic for adding/removing reactions, presets, etc.)
+
+                // --- FIX #2: Corrected grid columns with fixed widths for consistent margins ---
+                const reactionCols = `repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
+                const componentsGridCols =
+                    reactionPhase === 'Gas'
+                        ? `40px minmax(0, 1.5fr) 120px ${reactionCols}`
+                        : reactionPhase === 'Liquid'
+                        ? `40px minmax(0, 1.5fr) 120px 120px ${reactionCols}`
+                        : `40px minmax(0, 1.5fr) 120px 110px ${reactionCols}`; // Mixed
+
+        // --- CHANGE #1: Logic to determine if Henry's Law card should be visible ---
+        const hasGasComponent = useMemo(
+            () =>
+                reactionPhase === 'Mixed' &&
+                componentsSetup.some(c => c.phase === 'Gas'),
+            [reactionPhase, componentsSetup]
+        );
+
+  // Unit mapping function to convert between Gas and Liquid phase units
+  const mapUnits = (currentUnit: string, toPhase: 'Gas' | 'Liquid'): string => {
+    if (toPhase === 'Gas') {
+      // Converting from Liquid to Gas - add pressure units (default to Pa)
+      const liquidToGasMap: { [key: string]: string } = {
+        'mol,L,s': 'mol,L,Pa,s',
+        'mol,L,h': 'mol,L,Pa,h',
+        'mol,m^3,s': 'mol,m^3,Pa,s',
+        'mol,m^3,h': 'mol,m^3,Pa,h'
+      };
+      return liquidToGasMap[currentUnit] || currentUnit;
+    } else {
+      // Converting from Gas to Liquid - remove pressure units
+      const gasToLiquidMap: { [key: string]: string } = {
+        'mol,L,Pa,s': 'mol,L,s',
+        'mol,L,Pa,h': 'mol,L,h', 
+        'mol,m^3,Pa,s': 'mol,m^3,s',
+        'mol,m^3,Pa,h': 'mol,m^3,h',
+        'mol,L,bar,s': 'mol,L,s',
+        'mol,L,bar,h': 'mol,L,h',
+        'mol,m^3,bar,s': 'mol,m^3,s',
+        'mol,m^3,bar,h': 'mol,m^3,h'
+      };
+      return gasToLiquidMap[currentUnit] || currentUnit;
+    }
+  };
+
+    // Parameter UI moved to parent; this component is simplified.
+
+    // Enhanced phase switching function with automatic unit mapping
+    const handlePhaseChange = (newPhase: 'Liquid' | 'Gas' | 'Mixed') => {
+        if (newPhase === reactionPhase) return // No change needed
+
+        // For Mixed phase, don't remap units; rely on per-component phase selection
+        if (newPhase === 'Mixed') {
+            setReactionPhase(newPhase)
+            return
+        }
+
+        // Map units for all reactions when toggling between Liquid and Gas
+        const updatedReactions = reactionsSetup.map(reaction => ({
+            ...reaction,
+            AUnit: mapUnits(reaction.AUnit, newPhase),
+            AUnitBackward: reaction.AUnitBackward
+                ? mapUnits(reaction.AUnitBackward, newPhase)
+                : reaction.AUnitBackward,
+        }))
+
+        setReactionsSetup(updatedReactions)
+        setReactionPhase(newPhase)
+    }
   
   const addReactionSetup = () => {
     if (reactionsSetup.length >= 4) return
@@ -1183,57 +1407,191 @@ const KineticsInput = ({
   }
 
   // --- HDA Preset Data ---
-  const loadHdaPreset = () => {
-    setReactionsSetup([
-        // HDA Rxn 1 (Gas phase, Concentration basis -> simple units)
-        { id: '1', AValue: '1.188e14', AUnit: 'mol,L,h', EaValue: '52.0', EaUnit: 'kcal/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
-        // HDA Rxn 2 (Gas phase, Pressure basis -> pressure units)
-        { id: '2', AValue: '1.1647e-5', AUnit: 'mol,L,Pa,h', EaValue: '30.19', EaUnit: 'kcal/mol', isEquilibrium: true, AValueBackward: '4.56e-7', AUnitBackward: 'mol,L,Pa,h', EaValueBackward: '23.35', EaUnitBackward: 'kcal/mol', rateLawBasis: 'partialPressure'}
-    ]);
-    setComponentsSetup([
-        { id: 'comp-T', name: 'Toluene', molarMass: '92.14', density: '867', reactionData: { '1': { stoichiometry: '-1', order: '1' } } },
-        { id: 'comp-H2', name: 'Hydrogen', molarMass: '2.016', density: '89.9', reactionData: { '1': { stoichiometry: '-1', order: '0.5' }, '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
-        { id: 'comp-B', name: 'Benzene', molarMass: '78.11', density: '876', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-2', order: '2' } } },
-        { id: 'comp-CH4', name: 'Methane', molarMass: '16.04', density: '717', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
-        { id: 'comp-D', name: 'Diphenyl', molarMass: '154.21', density: '1080', reactionData: { '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
-    ]);
-    setSimBasis({ limitingReactantId: 'comp-T', desiredProductId: 'comp-B' });
-    setReactionPhase('Gas');
-    setProdRate('100');
-        setTemperature(650); // MODIFICATION: Set default temperature to 650 C
-        setPressure(30);    // MODIFICATION: Set default pressure to 30 bar
-  };
+    const loadHdaPreset = () => {
+        // --- START: MODIFICATION ---
+        // First set up the reaction data with the correct Gas phase units
+        const hdaReactions: ReactionSetup[] = [
+                // HDA Rxn 1 (Gas phase, Concentration basis -> simple units)
+                // Python units were sqrt(L/gmol)/h. The closest available unit is mol,L,h. The value is correct for this time basis.
+                { id: '1', AValue: '1.188e14', AUnit: 'mol,L,Pa,h', EaValue: '52.0', EaUnit: 'kcal/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+                // HDA Rxn 2 (Gas phase, Pressure basis -> pressure units)
+                // Python units were gmol/(L*Pa^2*h). The closest available unit is mol,L,Pa,h. The rate law uses the correct squared order.
+                { id: '2', AValue: '1.1647e-5', AUnit: 'mol,L,Pa,h', EaValue: '30.19', EaUnit: 'kcal/mol', isEquilibrium: true, AValueBackward: '4.56e-7', AUnitBackward: 'mol,L,Pa,h', EaValueBackward: '23.35', EaUnitBackward: 'kcal/mol', rateLawBasis: 'partialPressure'}
+        ];
+        
+        setReactionsSetup(hdaReactions);
+        // --- END: MODIFICATION ---
+        setComponentsSetup([
+                { id: 'comp-T', name: 'Toluene', molarMass: '92.14', density: '867', reactionData: { '1': { stoichiometry: '-1', order: '1' } } },
+                { id: 'comp-H2', name: 'Hydrogen', molarMass: '2.016', density: '89.9', reactionData: { '1': { stoichiometry: '-1', order: '0.5' }, '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
+                { id: 'comp-B', name: 'Benzene', molarMass: '78.11', density: '876', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-2', order: '2' } } },
+                { id: 'comp-CH4', name: 'Methane', molarMass: '16.04', density: '717', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
+                { id: 'comp-D', name: 'Diphenyl', molarMass: '154.21', density: '1080', reactionData: { '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
+        ]);
+        setSimBasis({ limitingReactantId: 'comp-T', desiredProductId: 'comp-B' });
+        setReactionPhase('Gas'); // Set phase directly since we already have the correct units
+        setProdRate('100');
+        setTemperature(650);
+        setPressure(30);
+        // ▼▼▼ ADD THIS LINE ▼▼▼
+        setReactorTypes({ pfr: true, cstr: false }); // HDA defaults to PFR
+    };
 
   const loadAlkylationPreset = () => {
     setReactionsSetup(initialReactions);
     setComponentsSetup(initialComponents);
     setSimBasis({ limitingReactantId: 'comp-A', desiredProductId: 'comp-C' });
-    setReactionPhase('Liquid');
+    setReactionPhase('Liquid'); // Set phase directly since initialReactions already has correct Liquid units
     setProdRate('100');
     setTemperature(4); // MODIFICATION: Corrected from 10 to 4
     setPressure(10);
+    // ▼▼▼ ADD THIS LINE ▼▼▼
+    setReactorTypes({ pfr: false, cstr: true }); // Alkylation defaults to CSTR
   }
   
-  const loadDmcPreset = () => {
-      setReactionsSetup([
-          // DMC Synthesis (Liquid phase -> simple units)
-          { id: '1', AValue: '1.6e11', AUnit: 'mol,L,s', EaValue: '104600', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
-          { id: '2', AValue: '6.7e12', AUnit: 'mol,L,s', EaValue: '98750', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
-      ]);
-      setComponentsSetup([
-          { id: 'comp-MeOH', name: 'Methanol', molarMass: '32.04', density: '792', reactionData: { '1': { stoichiometry: '-2', order: '2' } } },
-          { id: 'comp-CO', name: 'Carbon Monoxide', molarMass: '28.01', density: '789', reactionData: { '1': { stoichiometry: '-1', order: '0' }, '2': { stoichiometry: '-1', order: '0' } } },
-          { id: 'comp-O2', name: 'Oxygen', molarMass: '32.00', density: '1141', reactionData: { '1': { stoichiometry: '-0.5', order: '0.5' }, '2': { stoichiometry: '-0.5', order: '0.5' } } },
-          { id: 'comp-DMC', name: 'DMC', molarMass: '90.08', density: '1069', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
-          { id: 'comp-H2O', name: 'Water', molarMass: '18.02', density: '1000', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
-          { id: 'comp-CO2', name: 'Carbon Dioxide', molarMass: '44.01', density: '1101', reactionData: { '2': { stoichiometry: '1', order: '0' } } },
-      ]);
-      setSimBasis({ limitingReactantId: 'comp-O2', desiredProductId: 'comp-DMC' });
-      setReactionPhase('Liquid');
-      setProdRate('50');
-      setTemperature(80); // Set default temperature for next screen
-      setPressure(25);    // Set default pressure for next screen
-  }
+                // --- DMC Preset Loader with Default Henry's Law Data ---
+    const loadDmcPreset = async () => {
+        if (!supabase) {
+            console.error('Supabase client not available.');
+            return;
+        }
+
+        // --- Data from the provided image ---
+        const presetTemperatures = ['80', '90', '100', '110', '120', '130'];
+        const presetHenryConstants = {
+            'Oxygen': ['1526', '1451', '1379', '1303', '1225', '1146'],
+            'Carbon monoxide': ['4265', '3843', '3484', '3156', '2792', '2496'],
+            'Carbon dioxide': ['206', '222', '237', '250', '262', '271'],
+        };
+        // ------------------------------------
+
+        const componentNames = [
+            'Methanol',
+            'Carbon monoxide',
+            'Oxygen',
+            'Dimethyl carbonate',
+            'Water',
+            'Carbon dioxide',
+        ];
+        const gasPhaseNames = ['Carbon monoxide', 'Oxygen', 'Carbon dioxide'];
+
+        // 1. Create the temperature rows for the UI
+        const newHenryTemperatures = presetTemperatures.map(t => ({
+            id: `temp-dmc-${t}`, // Give each row a unique, stable ID
+            temp: t,
+        }));
+
+            // 2. Fetch all component data from Supabase
+            const fetchPromises = componentNames.map(async name => {
+                try {
+                    const { data: compoundDbData, error: compoundError } = await supabase
+                        .from('compounds')
+                        .select('id, name, molecular_weight')
+                        .ilike('name', name)
+                        .limit(1)
+                        .single();
+                    if (compoundError) throw compoundError;
+
+                    const { data: propsData, error: propsError } = await supabase
+                        .from('compound_properties')
+                        .select('properties')
+                        .eq('compound_id', compoundDbData.id)
+                        .limit(1)
+                        .maybeSingle();
+                    if (propsError) throw propsError;
+
+                    if (!propsData) {
+                        throw new Error(`No properties found for compound ID ${compoundDbData.id}`);
+                    }
+
+                    return {
+                        id: `comp-${compoundDbData.name.replace(/\s/g, '')}`,
+                        name: compoundDbData.name,
+                        molarMass: String(compoundDbData.molecular_weight),
+                        density: '',
+                        reactionData: {},
+                        isDbLocked: true,
+                        liquidDensityData: propsData.properties['Liquid density'],
+                        criticalTemp: parseCoefficient(propsData.properties['Critical temperature']),
+                        phase: gasPhaseNames.includes(compoundDbData.name) ? 'Gas' : 'Liquid',
+                    } as ComponentSetup;
+                } catch (error) {
+                    console.error(`Failed to fetch DMC component: '${name}'. Check database for this entry.`, error);
+                    return null;
+                }
+            });
+
+            const fetchedRaw = await Promise.all(fetchPromises);
+            const fetchedComponents = fetchedRaw.filter(Boolean) as ComponentSetup[];
+
+            if (fetchedComponents.length !== 6) {
+                console.error('Could not fetch all DMC components. Check the log above for details.');
+                return;
+            }
+
+            // 3. Add reaction and Henry's Law data to the fetched components
+            const finalComponents = fetchedComponents.map(c => {
+                switch (c.name) {
+                    case 'Methanol':
+                        c.reactionData = { '1': { stoichiometry: '-2', order: '2' } };
+                        break;
+                    case 'Carbon monoxide':
+                        c.reactionData = {
+                            '1': { stoichiometry: '-1', order: '0' },
+                            '2': { stoichiometry: '-1', order: '0' },
+                        };
+                        break;
+                    case 'Oxygen':
+                        c.reactionData = {
+                            '1': { stoichiometry: '-0.5', order: '0.5' },
+                            '2': { stoichiometry: '-0.5', order: '0.5' },
+                        };
+                        break;
+                    case 'Dimethyl carbonate':
+                        c.id = 'comp-DMC';
+                        c.reactionData = { '1': { stoichiometry: '1', order: '0' } };
+                        break;
+                    case 'Water':
+                        c.reactionData = { '1': { stoichiometry: '1', order: '0' } };
+                        break;
+                    case 'Carbon dioxide':
+                        c.reactionData = { '2': { stoichiometry: '1', order: '0' } };
+                        break;
+                }
+
+                // Assign Henry's Law data if the component is a gas in the preset
+                if (c.name in presetHenryConstants) {
+                    const constants = presetHenryConstants[c.name as keyof typeof presetHenryConstants];
+                    const newHenryData: { [key: string]: string } = {};
+                    newHenryTemperatures.forEach((tempRow, index) => {
+                        newHenryData[tempRow.id] = constants[index];
+                    });
+                    c.henryData = newHenryData;
+                }
+                return c;
+            });
+
+
+        // 4. Set all the states for the preset
+        const dmcReactions: ReactionSetup[] = [
+            { id: '1', AValue: '1.6e11', AUnit: 'mol,L,s', EaValue: '104600', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+            { id: '2', AValue: '6.7e12', AUnit: 'mol,L,s', EaValue: '98750', EaUnit: 'J/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
+        ];
+    
+        setReactionsSetup(dmcReactions);
+        setHenryTemperatures(newHenryTemperatures); // Set the temperature rows
+        setComponentsSetup(finalComponents);       // Set components with populated data
+        setSimBasis({ limitingReactantId: 'comp-Oxygen', desiredProductId: 'comp-DMC' });
+        setReactionPhase('Mixed');
+        setHenryUnit('bar');
+    // --- FIX: Ensure fluid package is set correctly ---
+    setFluidPackage('NRTL');
+        setProdRate('50');
+        setTemperature(80);
+        setPressure(25);
+        // ▼▼▼ ADD THIS LINE ▼▼▼
+        setReactorTypes({ pfr: false, cstr: true }); // DMC defaults to CSTR
+    };
 
   const addComponentSetup = () => {
     const newId = `comp-${Date.now()}`
@@ -1249,30 +1607,44 @@ const KineticsInput = ({
       setComponentsSetup(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c))
   }
   
-  const validationResult = useMemo(() => {
-    for (const reaction of reactionsSetup) {
-        let hasReactant = false;
-        let hasProduct = false;
+    const validationResult = useMemo(() => {
+        for (const reaction of reactionsSetup) {
+            let hasReactant = false
+            let hasProduct = false
 
-        for (const comp of componentsSetup) {
-            const stoichValue = parseFloat(comp.reactionData[reaction.id]?.stoichiometry || '0');
-            if (stoichValue < 0) {
-                hasReactant = true;
-            } else if (stoichValue > 0) {
-                hasProduct = true;
+            for (const comp of componentsSetup) {
+                const stoichValue = parseFloat(
+                    comp.reactionData[reaction.id]?.stoichiometry || '0'
+                )
+                if (stoichValue < 0) {
+                    hasReactant = true
+                } else if (stoichValue > 0) {
+                    hasProduct = true
+                }
+            }
+
+            if (!hasReactant || !hasProduct) {
+                return {
+                    isValid: false,
+                    message: `Reaction ${reaction.id} must have at least one reactant (negative stoichiometry) and one product (positive stoichiometry).`,
+                }
             }
         }
 
-        if (!hasReactant || !hasProduct) {
-            return {
-                isValid: false,
-                message: `Reaction ${reaction.id} must have at least one reactant (negative stoichiometry) and one product (positive stoichiometry).`
-            };
+        // --- NEW: Mixed phase requires all components from DB (locked) ---
+        if (reactionPhase === 'Mixed') {
+            const allComponentsLocked = componentsSetup.every(c => c.isDbLocked)
+            if (!allComponentsLocked) {
+                return {
+                    isValid: false,
+                    message:
+                        'For Mixed Phase, all components must be selected from the database.',
+                }
+            }
         }
-    }
 
-    return { isValid: true, message: '' };
-  }, [reactionsSetup, componentsSetup]);
+        return { isValid: true, message: '' }
+    }, [reactionsSetup, componentsSetup, reactionPhase])
   
   const generatePreview = (reaction: ReactionSetup) => {
         const reactants = componentsSetup
@@ -1326,9 +1698,72 @@ const KineticsInput = ({
         };
     };
 
-  const componentsGridCols = `40px 1fr 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
+  // --- NEW: State to manage the temperature rows for Henry's Law ---
+    // Henry's Law temps & unit are passed in from parent (Home) via props
+
+  // --- Updated Handlers ---
+  const handleAddTemperatureRow = () => {
+    setHenryTemperatures([
+      ...henryTemperatures,
+      { id: `temp-${Date.now()}`, temp: '' },
+    ]);
+  };
+  
+  // --- Updated to prevent deleting the first two rows ---
+  const handleRemoveTemperatureRow = (idToRemove: string) => {
+    if (henryTemperatures.length <= 2) return; // Keep at least two rows
+    setHenryTemperatures(henryTemperatures.filter(row => row.id !== idToRemove));
+    // Also clean up the orphaned data from components
+    setComponentsSetup(prev =>
+      prev.map(comp => {
+        if (comp.henryData && comp.henryData[idToRemove]) {
+          const newHenryData = { ...comp.henryData };
+          delete newHenryData[idToRemove];
+          return { ...comp, henryData: newHenryData };
+        }
+        return comp;
+      })
+    );
+  };
+
+  const handleTemperatureChange = (id: string, value: string) => {
+    setHenryTemperatures(
+      henryTemperatures.map(row => (row.id === id ? { ...row, temp: value } : row))
+    );
+  };
+
+  const handleHenryConstantChange = (
+    componentId: string,
+    tempId: string,
+    value: string
+  ) => {
+    setComponentsSetup(prev =>
+      prev.map(comp => {
+        if (comp.id === componentId) {
+          return {
+            ...comp,
+            henryData: {
+              ...comp.henryData,
+              [tempId]: value,
+            },
+          };
+        }
+        return comp;
+      })
+    );
+  };
+
+  // Memoize the list of gas components to avoid re-filtering on every render
+  const gasComponents = useMemo(
+    () => componentsSetup.filter(c => c.phase === 'Gas'),
+    [componentsSetup]
+  );
+
+  // --- Updated grid definition for new trash can position ---
+  const henrysLawGridCols = `40px 1fr ${'1fr '.repeat(gasComponents.length)}`;
 
   return (
+    <TooltipProvider>
     <div className={`min-h-screen flex flex-col p-4 bg-background text-foreground`}>
       <div className="container mx-auto space-y-6">
         
@@ -1535,24 +1970,52 @@ const KineticsInput = ({
                         <CardTitle>Simulation Basis</CardTitle>
                     </div>
                 <div className="space-y-4">
-                    <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
-                        <Button
-                            onClick={() => setReactionPhase('Liquid')}
-                            variant={reactionPhase === 'Liquid' ? 'default' : 'ghost'}
-                            size="sm"
-                            className="flex-1 text-xs px-3 py-1 h-auto"
-                        >
-                            Liquid
-                        </Button>
-                        <Button
-                            onClick={() => setReactionPhase('Gas')}
-                            variant={reactionPhase === 'Gas' ? 'default' : 'ghost'}
-                            size="sm"
-                            className="flex-1 text-xs px-3 py-1 h-auto"
-                        >
-                            Gas
-                        </Button>
-                    </div>
+                                        <div className="flex items-center gap-1 rounded-lg p-1 bg-muted">
+                                                <Button
+                                                        onClick={() => handlePhaseChange('Liquid')}
+                                                        variant={reactionPhase === 'Liquid' ? 'default' : 'ghost'}
+                                                        size="sm"
+                                                        className="flex-1 text-xs px-3 py-1 h-auto"
+                                                >
+                                                        Liquid
+                                                </Button>
+                                                <Button
+                                                        onClick={() => handlePhaseChange('Gas')}
+                                                        variant={reactionPhase === 'Gas' ? 'default' : 'ghost'}
+                                                        size="sm"
+                                                        className="flex-1 text-xs px-3 py-1 h-auto"
+                                                >
+                                                        Gas
+                                                </Button>
+                                                <Button
+                                                        onClick={() => handlePhaseChange('Mixed')}
+                                                        variant={reactionPhase === 'Mixed' ? 'default' : 'ghost'}
+                                                        size="sm"
+                                                        className="flex-1 text-xs px-3 py-1 h-auto"
+                                                >
+                                                        Mixed
+                                                </Button>
+                                        </div>
+
+                                        {/* --- NEW: Fluid Package Dropdown --- */}
+                                        {reactionPhase === 'Mixed' && (
+                                            <div>
+                                                <Label>Fluid Package</Label>
+                                                <Select value={fluidPackage} onValueChange={v => setFluidPackage(v as VleFluidPackage)}>
+                                                    <SelectTrigger className="w-full mt-1">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="Ideal">Ideal</SelectItem>
+                                                        <SelectItem value="NRTL">NRTL</SelectItem>
+                                                        <SelectItem value="Wilson">Wilson</SelectItem>
+                                                        <SelectItem value="UNIQUAC">UNIQUAC</SelectItem>
+                                                        <SelectItem value="Peng-Robinson">Peng-Robinson</SelectItem>
+                                                        <SelectItem value="SRK">SRK</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        )}
 
                     <div>
                         <Label>Limiting Reactant</Label>
@@ -1670,108 +2133,368 @@ const KineticsInput = ({
             </div>
         </div>
 
-        {/* Components Card (unchanged) */}
-        <div className={`p-6 rounded-lg shadow-lg bg-card text-card-foreground`}> 
-              <div className="mb-4">
-                <CardTitle className="flex items-center justify-between">
-                  Components
-                  <Button variant="outline" size="sm" onClick={addComponentSetup}>
-                      <PlusCircle className="mr-2 h-4 w-4" />Add Component
-                  </Button>
-                </CardTitle>
-              </div>
-              <div className="overflow-x-auto">
-                  {(() => {
-                    const componentsGridCols = `40px 1fr 1fr 1fr repeat(${reactionsSetup.length * 2}, minmax(0, 1fr))`;
-                    return (
-                        <>
-                            {/* Header Row 1: Main Titles */}
-                            <div className="grid items-center text-xs font-medium text-muted-foreground" style={{gridTemplateColumns: componentsGridCols}}>
-                                <div/> {/* Spacer */}
-                                <div className="text-center">Name</div>
-                                <div className="text-center">Molar Mass</div>
-                                <div className="text-center">Density</div>
-                                {reactionsSetup.map((r, index) => {
-                                    const numSideReactions = reactionsSetup.length - 1;
-                                    let reactionTitle = 'Primary Reaction';
-                                    if (index > 0) {
-                                        reactionTitle = numSideReactions === 1 ? 'Side Reaction' : `Side Reaction ${index}`;
+                {/* Components Card */}
+                <div
+                    ref={containerRef}
+                    className={`p-6 rounded-lg shadow-lg bg-card text-card-foreground`}
+                >
+                    <div className="mb-4">
+                        <CardTitle className="flex items-center justify-between">
+                            Components
+                            <Button variant="outline" size="sm" onClick={addComponentSetup}>
+                                <PlusCircle className="mr-2 h-4 w-4" />
+                                Add Component
+                            </Button>
+                        </CardTitle>
+                    </div>
+                    {/* ▼▼▼ CHANGE IS HERE ▼▼▼ */}
+                    {/* The <div> with "overflow-x-auto" has been removed to fix clipping */}
+                    <>
+                                                {/* --- FIX: Restored and Corrected Two-Row Header --- */}
+                                                <div
+                                                    className="grid items-center text-xs font-medium text-muted-foreground"
+                                                    style={{ gridTemplateColumns: componentsGridCols }}
+                                                >
+                                                    {/* This div now correctly spans the columns before the reactions */}
+                                                    <div
+                                                        style={{
+                                                            gridColumn: reactionPhase === 'Gas' ? 'span 3' : 'span 4',
+                                                        }}
+                                                    />
+                                                    {reactionsSetup.map((r, index) => {
+                                                        const numSideReactions = reactionsSetup.length - 1;
+                                                        let reactionTitle = 'Primary Reaction';
+                                                        if (index > 0) {
+                                                            reactionTitle =
+                                                                numSideReactions === 1
+                                                                    ? 'Side Reaction'
+                                                                    : `Side Reaction ${index}`;
+                                                        }
+                                                        return (
+                                                            <div key={r.id} className="text-center col-span-2">
+                                                                {reactionTitle}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+
+                                                <div
+                                                    className="grid items-center text-xs font-medium text-muted-foreground pb-2 border-b"
+                                                    style={{ gridTemplateColumns: componentsGridCols }}
+                                                >
+                                                    <div /> {/* Spacer for trash icon */}
+                                                    <div className="text-center">Name</div>
+                                                    <div className="text-center">(g/mol)</div>
+                                                    {reactionPhase === 'Mixed' ? (
+                                                        <div className="text-center">Phase</div>
+                                                    ) : reactionPhase === 'Liquid' ? (
+                                                        <div className="text-center">(g/L)</div>
+                                                    ) : null}
+                                                    {reactionsSetup.map(r => (
+                                                        <React.Fragment key={r.id}>
+                                                            <div className="text-center">Stoich.</div>
+                                                            <div className="text-center">
+                                                                {r.isEquilibrium ? 'Order (fwd/rev)' : 'Order'}
+                                                            </div>
+                                                        </React.Fragment>
+                                                    ))}
+                                                </div>
+
+                        {/* The actual component input rows */}
+                        {componentsSetup.map((comp, index) => (
+                            <div
+                                key={comp.id}
+                                className="grid gap-2 items-center py-2"
+                                style={{ gridTemplateColumns: componentsGridCols }}
+                            >
+                                {index > 1 ? (
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8"
+                                        onClick={() => removeComponentSetup(comp.id)}
+                                    >
+                                        <Trash2 className="h-4 w-4 text-red-500" />
+                                    </Button>
+                                ) : (
+                                    <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
+                                        <Trash2 className="h-4 w-4 text-muted-foreground" />
+                                    </Button>
+                                )}
+
+                                <div className="relative">
+                                    <div className="flex items-center">
+                                        <Input
+                                            value={comp.name}
+                                            onChange={e => handleNameChange(e, comp.id)}
+                                            onFocus={() => {
+                                                setActiveInputId(comp.id)
+                                                if (comp.name && comp.name.length > 1) {
+                                                    handleFetchSuggestions(comp.name)
+                                                }
+                                            }}
+                                            className="h-8 text-center"
+                                            autoComplete="off"
+                                        />
+                                        {comp.isDbLocked && (
+                                            <button
+                                                onClick={() => handleUnlockComponent(comp.id)}
+                                                className="absolute right-2 text-muted-foreground hover:text-foreground transition-colors"
+                                                title="Unlock to edit manually"
+                                            >
+                                                <Unlink2 className="h-4 w-4" />
+                                            </button>
+                                        )}
+                                    </div>
+                                    {/* Suggestions Dropdown */}
+                                    {showSuggestions &&
+                                        activeInputId === comp.id &&
+                                        suggestions.length > 0 && (
+                                            <div className="absolute z-50 w-full bg-background border border-input rounded-md shadow-lg mt-1">
+                                                {suggestions.map((s, i) => (
+                                                    <div
+                                                        key={i}
+                                                        onClick={() => handleSuggestionClick(s)}
+                                                        className="px-3 py-2 hover:bg-accent cursor-pointer text-sm text-center"
+                                                    >
+                                                        {s}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                </div>
+                                <Input
+                                    type="number"
+                                    placeholder="g/mol"
+                                    value={comp.molarMass || ''}
+                                    onChange={e =>
+                                        handleComponentSetupChange(comp.id, 'molarMass', e.target.value)
                                     }
-                                    return (
-                                        <div key={r.id} className="text-center col-span-2">
-                                            {reactionTitle}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                            {/* Header Row 2: Units and Sub-headers */}
-                            <div className="grid items-center text-xs font-medium text-muted-foreground pb-2 border-b" style={{gridTemplateColumns: componentsGridCols}}>
-                                <div/> {/* Spacer */}
-                                <div/> {/* Spacer for Name */}
-                                <div className="text-center">(g/mol)</div>
-                                <div className="text-center">(g/L)</div>
+                                    className={`h-8 text-center transition-colors ${
+                                        comp.isDbLocked ? 'bg-muted opacity-75' : ''
+                                    }`}
+                                    readOnly={comp.isDbLocked}
+                                />
+                                {/* --- NEW: Conditional Phase Selector or Density Input --- */}
+                                {/* --- Finalized Phase/Density Column --- */}
+                                {reactionPhase === 'Mixed' ? (
+                                    <Select
+                                        value={comp.phase}
+                                        onValueChange={value =>
+                                            handleComponentPropertyChange(comp.id, 'phase', value as any)
+                                        }
+                                    >
+                                        {/* --- CHANGE #3: Consistent Width --- */}
+                                        <SelectTrigger className="h-8 w-[90px] text-xs mx-auto">
+                                            {/* --- CHANGE #2: New Placeholder --- */}
+                                            <SelectValue placeholder="L / G" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {/* --- CHANGE #2: New Item Labels --- */}
+                                            <SelectItem value="Liquid">L</SelectItem>
+                                            <SelectItem value="Gas">G</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                ) : (
+                                    reactionPhase === 'Liquid' && (
+                                        <Input
+                                            type={comp.isDbLocked ? 'text' : 'number'}
+                                            placeholder="g/L"
+                                            value={comp.isDbLocked ? 'T. dependent' : comp.density || ''}
+                                            onChange={e =>
+                                                handleComponentPropertyChange(comp.id, 'density', e.target.value)
+                                            }
+                                            className={`h-8 text-center transition-colors ${
+                                                comp.isDbLocked ? 'bg-muted opacity-75 italic' : ''
+                                            }`}
+                                            readOnly={comp.isDbLocked}
+                                        />
+                                    )
+                                )}
                                 {reactionsSetup.map(r => (
                                     <React.Fragment key={r.id}>
-                                        <div className="text-center">Stoich.</div>
-                                        <div className="text-center">
-                                            {r.isEquilibrium ? 'Order (fwd/rev)' : 'Order'}
+                                        <Input
+                                            type="number"
+                                            placeholder="0"
+                                            value={comp.reactionData[r.id]?.stoichiometry || ''}
+                                            onChange={e =>
+                                                handleComponentSetupChange(comp.id, 'reactionData', {
+                                                    ...comp.reactionData,
+                                                    [r.id]: {
+                                                        ...comp.reactionData[r.id],
+                                                        stoichiometry: e.target.value,
+                                                    },
+                                                })
+                                            }
+                                            className="h-8 text-center"
+                                            step="0.1"
+                                        />
+                                        <div className="flex items-center gap-1">
+                                            <Input
+                                                type="number"
+                                                placeholder={r.isEquilibrium ? 'fwd' : '0'}
+                                                value={comp.reactionData[r.id]?.order || ''}
+                                                onChange={e =>
+                                                    handleComponentSetupChange(comp.id, 'reactionData', {
+                                                        ...comp.reactionData,
+                                                        [r.id]: {
+                                                            ...comp.reactionData[r.id],
+                                                            order: e.target.value,
+                                                        },
+                                                    })
+                                                }
+                                                className="h-8 text-center"
+                                                step="0.1"
+                                            />
+                                            {r.isEquilibrium && (
+                                                <Input
+                                                    type="number"
+                                                    placeholder="rev"
+                                                    value={comp.reactionData[r.id]?.orderReverse || ''}
+                                                    onChange={e =>
+                                                        handleComponentSetupChange(comp.id, 'reactionData', {
+                                                            ...comp.reactionData,
+                                                            [r.id]: {
+                                                                ...comp.reactionData[r.id],
+                                                                orderReverse: e.target.value,
+                                                            },
+                                                        })
+                                                    }
+                                                    className="h-8 text-center"
+                                                    step="0.1"
+                                                />
+                                            )}
                                         </div>
                                     </React.Fragment>
                                 ))}
                             </div>
+                        ))}
+                    </>
+                    {/* ▲▲▲ END OF CHANGES ▲▲▲ */}
+                                </div>
 
-                            {componentsSetup.map((comp, index) => (
-                                <div key={comp.id} className="grid gap-2 items-center py-2" style={{gridTemplateColumns: componentsGridCols}}>
-                                    {index > 1 ? (
-                                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeComponentSetup(comp.id)}>
-                                            <Trash2 className="h-4 w-4 text-red-500" />
-                                        </Button>
-                                    ) : (
-                                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled>
-                                        <Trash2 className="h-4 w-4 text-muted-foreground" />
-                                        </Button>
-                                    )}
-
-                                    {/* Correctly ordered input fields */}
-                                    <Input value={comp.name} onChange={e => handleComponentSetupChange(comp.id, 'name', e.target.value)} />
-                                    <Input type="number" placeholder="g/mol" value={comp.molarMass || ''} onChange={e => handleComponentSetupChange(comp.id, 'molarMass', e.target.value)} className="h-8 text-center"/>
-                                    <Input type="number" placeholder="g/L" value={comp.density || ''} onChange={e => handleComponentSetupChange(comp.id, 'density', e.target.value)} className="h-8 text-center"/>
-                                    {reactionsSetup.map(r => (
-                                        <React.Fragment key={r.id}>
-                                            <Input type="number" placeholder="0" value={comp.reactionData[r.id]?.stoichiometry || ''} onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], stoichiometry: e.target.value}})} className="h-8 text-center" step="0.1" />
-                                            <div className="flex items-center gap-1">
-                                                <Input 
-                                                type="number" 
-                                                placeholder={r.isEquilibrium ? "fwd" : "0"}
-                                                value={comp.reactionData[r.id]?.order || ''} 
-                                                onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], order: e.target.value}})} 
-                                                className="h-8 text-center" 
-                                                step="0.1" 
-                                                />
-                                                {r.isEquilibrium && (
-                                                <Input 
-                                                    type="number" 
-                                                    placeholder="rev"
-                                                    value={comp.reactionData[r.id]?.orderReverse || ''} 
-                                                    onChange={e => handleComponentSetupChange(comp.id, 'reactionData', {...comp.reactionData, [r.id]: {...comp.reactionData[r.id], orderReverse: e.target.value}})} 
-                                                    className="h-8 text-center" 
-                                                    step="0.1" 
-                                                />
-                                                )}
-                                            </div>
-                                        </React.Fragment>
+                    {/* --- Corrected Henry's Law Card --- */}
+                    {reactionPhase === 'Mixed' && hasGasComponent && (
+                        <Card className="p-6">
+                            <CardHeader className="p-0 pb-4 flex flex-row justify-between items-center">
+                                <CardTitle className="flex items-center gap-2">
+                                    Henry's Law Constants
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <button>
+                                                <Info className="h-4 w-4 text-muted-foreground" />
+                                            </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent className="max-w-xs">
+                                            <p className="text-sm font-medium">
+                                                H<sub>v</sub>
+                                                <sup>px</sup> = p<sub>x</sub> / x<sub>a</sub> = 1 / H
+                                                <sub>s</sub>
+                                                <sup>xp</sup>
+                                            </p>
+                                            <p className="text-xs text-muted-foreground mt-1">
+                                                The Henry volatility defined via aqueous-phase mixing ratio.
+                                            </p>
+                                        </TooltipContent>
+                                    </Tooltip>
+                                </CardTitle>
+                                <div className="flex items-center gap-2">
+                                    <Select value={henryUnit} onValueChange={(v) => setHenryUnit(v as any)}>
+                                        <SelectTrigger className="w-[90px] h-9 text-xs">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="Pa">Pa</SelectItem>
+                                            <SelectItem value="kPa">kPa</SelectItem>
+                                            <SelectItem value="bar">bar</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={handleAddTemperatureRow}
+                                    >
+                                        <PlusCircle className="mr-2 h-4 w-4" />
+                                        Add Temp
+                                    </Button>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="space-y-2 p-0">
+                                {/* Table Header */}
+                                <div
+                                    className="grid items-center text-xs font-medium text-muted-foreground pb-2 border-b"
+                                    style={{ gridTemplateColumns: henrysLawGridCols }}
+                                >
+                                    <div /> {/* Spacer for delete button */}
+                                    <div className="text-center">Temperature (°C)</div>
+                                    {gasComponents.map(comp => (
+                                        <div key={comp.id} className="text-center font-semibold">
+                                            {comp.name}
+                                        </div>
                                     ))}
                                 </div>
-                            ))}
-                        </>
-                    )
-                  })()}
-              </div>
-          </div>
+
+                                {/* Table Rows */}
+                                {henryTemperatures.map((row, index) => (
+                                    <div
+                                        key={row.id}
+                                        className="grid items-center gap-2"
+                                        style={{ gridTemplateColumns: henrysLawGridCols }}
+                                    >
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8"
+                                            onClick={() => handleRemoveTemperatureRow(row.id)}
+                                            // --- FIX: Trash can is disabled based on row index ---
+                                            disabled={index < 2}
+                                        >
+                                            <Trash2
+                                                className={`h-4 w-4 ${
+                                                    // --- FIX: Icon is greyed out based on row index ---
+                                                    index < 2
+                                                        ? 'text-muted-foreground'
+                                                        : 'text-red-500'
+                                                }`}
+                                            />
+                                        </Button>
+                                        <Input
+                                            type="number"
+                                            placeholder="e.g., 80"
+                                            value={row.temp}
+                                            onChange={e => handleTemperatureChange(row.id, e.target.value)}
+                                            className="h-8 text-center"
+                                            // --- FIX: The "disabled" prop has been removed ---
+                                        />
+                                        {gasComponents.map(comp => (
+                                            <Input
+                                                key={comp.id}
+                                                type="number"
+                                                placeholder={`H (${henryUnit}·m³/mol)`}
+                                                value={comp.henryData?.[row.id] || ''}
+                                                onChange={e =>
+                                                    handleHenryConstantChange(
+                                                        comp.id,
+                                                        row.id,
+                                                        e.target.value
+                                                    )
+                                                }
+                                                className="h-8 text-center"
+                                                // --- FIX: The "disabled" prop has been removed ---
+                                            />
+                                        ))}
+                                    </div>
+                                ))}
+                            </CardContent>
+                        </Card>
+                    )}
+                    {/* --- Interaction Parameters Card (shows when a non-ideal package is selected) --- */}
+                    {/* Interaction Parameters card removed - handled at parent level */}
+        </div>
       </div>
-    </div>
-  )
-}
+    </TooltipProvider>
+  );
+};
 
 // Interface for the new molarRatios prop
 interface MolarRatio {
@@ -1799,6 +2522,10 @@ const ReactorSimulator = ({
     prodRate,
     temperature, setTemperature, // Now receives state and setter
     pressure, setPressure,       // Now receives state and setter
+    // --- ADD THESE NEW PROPS ---
+    reactorTypes, setReactorTypes,
+    henryTemperatures,
+    henryUnit,
 }: { 
     onBack: () => void, 
     reactions: ReactionSetup[], 
@@ -1806,12 +2533,17 @@ const ReactorSimulator = ({
     simBasis: any,
     molarRatios: MolarRatio[],
     setMolarRatios: React.Dispatch<React.SetStateAction<MolarRatio[]>>,
-    reactionPhase: 'Liquid' | 'Gas',
+    reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
     prodRate: string,
     temperature: number,
     setTemperature: React.Dispatch<React.SetStateAction<number>>,
     pressure: number,
     setPressure: React.Dispatch<React.SetStateAction<number>>,
+    // --- ADD THESE NEW PROPS ---
+    reactorTypes: { pfr: boolean; cstr: boolean },
+    setReactorTypes: React.Dispatch<React.SetStateAction<{ pfr: boolean; cstr: boolean }>>,
+    henryTemperatures: { id: string; temp: string }[],
+    henryUnit: 'Pa' | 'kPa' | 'bar',
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -1821,18 +2553,13 @@ const ReactorSimulator = ({
   const mainBg = 'bg-background';
   const mainFg = 'text-foreground';
 
-  const [reactorTypes, setReactorTypes] = useState({ pfr: true, cstr: false })
-
-  // Add this handler function to manage toggling
+  // reactorTypes/state are passed in from parent; use prop-based handler
   const handleReactorTypeChange = (type: 'pfr' | 'cstr') => {
       setReactorTypes(prev => {
           const newState = { ...prev, [type]: !prev[type] }
-          
-          // This logic prevents deselecting both buttons
           if (!newState.pfr && !newState.cstr) {
-              return prev // Return the previous state if the user tries to deselect the last active button
+              return prev // prevent deselecting both
           }
-          
           return newState
       })
   }
@@ -1848,6 +2575,7 @@ const ReactorSimulator = ({
   // Removed local prodRate state
 
   const generateGraphData = useCallback(() => {
+    console.log("=============== NEW CALCULATION ===============");
     const tempK = convertUnit.temperature.celsiusToKelvin(temperature)
     
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
@@ -1859,37 +2587,39 @@ const ReactorSimulator = ({
 
     const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`
     let yLabel = ''
-    const legend: string[] = []
-    const series: any[] = []
     
+    const visibleLegend: string[] = []
+    const visibleSeries: any[] = []
+    const hardCap = 5000; // The maximum practical volume
+
     const colors = {
         pfr: '#22c55e', // green
         cstr: '#E53E3E'  // red
     }
 
-    let overallReasonableMax = -1 // Used to find a good axis limit across all visible curves
+    let overallReasonableMax = -1
 
-    // Loop through the selected reactor types
     for (const type in reactorTypes) {
         if (reactorTypes[type as keyof typeof reactorTypes]) {
+            const reactorType = type.toUpperCase() as 'PFR' | 'CSTR';
+            console.log(`[Tracer] Attempting to calculate for: ${reactorType}`);
             let dataToShow: {
                 selectivityData: { x: number; y: number }[];
                 volumeData: { x: number; y: number }[];
             } = { selectivityData: [], volumeData: [] }
 
-            const reactorType = type.toUpperCase() as 'PFR' | 'CSTR'
-
-            // --- Calculation for each type (logic is unchanged) ---
             if (reactorType === 'PFR') {
-                if (reactionPhase === 'Gas') {
-                    dataToShow = calculatePfrGasPhase(
-                        reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate)
-                    )
-                } else {
-                    dataToShow = calculatePfrLiquidPhase(
-                        reactions, components, tempK, molarRatios, simBasis, parseFloat(prodRate)
-                    )
-                }
+                const pfrPhase: 'Liquid' | 'Gas' = (reactionPhase === 'Mixed') ? 'Gas' : reactionPhase;
+                dataToShow = calculatePfrData_Optimized(
+                    reactions,
+                    components,
+                    tempK,
+                    pressure,
+                    molarRatios,
+                    simBasis,
+                    parseFloat(prodRate),
+                    pfrPhase
+                );
             } else { // CSTR
                 const F_A0_guess = 10.0
                 const initialFlowRates = { [limitingReactant.name]: F_A0_guess }
@@ -1908,91 +2638,76 @@ const ReactorSimulator = ({
                     parseFloat(prodRate)
                 )
             }
+            
+            let dataForPlotting;
+            const activeReactorCount = (reactorTypes.pfr ? 1 : 0) + (reactorTypes.cstr ? 1 : 0);
+            const seriesName = activeReactorCount > 1 ? `${reactorType.toUpperCase()} - ` : '';
 
-            // --- **FIX START**: Determine a reasonable Y-axis max for volume graphs ---
             if (graphType === 'volume') {
-                const volumeData = dataToShow.volumeData;
-                if (volumeData.length > 1) { // Need at least 2 points to interpolate
-                    // Interpolate to get volume at both low (5%) and high (95%) conversion
-                    const volAt5Percent = interpolateFromData(0.05, volumeData);
-                    const volAt95Percent = interpolateFromData(0.95, volumeData);
+                yLabel = 'Reactor Volume (m³)';
+                const volumePoints = dataToShow.volumeData;
+                
+                // Check if any data point is within the visible range of the chart
+                const isVisible = volumePoints.some(p => p.y <= hardCap);
 
-                    // Determine the larger of the two volumes, ignoring any non-finite results
-                    let curveReasonableMax = -1;
-                    if (isFinite(volAt5Percent) && isFinite(volAt95Percent)) {
-                        curveReasonableMax = Math.max(volAt5Percent, volAt95Percent);
-                    } else if (isFinite(volAt5Percent)) {
-                        curveReasonableMax = volAt5Percent;
-                    } else if (isFinite(volAt95Percent)) {
-                        curveReasonableMax = volAt95Percent;
-                    }
-                    
-                    // If this curve's reasonable max is higher than the overall max we've seen so far,
-                    // it becomes the new overall max for the chart's Y-axis.
-                    if (curveReasonableMax > overallReasonableMax) {
-                        overallReasonableMax = curveReasonableMax;
+                if (isVisible) {
+                    dataForPlotting = volumePoints.map(d => [d.x, d.y]);
+                    visibleLegend.push(`${seriesName}Reactor Volume`);
+
+                    // Calculate a reasonable y-axis max for this curve, but only if it's visible
+                    if (volumePoints.length > 1) {
+                        const volAt5Percent = interpolateFromData(0.05, volumePoints);
+                        const volAt95Percent = interpolateFromData(0.95, volumePoints);
+                        let curveReasonableMax = -1;
+                        if (isFinite(volAt5Percent) && isFinite(volAt95Percent)) {
+                            curveReasonableMax = Math.max(volAt5Percent, volAt95Percent);
+                        } else if (isFinite(volAt5Percent)) {
+                            curveReasonableMax = volAt5Percent;
+                        } else if (isFinite(volAt95Percent)) {
+                            curveReasonableMax = volAt95Percent;
+                        }
+                        if (curveReasonableMax > overallReasonableMax) {
+                            overallReasonableMax = curveReasonableMax;
+                        }
                     }
                 }
+            } else { // This is a selectivity graph, always show it
+                yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`;
+                dataForPlotting = dataToShow.selectivityData.map(d => [d.x, d.y]);
+                visibleLegend.push(`${seriesName}Selectivity`);
             }
-            // --- **FIX END** ---
-
-            // --- MODIFICATION: Check how many reactors are active ---
-            const activeReactorCount = (reactorTypes.pfr ? 1 : 0) + (reactorTypes.cstr ? 1 : 0);
-
-            // --- MODIFICATION: Set the series name conditionally ---
-            const baseName = graphType === 'volume' ? 'Reactor Volume' : 'Selectivity';
-            const seriesName = activeReactorCount > 1
-                ? `${reactorType.toUpperCase()} - ${baseName}`
-                : baseName;
-            legend.push(seriesName)
             
-            if (graphType === 'volume') {
-                yLabel = 'Reactor Volume (m³)'
-
-                const finalVolumeData = dataToShow.volumeData
-                                            .map(d => [d.x, d.y]); // already in m³
-
-                series.push({ 
-                    name: seriesName, 
+            // If data was prepared for this series (i.e., it was visible), add it to our list
+            if (dataForPlotting) {
+                 visibleSeries.push({ 
+                    name: visibleLegend[visibleLegend.length - 1],
                     type: 'line', 
-                    data: finalVolumeData, 
+                    data: dataForPlotting, 
                     smooth: true, 
                     showSymbol: false, 
                     color: colors[type as keyof typeof colors],
                     lineStyle: { width: 4 } 
-                })
-            } else { 
-                yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`
-                series.push({ 
-                    name: seriesName, 
-                    type: 'line', 
-                    data: dataToShow.selectivityData.map(d => [d.x, d.y]), 
-                    smooth: true, 
-                    showSymbol: false, 
-                    color: colors[type as keyof typeof colors],
-                    lineStyle: { width: 4 }
-                })
+                });
             }
         }
     }
     
-    // Set the final Y-axis max value with a hard cap
+    // Set the final Y-axis max value based only on the data that will be visible
     let yAxisMax: number | 'dataMax' = 'dataMax';
     if (graphType === 'volume') {
-        const hardCap = 5000; // The maximum practical volume
         if (overallReasonableMax > 0) {
-            // The axis maximum will be the smaller of the calculated max or the hard cap.
-            // This keeps the graph nicely scaled for smaller volumes but caps it for large ones.
+            // Set the max based on the visible data, but don't exceed the hard cap
             yAxisMax = Math.min(overallReasonableMax, hardCap);
         } else {
-            // If all calculated volumes are enormous, just default the axis to the cap.
-            yAxisMax = hardCap;
+            // If NO curves were visible, default the axis to a small number
+            // to avoid showing a blank chart scaled from 0 to 5000.
+            yAxisMax = 100; 
         }
     }
 
-    return { series, xAxis: xLabel, yAxis: yLabel, legend, yMax: yAxisMax }
+    return { series: visibleSeries, xAxis: xLabel, yAxis: yLabel, legend: visibleLegend, yMax: yAxisMax }
 
-}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate])
+}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate, henryTemperatures, henryUnit])
 
   const graphData = generateGraphData();
     // --- MODIFICATION: Set chart title based on selection ---
@@ -2327,9 +3042,317 @@ export default function Home() {
   
   // State for parameters now lives in the parent component
   const [prodRate, setProdRate] = useState('100');
-  const [reactionPhase, setReactionPhase] = useState<'Liquid' | 'Gas'>('Liquid'); 
+    const [reactionPhase, setReactionPhase] = useState<'Liquid' | 'Gas' | 'Mixed'>('Liquid'); 
+    // --- ADD THIS NEW STATE ---
+    const [fluidPackage, setFluidPackage] = useState<VleFluidPackage>('Ideal');
+    const [interactionParameters, setInteractionParameters] = useState<Map<string, InteractionParams | null>>(new Map());
+        // This map will store fetched pure component VLE data
+        const [vleComponentData, setVleComponentData] = useState<Map<string, CompoundData>>(new Map());
   const [temperature, setTemperature] = useState(4); // State lifted here
   const [pressure, setPressure] = useState(25);       // State lifted here 
+  const [isFetching, setIsFetching] = useState(false) // Add loading state
+    // Loading and error states for VLE preparation
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    // --- ADD THIS NEW STATE FOR HENRY'S LAW TABLE ---
+    const [henryTemperatures, setHenryTemperatures] = useState<
+        { id: string; temp: string }[]
+    >([
+        { id: `temp-${Date.now()}-1`, temp: '' },
+        { id: `temp-${Date.now()}-2`, temp: '' },
+    ]);
+    const [henryUnit, setHenryUnit] = useState<'Pa' | 'kPa' | 'bar'>('Pa');
+    // --- END ADD ---
+
+        // --- NEW: reactorTypes state to control which reactors are active ---
+        const [reactorTypes, setReactorTypes] = useState<{ pfr: boolean; cstr: boolean }>({ pfr: true, cstr: false });
+
+  // --- ADD THIS FUNCTION TO FETCH COMPONENT DATA ---
+  const fetchComponentProperties = useCallback(
+    async (name: string, componentId: string) => {
+      if (!supabase) {
+        console.error('Supabase not initialized.')
+        return
+      }
+      setIsFetching(true)
+      try {
+                const { data: compoundDbData, error: compoundError } = await supabase
+                    .from('compounds')
+                    .select('id, name, molecular_weight, cas_number')
+                    .ilike('name', name)
+                    .limit(1)
+                    .single()
+
+        if (compoundError || !compoundDbData) {
+          throw new Error(`Compound '${name}' not found.`)
+        }
+
+        const { data: propsData, error: propsError } = await supabase
+          .from('compound_properties')
+          .select('properties')
+          .eq('compound_id', compoundDbData.id)
+          .limit(1)
+          .single()
+
+        if (propsError || !propsData) {
+          throw new Error(`No properties found for ${compoundDbData.name}.`)
+        }
+
+    const liquidDensityData = propsData.properties['Liquid density']
+    const cas_number = compoundDbData.cas_number;
+        const molarMass = compoundDbData.molecular_weight
+        const critTemp = parseCoefficient(
+          propsData.properties['Critical temperature']
+        )
+        let densityValue = ''
+
+        if (liquidDensityData && liquidDensityData.eqno && critTemp) {
+          const tempK = convertUnit.temperature.celsiusToKelvin(temperature)
+          const densityCoeffs = {
+            A: parseCoefficient(liquidDensityData.A),
+            B: parseCoefficient(liquidDensityData.B),
+            C: parseCoefficient(liquidDensityData.C),
+            D: parseCoefficient(liquidDensityData.D),
+          }
+          // Assuming DB density is kg/m^3 which is equivalent to g/L.
+          const densityKgM3 = calculatePropertyByEquation(
+            liquidDensityData.eqno,
+            tempK,
+            densityCoeffs,
+            critTemp
+          )
+          if (densityKgM3 !== null) {
+            densityValue = densityKgM3.toPrecision(4)
+          }
+        }
+
+        setComponentsSetup(prev =>
+          prev.map(c =>
+                                c.id === componentId
+                            ? {
+                                    ...c,
+                                    name: compoundDbData.name,
+                                    molarMass: molarMass ? String(molarMass) : '',
+                                    density: densityValue,
+                                    liquidDensityData: liquidDensityData,
+                                    criticalTemp: critTemp,
+                                    cas_number: cas_number,
+                                    isDbLocked: true,
+                                }
+              : c
+          )
+        )
+      } catch (err: any) {
+        console.error('Error fetching component properties:', err.message)
+      } finally {
+        setIsFetching(false)
+      }
+    },
+    [temperature]
+  ) // Depends on temperature for initial calculation
+
+  // --- Data Fetching helper used across VLE tools (adapted from mccabe-thiele) ---
+  async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
+    if (!supabase) { throw new Error('Supabase client not initialized.'); }
+    try {
+        const { data: compoundDbData, error: compoundError } = await supabase
+            .from('compounds')
+            .select('id, name, cas_number')
+            .ilike('name', compoundName)
+            .limit(1);
+
+        if (compoundError) throw new Error(`Supabase compound query error: ${compoundError.message}`);
+        if (!compoundDbData || compoundDbData.length === 0) throw new Error(`Compound '${compoundName}' not found.`);
+        const compoundId = compoundDbData[0].id;
+        const foundName = compoundDbData[0].name;
+        const casNumber = compoundDbData[0].cas_number;
+
+        // Try multiple sources for properties
+        const sourcesToTry = ['chemsep1', 'chemsep2', 'DWSIM', 'biod_db'];
+        let properties: any = null;
+        for (const source of sourcesToTry) {
+            const { data: propsData, error: propsError } = await supabase
+                .from('compound_properties')
+                .select('properties')
+                .eq('compound_id', compoundId)
+                .eq('source', source)
+                .single();
+            if (propsError && propsError.code !== 'PGRST116') console.warn(`Supabase props query error (${source}): ${propsError.message}`);
+            else if (propsData) { properties = propsData.properties; break; }
+        }
+        if (!properties) {
+            const { data: anyPropsData, error: anyPropsError } = await supabase
+                .from('compound_properties').select('properties, source').eq('compound_id', compoundId).limit(1);
+            if (anyPropsError) console.warn(`Supabase fallback props query error: ${anyPropsError.message}`);
+            else if (anyPropsData && anyPropsData.length > 0) { properties = anyPropsData[0].properties; }
+            else throw new Error(`No properties found for ${foundName}.`);
+        }
+
+        // Extract Antoine params
+        let antoine: any | null = null;
+        const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure;
+        if (antoineChemsep?.A && antoineChemsep.B && antoineChemsep.C) {
+            antoine = {
+                A: parseFloat(antoineChemsep.A?.value ?? antoineChemsep.A),
+                B: parseFloat(antoineChemsep.B?.value ?? antoineChemsep.B),
+                C: parseFloat(antoineChemsep.C?.value ?? antoineChemsep.C),
+                Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? antoineChemsep.Tmin ?? 0),
+                Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? antoineChemsep.Tmax ?? 10000),
+                Units: antoineChemsep.units || 'Pa',
+                EquationNo: antoineChemsep.eqno
+            };
+        }
+        if (!antoine || isNaN(antoine.A) || isNaN(antoine.B) || isNaN(antoine.C)) throw new Error(`Failed to extract valid Antoine params for ${foundName}.`);
+
+        // UNIFAC groups (optional)
+        let unifacGroups: any = null;
+        if (properties.elements_composition?.UNIFAC) {
+            unifacGroups = {};
+            for (const key in properties.elements_composition.UNIFAC) {
+                const subgroupId = parseInt(key); const count = parseInt(properties.elements_composition.UNIFAC[key]);
+                if (!isNaN(subgroupId) && !isNaN(count) && count > 0) unifacGroups[subgroupId] = count;
+            }
+            if (Object.keys(unifacGroups).length === 0) unifacGroups = null;
+        }
+
+        // PR/SRK/Uniquac/Wilson params
+        const tcPropObj = properties['Critical temperature'];
+        const pcPropObj = properties['Critical pressure'];
+        const omegaPropObj = properties['Acentric factor'];
+        let prParams = null;
+        let srkParams = null;
+        if (tcPropObj && pcPropObj && omegaPropObj) {
+            const Tc_K_val = parseFloat(tcPropObj.value);
+            const pcValue = parseFloat(pcPropObj.value);
+            const pcUnits = String(pcPropObj.units).toLowerCase();
+            let Pc_Pa_val: number;
+            if (pcUnits === 'pa') Pc_Pa_val = pcValue;
+            else if (pcUnits === 'kpa') Pc_Pa_val = pcValue * 1e3;
+            else if (pcUnits === 'mpa') Pc_Pa_val = pcValue * 1e6;
+            else if (pcUnits === 'bar') Pc_Pa_val = pcValue * 1e5;
+            else { Pc_Pa_val = pcValue; console.warn(`Unknown Pc units ('${pcUnits}') for ${foundName}. Assuming Pa.`); }
+            prParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: parseFloat(omegaPropObj.value) };
+            srkParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: parseFloat(omegaPropObj.value) };
+        }
+
+        // Wilson params (liquid molar volume)
+        let wilsonParams = null;
+        const vLObj = properties['Liquid molar volume'];
+        if (vLObj && vLObj.value) {
+            const vVal = parseFloat(vLObj.value);
+            // Assume units are m^3/mol if small, otherwise convert if units provided (best-effort)
+            wilsonParams = { V_L_m3mol: vVal };
+        }
+
+        const compoundData: CompoundData = {
+            name: foundName,
+            cas_number: casNumber,
+            antoine,
+            unifacGroups: unifacGroups,
+            prParams: prParams,
+            srkParams: srkParams,
+            uniquacParams: null,
+            wilsonParams: wilsonParams,
+        };
+        return compoundData;
+    } catch (err: any) {
+        console.error('fetchCompoundDataLocal error:', err.message || err);
+        return null;
+    }
+  }
+
+  // --- NEW: Prepare VLE data function (fetches pure component data and binary params) ---
+  const prepareVleData = async () => {
+    if (fluidPackage === 'Ideal' || !supabase) {
+      return true; // Nothing to fetch for Ideal model
+    }
+    
+    setLoading(true); // Assuming you have a loading state
+    setError(null);   // Assuming you have an error state
+
+    try {
+      // 1. Fetch Pure Component VLE Data
+      const fetchedVleData = new Map(vleComponentData);
+      const dataPromises = componentsSetup.map(async (comp) => {
+        if (!comp.name || fetchedVleData.has(comp.id)) return; // Skip if no name or already cached
+        const data = await fetchCompoundDataLocal(comp.name); // Use the same fetcher as McCabe-Thiele
+        if (data) {
+          fetchedVleData.set(comp.id, data);
+        } else {
+          throw new Error(`Failed to fetch VLE properties for ${comp.name}.`);
+        }
+      });
+      await Promise.all(dataPromises);
+      setVleComponentData(fetchedVleData);
+
+      // 2. Fetch Binary Interaction Parameters
+      const newInteractionParams = new Map(interactionParameters);
+      const componentPairs: [CompoundData, CompoundData][] = [];
+      for (let i = 0; i < componentsSetup.length; i++) {
+        for (let j = i + 1; j < componentsSetup.length; j++) {
+            const comp1Data = fetchedVleData.get(componentsSetup[i].id);
+            const comp2Data = fetchedVleData.get(componentsSetup[j].id);
+            if (comp1Data && comp2Data) {
+                componentPairs.push([comp1Data, comp2Data]);
+            }
+        }
+      }
+
+      const paramPromises = componentPairs.map(async ([comp1, comp2]) => {
+        const key = [comp1.cas_number, comp2.cas_number].sort().join('_');
+        if (newInteractionParams.has(key)) return; // Skip if already cached
+
+        let params: InteractionParams | null = null;
+        switch (fluidPackage) {
+            case 'NRTL':
+                params = await fetchNrtlParameters(supabase, comp1.cas_number!, comp2.cas_number!);
+                break;
+            // Add cases for Wilson, UNIQUAC, PR, SRK here...
+        }
+        newInteractionParams.set(key, params);
+      });
+      await Promise.all(paramPromises);
+      setInteractionParameters(newInteractionParams);
+
+      return true;
+
+    } catch (err: any) {
+        setError(err.message);
+        return false;
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  // --- ADD THIS EFFECT TO UPDATE DENSITY ON TEMP CHANGE ---
+  useEffect(() => {
+    const tempK = convertUnit.temperature.celsiusToKelvin(temperature)
+
+    const needsUpdate = componentsSetup.some(
+      c => c.isDbLocked && c.liquidDensityData
+    )
+
+    if (needsUpdate) {
+      setComponentsSetup(prev =>
+        prev.map(c => {
+          if (c.isDbLocked && c.liquidDensityData && c.criticalTemp) {
+            const { eqno, ...coeffs } = c.liquidDensityData
+            const densityKgM3 = calculatePropertyByEquation(
+              eqno,
+              tempK,
+              coeffs,
+              c.criticalTemp
+            )
+            if (densityKgM3 !== null) {
+              return { ...c, density: densityKgM3.toPrecision(4) }
+            }
+          }
+          return c
+        })
+      )
+    }
+  }, [temperature]) 
 
   // --- MODIFICATION START ---
   // This function now correctly identifies ONLY primary reactants (chemicals that are
@@ -2395,7 +3418,7 @@ export default function Home() {
             defaultValue = 6.0; // Butane Alkylation Preset
         } else if (limitingReactantName === 'Oxygen') {
             if (reactant.name === 'Methanol') defaultValue = 12.0; // DMC Preset
-            if (reactant.name === 'Carbon Monoxide') defaultValue = 24.0; // DMC Preset
+            if (reactant.name === 'Carbon monoxide') defaultValue = 24.0; // DMC Preset
         }
 
         return {
@@ -2476,35 +3499,58 @@ export default function Home() {
     }, [reactionPhase, reactionsSetup]);
 
   if (showSimulator) {
-    return <ReactorSimulator 
-              onBack={() => setShowSimulator(false)} 
-              reactions={reactionsSetup} 
-              components={componentsSetup} 
-              simBasis={simBasis}
-              molarRatios={molarRatios}
-              setMolarRatios={setMolarRatios}
-              reactionPhase={reactionPhase}
-              prodRate={prodRate}
-              temperature={temperature}     // Pass state down
-              setTemperature={setTemperature} // Pass setter down
-              pressure={pressure}           // Pass state down
-              setPressure={setPressure}       // Pass setter down
-            />
+        return <ReactorSimulator 
+                            onBack={() => {
+                                // A trick to make Henry's Law data available to the CSTR solver
+                                (window as any).__HENRY_TEMPS = null; 
+                                setShowSimulator(false)
+                            }} 
+                            reactions={reactionsSetup} 
+                            components={componentsSetup} 
+                            simBasis={simBasis}
+                            molarRatios={molarRatios}
+                            setMolarRatios={setMolarRatios}
+                            reactionPhase={reactionPhase}
+                            prodRate={prodRate}
+                            temperature={temperature}
+                            setTemperature={setTemperature}
+                            pressure={pressure}
+                            setPressure={setPressure}
+                            // --- PASS NEW PROPS ---
+                            reactorTypes={reactorTypes}
+                            setReactorTypes={setReactorTypes}
+                            henryTemperatures={henryTemperatures}
+                            henryUnit={henryUnit}
+                        />
   } else {
-    return <KineticsInput 
-              onNext={() => setShowSimulator(true)} 
-              reactionsSetup={reactionsSetup}
-              setReactionsSetup={setReactionsSetup}
-              componentsSetup={componentsSetup}
-              setComponentsSetup={setComponentsSetup}
-              simBasis={simBasis}
-              setSimBasis={setSimBasis}
-              reactionPhase={reactionPhase}      
-              setReactionPhase={setReactionPhase}
-              prodRate={prodRate}
-              setProdRate={setProdRate}
-              setTemperature={setTemperature} // Pass setter down
-              setPressure={setPressure}       // Pass setter down
-            />
+        return <KineticsInput 
+                            onNext={() => {
+                                // A trick to make Henry's Law data available to the CSTR solver
+                                (window as any).__HENRY_TEMPS = henryTemperatures;
+                                setShowSimulator(true)
+                            }} 
+                            reactionsSetup={reactionsSetup}
+                            setReactionsSetup={setReactionsSetup}
+                            componentsSetup={componentsSetup}
+                            setComponentsSetup={setComponentsSetup}
+                            simBasis={simBasis}
+                            setSimBasis={setSimBasis}
+                            reactionPhase={reactionPhase}      
+                            setReactionPhase={setReactionPhase}
+                            prodRate={prodRate}
+                            setProdRate={setProdRate}
+                            setTemperature={setTemperature}
+                            setPressure={setPressure}
+                            fetchComponentProperties={fetchComponentProperties}
+                            isFetching={isFetching}
+                            fluidPackage={fluidPackage}
+                            setFluidPackage={setFluidPackage}
+                            // --- PASS NEW PROPS ---
+                            henryTemperatures={henryTemperatures}
+                            setHenryTemperatures={setHenryTemperatures}
+                            henryUnit={henryUnit}
+                            setHenryUnit={setHenryUnit}
+                            setReactorTypes={setReactorTypes}
+                        />
   }
 }
