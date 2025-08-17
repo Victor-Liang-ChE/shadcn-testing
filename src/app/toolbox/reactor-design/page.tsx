@@ -1771,7 +1771,7 @@ const KineticsInput = ({
         <div className="relative flex justify-center items-center py-2 mb-4">
             {/* Centered Preset Buttons */}
             <div className="flex justify-center items-center gap-4">
-                <Label className="text-sm font-semibold text-muted-foreground">Load a Preset:</Label>
+                <Label className="text-sm font-semibold text-muted-foreground">Load a preset from my design courses:</Label>
                 <Button variant="outline" onClick={loadAlkylationPreset}>Butane Alkylation</Button>
                 <Button variant="outline" onClick={loadHdaPreset}>HDA</Button>
                 <Button variant="outline" onClick={loadDmcPreset}>DMC Synthesis</Button>
@@ -2387,10 +2387,7 @@ const KineticsInput = ({
                                         </TooltipTrigger>
                                         <TooltipContent className="max-w-xs">
                                             <p className="text-sm font-medium">
-                                                H<sub>v</sub>
-                                                <sup>px</sup> = p<sub>x</sub> / x<sub>a</sub> = 1 / H
-                                                <sub>s</sub>
-                                                <sup>xp</sup>
+                                                H = P*y/x
                                             </p>
                                             <p className="text-xs text-muted-foreground mt-1">
                                                 The Henry volatility defined via aqueous-phase mixing ratio.
@@ -2576,136 +2573,137 @@ const ReactorSimulator = ({
 
   const generateGraphData = useCallback(() => {
     console.log("=============== NEW CALCULATION ===============");
-    const tempK = convertUnit.temperature.celsiusToKelvin(temperature)
+    const tempK = convertUnit.temperature.celsiusToKelvin(temperature);
     
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId)
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId)
+    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
+    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
 
     if (!limitingReactant || !desiredProduct) {
         return { series: [], xAxis: '', yAxis: '', legend: [], yMax: 'dataMax' }
     }
 
-    const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`
-    let yLabel = ''
+    const xLabel = `Conversion of ${limitingReactant?.name || 'Limiting Reactant'}`;
+    let yLabel = '';
     
-    const visibleLegend: string[] = []
-    const visibleSeries: any[] = []
+    // We will now build a list of ALL series, and toggle their visibility
+    const allSeries: any[] = [];
+    const allLegends: string[] = [];
+    
     const hardCap = 5000; // The maximum practical volume
-
     const colors = {
         pfr: '#22c55e', // green
         cstr: '#E53E3E'  // red
-    }
+    };
 
-    let overallReasonableMax = -1
+    // This will be calculated using ONLY data from visible series
+    let overallReasonableMax = -1;
+    const visibleVolumeDataSets: { x: number; y: number }[][] = [];
+
 
     for (const type in reactorTypes) {
         if (reactorTypes[type as keyof typeof reactorTypes]) {
             const reactorType = type.toUpperCase() as 'PFR' | 'CSTR';
-            console.log(`[Tracer] Attempting to calculate for: ${reactorType}`);
             let dataToShow: {
                 selectivityData: { x: number; y: number }[];
                 volumeData: { x: number; y: number }[];
-            } = { selectivityData: [], volumeData: [] }
+            } = { selectivityData: [], volumeData: [] };
 
+            // --- Calculation for each type ---
             if (reactorType === 'PFR') {
                 const pfrPhase: 'Liquid' | 'Gas' = (reactionPhase === 'Mixed') ? 'Gas' : reactionPhase;
                 dataToShow = calculatePfrData_Optimized(
-                    reactions,
-                    components,
-                    tempK,
-                    pressure,
-                    molarRatios,
-                    simBasis,
-                    parseFloat(prodRate),
-                    pfrPhase
+                    reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate), pfrPhase
                 );
             } else { // CSTR
-                const F_A0_guess = 10.0
-                const initialFlowRates = { [limitingReactant.name]: F_A0_guess }
+                const F_A0_guess = 10.0;
+                const initialFlowRates = { [limitingReactant.name]: F_A0_guess };
                 molarRatios.forEach(ratio => {
-                    const compName = components.find(c => c.id === ratio.numeratorId)?.name
-                    if (compName) initialFlowRates[compName] = F_A0_guess * ratio.value
-                })
+                    const compName = components.find(c => c.id === ratio.numeratorId)?.name;
+                    if (compName) initialFlowRates[compName] = F_A0_guess * ratio.value;
+                });
                 components.forEach(c => {
-                    if (initialFlowRates[c.name] === undefined) initialFlowRates[c.name] = 0
-                })
+                    if (initialFlowRates[c.name] === undefined) initialFlowRates[c.name] = 0;
+                });
                 
                 dataToShow = calculateCstrData(
                     reactions, components, initialFlowRates, tempK, simBasis, 
-                    reactionPhase,
-                    pressure,
-                    parseFloat(prodRate)
-                )
+                    reactionPhase, pressure, parseFloat(prodRate)
+                );
             }
             
-            let dataForPlotting;
             const activeReactorCount = (reactorTypes.pfr ? 1 : 0) + (reactorTypes.cstr ? 1 : 0);
-            const seriesName = activeReactorCount > 1 ? `${reactorType.toUpperCase()} - ` : '';
+            const seriesNamePrefix = activeReactorCount > 1 ? `${reactorType.toUpperCase()} - ` : '';
+            
+            let seriesObject: any = {
+                type: 'line',
+                smooth: true,
+                showSymbol: false,
+                color: colors[type as keyof typeof colors],
+                lineStyle: { width: 4 }
+            };
 
             if (graphType === 'volume') {
                 yLabel = 'Reactor Volume (m³)';
                 const volumePoints = dataToShow.volumeData;
+                seriesObject.name = `${seriesNamePrefix}Reactor Volume`;
+                seriesObject.data = volumePoints.map(d => [d.x, d.y]);
                 
-                // Check if any data point is within the visible range of the chart
+                // Check for visibility but don't filter the series
                 const isVisible = volumePoints.some(p => p.y <= hardCap);
-
+                
+                // --- THIS IS THE KEY CHANGE ---
+                // The series is ALWAYS included, but its visibility is toggled.
+                seriesObject.show = isVisible;
+                
                 if (isVisible) {
-                    dataForPlotting = volumePoints.map(d => [d.x, d.y]);
-                    visibleLegend.push(`${seriesName}Reactor Volume`);
-
-                    // Calculate a reasonable y-axis max for this curve, but only if it's visible
-                    if (volumePoints.length > 1) {
-                        const volAt5Percent = interpolateFromData(0.05, volumePoints);
-                        const volAt95Percent = interpolateFromData(0.95, volumePoints);
-                        let curveReasonableMax = -1;
-                        if (isFinite(volAt5Percent) && isFinite(volAt95Percent)) {
-                            curveReasonableMax = Math.max(volAt5Percent, volAt95Percent);
-                        } else if (isFinite(volAt5Percent)) {
-                            curveReasonableMax = volAt5Percent;
-                        } else if (isFinite(volAt95Percent)) {
-                            curveReasonableMax = volAt95Percent;
-                        }
-                        if (curveReasonableMax > overallReasonableMax) {
-                            overallReasonableMax = curveReasonableMax;
-                        }
-                    }
+                    visibleVolumeDataSets.push(volumePoints);
                 }
-            } else { // This is a selectivity graph, always show it
+
+            } else { // Selectivity graph is always visible
                 yLabel = `Selectivity to ${desiredProduct?.name || 'Product'}`;
-                dataForPlotting = dataToShow.selectivityData.map(d => [d.x, d.y]);
-                visibleLegend.push(`${seriesName}Selectivity`);
+                seriesObject.name = `${seriesNamePrefix}Selectivity`;
+                seriesObject.data = dataToShow.selectivityData.map(d => [d.x, d.y]);
+                seriesObject.show = true;
             }
             
-            // If data was prepared for this series (i.e., it was visible), add it to our list
-            if (dataForPlotting) {
-                 visibleSeries.push({ 
-                    name: visibleLegend[visibleLegend.length - 1],
-                    type: 'line', 
-                    data: dataForPlotting, 
-                    smooth: true, 
-                    showSymbol: false, 
-                    color: colors[type as keyof typeof colors],
-                    lineStyle: { width: 4 } 
-                });
-            }
+            allSeries.push(seriesObject);
+            allLegends.push(seriesObject.name);
         }
     }
     
-    // Set the final Y-axis max value based only on the data that will be visible
-    let yAxisMax: number | 'dataMax' = 'dataMax';
+    // Calculate the Y-axis max based ONLY on the visible datasets
     if (graphType === 'volume') {
-        if (overallReasonableMax > 0) {
-            // Set the max based on the visible data, but don't exceed the hard cap
-            yAxisMax = Math.min(overallReasonableMax, hardCap);
-        } else {
-            // If NO curves were visible, default the axis to a small number
-            // to avoid showing a blank chart scaled from 0 to 5000.
-            yAxisMax = 100; 
+        for (const volumePoints of visibleVolumeDataSets) {
+             if (volumePoints.length > 1) {
+                const volAt5Percent = interpolateFromData(0.05, volumePoints);
+                const volAt95Percent = interpolateFromData(0.95, volumePoints);
+                let curveReasonableMax = -1;
+                if (isFinite(volAt5Percent) && isFinite(volAt95Percent)) {
+                    curveReasonableMax = Math.max(volAt5Percent, volAt95Percent);
+                } else if (isFinite(volAt5Percent)) {
+                    curveReasonableMax = volAt5Percent;
+                } else if (isFinite(volAt95Percent)) {
+                    curveReasonableMax = volAt95Percent;
+                }
+
+                if (curveReasonableMax > overallReasonableMax) {
+                    overallReasonableMax = curveReasonableMax;
+                }
+            }
         }
     }
 
-    return { series: visibleSeries, xAxis: xLabel, yAxis: yLabel, legend: visibleLegend, yMax: yAxisMax }
+    let yAxisMax: number | 'dataMax' = 'dataMax';
+    if (graphType === 'volume') {
+        if (overallReasonableMax > 0) {
+            yAxisMax = Math.min(overallReasonableMax, hardCap);
+        } else {
+            yAxisMax = 100; // Default max if no curves are visible
+        }
+    }
+    
+    // Return ALL series and legends. ECharts handles showing/hiding.
+    return { series: allSeries, xAxis: xLabel, yAxis: yLabel, legend: allLegends, yMax: yAxisMax }
 
 }, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate, henryTemperatures, henryUnit])
 
@@ -2731,7 +2729,6 @@ const ReactorSimulator = ({
     xAxis: {
         type: 'value',
         name: graphData.xAxis,
-    // --- MODIFICATION: Add the scale property ---
     scale: true,
         nameLocation: 'middle', nameGap: 30,
         nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
@@ -2748,9 +2745,7 @@ const ReactorSimulator = ({
         nameTextStyle: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
         min: 0,
         
-        // **FIX START**: Use the dynamic max value for volume graphs
         max: graphType === 'selectivity' ? 1 : graphData.yMax,
-        // **FIX END**
 
         axisTick: {
             show: true
@@ -2761,7 +2756,6 @@ const ReactorSimulator = ({
             color: textColor,
             fontSize: 14,
             fontFamily: 'Merriweather Sans',
-            // This formatter hides the label for the maximum tick
             formatter: (value: number) => {
                 if (
                     graphType === 'volume' &&
@@ -2770,7 +2764,6 @@ const ReactorSimulator = ({
                 ) {
                     return '';
                 }
-                // Formatting for all other labels remains the same
                 if (graphType === 'volume') {
                     if (value === 0) return '0';
                     if (value < 1) return value.toPrecision(3);
@@ -2803,19 +2796,19 @@ const ReactorSimulator = ({
           fontFamily: 'Merriweather Sans',
           fontSize: 12,
           formatter: function (params) {
-            return parseFloat(params.value as string).toPrecision(3)
+            // --- CHANGE #1: Use toFixed(2) for the axis pointer label ---
+            return parseFloat(params.value as string).toFixed(2);
           }
         }
       },
 
-      // This formatter function creates the custom tooltip content 
       formatter: (params: any) => { 
          if (!params || params.length === 0) { 
              return '' 
          } 
 
-         // MODIFICATION: Using the new helper for all numbers
-         const xAxisValue = formatTooltipNumber(params[0].axisValue);
+         // --- CHANGE #2: Use toFixed(2) for the tooltip header ---
+         const xAxisValue = parseFloat(params[0].axisValue).toFixed(2);
          let tooltipContent = `<strong>Conversion</strong>: ${xAxisValue}`; 
 
          params.forEach((p: any) => { 
