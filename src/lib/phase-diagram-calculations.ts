@@ -292,26 +292,39 @@ async function fetchInteractionParams(pkg: FluidPackageType, c1: CompoundData, c
 }
 
 export async function fetchCompoundData(compoundName: string): Promise<CompoundData> {
-    const { data: compoundDbData, error: compoundError } = await supabase.from('compounds').select('id, name, cas_number').ilike('name', compoundName).limit(1).single();
+    const { data: compoundDbData, error: compoundError } = await supabase.from('compound_properties').select('name, properties').ilike('name', compoundName).limit(1).single();
     if (compoundError) throw new Error(`Compound '${compoundName}' not found.`);
-    const { id: compoundId, name: foundName, cas_number: casNumber } = compoundDbData;
-    const { data: propsData, error: propsError } = await supabase.from('compound_properties').select('properties').eq('compound_id', compoundId).limit(1).single();
-    if (propsError) throw new Error(`No properties found for ${foundName}.`);
+    const { name: foundName, properties } = compoundDbData;
     
-    const p = propsData.properties as any;
-    const antoine = p.Antoine || p.AntoineVaporPressure;
-    const Tc = p["Critical temperature"]?.value, Pc_val = p["Critical pressure"]?.value, omega = p["Acentric factor"]?.value;
-    const Pc_units = p["Critical pressure"]?.units?.toLowerCase() ?? '', Pc_Pa = Pc_val * (Pc_units.includes('kpa') ? 1000 : Pc_units.includes('bar') ? 100000 : 1);
-    const vL_obj = p["Liquid molar volume"] || p["Molar volume"] || p["Wilson volume"], vL_val = vL_obj?.value, vL_units = vL_obj?.units?.toLowerCase() ?? 'cm3/mol';
+    const p = properties as any;
+    const casNumber = p.CAS?.value || null;
+    const antoine = p.AntoineVaporPressure || p.Antoine;
+    const Tc = p.CriticalTemperature?.value, Pc_val = p.CriticalPressure?.value, omega = p.AcentricityFactor?.value;
+    const Pc_units = p.CriticalPressure?.units?.toLowerCase() ?? '', Pc_Pa = Pc_val * (Pc_units.includes('kpa') ? 1000 : Pc_units.includes('bar') ? 100000 : 1);
+    const vL_obj = p.WilsonVolume || p.LiquidVolumeAtNormalBoilingPoint, vL_val = vL_obj?.value, vL_units = vL_obj?.units?.toLowerCase() ?? 'm3/kmol';
     let vL_m3mol = null;
     if (vL_val) { if (vL_units.includes('cm3')) vL_m3mol = vL_val * 1e-6; else if (vL_units.includes('m3/kmol')) vL_m3mol = vL_val / 1000; else if (vL_units.includes('m3')) vL_m3mol = vL_val; }
+    // Handle UNIFAC groups - they might be in object or array format
+    let unifacGroups: UnifacGroupComposition | null = null;
+    const unifacData = p.UnifacVLE?.group || p.UNIFAC?.group || p.unifac?.group;
+    if (unifacData && Array.isArray(unifacData)) {
+        unifacGroups = {};
+        for (const group of unifacData) {
+            const id = parseInt(group.id);
+            const value = parseInt(group.value);
+            if (!isNaN(id) && !isNaN(value)) {
+                unifacGroups[id] = value;
+            }
+        }
+    }
+    
     return {
         name: foundName, cas_number: casNumber,
-        antoine: antoine ? { A: antoine.A, B: antoine.B, C: antoine.C, Tmin_K: antoine.Tmin ?? 0, Tmax_K: antoine.Tmax ?? 10000, Units: antoine.units || 'Pa', EquationNo: antoine.eqno } : null,
-        unifacGroups: p.elements_composition?.UNIFAC,
+        antoine: antoine ? { A: antoine.A?.value, B: antoine.B?.value, C: antoine.C?.value, Tmin_K: antoine.Tmin?.value ?? 0, Tmax_K: antoine.Tmax?.value ?? 10000, Units: antoine.units || 'Pa', EquationNo: antoine.eqno?.value } : null,
+        unifacGroups,
         prParams: (Tc&&Pc_val&&omega) ? { Tc_K: Tc, Pc_Pa, omega } : null,
         srkParams: (Tc&&Pc_val&&omega) ? { Tc_K: Tc, Pc_Pa, omega } : null,
-        uniquacParams: (p["UNIQUAC r"]?.value && p["UNIQUAC q"]?.value) ? { r: p["UNIQUAC r"].value, q: p["UNIQUAC q"].value } : null,
+        uniquacParams: (p.UniquacR?.value && p.UniquacQ?.value) ? { r: p.UniquacR.value, q: p.UniquacQ.value } : null,
         wilsonParams: vL_m3mol ? { V_L_m3mol: vL_m3mol } : null,
     };
 }

@@ -66,28 +66,19 @@ if (supabaseUrl && supabaseAnonKey) {
 }
 
 // Updated formatNumberToPrecision function (assuming 2-argument version from previous state)
+// Format numbers with default rounding precision
 const formatNumberToPrecision = (num: any, precision: number = 4): string => {
-    if (typeof num !== 'number' || isNaN(num)) return String(num);
-    if (num === 0) return '0';
-
-    const s = num.toPrecision(precision);
-
-    if (s.includes('e')) {
-        const numFromScientific = Number(s);
-        const plainString = numFromScientific.toString();
-        if (!plainString.includes('e') && (plainString !== "0" || numFromScientific === 0)) {
-            if (plainString.includes('.')) {
-                return parseFloat(plainString).toString();
-            }
-            return plainString;
-        }
-        return s;
-    } else {
-        if (s.includes('.')) {
-            return parseFloat(s).toString();
-        }
-        return s;
-    }
+  if (num === null || num === undefined || isNaN(num)) return '';
+  const factor = Math.pow(10, precision);
+  return String(Math.round(num * factor) / factor);
+};
+// Format with significant figures and scientific notation for extreme values
+const formatWithSigFigs = (num: number, sigFigs: number = 3): string => {
+  const absVal = Math.abs(num);
+  if ((absVal !== 0 && absVal < 1e-6) || absVal >= 1e6) {
+    return num.toExponential(sigFigs - 1);
+  }
+  return num.toPrecision(sigFigs);
 };
 
 
@@ -380,41 +371,23 @@ export default function CompoundPropertiesPage() {
 
     try {
       const { data: compoundDbData, error: compoundError } = await supabase
-        .from('compounds').select('id, name, cas_number, molecular_weight').ilike('name', trimmedCompoundName).limit(1).single();
+        .from('compound_properties').select('name, properties').ilike('name', trimmedCompoundName).limit(1).single();
 
       if (compoundError || !compoundDbData) {
-        throw new Error(compoundError?.message || `Compound '${trimmedCompoundName}' not found in 'compounds' table.`);
+        throw new Error(compoundError?.message || `Compound '${trimmedCompoundName}' not found in 'compound_properties' table.`);
       }
       
-      const compoundId = compoundDbData.id;
       const foundName = compoundDbData.name;
-
-      const sourcesToTry = ['chemsep1', 'DWSIM', 'chemsep2', 'biod_db'];
-      let properties: any = null;
-      for (const source of sourcesToTry) {
-        const { data: propsData, error: propsError } = await supabase
-          .from('compound_properties').select('properties').eq('compound_id', compoundId).eq('source', source).single();
-        if (!propsError && propsData) { properties = propsData.properties; break; }
-      }
-      if (!properties) {
-        const { data: anyPropsData, error: anyPropsError } = await supabase
-          .from('compound_properties').select('properties').eq('compound_id', compoundId).limit(1).single();
-        if (anyPropsError || !anyPropsData) throw new Error(`No properties found for ${foundName}.`);
-        properties = anyPropsData.properties;
-      }
+      const properties = compoundDbData.properties;
+      
       if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid properties format for ${foundName}.`);
 
-      const directMolarWeight = compoundDbData.molecular_weight;
+  // Extract molecular weight and critical temperature from properties
+  let molarWeight: number | null = null;
+  const mwFromProps = properties.MolecularWeight;
+  molarWeight = parseCoefficient(mwFromProps);
 
-      let molarWeight: number | null = null;
-      if (directMolarWeight !== null && typeof directMolarWeight === 'number') {
-        molarWeight = directMolarWeight;
-      } else {
-        const mwFromProps = properties["Molecular weight"];
-        molarWeight = parseCoefficient(mwFromProps?.value ?? mwFromProps);
-      }
-      
-      const criticalTemp = parseCoefficient(properties["Critical temperature"]?.value ?? properties["Critical temperature"]);
+  const criticalTemp = parseCoefficient(properties.CriticalTemperature);
 
       const finalData = { properties, molarWeight, criticalTemp, name: foundName };
       
@@ -523,9 +496,9 @@ export default function CompoundPropertiesPage() {
             // `finalPlotPressureMin` and `finalPlotPressureMax` now define the x-axis range for the plot.
         } else { // Not Boiling Point Plot - existing logic for temperature axis
             // First pass to determine common Tmin/Tmax for plotting range
-            allCompoundsData.forEach(compoundState => {
+      allCompoundsData.forEach(compoundState => {
                 if (compoundState.data && compoundState.data.properties) {
-                    const propDataForRange = compoundState.data.properties[propDef.jsonKey];
+        const propDataForRange = compoundState.data.properties[propDef.jsonKey];
                     if (propDataForRange) {
                         const tMinK_compound = parseCoefficient(propDataForRange.Tmin?.value ?? propDataForRange.Tmin);
                         const tMaxK_compound = parseCoefficient(propDataForRange.Tmax?.value ?? propDataForRange.Tmax);
@@ -696,8 +669,9 @@ export default function CompoundPropertiesPage() {
                         
                     let rawValue: number | null = null;
 
-                const eqno = propData?.eqno;
-                if (eqno === undefined || eqno === null) {
+                const eqnoParsed = parseCoefficient(propData?.eqno);
+                const eqnoStr = eqnoParsed !== null ? String(eqnoParsed) : (propData?.eqno ? String(propData.eqno) : '');
+                if (!eqnoStr) {
                     console.warn(`Equation number (eqno) not found for property ${propDef.displayName} for ${currentCompoundData.name}.`);
                     continue; // Skips this iteration of the forEach loop
                 }
@@ -713,8 +687,8 @@ export default function CompoundPropertiesPage() {
                 // Tc is required for some equations, so we pass it if available.
                 const Tc_K_for_calc = currentCompoundData.criticalTemp ?? undefined;
 
-                rawValue = calculatePropertyByEquation(
-                    eqno,
+        rawValue = calculatePropertyByEquation(
+          eqnoStr,
                     T, // Temperature in Kelvin
                     coeffsForCalc,
                     Tc_K_for_calc
@@ -827,9 +801,20 @@ export default function CompoundPropertiesPage() {
         const isDark = resolvedTheme === 'dark';
         const textColor = isDark ? 'white' : '#000000';
 
-        let yAxisTickFormatter = isBoilingPointPlot 
-            ? (val: number) => val.toFixed(0) // Temp C
-            : (val: number) => formatNumberToPrecision(val, 7); // Property value
+  // Format Y-axis ticks: scientific notation for extremes, default for <100, 3 sig figs otherwise
+  const yAxisTickFormatter = (val: number) => {
+    const absVal = Math.abs(val);
+    // Scientific notation for very small or large values
+    if ((absVal !== 0 && absVal < 1e-6) || absVal >= 1e6) {
+      return formatWithSigFigs(val, 3);
+    }
+    // Default 2-decimal precision for values under 100
+    if (absVal < 100) {
+      return formatNumberToPrecision(val, 2);
+    }
+    // Use 3 significant figures for mid-range values
+    return formatWithSigFigs(val, 3);
+  };
 
         // --- Determine dynamic axis label margin and nameGap ---
         // For Boiling Point, Y-axis is Temperature (°C).
@@ -868,25 +853,14 @@ export default function CompoundPropertiesPage() {
             nameLocation: 'middle',
             nameGap: 30,
             axisLabel: {
-                color: textColor, // Corrected from #e6e6e6 to #e0e6f1 for consistency
+                color: textColor,
                 fontFamily: 'Merriweather Sans',
                 fontSize: 16,
-                formatter: isBoilingPointPlot
-                    ? (val: number) => {
-                        // pressureAxisInterval should be defined here if isBoilingPointPlot is true
-                        // and the axis is being configured.
-                        if (typeof pressureAxisInterval === 'number') {
-                            let dp = 0; // Default decimal places for intervals >= 1
-                            if (pressureAxisInterval < 0.1) { // For intervals like 0.01, 0.05
-                                dp = 2;
-                            } else if (pressureAxisInterval < 1) { // For intervals like 0.1, 0.2, 0.5
-                                dp = 1;
-                            }
-                            return val.toFixed(dp);
-                        }
-                        return val.toString(); // Fallback
-                      }
-                    : (val: number) => (val - 273.15).toFixed(0) // Temp Kelvin to Celsius for display
+                formatter: (val: number) => {
+                  // For temp-dependent, convert Kelvin to Celsius for display, else use pressure directly
+                  const displayVal = isBoilingPointPlot ? val : val - 273.15;
+                  return formatWithSigFigs(displayVal, 3);
+                }
             },
             nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: textColor, width: 2 } },
@@ -918,80 +892,55 @@ export default function CompoundPropertiesPage() {
             axisPointer: { 
               type: 'cross',
               label: {
-                backgroundColor: isDark ? '#1e293b' : '#ffffff', // Theme-aware background of the label box
+                backgroundColor: isDark ? '#1e293b' : '#ffffff',
                 formatter: function (params: { value: number | string | Date; axisDimension: string; }) { 
                   let valueAsNumber: number;
-                  const paramValue = params.value; 
+                  const paramValue = params.value;
                   const axisDim = params.axisDimension;
-
                   if (typeof paramValue === 'number') {
                     valueAsNumber = paramValue;
                   } else if (typeof paramValue === 'string') {
                     valueAsNumber = parseFloat(paramValue);
-                  } else if (paramValue instanceof Date) { // paramValue can be Date
-                    valueAsNumber = paramValue.getTime(); 
+                  } else if (paramValue instanceof Date) {
+                    valueAsNumber = paramValue.getTime();
                   } else {
                     const valStr = String(paramValue);
                     return valStr.length > 10 ? valStr.substring(0,7) + '...' : valStr;
                   }
-
-                  if (isNaN(valueAsNumber)) {
-                      const valStr = String(paramValue); 
-                      return valStr.length > 10 ? valStr.substring(0,7) + '...' : valStr;
-                  }
-
-                  if (isBoilingPointPlot) {
-                    if (axisDim === 'x') { // Pressure
-                      return formatNumberToPrecision(valueAsNumber, 3) + (displayUnit ? ' ' + displayUnit : '');
-                    } else if (axisDim === 'y') { // Temperature
-                      return formatNumberToPrecision(valueAsNumber, 3) + ' °C';
-                    }
-                  } else {
-                    if (axisDim === 'x') { // Temperature Kelvin
-                      return formatNumberToPrecision(valueAsNumber - 273.15, 3) + ' °C';
-                    } else if (axisDim === 'y') { // Property Value
-                      return formatNumberToPrecision(valueAsNumber, 3) + (yAxisUnit ? ' ' + yAxisUnit : '');
-                    }
-                  }
-                  return formatNumberToPrecision(valueAsNumber, 3); // Fallback
+                  const displayVal = isBoilingPointPlot
+                    ? (axisDim === 'x' ? valueAsNumber : valueAsNumber)
+                    : (axisDim === 'x' ? valueAsNumber - 273.15 : valueAsNumber);
+                  const suffix = isBoilingPointPlot
+                    ? (axisDim === 'x' ? ` ${displayUnit}` : ' °C')
+                    : (axisDim === 'y' ? (yAxisUnit ? ` ${yAxisUnit}` : '') : ' °C');
+                  return formatWithSigFigs(displayVal, 3) + suffix;
                 },
-                fontFamily: 'Merriweather Sans', // Font for the text inside the label
-                color: textColor // Color of the text inside the label
+                fontFamily: 'Merriweather Sans',
+                color: textColor
               }
             },
             backgroundColor: resolvedTheme === 'dark' ? '#1e293b' : '#ffffff', // Background of the main tooltip box
             borderColor: resolvedTheme === 'dark' ? '#3b82f6' : '#333333',
             textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
-            formatter: (params: any) => {
-                if (!Array.isArray(params) || params.length === 0) return '';
-                
-                // Sort params by property value in descending order (highest to lowest)
-                const sortedParams = [...params].sort((a: any, b: any) => {
-                    const valueA = isBoilingPointPlot ? a.value[1] : a.value[1]; // For both cases, value[1] is the property value
-                    const valueB = isBoilingPointPlot ? b.value[1] : b.value[1];
-                    return valueB - valueA; // Descending order
-                });
-                
-                let tooltipHtml = '';
-                if (isBoilingPointPlot) {
-                    const pressureVal = params[0].axisValue; // Pressure from X-axis
-                    tooltipHtml = `Pressure: <b>${formatNumberToPrecision(pressureVal, 3)} ${displayUnit}</b><br/>`;
-                    sortedParams.forEach((param: any) => {
-                        const seriesFullname = param.seriesName;
-                        // param.value is [Pressure_DisplayUnit, TempC]
-                        tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 3)} °C</b></span><br/>`;
-                    });
-                } else {
-                    const tempInCelsius = params[0].axisValue - 273.15; // TempK from X-axis
-                    tooltipHtml = `Temperature: <b>${formatNumberToPrecision(tempInCelsius, 3)} °C</b><br/>`;
-                    sortedParams.forEach((param: any) => {
-                        const seriesFullname = param.seriesName;
-                        // param.value is [TempK, Value]
-                        tooltipHtml += `<span style="color: ${param.color};"><b>${seriesFullname}: ${formatNumberToPrecision(param.value[1], 4)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b></span><br/>`;
-                    });
-                }
-                return tooltipHtml;
-            }
+      formatter: (params: any) => {
+        if (!Array.isArray(params) || params.length === 0) return '';
+        const sortedParams = [...params].sort((a: any, b: any) => b.value[1] - a.value[1]);
+        let tooltipHtml = '';
+        if (isBoilingPointPlot) {
+          const pressureVal = params[0].axisValue;
+          tooltipHtml = `Pressure: <b>${formatWithSigFigs(pressureVal,3)} ${displayUnit}</b><br/>`;
+          sortedParams.forEach((param: any) => {
+            tooltipHtml += `<span style="color: ${param.color};"><b>${param.seriesName}: ${formatWithSigFigs(param.value[1],3)} °C</b></span><br/>`;
+          });
+        } else {
+          const tempInCelsius = params[0].axisValue - 273.15;
+          tooltipHtml = `Temperature: <b>${formatWithSigFigs(tempInCelsius,3)} °C</b><br/>`;
+          sortedParams.forEach((param: any) => {
+            tooltipHtml += `<span style="color: ${param.color};"><b>${param.seriesName}: ${formatWithSigFigs(param.value[1],3)}${yAxisUnit !== '-' ? ' ' + yAxisUnit : ''}</b></span><br/>`;
+          });
+        }
+        return tooltipHtml;
+      }
           },
           legend: {
             data: finalSeriesToPlot.map(s => s.name as string), // Use filtered series for legend data
@@ -1199,9 +1148,9 @@ export default function CompoundPropertiesPage() {
     if (plotMode === 'tempDependent') {
         let commonProps: PropertyDefinition[] = [];
         if (activeCompoundsWithData.length > 0) {
-            commonProps = propertiesToPlotConfig.filter(propDef => {
+      commonProps = propertiesToPlotConfig.filter(propDef => {
                 const allCompoundsMeetBasicCriteria = activeCompoundsWithData.every(compoundState => {
-                    const propData = compoundState.data!.properties[propDef.jsonKey];
+        const propData = compoundState.data!.properties[propDef.jsonKey];
                     if (!propData) return false;
                     
                     const TminCompound = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
@@ -1213,13 +1162,13 @@ export default function CompoundPropertiesPage() {
                     const hasMwDependentUnit = propDef.availableUnits?.some(unit => typeof unit.conversionFactorFromBase === 'object' && (unit.conversionFactorFromBase.operation === 'divide_by_mw' || unit.conversionFactorFromBase.operation === 'multiply_by_mw'));
                     if (hasMwDependentUnit && compoundState.data!.molarWeight === null) return false;
                     
-                    if (propDef.coeffs.length > 0) {
+          if (propDef.coeffs.length > 0) {
                         // Check if at least one coefficient is available for calculation
-                        const hasValidCoeff = propDef.coeffs.some(cKey => parseCoefficient(propData[cKey]) !== null);
+                        const hasValidCoeff = propDef.coeffs.some(cKey => parseCoefficient(propData?.[cKey]) !== null);
                         if (!hasValidCoeff) return false;
                         
-                        // Check if eqno is available
-                        if (!propData.eqno) return false;
+            // Check if eqno is available and parseable
+            if (parseCoefficient(propData?.eqno) === null) return false;
                     }
                     return true;
                 });
@@ -1231,10 +1180,10 @@ export default function CompoundPropertiesPage() {
                 let overallCommonTminForProp: number | null = null;
                 let overallCommonTmaxForProp: number | any = null;
 
-                for (const compoundState of activeCompoundsWithData) {
-                    const propData = compoundState.data!.properties[propDef.jsonKey];
-                    const tminRawValue = propData.Tmin?.value ?? propData.Tmin;
-                    const tmaxRawValue = propData.Tmax?.value ?? propData.Tmax;
+        for (const compoundState of activeCompoundsWithData) {
+          const propData = compoundState.data!.properties[propDef.jsonKey];
+                    const tminRawValue = propData?.Tmin?.value ?? propData?.Tmin;
+                    const tmaxRawValue = propData?.Tmax?.value ?? propData?.Tmax;
 
                     const Tmin = parseCoefficient(tminRawValue)!;
                     const Tmax = parseCoefficient(tmaxRawValue)!;
@@ -1415,7 +1364,7 @@ export default function CompoundPropertiesPage() {
     }
     try {
       const { data, error: fetchError } = await supabase
-        .from('compounds')
+        .from('compound_properties')
         .select('name')
         .ilike('name', `${trimmedInputValue}%`) 
         .limit(5);
@@ -1571,8 +1520,8 @@ export default function CompoundPropertiesPage() {
     const currentDisplayUnit = unitDefToUse.unit;
 
     const newPointsData = compounds.filter(c => c.data).map(compoundState => {
-      const currentCompoundData = compoundState.data!;
-      const propData = currentCompoundData.properties[propDef.jsonKey];
+  const currentCompoundData = compoundState.data!;
+  const propData = currentCompoundData.properties[propDef.jsonKey];
       
       let point: ManualTempPoint = {
         compoundName: currentCompoundData.name, seriesName: currentCompoundData.name,
@@ -1630,16 +1579,20 @@ export default function CompoundPropertiesPage() {
         }
       } else {
         const tempKelvinForCalc = inputValue + 273.15;
-        const Tmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
-        const Tmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
+  const Tmin = parseCoefficient(propData.Tmin?.value ?? propData.Tmin);
+  const Tmax = parseCoefficient(propData.Tmax?.value ?? propData.Tmax);
 
         if (Tmin === null || Tmax === null || tempKelvinForCalc < Tmin - 1e-6 || tempKelvinForCalc > Tmax + 1e-6) {
-          point.message = `Temp out of range (${formatNumberToPrecision(Tmin ? Tmin - 273.15 : NaN,1)} to ${formatNumberToPrecision(Tmax ? Tmax - 273.15 : NaN,1)} °C).`;
+          // Use Supabase-derived temperature limits
+          const TminC = Tmin !== null ? Tmin - 273.15 : NaN;
+          const TmaxC = Tmax !== null ? Tmax - 273.15 : NaN;
+          point.message = `Temp out of range (${formatWithSigFigs(TminC, 3)} to ${formatWithSigFigs(TmaxC, 3)} °C).`;
           return point;
         }
         
-        const eqno = propData?.eqno;
-        if (eqno === undefined || eqno === null) {
+  const eqnoParsed = parseCoefficient(propData?.eqno);
+  const eqnoStr = eqnoParsed !== null ? String(eqnoParsed) : (propData?.eqno ? String(propData.eqno) : '');
+  if (!eqnoStr) {
           point.message = `Equation number (eqno) not found.`;
           return point;
         }
@@ -1651,7 +1604,7 @@ export default function CompoundPropertiesPage() {
           point.message = `Critical Temp required but not found.`; return point;
         }
 
-        let rawValue = calculatePropertyByEquation(eqno, tempKelvinForCalc, coeffsForCalc, Tc_K_for_calc);
+  let rawValue = calculatePropertyByEquation(eqnoStr, tempKelvinForCalc, coeffsForCalc, Tc_K_for_calc);
 
         if (rawValue !== null && isFinite(rawValue)) {
           let valueInBaseUnit = rawValue;

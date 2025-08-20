@@ -124,7 +124,7 @@ function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
   return debounced as (...args: Parameters<F>) => void;
 }
 
-// Function to fetch CAS number by name
+// Function to fetch CAS number by name from the new compound_properties table
 const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string): Promise<string | null> => {
     if (!name || !name.trim()) {
         console.error("fetchCasNumberByName (McCabe-Thiele): Name is empty.");
@@ -132,8 +132,8 @@ const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string
     }
     const trimmedName = name.trim();
     const { data, error } = await supabaseClient
-        .from('compounds')
-        .select('cas_number, name')
+        .from('compound_properties')
+        .select('properties')
         .ilike('name', trimmedName)
         .limit(1)
         .single();
@@ -143,12 +143,12 @@ const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string
         return null;
     }
 
-    if (!data || !data.cas_number) {
+    if (!data || !data.properties?.CAS?.value) {
         console.warn(`fetchCasNumberByName (McCabe-Thiele): No CAS number found for "${trimmedName}". Data received:`, data);
         return null;
     }
 
-    return data.cas_number;
+    return data.properties.CAS.value;
 };
 
 export default function McCabeThielePage() {
@@ -234,48 +234,31 @@ export default function McCabeThielePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]); // Add supabase as a dependency if it can be initially undefined
 
-  // --- Data Fetching (Adapted from test/page.tsx) ---
+  // --- Data Fetching (Updated for new compound_properties table structure) ---
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
     if (!supabase) { throw new Error("Supabase client not initialized."); }
     try {
+        // Fetch compound data from the new compound_properties table
         const { data: compoundDbData, error: compoundError } = await supabase
-            .from('compounds')
-            .select('id, name, cas_number')
+            .from('compound_properties')
+            .select('name, properties')
             .ilike('name', compoundName)
-            .limit(1);
+            .limit(1)
+            .single();
 
         if (compoundError) throw new Error(`Supabase compound query error: ${compoundError.message}`);
-        if (!compoundDbData || compoundDbData.length === 0) throw new Error(`Compound '${compoundName}' not found.`);
+        if (!compoundDbData || !compoundDbData.properties) throw new Error(`Compound '${compoundName}' not found.`);
         
-        const compoundId = compoundDbData[0].id;
-        const foundName = compoundDbData[0].name;
-        const casNumber = compoundDbData[0].cas_number;
+        const foundName = compoundDbData.name;
+        const properties = compoundDbData.properties;
+        
+        // Extract CAS number from properties
+        const casNumber = properties.CAS?.value || null;
 
-        const sourcesToTry = ['chemsep1', 'chemsep2', 'DWSIM', 'biod_db'];
-        let properties: any = null;
-        let foundSource: string | null = null;
-
-        for (const source of sourcesToTry) {
-            const { data: propsData, error: propsError } = await supabase
-                .from('compound_properties')
-                .select('properties')
-                .eq('compound_id', compoundId)
-                .eq('source', source)
-                .single();
-            if (propsError && propsError.code !== 'PGRST116') console.warn(`Supabase props query error (${source}): ${propsError.message}`);
-            else if (propsData) { properties = propsData.properties; foundSource = source; break; }
-        }
-        if (!properties) {
-            const { data: anyPropsData, error: anyPropsError } = await supabase
-                .from('compound_properties').select('properties, source').eq('compound_id', compoundId).limit(1);
-            if (anyPropsError) console.warn(`Supabase fallback props query error: ${anyPropsError.message}`);
-            else if (anyPropsData && anyPropsData.length > 0) { properties = anyPropsData[0].properties; foundSource = anyPropsData[0].source; }
-            else throw new Error(`No properties found for ${foundName}.`);
-        }
         if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid props format for ${foundName}.`);
 
         let antoine: AntoineParams | null = null;
-        const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure;
+        const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure || properties.VaporPressure;
         if (antoineChemsep?.A && antoineChemsep.B && antoineChemsep.C) {
             antoine = {
                 A: parseFloat(antoineChemsep.A?.value ?? antoineChemsep.A),
@@ -284,27 +267,57 @@ export default function McCabeThielePage() {
                 Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? antoineChemsep.Tmin ?? 0),
                 Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? antoineChemsep.Tmax ?? 10000),
                 Units: antoineChemsep.units || 'Pa',
-                EquationNo: antoineChemsep.eqno
+                EquationNo: antoineChemsep.eqno?.value ?? antoineChemsep.eqno
             };
         }
         if (!antoine || isNaN(antoine.A) || isNaN(antoine.B) || isNaN(antoine.C)) throw new Error(`Failed to extract valid Antoine params for ${foundName}.`);
 
-        let unifacGroups: UnifacGroupComposition | null = null;
-        if (properties.elements_composition?.UNIFAC) {
-            unifacGroups = {};
-            for (const key in properties.elements_composition.UNIFAC) {
-                const subgroupId = parseInt(key); const count = parseInt(properties.elements_composition.UNIFAC[key]);
-                if (!isNaN(subgroupId) && !isNaN(count) && count > 0) unifacGroups[subgroupId] = count;
+    let unifacGroups: UnifacGroupComposition | null = null;
+    // UNIFAC groups may be stored either as an array of {id,value} or as an object map {"1": "2", ...}
+    const unifacRaw = properties.UnifacVLE || properties.UnifacVLE;
+    if (unifacRaw) {
+      unifacGroups = {};
+      try {
+        const groupData = unifacRaw.group ?? unifacRaw;
+        if (Array.isArray(groupData)) {
+          for (const groupItem of groupData) {
+            const subgroupId = parseInt(String(groupItem?.id ?? groupItem?.group));
+            const count = parseInt(String(groupItem?.value ?? groupItem?.count ?? 0));
+            if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
+              unifacGroups[subgroupId] = count;
             }
-            if (Object.keys(unifacGroups).length === 0) unifacGroups = null;
+          }
+        } else if (groupData && typeof groupData === 'object') {
+          for (const [key, val] of Object.entries(groupData)) {
+            const subgroupId = parseInt(key);
+            let count = NaN;
+            if (val && typeof val === 'object') {
+              count = parseInt(String((val as any).value ?? (val as any).count ?? NaN));
+            } else {
+              count = parseInt(String(val as any));
+            }
+            if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
+              unifacGroups[subgroupId] = count;
+            }
+          }
+        } else {
+          // Unexpected format: leave unifacGroups as null
+          console.warn(`UNIFAC group data in unexpected format for ${foundName}.`, groupData);
+          unifacGroups = null;
         }
+      } catch (err) {
+        console.warn(`Error parsing UNIFAC groups for ${foundName}:`, err);
+        unifacGroups = null;
+      }
+      if (unifacGroups && Object.keys(unifacGroups).length === 0) unifacGroups = null;
+    }
         if (fluidPackage === 'unifac' && !unifacGroups) throw new Error(`UNIFAC groups required for ${foundName} with UNIFAC model.`);
 
         let prParams: PrPureComponentParams | null = null;
         let srkParams: SrkPureComponentParams | null = null;
-        const tcPropObj = properties["Critical temperature"];
-        const pcPropObj = properties["Critical pressure"];
-        const omegaPropObj = properties["Acentric factor"];
+        const tcPropObj = properties["CriticalTemperature"] || properties["Critical temperature"];
+        const pcPropObj = properties["CriticalPressure"] || properties["Critical pressure"];
+        const omegaPropObj = properties["AcentricityFactor"] || properties["Acentric factor"];
         if (tcPropObj && pcPropObj && omegaPropObj) {
             const Tc_K_val = parseFloat(tcPropObj.value);
             const pcValue = parseFloat(pcPropObj.value);
@@ -327,8 +340,8 @@ export default function McCabeThielePage() {
         if ((fluidPackage === 'pr' && !prParams) || (fluidPackage === 'srk' && !srkParams)) throw new Error(`EOS params (Tc,Pc,omega) required for ${foundName} with ${fluidPackage.toUpperCase()} model.`);
 
         let uniquacParams: UniquacPureComponentParams | null = null;
-        const rPropObj = properties["UNIQUAC r"] || properties["Van der Waals volume"];
-        const qPropObj = properties["UNIQUAC q"] || properties["Van der Waals area"];
+        const rPropObj = properties["UniquacR"] || properties["UNIQUAC r"];
+        const qPropObj = properties["UniquacQ"] || properties["UNIQUAC q"];
         if (rPropObj && qPropObj) {
             const r_val = parseFloat(rPropObj.value ?? rPropObj);
             const q_val = parseFloat(qPropObj.value ?? qPropObj);
@@ -337,10 +350,10 @@ export default function McCabeThielePage() {
         if (fluidPackage === 'uniquac' && !uniquacParams) throw new Error(`UNIQUAC params (r,q) required for ${foundName}.`);
         
         let wilsonParams: WilsonPureComponentParams | null = null;
-        const vLPropObj = properties["Liquid molar volume"] || properties["Molar volume"] || properties["Wilson volume"];
+        const vLPropObj = properties["WilsonVolume"] || properties["Wilson volume"] || properties["LiquidVolumeAtNormalBoilingPoint"];
         if (vLPropObj) {
             const vL_val_any_unit = parseFloat(vLPropObj.value ?? vLPropObj);
-            const vL_units = String(vLPropObj.units).toLowerCase() || 'cm3/mol';
+            const vL_units = String(vLPropObj.units || 'm3/kmol').toLowerCase();
             let vL_m3mol: number | undefined;
             if (!isNaN(vL_val_any_unit)) {
                 if (vL_units === 'cm3/mol' || vL_units === 'cm^3/mol') vL_m3mol = vL_val_any_unit * 1e-6;
@@ -376,7 +389,7 @@ export default function McCabeThielePage() {
 
     try {
       const { data, error } = await supabase
-        .from('compounds')
+        .from('compound_properties')
         .select('name')
         .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
         .limit(5);

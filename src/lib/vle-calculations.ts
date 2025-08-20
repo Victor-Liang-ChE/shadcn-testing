@@ -26,13 +26,18 @@ function antoineBoilingPointSolverLocal(antoineParams: AntoineParams | null, P_t
   if (!antoineParams) return null;
   try {
     let logP: number;
-    const P_converted_to_antoine_units = P_target / (antoineParams.Units?.toLowerCase() === 'kpa' ? 1000 : 1);
+  // Convert Pa -> units expected by Antoine coefficients
+  const units = (antoineParams.Units || 'Pa').toLowerCase();
+  let P_converted_to_antoine_units = P_target; // default Pa
+  if (units === 'kpa') P_converted_to_antoine_units = P_target / 1000;
+  else if (units === 'bar') P_converted_to_antoine_units = P_target / 100000;
+  else if (units === 'mmhg') P_converted_to_antoine_units = P_target / 133.322;
+  else if (units === 'torr') P_converted_to_antoine_units = P_target / 133.322;
+  else if (units === 'atm') P_converted_to_antoine_units = P_target / 101325;
     
-    if (antoineParams.EquationNo === 1 || antoineParams.EquationNo === '1') {
-      logP = Math.log10(P_converted_to_antoine_units);
-    } else {
-      logP = Math.log(P_converted_to_antoine_units);
-    }
+  const eqno = typeof antoineParams.EquationNo === 'string' ? parseInt(antoineParams.EquationNo, 10) : antoineParams.EquationNo;
+  const useLog10 = eqno === 208 || eqno === 209 || eqno === 210 || eqno === 1; // include legacy '1' as log10
+  logP = useLog10 ? Math.log10(P_converted_to_antoine_units) : Math.log(P_converted_to_antoine_units);
     
     if (antoineParams.A - logP === 0) return null; // Avoid division by zero
     const T_K = antoineParams.B / (antoineParams.A - logP) - antoineParams.C;
@@ -51,10 +56,17 @@ export function calculatePsat_Pa(
   T_K: number
 ): number {
   if (!params || T_K <= 0) return NaN;
-
-  const conv = params.Units?.toLowerCase() === 'kpa' ? 1000 : 1; // kPa → Pa
+  // Conversion from Antoine unit to Pa
+  const u = (params.Units || 'Pa').toLowerCase();
+  let conv = 1; // default Pa
+  if (u === 'kpa') conv = 1000;
+  else if (u === 'bar') conv = 100000;
+  else if (u === 'mmhg' || u === 'torr') conv = 133.322;
+  else if (u === 'atm') conv = 101325;
   let P: number;
-  if (params.EquationNo === 1 || params.EquationNo === '1') {
+  const eqno = typeof params.EquationNo === 'string' ? parseInt(params.EquationNo, 10) : params.EquationNo;
+  const useLog10 = eqno === 208 || eqno === 209 || eqno === 210 || eqno === 1; // include legacy '1' as log10
+  if (useLog10) {
     // log10 form
     P = 10 ** (params.A - params.B / (T_K + params.C));
   } else {
@@ -1476,27 +1488,18 @@ export async function fetchUniquacInteractionParams(
 
 /** Convert a critical volume value to cm^3/mol, handling units */
 async function _fetchCriticalVolume_cm3_per_mol(supabase: SupabaseClient, casn: string): Promise<number | null> {
-  // 1. Get compound id
-  const { data: compIdData, error: compIdErr } = await supabase
-    .from('compounds')
-    .select('id')
-    .eq('cas_number', casn)
-    .single();
-  if (compIdErr || !compIdData) return null;
-  const compound_id = compIdData.id;
-
-  // 2. Query compound_properties limited to chemsep sources
+  // Query compound_properties directly by CAS number from properties.CAS.value
   const { data: propsRows, error: propsErr } = await supabase
     .from('compound_properties')
-    .select('properties, source')
-    .eq('compound_id', compound_id)
-    .in('source', ['chemsep1', 'chemsep2']);
+    .select('properties')
+    .eq('properties->CAS->>value', casn);
+    
   if (propsErr || !propsRows || propsRows.length === 0) return null;
 
   for (const row of propsRows) {
     const props = row.properties as any;
-    if (!props || !props["Critical volume"]) continue;
-    const cvObj = props["Critical volume"];
+    if (!props || !props.CriticalVolume) continue;
+    const cvObj = props.CriticalVolume;
     const val = cvObj?.value;
     const units = (cvObj?.units || '').toLowerCase();
     if (typeof val !== 'number') continue;

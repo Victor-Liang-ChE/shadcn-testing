@@ -27,7 +27,7 @@ export const baseColors = ['#5470C6', '#91CC75', '#FAC858', '#EE6666', '#73C0DE'
 
 export const propertiesToPlotConfig: PropertyDefinition[] = [
   { 
-    displayName: "Vapor Pressure", jsonKey: "Vapour pressure", symbol: "P", yAxisIndex: 0, targetUnitName: "Pa", 
+    displayName: "Vapor Pressure", jsonKey: "VaporPressure", symbol: "P", yAxisIndex: 0, targetUnitName: "Pa", 
     availableUnits: [
         { unit: "bar", conversionFactorFromBase: 1e-5 },
         { unit: "Pa", conversionFactorFromBase: 1 },
@@ -40,7 +40,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
   },
   { 
     displayName: "Boiling Point", 
-    jsonKey: "Vapour pressure", // Uses the same data source as Vapor Pressure
+    jsonKey: "VaporPressure", // Uses the same data source as Vapor Pressure
     symbol: "T_b", // Conceptual symbol for the dropdown
     yAxisIndex: 0, 
     targetUnitName: "Pa", // Base unit for the *pressure* input to the solver
@@ -58,7 +58,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" // Original equation string for reference
   },
   { 
-    displayName: "Liquid Density", jsonKey: "Liquid density", symbol: "ρ_L", yAxisIndex: 0, targetUnitName: "kmol/m³", 
+    displayName: "Liquid Density", jsonKey: "LiquidDensity", symbol: "ρ_L", yAxisIndex: 0, targetUnitName: "kmol/m³", 
     availableUnits: [
         { unit: "kmol/m³", conversionFactorFromBase: 1 },
         { unit: "mol/L", conversionFactorFromBase: 1 }, // 1 kmol/m³ = 1 mol/L
@@ -71,7 +71,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[1], coeffs: ['A', 'B', 'C', 'D'], requiresMolarMass: false, requiresTc: true, conversionFactor: 1, equationTemplate: "A / B<sup>(1+(1-T/Tc)<sup>D</sup>)</sup>" 
   },
   { 
-    displayName: "Liquid Heat Capacity", jsonKey: "Liquid heat capacity", symbol: "Cp", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    displayName: "Liquid Heat Capacity", jsonKey: "LiquidHeatCapacityCp", symbol: "Cp", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
     conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
@@ -86,7 +86,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[2], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)" 
   },
   { 
-    displayName: "Liquid Viscosity", jsonKey: "Liquid viscosity", symbol: "μ", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    displayName: "Liquid Viscosity", jsonKey: "LiquidViscosity", symbol: "μ", yAxisIndex: 0, targetUnitName: "Pa·s", 
     availableUnits: [
         { unit: "cP", conversionFactorFromBase: 1000 },
         { unit: "Pa·s", conversionFactorFromBase: 1 },
@@ -95,7 +95,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[3], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
   },
   { 
-    displayName: "Heat of Vaporization", jsonKey: "Heat of vaporization", symbol: "ΔH_v", yAxisIndex: 0, targetUnitName: "J/kmol", 
+    displayName: "Heat of Vaporization", jsonKey: "HeatOfVaporization", symbol: "ΔH_v", yAxisIndex: 0, targetUnitName: "J/kmol", 
     conversionFactor: 1, // Assuming eq output is already J/kmol, or adjust if it's J/mol from DB
     availableUnits: [
         { unit: "J/mol", conversionFactorFromBase: 0.001 },
@@ -110,7 +110,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[4], coeffs: ['A', 'B', 'C', 'D', 'E'], requiresTc: true, equationTemplate: "A(1-T/Tc)<sup>(B+C(T/Tc)+D(T/Tc)<sup>2</sup>+E(T/Tc)<sup>3</sup>)</sup>" 
   },
   { 
-    displayName: "Ideal Gas Heat Capacity", jsonKey: "Ideal gas heat capacity", symbol: "Cp^0", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    displayName: "Ideal Gas Heat Capacity", jsonKey: "IdealGasHeatCapacityCp", symbol: "Cp^0", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
     conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
@@ -125,7 +125,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[5], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)"
   },
   { 
-    displayName: "Liquid Thermal Conductivity", jsonKey: "Liquid thermal conductivity", symbol: "k_L", yAxisIndex: 0, targetUnitName: "W/m/K", 
+    displayName: "Liquid Thermal Conductivity", jsonKey: "LiquidThermalConductivity", symbol: "k_L", yAxisIndex: 0, targetUnitName: "W/m/K", 
     availableUnits: [
         { unit: "W/m/K", conversionFactorFromBase: 1 },
         { unit: "mW/m/K", conversionFactorFromBase: 1000 }
@@ -133,7 +133,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[7], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)" 
   },
   { 
-    displayName: "Second Virial Coefficient", jsonKey: "Second virial coefficient", symbol: "B_v", yAxisIndex: 0, targetUnitName: "m³/kmol", 
+    displayName: "Second Virial Coefficient", jsonKey: "SecondVirialCoefficient", symbol: "B_v", yAxisIndex: 0, targetUnitName: "m³/kmol", 
     availableUnits: [
         { unit: "cm³/mol", conversionFactorFromBase: 1000 }, 
         { unit: "m³/kmol", conversionFactorFromBase: 1 },
@@ -145,7 +145,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: baseColors[8], coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B/T + C/T<sup>2</sup> + D/T<sup>8</sup> + E/T<sup>9</sup>" 
   },
   { 
-    displayName: "Solid Density", jsonKey: "Solid density", symbol: "ρ_S", yAxisIndex: 0, targetUnitName: "kmol/m³", 
+    displayName: "Solid Density", jsonKey: "SolidDensity", symbol: "ρ_S", yAxisIndex: 0, targetUnitName: "kmol/m³", 
     availableUnits: [
         { unit: "kmol/m³", conversionFactorFromBase: 1 },
         { unit: "mol/L", conversionFactorFromBase: 1 },
@@ -158,7 +158,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#808080', coeffs: ['A', 'B'], requiresMolarMass: false, conversionFactor: 1, equationTemplate: "A + B T" 
   },
   { 
-    displayName: "Solid Heat Capacity", jsonKey: "Solid heat capacity", symbol: "Cp_S", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    displayName: "Solid Heat Capacity", jsonKey: "SolidHeatCapacityCp", symbol: "Cp_S", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
     conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
@@ -173,7 +173,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#FFD700', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B T + C T<sup>2</sup> + D T<sup>3</sup> + E T<sup>4</sup>" 
   },
   { 
-    displayName: "Surface Tension", jsonKey: "Surface tension", symbol: "σ", yAxisIndex: 0, targetUnitName: "N/m", 
+    displayName: "Surface Tension", jsonKey: "SurfaceTension", symbol: "σ", yAxisIndex: 0, targetUnitName: "N/m", 
     availableUnits: [
         { unit: "N/m", conversionFactorFromBase: 1 },
         { unit: "mN/m", conversionFactorFromBase: 1000 },
@@ -182,7 +182,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#00CED1', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + exp(B/T + C + D T + E T<sup>2</sup>)" 
   },
   { 
-    displayName: "Vapour Thermal Conductivity", jsonKey: "Vapour thermal conductivity", symbol: "k_V", yAxisIndex: 0, targetUnitName: "W/m/K", 
+    displayName: "Vapor Thermal Conductivity", jsonKey: "VaporThermalConductivity", symbol: "k_V", yAxisIndex: 0, targetUnitName: "W/m/K", 
     availableUnits: [
         { unit: "W/m/K", conversionFactorFromBase: 1 },
         { unit: "mW/m/K", conversionFactorFromBase: 1000 }
@@ -190,7 +190,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#DA70D6', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "(A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" 
   },
   { 
-    displayName: "Vapour Viscosity", jsonKey: "Vapour viscosity", symbol: "μ_V", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    displayName: "Vapor Viscosity", jsonKey: "VaporViscosity", symbol: "μ_V", yAxisIndex: 0, targetUnitName: "Pa·s", 
     availableUnits: [
         { unit: "cP", conversionFactorFromBase: 1000 },
         { unit: "Pa·s", conversionFactorFromBase: 1 },
@@ -199,7 +199,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#6A5ACD', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "(A T<sup>B</sup>) / (1 + C/T + D/T<sup>2</sup>)" 
   },
   { 
-    displayName: "Relative Static Permittivity", jsonKey: "Relative static permittivity", symbol: "ε_r", yAxisIndex: 0, targetUnitName: "-", 
+    displayName: "Relative Static Permittivity", jsonKey: "RelativeStaticPermittivity", symbol: "ε_r", yAxisIndex: 0, targetUnitName: "-", 
     // NOTE: Coefficients for "Water" for this property in the database (as of current data)
     // seem to produce highly incorrect values when used with calculatePolynomial.
     // Updated to use calculateEq121 based on eqno: 121 in the database.
@@ -209,7 +209,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#FF4500', coeffs: ['A', 'B', 'C', 'D'], equationTemplate: "A + B/T + C ln(T) + D T" 
   },
   { 
-    displayName: "Antoine Vapor Pressure", jsonKey: "Antoine vapor pressure", symbol: "P", yAxisIndex: 0, targetUnitName: "Pa", 
+    displayName: "Antoine Vapor Pressure", jsonKey: "AntoineVaporPressure", symbol: "P", yAxisIndex: 0, targetUnitName: "Pa", 
     availableUnits: [
         { unit: "bar", conversionFactorFromBase: 1e-5 },
         { unit: "Pa", conversionFactorFromBase: 1 },
@@ -221,7 +221,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#FF6347', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "exp(A + B/T + C ln(T) + D T<sup>E</sup>)" 
   },
   { 
-    displayName: "Ideal Gas Heat Capacity (RPP)", jsonKey: "Ideal gas heat capacity (RPP)", symbol: "Cp^0_RPP", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
+    displayName: "Ideal Gas Heat Capacity (RPP)", jsonKey: "RPPHeatCapacityCp", symbol: "Cp^0_RPP", yAxisIndex: 0, targetUnitName: "J/kmol/K", 
     conversionFactor: 1, 
     availableUnits: [
         { unit: "J/mol/K", conversionFactorFromBase: 0.001 },
@@ -236,7 +236,7 @@ export const propertiesToPlotConfig: PropertyDefinition[] = [
     color: '#4682B4', coeffs: ['A', 'B', 'C', 'D', 'E'], equationTemplate: "A + B T + C T<sup>2</sup> + D T<sup>3</sup> + E T<sup>4</sup>" 
   },
   { 
-    displayName: "Liquid Viscosity (RPS)", jsonKey: "Liquid viscosity (RPS)", symbol: "μ_RPS", yAxisIndex: 0, targetUnitName: "Pa·s", 
+    displayName: "Liquid Viscosity (RPS)", jsonKey: "LiquidViscosityRPS", symbol: "μ_RPS", yAxisIndex: 0, targetUnitName: "Pa·s", 
     availableUnits: [
         { unit: "cP", conversionFactorFromBase: 1000 },
         { unit: "Pa·s", conversionFactorFromBase: 1 },
@@ -446,9 +446,15 @@ export function parseCoefficient(value: any): number | null {
     if (typeof value === 'number') {
         return value;
     }
-    if (typeof value === 'object' && value !== null && typeof value.value === 'number') {
-        return value.value;
+  if (typeof value === 'object' && value !== null) {
+    if (typeof value.value === 'number') {
+      return value.value;
     }
+    if (typeof value.value === 'string') {
+      const n = parseFloat(value.value);
+      if (!isNaN(n)) return n;
+    }
+  }
     if (typeof value === 'string') {
         const num = parseFloat(value);
         if (!isNaN(num)) return num;

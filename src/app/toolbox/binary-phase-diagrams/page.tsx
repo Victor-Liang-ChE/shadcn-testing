@@ -331,57 +331,44 @@ export default function VleDiagramPage() {
     
         try {
             const { data: compoundDbData, error: compoundError } = await supabase
-                .from('compounds')
-                .select('id, name, cas_number')
+                .from('compound_properties')
+                .select('name, properties')
                 .ilike('name', compoundName)
                 .limit(1);
     
             if (compoundError) throw new Error(`Supabase compound query error: ${compoundError.message}`);
             if (!compoundDbData || compoundDbData.length === 0) throw new Error(`Compound '${compoundName}' not found.`);
             
-            const compoundId = compoundDbData[0].id;
             const foundName = compoundDbData[0].name;
-            const casNumber = compoundDbData[0].cas_number;
-    
-            const sourcesToTry = ['chemsep1', 'chemsep2', 'DWSIM', 'biod_db'];
-            let properties: any = null;
-    
-            for (const source of sourcesToTry) {
-                const { data: propsData, error: propsError } = await supabase
-                    .from('compound_properties')
-                    .select('properties')
-                    .eq('compound_id', compoundId)
-                    .eq('source', source)
-                    .single();
-                if (!propsError && propsData) { properties = propsData.properties; break; }
+            const properties = compoundDbData[0].properties;
+            const casNumber = properties?.CAS?.value;
+
+            if (!properties || typeof properties !== 'object') {
+                throw new Error(`No properties found for ${foundName}.`);
             }
-            if (!properties) {
-                const { data: anyPropsData } = await supabase.from('compound_properties').select('properties').eq('compound_id', compoundId).limit(1);
-                if (anyPropsData && anyPropsData.length > 0) properties = anyPropsData[0].properties;
-                else throw new Error(`No properties found for ${foundName}.`);
-            }
-            if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid props format for ${foundName}.`);
     
             let antoine: AntoineParams | null = null;
-            const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure;
-            if (antoineChemsep?.A && antoineChemsep.B && antoineChemsep.C) {
+            const antoineChemsep = properties.AntoineVaporPressure || properties.Antoine;
+            if (antoineChemsep?.A?.value && antoineChemsep.B?.value && antoineChemsep.C?.value) {
                 antoine = {
-                    A: parseFloat(antoineChemsep.A?.value ?? antoineChemsep.A),
-                    B: parseFloat(antoineChemsep.B?.value ?? antoineChemsep.B),
-                    C: parseFloat(antoineChemsep.C?.value ?? antoineChemsep.C),
-                    Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? antoineChemsep.Tmin ?? 0),
-                    Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? antoineChemsep.Tmax ?? 10000),
+                    A: parseFloat(antoineChemsep.A.value),
+                    B: parseFloat(antoineChemsep.B.value),
+                    C: parseFloat(antoineChemsep.C.value),
+                    Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? 0),
+                    Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? 10000),
                     Units: antoineChemsep.units || 'Pa',
-                    EquationNo: antoineChemsep.eqno
+                    EquationNo: antoineChemsep.eqno?.value
                 };
             }
             if (!antoine || isNaN(antoine.A) || isNaN(antoine.B) || isNaN(antoine.C)) throw new Error(`Failed to extract valid Antoine params for ${foundName}.`);
     
             let unifacGroups: UnifacGroupComposition | null = null;
-            if (properties.elements_composition?.UNIFAC) {
+            const unifacData = properties.UnifacVLE?.group;
+            if (unifacData && Array.isArray(unifacData)) {
                 unifacGroups = {};
-                for (const key in properties.elements_composition.UNIFAC) {
-                    const subgroupId = parseInt(key); const count = parseInt(properties.elements_composition.UNIFAC[key]);
+                for (const group of unifacData) {
+                    const subgroupId = parseInt(group.id);
+                    const count = parseInt(group.value);
                     if (!isNaN(subgroupId) && !isNaN(count) && count > 0) unifacGroups[subgroupId] = count;
                 }
                 if (Object.keys(unifacGroups).length === 0) unifacGroups = null;
@@ -389,9 +376,9 @@ export default function VleDiagramPage() {
     
             let prParams: PrPureComponentParams | null = null;
             let srkParams: SrkPureComponentParams | null = null;
-            const tcPropObj = properties["Critical temperature"];
-            const pcPropObj = properties["Critical pressure"];
-            const omegaPropObj = properties["Acentric factor"];
+            const tcPropObj = properties.CriticalTemperature;
+            const pcPropObj = properties.CriticalPressure;
+            const omegaPropObj = properties.AcentricityFactor;
             if (tcPropObj && pcPropObj && omegaPropObj) {
                 const Tc_K_val = parseFloat(tcPropObj.value);
                 const pcValue = parseFloat(pcPropObj.value);
@@ -405,8 +392,8 @@ export default function VleDiagramPage() {
             }
     
             let uniquacParams: UniquacPureComponentParams | null = null;
-            const rPropObj = properties["UNIQUAC r"] || properties["Van der Waals volume"];
-            const qPropObj = properties["UNIQUAC q"] || properties["Van der Waals area"];
+            const rPropObj = properties.UniquacR || properties.VanDerWaalsVolume;
+            const qPropObj = properties.UniquacQ || properties.VanDerWaalsArea;
             if (rPropObj && qPropObj) {
                 const r_val = parseFloat(rPropObj.value ?? rPropObj);
                 const q_val = parseFloat(qPropObj.value ?? qPropObj);
@@ -414,7 +401,7 @@ export default function VleDiagramPage() {
             }
             
             let wilsonParams: WilsonPureComponentParams | null = null;
-            const vLPropObj = properties["Liquid molar volume"] || properties["Molar volume"] || properties["Wilson volume"];
+            const vLPropObj = properties.WilsonVolume;
             if (vLPropObj) {
                 const vL_val_any_unit = parseFloat(vLPropObj.value ?? vLPropObj);
                 const vL_units = String(vLPropObj.units).toLowerCase() || 'cm3/mol';
@@ -741,7 +728,7 @@ export default function VleDiagramPage() {
             return;
         }
         try {
-            const { data, error } = await supabase.from('compounds').select('name').ilike('name', `${inputValue}%`).limit(5);
+            const { data, error } = await supabase.from('compound_properties').select('name').ilike('name', `${inputValue}%`).limit(5);
             if (error) { throw error; }
             const suggestions = data ? data.map(item => item.name) : [];
             if (inputTarget === 'comp1') {

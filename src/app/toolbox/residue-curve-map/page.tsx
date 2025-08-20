@@ -315,7 +315,7 @@ export default function TernaryResidueMapPage() {
         }
         try {
             const { data, error } = await supabase
-                .from('compounds')
+                .from('compound_properties')
                 .select('name')
                 .ilike('name', `${query.trim()}%`) // Changed to "starts with" pattern
                 .limit(5);
@@ -536,8 +536,8 @@ export default function TernaryResidueMapPage() {
         }
         const trimmedName = name.trim();
         const { data, error } = await supabaseClient
-            .from('compounds')
-            .select('cas_number, name') // Also select name for logging
+            .from('compound_properties')
+            .select('name, properties') // Select properties to get CAS number
             .ilike('name', trimmedName) // Changed from %${trimmedName}% to trimmedName for exact match (case-insensitive)
             .limit(1)
             .single();
@@ -546,11 +546,12 @@ export default function TernaryResidueMapPage() {
             console.error(`fetchCasNumberByName: Error fetching CAS for "${trimmedName}":`, error);
             throw new Error(`Could not fetch CAS number for ${trimmedName}: ${error.message}`);
         }
-        if (!data || !data.cas_number) {
+        const casNumber = data?.properties?.CAS?.value;
+        if (!data || !casNumber) {
             console.error(`fetchCasNumberByName: No CAS number found for "${trimmedName}". Data received:`, data);
             throw new Error(`No CAS number found for ${trimmedName}.`);
         }
-        return data.cas_number;
+        return casNumber;
     };
 
     // Helper function to calculate boiling point of a pure component at P_sys_Pa using Secant method

@@ -218,28 +218,27 @@ export default function PhaseDiagramPage() {
     if (dataCache.current.has(cacheKey)) { const cached = dataCache.current.get(cacheKey); if (cached === null) throw new Error(`Compound '${trimmedName}' not found.`); return cached ?? null; }
     setLoading(true); setError(null);
     try {
-        const { data: compoundDbData, error: compoundError } = await supabase.from('compounds').select('id, name, molecular_weight').ilike('name', trimmedName).limit(1).single();
+        const { data: compoundDbData, error: compoundError } = await supabase.from('compound_properties').select('name, properties').ilike('name', trimmedName).limit(1).single();
         if (compoundError || !compoundDbData) { throw new Error(compoundError?.message || `Compound '${trimmedName}' not found.`); }
-        const { data: propsData, error: propsError } = await supabase.from('compound_properties').select('properties').eq('compound_id', compoundDbData.id).limit(1).single();
-        if (propsError || !propsData) { throw new Error(`No properties found for ${compoundDbData.name}.`); }
-        const heatOfFusionValue = parseCoefficient(propsData.properties["Heat of fusion at melting point"]);
+        const properties = compoundDbData.properties;
+        const heatOfFusionValue = parseCoefficient(properties.HeatOfFusionAtMeltingPoint?.value);
         
-        const fetchedData: FetchedPhaseData = {
+    const fetchedData: FetchedPhaseData = {
             name: compoundDbData.name,
-            criticalTemp: parseCoefficient(propsData.properties["Critical temperature"]),
-            criticalPressure: parseCoefficient(propsData.properties["Critical pressure"]),
-            triplePointTemp: parseCoefficient(propsData.properties["Triple point temperature"]),
-            triplePointPressure: parseCoefficient(propsData.properties["Triple point pressure"]),
-            normalBoilingPoint: parseCoefficient(propsData.properties["Normal boiling point"]),
-            normalMeltingPoint: parseCoefficient(propsData.properties["Melting point"]),
-            molarWeight: compoundDbData.molecular_weight,
+            criticalTemp: parseCoefficient(properties.CriticalTemperature?.value),
+            criticalPressure: parseCoefficient(properties.CriticalPressure?.value),
+            triplePointTemp: parseCoefficient(properties.TriplePointTemperature?.value),
+            triplePointPressure: parseCoefficient(properties.TriplePointPressure?.value),
+            normalBoilingPoint: parseCoefficient(properties.NormalBoilingPointTemperature?.value),
+            normalMeltingPoint: parseCoefficient(properties.NormalMeltingPointTemperature?.value),
+            molarWeight: parseCoefficient(properties.MolecularWeight?.value),
             // --- FIX IS HERE ---
             // Store the value directly. The units are handled in the plotting function.
             heatOfFusion: heatOfFusionValue, 
-            heatOfVaporization: propsData.properties["Heat of vaporization"],
-            vapourPressure: propsData.properties["Vapour pressure"],
-            liquidDensity: propsData.properties["Liquid density"],
-            solidDensity: propsData.properties["Solid density"],
+      heatOfVaporization: properties.HeatOfVaporization, // keep full object (with A..E, Tmin/Tmax, eqno)
+      vapourPressure: properties.VaporPressure, // keep full object (with A..E, Tmin/Tmax, eqno)
+      liquidDensity: properties.LiquidDensity, // if equation-based
+      solidDensity: properties.SolidDensity, // if equation-based
         };
         dataCache.current.set(cacheKey, fetchedData);
         return fetchedData;
@@ -307,10 +306,12 @@ export default function PhaseDiagramPage() {
   // Vaporization Curve Data
   if (vapourPressure) {
     const vpCoeffs = { A: parseCoefficient(vapourPressure.A), B: parseCoefficient(vapourPressure.B), C: parseCoefficient(vapourPressure.C), D: parseCoefficient(vapourPressure.D), E: parseCoefficient(vapourPressure.E) };
-    if (vapourPressure['eqno'] && Object.values(vpCoeffs).every(c => c !== null)) {
+    const eqnoParsed = parseCoefficient((vapourPressure as any)['eqno']);
+    const eqnoStr = eqnoParsed !== null ? String(eqnoParsed) : '';
+    if (eqnoStr && Object.values(vpCoeffs).every(c => c !== null)) {
       for (const tempK of masterTemperaturesK) {
         if (tempK >= triplePointTemp && tempK <= criticalTemp) {
-          const pPa = calculatePropertyByEquation(vapourPressure['eqno'], tempK, vpCoeffs, criticalTemp);
+          const pPa = calculatePropertyByEquation(eqnoStr, tempK, vpCoeffs, criticalTemp);
           if (pPa !== null && pPa > 0) {
             vaporizationData.push([convertTempFromK(tempK, tempUnit), transformPressure(pPa)]);
           }
@@ -346,8 +347,10 @@ export default function PhaseDiagramPage() {
   // Sublimation Curve Data
   if (heatOfFusion && heatOfVaporization && triplePointPressure > 0) {
     const hvCoeffs = { A: parseCoefficient(heatOfVaporization.A), B: parseCoefficient(heatOfVaporization.B), C: parseCoefficient(heatOfVaporization.C), D: parseCoefficient(heatOfVaporization.D), E: parseCoefficient(heatOfVaporization.E) };
-    if (heatOfVaporization['eqno'] && Object.values(hvCoeffs).every(c => c !== null)) {
-      const hVap_J_per_kmol = calculatePropertyByEquation(heatOfVaporization['eqno'], triplePointTemp, hvCoeffs, criticalTemp);
+    const hvEqParsed = parseCoefficient((heatOfVaporization as any)['eqno']);
+    const hvEqStr = hvEqParsed !== null ? String(hvEqParsed) : '';
+    if (hvEqStr && Object.values(hvCoeffs).every(c => c !== null)) {
+      const hVap_J_per_kmol = calculatePropertyByEquation(hvEqStr, triplePointTemp, hvCoeffs, criticalTemp);
             
       if (hVap_J_per_kmol !== null && heatOfFusion !== null) {
         const deltaH_sub_J_per_kmol = heatOfFusion + hVap_J_per_kmol;
@@ -392,12 +395,20 @@ export default function PhaseDiagramPage() {
   if(spotSuper) annotationPoints.push({ name: 'Supercritical', value: spotSuper });
   series.push({ name: 'Phases', type: 'scatter', data: annotationPoints, symbol: 'circle', symbolSize: 0, label: { show: true, position: 'inside', formatter: '{b}', color: textColor, fontSize: 16, fontWeight: 'bold', fontFamily: 'Merriweather Sans', opacity: 0.6 }, z: 5, silent: true });
     
+  // Build legend dynamically to avoid warnings when a series is absent
+  const legendEntries: any[] = [];
+  if (vaporizationData.length > 0) legendEntries.push('Vaporization');
+  if (fusionData.length > 0) legendEntries.push('Fusion');
+  if (sublimationData.length > 0) legendEntries.push('Sublimation');
+  legendEntries.push({ name: 'Critical Point', itemStyle: { color: 'green' } });
+  legendEntries.push({ name: 'Triple Point', itemStyle: { color: 'red' } });
+
   setEchartsOptions({
     backgroundColor: 'transparent',
     title: { text: `Phase Diagram for ${data.name}`, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
     grid: { left: '8%', right: '5%', bottom: '10%', top: '5%', containLabel: true },
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross', label: { backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', color: textColor, fontFamily: 'Merriweather Sans', formatter: (params: any) => { if (params.axisDimension === 'x') { return `${formatNumber(params.value, 3)} ${getTempUnitSymbol(tempUnit)}`; } else if (params.axisDimension === 'y') { const realP = logScaleY ? Math.pow(10, params.value) : params.value; return `${formatNumber(realP, 3)} ${pressureUnit}`; } return params.value; } } }, backgroundColor: isDark ? '#1e293b' : '#ffffff', borderColor: isDark ? '#3b82f6' : '#333333', textStyle: { color: textColor, fontFamily: 'Merriweather Sans' }, formatter: (params: any) => { if (!Array.isArray(params) || params.length === 0) return ''; const header = `Temperature: <b>${formatNumber(params[0].axisValue, 3)} ${getTempUnitSymbol(tempUnit)}</b>`; const lines = params.filter(param => param.seriesName && !['Phases', 'Supercritical Boundary', 'Critical Point', 'Triple Point'].includes(param.seriesName)).map(param => { const chartP = param.value[1]; const realP = logScaleY ? Math.pow(10, chartP) : chartP; return `<span style="color: ${param.color};">${param.seriesName}: <b>${formatNumber(realP, 3)} ${pressureUnit}</b></span>`; }); return [header, ...lines].join('<br/>');} },
-  legend: { data: [ 'Vaporization', 'Fusion', 'Sublimation', { name: 'Critical Point', itemStyle: { color: 'green' } }, { name: 'Triple Point', itemStyle: { color: 'red' } } ], bottom: 5, textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 }, inactiveColor: '#4b5563' },
+  legend: { data: legendEntries, bottom: 5, textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14 }, inactiveColor: '#4b5563' },
   xAxis: { type: 'value', name: `Temperature (${getTempUnitSymbol(tempUnit)})`, nameLocation: 'middle', nameGap: 30, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16, showMinLabel: false, showMaxLabel: false }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 12 }, splitLine: { show: false }, scale: false, min: axisXMin, max: axisXMax },
   yAxis: logScaleY ? { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 50, min: axisYMin, max: axisYMax, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, hideOverlap: false, showMaxLabel: true, showMinLabel: true, interval: 1, formatter: (val: number) => `1e${val.toFixed(0)}` }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, minorTick: { show: true, splitNumber: 9, length: 5 }, splitLine: { show: false }, minorSplitLine: { show: false }, scale: false, } as any : { type: 'value', name: `Pressure (${pressureUnit})`, nameLocation: 'middle', nameGap: 50, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 14, formatter: (val: number) => { if (Math.abs(val) >= 1e6 || (Math.abs(val) < 1e-3 && val !== 0)) { return val.toExponential(1); } return val.toString(); } }, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: textColor, width: 2 }, onZero: false }, axisTick: { show: true, lineStyle: { color: textColor }, length: 10 }, splitLine: { show: false }, scale: false, min: axisYMin, max: axisYMax } as any,
     series: series,
@@ -415,7 +426,7 @@ export default function PhaseDiagramPage() {
         return;
     }
     try {
-        const { data, error } = await supabase.from('compounds').select('name').ilike('name', `${value}%`).limit(5);
+        const { data, error } = await supabase.from('compound_properties').select('name').ilike('name', `${value}%`).limit(5);
         if (error) throw error;
         setCompoundSuggestions(data?.map(d => d.name) || []);
         setShowSuggestions((data?.length || 0) > 0);

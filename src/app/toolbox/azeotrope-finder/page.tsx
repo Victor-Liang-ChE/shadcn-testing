@@ -194,25 +194,16 @@ export default function AzeotropeFinderPage() {
 
     if (!supabase) { throw new Error("Supabase client not initialized."); }
     try {
-        const { data: compoundDbData, error: compoundError } = await supabase.from('compounds').select('id, name, cas_number').ilike('name', compoundName).limit(1).single();
+        const { data: compoundDbData, error: compoundError } = await supabase.from('compound_properties').select('name, properties').ilike('name', compoundName).limit(1).single();
         if (compoundError || !compoundDbData) throw new Error(compoundError?.message || `Compound '${compoundName}' not found.`);
         
-        const compoundId = compoundDbData.id;
         const foundName = compoundDbData.name;
-        const casNumber = compoundDbData.cas_number;
+        const properties = compoundDbData.properties;
+        const casNumber = properties?.CAS?.value;
 
-        const sourcesToTry = ['chemsep1', 'chemsep2', 'DWSIM', 'biod_db'];
-        let properties: any = null; let foundSource: string | null = null;
-        for (const source of sourcesToTry) {
-            const { data: propsData, error: propsError } = await supabase.from('compound_properties').select('properties').eq('compound_id', compoundId).eq('source', source).single();
-            if (!propsError && propsData) { properties = propsData.properties; foundSource = source; break; }
+        if (!properties || typeof properties !== 'object') {
+            throw new Error(`No properties found for ${foundName}.`);
         }
-        if (!properties) {
-            const { data: anyPropsData, error: anyPropsError } = await supabase.from('compound_properties').select('properties, source').eq('compound_id', compoundId).limit(1).single();
-            if (anyPropsError || !anyPropsData) throw new Error(`No properties found for ${foundName}.`);
-            properties = anyPropsData.properties; foundSource = anyPropsData.source;
-        }
-        if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid props format for ${foundName} from source ${foundSource}.`);
 
         let antoine: AntoineParams | null = null;
         const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure;
@@ -238,9 +229,9 @@ export default function AzeotropeFinderPage() {
 
         let prParams: PrPureComponentParams | null = null;
         let srkParams: SrkPureComponentParams | null = null;
-        const tcPropObj = properties["Critical temperature"];
-        const pcPropObj = properties["Critical pressure"];
-        const omegaPropObj = properties["Acentric factor"];
+        const tcPropObj = properties["CriticalTemperature"] || properties["Critical temperature"];
+        const pcPropObj = properties["CriticalPressure"] || properties["Critical pressure"];
+        const omegaPropObj = properties["AcentricityFactor"] || properties["Acentric factor"];
         if (tcPropObj && pcPropObj && omegaPropObj) {
             const Tc_K_val = parseFloat(tcPropObj.value);
             const pcValue = parseFloat(pcPropObj.value);
@@ -254,18 +245,24 @@ export default function AzeotropeFinderPage() {
         }
         // Validation for PR/SRK params will be done in handleAzeotropeScan
 
-        let uniquacParams: UniquacPureComponentParams | null = null;
-        const rPropObjUQ = properties["UNIQUAC r"] || properties["Van der Waals volume"]; // Renamed to avoid conflict
-        const qPropObjUQ = properties["UNIQUAC q"] || properties["Van der Waals area"]; // Renamed to avoid conflict
-        if (rPropObjUQ && qPropObjUQ) {
-            const r_val = parseFloat(rPropObjUQ.value ?? rPropObjUQ);
-            const q_val = parseFloat(qPropObjUQ.value ?? qPropObjUQ);
-            if (!isNaN(r_val) && !isNaN(q_val)) uniquacParams = { r: r_val, q: q_val };
-        }
+    let uniquacParams: UniquacPureComponentParams | null = null;
+    // Use unified schema keys (matching residue-curve-map and constant-properties):
+    // Prefer UniquacR/UniquacQ; fall back to VanDerWaalsVolume/VanDerWaalsArea
+    const rPropObjUQ = properties["UniquacR"] || properties["VanDerWaalsVolume"] || properties["UNIQUAC r"] || properties["Van der Waals volume"]; 
+    const qPropObjUQ = properties["UniquacQ"] || properties["VanDerWaalsArea"] || properties["UNIQUAC q"] || properties["Van der Waals area"]; 
+    if (rPropObjUQ && qPropObjUQ) {
+      const r_val_raw = (rPropObjUQ.value !== undefined) ? rPropObjUQ.value : rPropObjUQ;
+      const q_val_raw = (qPropObjUQ.value !== undefined) ? qPropObjUQ.value : qPropObjUQ;
+      const r_val = typeof r_val_raw === 'number' ? r_val_raw : parseFloat(String(r_val_raw));
+      const q_val = typeof q_val_raw === 'number' ? q_val_raw : parseFloat(String(q_val_raw));
+      if (!isNaN(r_val) && !isNaN(q_val)) {
+        uniquacParams = { r: r_val, q: q_val };
+      }
+    }
         // Validation for UNIQUAC params will be done in handleAzeotropeScan
         
         let wilsonParams: WilsonPureComponentParams | null = null;
-        const vLPropObj = properties["Liquid molar volume"] || properties["Molar volume"] || properties["Wilson volume"];
+        const vLPropObj = properties["WilsonVolume"] || properties["Liquid molar volume"] || properties["Molar volume"] || properties["Wilson volume"];
         if (vLPropObj) {
             const vL_val_any_unit = parseFloat(vLPropObj.value ?? vLPropObj);
             const vL_units = String(vLPropObj.units).toLowerCase() || 'cm3/mol';
@@ -299,7 +296,7 @@ export default function AzeotropeFinderPage() {
     }
     try {
       const { data, error } = await supabase
-        .from('compounds')
+        .from('compound_properties')
         .select('name')
         .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
         .limit(5);
