@@ -1311,7 +1311,7 @@ const KineticsInput = ({
     }
     try {
       const { data, error } = await supabase
-        .from('compounds')
+        .from('compound_properties')
         .select('name')
         .ilike('name', `${value}%`)
         .limit(5)
@@ -1569,34 +1569,50 @@ const KineticsInput = ({
             const fetchPromises = componentNames.map(async name => {
                 try {
                     const { data: compoundDbData, error: compoundError } = await supabase
-                        .from('compounds')
-                        .select('id, name, molecular_weight')
+                        .from('compound_properties')
+                        .select('id, name, properties')
                         .ilike('name', name)
                         .limit(1)
                         .single();
                     if (compoundError) throw compoundError;
 
-                    const { data: propsData, error: propsError } = await supabase
-                        .from('compound_properties')
-                        .select('properties')
-                        .eq('compound_id', compoundDbData.id)
-                        .limit(1)
-                        .maybeSingle();
-                    if (propsError) throw propsError;
-
-                    if (!propsData) {
-                        throw new Error(`No properties found for compound ID ${compoundDbData.id}`);
+                    if (!compoundDbData || !compoundDbData.properties) {
+                        throw new Error(`No properties found for compound '${name}'`);
                     }
+
+                    // Add debugging
+                    console.log('DMC preset - fetched compound:', name, compoundDbData.properties);
+                    console.log('DMC preset - available keys:', Object.keys(compoundDbData.properties || {}));
+
+                    // Extract molecular weight from properties JSON - handle if it's an object
+                    let molecularWeight = compoundDbData.properties.MolecularWeight || compoundDbData.properties.molecular_weight;
+                    
+                    // Try other possible keys if the standard ones don't work
+                    if (!molecularWeight) {
+                      const possibleKeys = ['MW', 'mw', 'MolarMass', 'molar_mass', 'mol_weight'];
+                      for (const key of possibleKeys) {
+                        if (compoundDbData.properties[key]) {
+                          molecularWeight = compoundDbData.properties[key];
+                          break;
+                        }
+                      }
+                    }
+                    
+                    if (typeof molecularWeight === 'object' && molecularWeight !== null) {
+                      molecularWeight = molecularWeight.value || molecularWeight.Value || molecularWeight.val || Object.values(molecularWeight)[0];
+                    }
+                    
+                    console.log('DMC preset - extracted molecular weight:', molecularWeight);
 
                     return {
                         id: `comp-${compoundDbData.name.replace(/\s/g, '')}`,
                         name: compoundDbData.name,
-                        molarMass: String(compoundDbData.molecular_weight),
+                        molarMass: String(molecularWeight),
                         density: '',
                         reactionData: {},
                         isDbLocked: true,
-                        liquidDensityData: propsData.properties['Liquid density'],
-                        criticalTemp: parseCoefficient(propsData.properties['Critical temperature']),
+                        liquidDensityData: compoundDbData.properties['LiquidDensity'] || compoundDbData.properties['Liquid density'],
+                        criticalTemp: parseCoefficient(compoundDbData.properties['CriticalTemperature'] || compoundDbData.properties['Critical temperature']),
                         phase: gasPhaseNames.includes(compoundDbData.name) ? 'Gas' : 'Liquid',
                     } as ComponentSetup;
                 } catch (error) {
@@ -3175,8 +3191,8 @@ export default function Home() {
       setIsFetching(true)
       try {
                 const { data: compoundDbData, error: compoundError } = await supabase
-                    .from('compounds')
-                    .select('id, name, molecular_weight, cas_number')
+                    .from('compound_properties')
+                    .select('id, name, properties')
                     .ilike('name', name)
                     .limit(1)
                     .single()
@@ -3185,22 +3201,40 @@ export default function Home() {
           throw new Error(`Compound '${name}' not found.`)
         }
 
-        const { data: propsData, error: propsError } = await supabase
-          .from('compound_properties')
-          .select('properties')
-          .eq('compound_id', compoundDbData.id)
-          .limit(1)
-          .single()
-
-        if (propsError || !propsData) {
+        if (!compoundDbData.properties) {
           throw new Error(`No properties found for ${compoundDbData.name}.`)
         }
 
-    const liquidDensityData = propsData.properties['Liquid density']
-    const cas_number = compoundDbData.cas_number;
-        const molarMass = compoundDbData.molecular_weight
+        // Add debugging to see what we're getting
+        console.log('Fetched compound data:', compoundDbData.name, compoundDbData.properties);
+        console.log('Available property keys:', Object.keys(compoundDbData.properties || {}));
+
+    const liquidDensityData = compoundDbData.properties['LiquidDensity'] || compoundDbData.properties['Liquid density']
+    const cas_number = compoundDbData.properties['CasNumber'] || compoundDbData.properties['cas_number'];
+        
+        // Handle molecular weight - it might be an object or a simple value
+        let molarMass = compoundDbData.properties['MolecularWeight'] || compoundDbData.properties['molecular_weight'];
+        
+        // Try other possible keys if the standard ones don't work
+        if (!molarMass) {
+          const possibleKeys = ['MW', 'mw', 'MolarMass', 'molar_mass', 'mol_weight'];
+          for (const key of possibleKeys) {
+            if (compoundDbData.properties[key]) {
+              molarMass = compoundDbData.properties[key];
+              break;
+            }
+          }
+        }
+        
+        if (typeof molarMass === 'object' && molarMass !== null) {
+          // If it's an object, try to extract the value
+          molarMass = molarMass.value || molarMass.Value || molarMass.val || Object.values(molarMass)[0];
+        }
+        
+        console.log('Extracted molar mass:', molarMass);
+        
         const critTemp = parseCoefficient(
-          propsData.properties['Critical temperature']
+          compoundDbData.properties['CriticalTemperature'] || compoundDbData.properties['Critical temperature']
         )
         let densityValue = ''
 
@@ -3254,36 +3288,21 @@ export default function Home() {
     if (!supabase) { throw new Error('Supabase client not initialized.'); }
     try {
         const { data: compoundDbData, error: compoundError } = await supabase
-            .from('compounds')
-            .select('id, name, cas_number')
+            .from('compound_properties')
+            .select('id, name, properties')
             .ilike('name', compoundName)
             .limit(1);
 
         if (compoundError) throw new Error(`Supabase compound query error: ${compoundError.message}`);
         if (!compoundDbData || compoundDbData.length === 0) throw new Error(`Compound '${compoundName}' not found.`);
-        const compoundId = compoundDbData[0].id;
-        const foundName = compoundDbData[0].name;
-        const casNumber = compoundDbData[0].cas_number;
+        const compound = compoundDbData[0];
+        const foundName = compound.name;
+        const casNumber = compound.properties?.CasNumber || compound.properties?.cas_number;
 
-        // Try multiple sources for properties
-        const sourcesToTry = ['chemsep1', 'chemsep2', 'DWSIM', 'biod_db'];
-        let properties: any = null;
-        for (const source of sourcesToTry) {
-            const { data: propsData, error: propsError } = await supabase
-                .from('compound_properties')
-                .select('properties')
-                .eq('compound_id', compoundId)
-                .eq('source', source)
-                .single();
-            if (propsError && propsError.code !== 'PGRST116') console.warn(`Supabase props query error (${source}): ${propsError.message}`);
-            else if (propsData) { properties = propsData.properties; break; }
-        }
+        // Use the properties directly from the compound_properties table
+        const properties = compound.properties;
         if (!properties) {
-            const { data: anyPropsData, error: anyPropsError } = await supabase
-                .from('compound_properties').select('properties, source').eq('compound_id', compoundId).limit(1);
-            if (anyPropsError) console.warn(`Supabase fallback props query error: ${anyPropsError.message}`);
-            else if (anyPropsData && anyPropsData.length > 0) { properties = anyPropsData[0].properties; }
-            else throw new Error(`No properties found for ${foundName}.`);
+            throw new Error(`No properties found for ${foundName}.`);
         }
 
         // Extract Antoine params
