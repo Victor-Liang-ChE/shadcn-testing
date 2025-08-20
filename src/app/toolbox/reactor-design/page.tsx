@@ -35,17 +35,33 @@ import type { CompoundData } from '@/lib/vle-types';
 import { solveODE_BDF as solveODE_BDF_imported, solveLinearSystem as solveLinearSystem_imported } from '@/lib/reactor-solver';
 
 import {
-    NrtlInteractionParams,
-    WilsonInteractionParams,
-    PrInteractionParams,
-    SrkInteractionParams,
-    UniquacInteractionParams,
+    // All VLE calculations and data fetching now come from the multicomponent file
+    calculateNrtlGammaMulticomponent,
+    calculateWilsonGammaMulticomponent,
+    calculateUniquacGammaMulticomponent,
+    calculatePrFugacityCoefficientsMulticomponent,
+    calculateSrkFugacityCoefficientsMulticomponent,
+
+    // Fetching functions (now moved into the multicomponent file)
     fetchNrtlParameters,
     fetchWilsonInteractionParams,
     fetchPrInteractionParams,
     fetchSrkInteractionParams,
     fetchUniquacInteractionParams,
-} from '@/lib/vle-calculations'; // adjust path as needed
+
+    // Type definitions for parameter objects and matrices
+    NrtlInteractionParams,
+    WilsonInteractionParams,
+    PrSrkInteractionParams, // Combined type for PR and SRK
+    UniquacInteractionParams,
+    NrtlParameterMatrix,
+    WilsonParameterMatrix,
+    UniquacParameterMatrix,
+    PrSrkParameterMatrix,
+} from '@/lib/vle-calculations-multicomponent';
+
+// The generic InteractionParams type needs to be redefined here
+type InteractionParams = NrtlInteractionParams | WilsonInteractionParams | PrSrkInteractionParams | UniquacInteractionParams;
 
 // --- Supabase Client Initialization ---
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
@@ -204,7 +220,6 @@ interface ComponentSetup {
 
 // --- NEW: Define types for the fluid package and parameters ---
 type VleFluidPackage = 'Ideal' | 'NRTL' | 'Wilson' | 'UNIQUAC' | 'Peng-Robinson' | 'SRK';
-type InteractionParams = NrtlInteractionParams | WilsonInteractionParams | PrInteractionParams | SrkInteractionParams | UniquacInteractionParams;
 
 type ReactorType = 'PFR' | 'CSTR'
 type GraphType = 'selectivity' | 'volume' | 'conversion' | 'flowrates' | 'composition' | 'selectivityVsConversion';
@@ -363,7 +378,14 @@ const calculateCstrData = (
     simBasis: { limitingReactantId: string; desiredProductId: string },
     reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
     pressure_bar: number,
-    targetProduction_kta: number
+    targetProduction_kta: number,
+    // --- ADD henryUnit PARAM ---
+    henryUnit: 'Pa' | 'kPa' | 'bar',
+    // VLE parameters
+    fluidPackage?: VleFluidPackage,
+    vleComponentData?: Map<string, CompoundData>,
+    interactionParameters?: Map<string, InteractionParams | null>,
+    henryTemperatures?: { id: string; temp: string }[] // 👈 ADD THIS
 ) => {
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
@@ -445,7 +467,12 @@ const calculateCstrData = (
             reactionPhase,
             pressure_bar,
             tempK,
-            last_F_out_basis // Pass the last result as the initial guess
+            last_F_out_basis, // Pass the last result as the initial guess
+            henryUnit,
+            fluidPackage,
+            vleComponentData,
+            interactionParameters,
+            henryTemperatures // 👈 ADD THIS
         );
 
         // After successfully getting F_out_basis, update the guess for the next iteration
@@ -600,219 +627,203 @@ const calculatePfrData = (
 
 // Local linear solver and BDF solver removed — using shared implementations from '@/lib/reactor-solver'
 
-// Add this new, more robust solver function to your file.
 const solveCSTR_Robust = (
-  parsedReactions: any,
-  components: ComponentSetup[],
-  V: number, // Liters
-  initialFlowRates: { [key: string]: number },
+    parsedReactions: any,
+    components: ComponentSetup[],
+    V: number, // Liters
+    initialFlowRates: { [key: string]: number },
     reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
-  totalPressure_bar: number,
-  temp_K: number,
-  initialGuess?: number[]
+    totalPressure_bar: number,
+    temp_K: number,
+    initialGuess?: number[],
+    henryUnit?: 'Pa' | 'kPa' | 'bar',
+    fluidPackage?: VleFluidPackage,
+    vleComponentData?: Map<string, CompoundData>,
+    interactionParameters?: Map<string, InteractionParams | null>,
+    henryTemperatures?: { id: string; temp: string }[]
 ): { [key: string]: number } => {
-  const componentNames = parsedReactions.allInvolvedComponents.map((c: any) => c.name);
-  let F = initialGuess ? [...initialGuess] : componentNames.map((name: string) => initialFlowRates[name] || 0);
-  const n = F.length;
-  const max_iter = 100;
-  const tol = 1e-9;
+    const componentNames = parsedReactions.allInvolvedComponents.map((c: any) => c.name);
+    let F = initialGuess ? [...initialGuess] : componentNames.map((name: string) => initialFlowRates[name] || 0);
+    const n = F.length;
+    const max_iter = 100;
+    const tol = 1e-9;
 
-  const G = (current_F: number[]): number[] => {
-    const F_dict = componentNames.reduce((acc: { [key: string]: number }, name: string, i: number) => { acc[name] = current_F[i]; return acc; }, {} as {[key:string]:number});
-    let rates: number[];
+    const G = (current_F: number[]): number[] => {
+        const F_dict = componentNames.reduce((acc: { [key: string]: number }, name: string, i: number) => { acc[name] = current_F[i]; return acc; }, {} as { [key: string]: number });
+        let rates: number[];
+        const F_total = current_F.reduce((sum, f) => sum + Math.max(0, f), 0);
+        if (F_total < 1e-12) return Array(n).fill(0).map((_, i) => (initialFlowRates[componentNames[i]] || 0) - current_F[i]);
 
-    if (reactionPhase === 'Liquid') {
-        let v = 0;
-        componentNames.forEach((name: string) => {
-            const compInfo = components.find(c => c.name === name);
-            const molarMass = parseFloat(compInfo?.molarMass || '1');
-            const density = parseFloat(compInfo?.density || '1000');
-            if (density > 0) v += (F_dict[name] * molarMass) / density;
-        });
-        if (v < 1e-9) v = 1e-9; // v is in Liters
-        
-        let concentrations: { [key: string]: number } = {};
-        componentNames.forEach((name: string) => concentrations[name] = Math.max(0, F_dict[name]) / v);
-        
-        rates = parsedReactions.reactions.map((reaction: any) => {
-            let rate = reaction.rateConstantAtT || 0;
-            reaction.reactants.forEach((reactant: any) => {
-                rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
-            });
-            return rate; // mol/(L*s)
-        });
+        const rateBasis: { [key: string]: number } = {};
+        const allCompSetupData = parsedReactions.allInvolvedComponents.map((c: any) => components.find(comp => comp.name === c.name)).filter(Boolean) as ComponentSetup[];
 
-    } else if (reactionPhase === 'Mixed') {
-        // --- START: MIXED PHASE BLOCK ---
-        let concentrations_L: { [key: string]: number } = {};
+        if (reactionPhase === 'Mixed') {
+            const liquidComps = allCompSetupData.filter(c => c.phase === 'Liquid');
+            const gasComps = allCompSetupData.filter(c => c.phase === 'Gas');
+            const liquidCompNames = liquidComps.map(c => c.name);
 
-        // 1. Calculate properties of the liquid phase
-        let q_liquid_L_per_s = 0;
-        let F_liquid_total = 0;
-        components.filter(c => c.phase === 'Liquid').forEach(comp => {
-            const flow = F_dict[comp.name] || 0;
-            if (flow > 0) {
-                const molarMass = parseFloat(comp.molarMass || '1');
-                const density = parseFloat(comp.density || '1000'); // g/L
-                if (density > 0) {
-                    q_liquid_L_per_s += (flow * molarMass) / density;
-                    F_liquid_total += flow;
+            const F_liquid_total = liquidCompNames.reduce((sum, name) => sum + (F_dict[name] || 0), 0);
+            const liquidMoleFractions = F_liquid_total > 0 ? liquidCompNames.map(name => (F_dict[name] || 0) / F_liquid_total) : [];
+
+            let liquidGammas = new Map(liquidCompNames.map(name => [name, 1.0]));
+            if (fluidPackage !== 'Ideal' && liquidComps.length > 0 && interactionParameters) {
+                const liquidVleData = liquidComps.map(c => ({ ...(vleComponentData?.get(c.id)), phase: c.phase })) as any[];
+                
+                // --- START OF FIX: Remap interaction parameter keys to local indices ---
+                const originalIndexToLocalIndex = new Map<number, number>();
+                liquidComps.forEach((comp, localIndex) => {
+                    const originalIndex = allCompSetupData.findIndex(c => c.id === comp.id);
+                    if (originalIndex !== -1) {
+                        originalIndexToLocalIndex.set(originalIndex, localIndex);
+                    }
+                });
+
+                const localInteractionParams = new Map<string, InteractionParams>();
+                for (const [key, value] of interactionParameters.entries()) {
+                    const [i_orig_str, j_orig_str] = key.split('-');
+                    const i_orig = parseInt(i_orig_str, 10);
+                    const j_orig = parseInt(j_orig_str, 10);
+
+                    if (originalIndexToLocalIndex.has(i_orig) && originalIndexToLocalIndex.has(j_orig) && value) {
+                        const i_local = originalIndexToLocalIndex.get(i_orig)!;
+                        const j_local = originalIndexToLocalIndex.get(j_orig)!;
+                        localInteractionParams.set(`${i_local}-${j_local}`, value);
+                    }
+                }
+                // --- END OF FIX ---
+
+                let calculatedGammas: number[] | null = null;
+                switch (fluidPackage) {
+                    case 'NRTL': calculatedGammas = calculateNrtlGammaMulticomponent(liquidVleData, liquidMoleFractions, temp_K, localInteractionParams as any); break;
+                    case 'Wilson': calculatedGammas = calculateWilsonGammaMulticomponent(liquidVleData, liquidMoleFractions, temp_K, localInteractionParams as any); break;
+                    case 'UNIQUAC': calculatedGammas = calculateUniquacGammaMulticomponent(liquidVleData, liquidMoleFractions, temp_K, localInteractionParams as any); break;
+                }
+                if (calculatedGammas) {
+                    liquidCompNames.forEach((name, i) => liquidGammas.set(name, calculatedGammas[i]));
                 }
             }
-        });
-        if (q_liquid_L_per_s < 1e-12) q_liquid_L_per_s = 1e-12;
-        if (F_liquid_total < 1e-12) F_liquid_total = 1e-12;
-        const C_total_liquid_mol_L = F_liquid_total / q_liquid_L_per_s;
 
-        // 2. Set concentrations for liquid components
-        components.filter(c => c.phase === 'Liquid').forEach(comp => {
-            concentrations_L[comp.name] = (F_dict[comp.name] || 0) / q_liquid_L_per_s;
-        });
-        
-        // 3. Calculate concentrations for dissolved gas components
-        const F_total_all = current_F.reduce((sum, f) => sum + Math.max(0, f), 0);
-        if (F_total_all > 1e-12) {
-             components.filter(c => c.phase === 'Gas').forEach(comp => {
-                const partial_pressure_bar = (F_dict[comp.name] / F_total_all) * totalPressure_bar;
-                const H_bar = getHenryConstant(temp_K - 273.15, comp.henryData, (window as any).__HENRY_TEMPS || []); // A bit of a hack to get temps
-                
-                if (H_bar && H_bar > 0) {
-                    const mole_fraction_in_liquid = partial_pressure_bar / H_bar;
-                    concentrations_L[comp.name] = mole_fraction_in_liquid * C_total_liquid_mol_L;
+            let q_liquid_L_per_s = 0;
+            liquidComps.forEach(comp => {
+                const flow = F_dict[comp.name] || 0;
+                if (flow > 0) {
+                    q_liquid_L_per_s += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
+                }
+            });
+            if (q_liquid_L_per_s < 1e-12) q_liquid_L_per_s = 1e-12;
+            const C_total_liquid_mol_L = F_liquid_total > 0 ? F_liquid_total / q_liquid_L_per_s : 0;
+
+            const concentrations_L: { [key: string]: number } = {};
+            liquidComps.forEach(comp => {
+                concentrations_L[comp.name] = (F_dict[comp.name] || 0) / q_liquid_L_per_s;
+                rateBasis[comp.name] = (liquidGammas.get(comp.name) || 1.0) * Math.max(0, concentrations_L[comp.name]);
+            });
+
+            const definedTemps = (window as any).__HENRY_TEMPS || [];
+            gasComps.forEach(comp => {
+                const partial_pressure_bar = (F_dict[comp.name] / F_total) * totalPressure_bar;
+                let H_val = getHenryConstant(temp_K - 273.15, comp.henryData, definedTemps);
+                if (H_val !== null) {
+                    if (henryUnit === 'Pa') H_val /= 1e5; else if (henryUnit === 'kPa') H_val /= 100;
+                }
+                if (H_val && H_val > 0) {
+                    concentrations_L[comp.name] = (partial_pressure_bar / H_val) * C_total_liquid_mol_L;
                 } else {
                     concentrations_L[comp.name] = 0;
                 }
+                rateBasis[comp.name] = 1.0 * Math.max(0, concentrations_L[comp.name]);
             });
-        }
-        
-        // 4. Calculate rates based on liquid-phase concentrations
-    rates = calculateNetReactionRates(parsedReactions.reactions, components, concentrations_L, {}, temp_K); // Already in mol/L/s
-        // --- END: MIXED PHASE BLOCK ---
-    } else { // Gas Phase
-        const F_total = current_F.reduce((sum: number, f: number) => sum + Math.max(0, f), 0);
-        let concentrations_L: { [key: string]: number } = {};
-        let partialPressures_Pa: { [key: string]: number } = {};
+            rates = calculateNetReactionRates(parsedReactions.reactions, components, rateBasis, {}, temp_K);
 
-        if (F_total < 1e-9) {
-            componentNames.forEach((name: string) => {
-                concentrations_L[name] = 0;
-                partialPressures_Pa[name] = 0;
-            });
-        } else {
-            const P_Pa = convertUnit.pressure.barToPa(totalPressure_bar);
-
-            // First, calculate concentration in mol/m³
-            const concentrations_m3 = componentNames.reduce((acc: { [key: string]: number }, name: string) => {
-                acc[name] = (Math.max(0, F_dict[name]) / F_total) * P_Pa / (R * temp_K);
-                return acc;
-            }, {} as { [key: string]: number });
-
-            // Now, correctly calculate and assign the values needed for the rate law
-            for (const name of componentNames) {
-                concentrations_L[name] = convertUnit.concentration.molPerCubicMeterToMolPerLiter(concentrations_m3[name]);
-                partialPressures_Pa[name] = concentrations_m3[name] * R * temp_K;
-            }
-        }
-        
-        // --- START: Replace the 'rates' calculation with this corrected block ---
-        rates = parsedReactions.reactions.map((reaction: any) => {
-            const k_c = reaction.rateConstantAtT || 0;
-            let rate: number;
-            const usePartialPressure = reaction.rateLawBasis === 'partialPressure';
-
-            if (usePartialPressure) {
-                let totalOrder = 0;
-                reaction.reactants.forEach((r: any) => { totalOrder += r.reactionOrderNum || 0; });
-                const k_p = convertUnit.kinetics.kcToKp(k_c, temp_K, totalOrder);
-                rate = k_p;
-            } else {
-                rate = k_c;
-            }
-
-            reaction.reactants.forEach((reactant: any) => {
-                if (usePartialPressure) {
-                    rate *= Math.pow(partialPressures_Pa[reactant.name], reactant.reactionOrderNum || 0);
-                } else {
-                    rate *= Math.pow(concentrations_L[reactant.name], reactant.reactionOrderNum || 0);
+        } else if (reactionPhase === 'Liquid') {
+            const moleFractions = componentNames.map((name: string) => (F_dict[name] || 0) / F_total);
+            let gammas = Array(n).fill(1.0);
+            const allVleData = allCompSetupData.map(c => vleComponentData?.get(c.id)) as any[];
+            if (fluidPackage !== 'Ideal' && allVleData.every(Boolean) && interactionParameters) {
+                switch (fluidPackage) {
+                    case 'NRTL': gammas = calculateNrtlGammaMulticomponent(allVleData, moleFractions, temp_K, interactionParameters as any) || gammas; break;
+                    case 'Wilson': gammas = calculateWilsonGammaMulticomponent(allVleData, moleFractions, temp_K, interactionParameters as any) || gammas; break;
+                    case 'UNIQUAC': gammas = calculateUniquacGammaMulticomponent(allVleData, moleFractions, temp_K, interactionParameters as any) || gammas; break;
                 }
+            }
+            let v_Liters = 0;
+            componentNames.forEach((name: string) => {
+                const compInfo = components.find(c => c.name === name);
+                v_Liters += (F_dict[name] * parseFloat(compInfo?.molarMass || '1')) / parseFloat(compInfo?.density || '1000');
             });
-            return rate;
+            if (v_Liters < 1e-9) v_Liters = 1e-9;
+            componentNames.forEach((name: string, i: number) => {
+                rateBasis[name] = gammas[i] * Math.max(0, F_dict[name]) / v_Liters;
+            });
+            rates = calculateNetReactionRates(parsedReactions.reactions, components, rateBasis, {}, temp_K);
+
+        } else { // Gas Phase
+            const moleFractions = componentNames.map((name: string) => (F_dict[name] || 0) / F_total);
+            let phis = Array(n).fill(1.0);
+            const allVleData = allCompSetupData.map(c => vleComponentData?.get(c.id)) as any[];
+            if (fluidPackage !== 'Ideal' && allVleData.every(Boolean) && interactionParameters) {
+                 switch (fluidPackage) {
+                    case 'Peng-Robinson': phis = calculatePrFugacityCoefficientsMulticomponent(allVleData, moleFractions, temp_K, totalPressure_bar * 1e5, interactionParameters as any, 'vapor') || phis; break;
+                    case 'SRK': phis = calculateSrkFugacityCoefficientsMulticomponent(allVleData, moleFractions, temp_K, totalPressure_bar * 1e5, interactionParameters as any, 'vapor') || phis; break;
+                }
+            }
+            const P_Pa = convertUnit.pressure.barToPa(totalPressure_bar);
+            componentNames.forEach((name: string, i: number) => {
+                rateBasis[name] = phis[i] * moleFractions[i] * P_Pa;
+            });
+            rates = calculateNetReactionRates(parsedReactions.reactions, components, {}, rateBasis, temp_K);
+        }
+
+        return componentNames.map((name: string, i: number) => {
+            let netRateOfFormation = 0;
+            parsedReactions.reactions.forEach((reaction: any, j: number) => {
+                const reactantInfo = reaction.reactants.find((r: any) => r.name === name);
+                const productInfo = reaction.products.find((p: any) => p.name === name);
+                if (reactantInfo) netRateOfFormation -= (reactantInfo.stoichiometricCoefficient || 0) * rates[j];
+                if (productInfo) netRateOfFormation += (productInfo.stoichiometricCoefficient || 0) * rates[j];
+            });
+            return (initialFlowRates[name] || 0) - current_F[i] + netRateOfFormation * V;
         });
-        // --- END: Replacement block ---
+    };
+
+    // --- Newton-Raphson solver part is unchanged ---
+    for (let iter = 0; iter < max_iter; iter++) {
+        const G_current = G(F);
+        const errorNorm = Math.sqrt(G_current.reduce((s, v) => s + v * v, 0));
+        if (errorNorm < tol) break;
+        const J_G: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+        for (let j = 0; j < n; j++) {
+            const F_plus_h = [...F];
+            const h = (Math.abs(F[j]) || 1e-8) * 1e-7;
+            F_plus_h[j] += h;
+            const G_plus_h = G(F_plus_h);
+            for (let i = 0; i < n; i++) J_G[i][j] = (G_plus_h[i] - G_current[i]) / h;
+        }
+        const delta_F = solveLinearSystem_imported(J_G, G_current.map((val: number) => -val));
+        if (!delta_F) break;
+        let alpha = 1.0;
+        const beta = 0.5;
+        const c = 1e-4;
+        let F_new = F;
+        let step_accepted = false;
+        for (let ls_iter = 0; ls_iter < 10; ls_iter++) {
+            F_new = F.map((val: number, i: number) => val + alpha * delta_F[i]);
+            F_new = F_new.map((v: number) => Math.max(0, v));
+            const G_new = G(F_new);
+            const newErrorNorm = Math.sqrt(G_new.reduce((s, v) => s + v * v, 0));
+            if (newErrorNorm < (1 - c * alpha) * errorNorm) {
+                step_accepted = true;
+                break;
+            }
+            alpha *= beta;
+        }
+        if (step_accepted) { F = F_new; }
+        else { break; }
     }
-
-    return componentNames.map((name: string, i: number) => {
-      let netRateOfFormation = 0; // r_j in mol/(L*s)
-      parsedReactions.reactions.forEach((reaction: any, j: number) => {
-        const reactantInfo = reaction.reactants.find((r: any) => r.name === name);
-        const productInfo = reaction.products.find((p: any) => p.name === name);
-        if (reactantInfo) netRateOfFormation -= (reactantInfo.stoichiometricCoefficient || 0) * rates[j];
-        if (productInfo) netRateOfFormation += (productInfo.stoichiometricCoefficient || 0) * rates[j];
-      });
-      // F0 (mol/s) - F (mol/s) + r (mol/L/s) * V (L) = mol/s
-      return (initialFlowRates[name] || 0) - current_F[i] + netRateOfFormation * V;
-    });
-  };
-
-  // The rest of the function (Newton's method solver) is unchanged...
-  for (let iter = 0; iter < max_iter; iter++) {
-    const G_current = G(F);
-    const errorNorm = Math.sqrt(G_current.reduce((s, v) => s + v * v, 0));
-    console.log(`[CSTR Solver] Newton Iteration #${iter}, Error Norm = ${errorNorm.toExponential()}`);
-    
-    if (errorNorm < tol) break;
-    
-    // --- Calculate Jacobian and Newton Step (same as before) ---
-    const J_G: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
-    for (let j = 0; j < n; j++) {
-        const F_plus_h = [...F];
-        const h = (Math.abs(F[j]) || 1e-8) * 1e-7;
-        F_plus_h[j] += h;
-        const G_plus_h = G(F_plus_h);
-        for (let i = 0; i < n; i++) J_G[i][j] = (G_plus_h[i] - G_current[i]) / h;
-    }
-
-    const delta_F = solveLinearSystem_imported(J_G, G_current.map((val: number) => -val));
-    if (!delta_F) break; // Jacobian is singular, can't proceed
-    
-    // --- NEW: Backtracking Line Search to ensure stability ---
-    let alpha = 1.0; // Initial step size (full Newton step)
-    const beta = 0.5; // Step reduction factor
-    const c = 1e-4; // Armijo condition constant
-    let F_new = F;
-    let step_accepted = false;
-
-    for (let ls_iter = 0; ls_iter < 10; ls_iter++) { // Max 10 line search steps
-      F_new = F.map((val: number, i: number) => val + alpha * delta_F[i]);
-
-      // Ensure physical solution (no negative flows)
-    // Project candidate to non-negative to avoid rejecting physically-valid small steps
-    F_new = F_new.map((v: number) => Math.max(0, v));
-      
-      const G_new = G(F_new);
-      const newErrorNorm = Math.sqrt(G_new.reduce((s, v) => s + v * v, 0));
-
-      // Check for sufficient decrease (Armijo condition)
-      if (newErrorNorm < (1 - c * alpha) * errorNorm) {
-        step_accepted = true;
-        break;
-      }
-      
-      alpha *= beta; // Reduce step size and try again
-    }
-    
-    if (step_accepted) {
-      F = F_new;
-    } else {
-      break; // Line search failed, exit main loop
-    }
-    // --- End of Line Search ---
-  }
-
-  return componentNames.reduce((acc: { [key: string]: number }, name: string, index: number) => {
-    acc[name] = F[index] > 0 ? F[index] : 0;
-    return acc;
-  }, {} as { [key: string]: number });
+    return componentNames.reduce((acc: { [key: string]: number }, name: string, index: number) => {
+        acc[name] = F[index] > 0 ? F[index] : 0;
+        return acc;
+    }, {} as { [key: string]: number });
 };
 
 const calculateNetReactionRates = (
@@ -919,8 +930,15 @@ const calculatePfrData_Optimized = (
     molarRatios: Array<{ numeratorId: string; value: number }>,
     simBasis: { limitingReactantId: string; desiredProductId: string },
     targetProduction_kta: number,
-    reactionPhase: 'Liquid' | 'Gas'
+    reactionPhase: 'Liquid' | 'Gas',
+    // --- ADD THESE NEW PARAMETERS ---
+    fluidPackage?: VleFluidPackage,
+    vleComponentData?: Map<string, CompoundData>,
+    interactionParameters?: Map<string, InteractionParams | null>
 ) => {
+    // Add this log at the top
+    console.log(`[DEBUG-PFR] 🧠 PFR solver using package: ${fluidPackage}. Received interaction params:`, interactionParameters);
+
     // 1. Initial Setup
     const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
     const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
@@ -972,46 +990,108 @@ const calculatePfrData_Optimized = (
         };
     });
 
-    // 3. Define a LEANER Rate Law Function (dF/dV = r)
+    // 3. Define a ROBUST Rate Law Function (dF/dV = r)
     const dFdV = (V: number, F_vec: number[]): number[] => {
-        let concentrations_L: { [key: string]: number } = {};
-        let partialPressures_Pa: { [key: string]: number } = {};
+        // This object will hold the basis for the rate law (activity or fugacity)
+        const rateBasis: { [key: string]: number } = {};
+        const F_total = F_vec.reduce((sum, f) => sum + Math.max(0, f), 0);
+        if (F_total < 1e-12) return Array(allComponentNames.length).fill(0);
+
+        const moleFractions = F_vec.map(f => Math.max(0, f) / F_total);
 
         if (reactionPhase === 'Liquid') {
-            let q_basis_L = 0;
+            // --- Activity Coefficient Models ---
+            let gammas: number[] = Array(allComponentNames.length).fill(1.0); // Default to ideal
+
+            // Get component data for multicomponent calculations
+            const allCompData = components.map(c => {
+                const data = vleComponentData?.get(c.id);
+                if (!data) return null;
+                return { ...data, phase: c.phase }; // Merge phase property
+            }).filter(Boolean) as (CompoundData & { phase?: 'Liquid' | 'Gas' })[];
+            
+            if (fluidPackage !== 'Ideal' && allCompData.length === allComponentNames.length && interactionParameters) {
+                switch (fluidPackage) {
+                    case 'NRTL':
+                        gammas = calculateNrtlGammaMulticomponent(allCompData, moleFractions, tempK, interactionParameters as unknown as NrtlParameterMatrix) || gammas;
+                        // Add this log to see the result
+                        console.log('[DEBUG-PFR] NRTL gammas:', gammas);
+                        break;
+                    case 'Wilson':
+                        gammas = calculateWilsonGammaMulticomponent(allCompData, moleFractions, tempK, interactionParameters as unknown as WilsonParameterMatrix) || gammas;
+                        // Add this log to see the result
+                        console.log('[DEBUG-PFR] Wilson gammas:', gammas);
+                        break;
+                    case 'UNIQUAC':
+                        gammas = calculateUniquacGammaMulticomponent(allCompData, moleFractions, tempK, interactionParameters as unknown as UniquacParameterMatrix) || gammas;
+                        // Add this log to see the result
+                        console.log('[DEBUG-PFR] UNIQUAC gammas:', gammas);
+                        break;
+                }
+            }
+
+            // Calculate liquid volumetric flow rate and concentrations
+            let q_Liters = 0;
             allComponentNames.forEach((name, i) => {
                 const flow = F_vec[i];
                 if (flow > 0) {
                     const comp = components[i];
-                    q_basis_L += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
+                    q_Liters += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
                 }
             });
-            if (q_basis_L < 1e-9) q_basis_L = 1e-9;
-            allComponentNames.forEach((name, i) => concentrations_L[name] = Math.max(0, F_vec[i]) / q_basis_L);
+            if (q_Liters < 1e-9) q_Liters = 1e-9;
+            
+            // Calculate activity = gamma * concentration
+            allComponentNames.forEach((name, i) => {
+                const concentration = Math.max(0, F_vec[i]) / q_Liters;
+                rateBasis[name] = gammas[i] * concentration;
+            });
+
         } else { // Gas Phase
-            const F_tot = F_vec.reduce((sum, f) => sum + Math.max(0, f), 0);
-            if (F_tot < 1e-12) return Array(allComponentNames.length).fill(0);
+            // --- Fugacity Coefficient Models (Equations of State) ---
+            let phis: number[] = Array(allComponentNames.length).fill(1.0); // Default to ideal
+
+            // Get component data for multicomponent calculations
+            const allCompData = components.map(c => vleComponentData?.get(c.id)).filter(Boolean) as CompoundData[];
+
+            if (fluidPackage !== 'Ideal' && allCompData.length === allComponentNames.length && interactionParameters) {
+                switch (fluidPackage) {
+                    case 'Peng-Robinson':
+                        phis = calculatePrFugacityCoefficientsMulticomponent(allCompData, moleFractions, tempK, pressure_bar * 1e5, interactionParameters as unknown as PrSrkParameterMatrix, 'vapor') || phis;
+                        // Add this log to see the result
+                        console.log('[DEBUG-PFR] Peng-Robinson phis:', phis);
+                        break;
+                    case 'SRK':
+                        phis = calculateSrkFugacityCoefficientsMulticomponent(allCompData, moleFractions, tempK, pressure_bar * 1e5, interactionParameters as unknown as PrSrkParameterMatrix, 'vapor') || phis;
+                        // Add this log to see the result
+                        console.log('[DEBUG-PFR] SRK phis:', phis);
+                        break;
+                }
+            }
+
+            // Calculate fugacity = phi * partial pressure
             const P_Pa = convertUnit.pressure.barToPa(pressure_bar);
             allComponentNames.forEach((name, i) => {
-                const C_m3 = (Math.max(0, F_vec[i]) / F_tot) * P_Pa / (R * tempK);
-                concentrations_L[name] = convertUnit.concentration.molPerCubicMeterToMolPerLiter(C_m3);
-                partialPressures_Pa[name] = C_m3 * R * tempK;
+                const partialPressure = moleFractions[i] * P_Pa;
+                rateBasis[name] = phis[i] * partialPressure;
             });
         }
-
+        
+        // --- Calculate net rates using the new rateBasis (activity or fugacity) ---
         const reactionNetRates = parsedReactions.map(pReaction => {
             let rate_f = pReaction.k_f;
             let rate_r = pReaction.k_r;
-            const usePartialPressure = pReaction.rateLawBasis === 'partialPressure';
-            
+            // Use pressure-based rate constants if the basis is fugacity
+            const usePartialPressure = pReaction.rateLawBasis === 'partialPressure' || reactionPhase === 'Gas';
+
             pReaction.participants.forEach(p => {
                 if (p.stoichiometry < 0 && p.order > 0) {
-                    const basis = usePartialPressure ? partialPressures_Pa[p.name] : concentrations_L[p.name];
-                    rate_f *= Math.pow(Math.max(0, basis), p.order);
+                    const basisValue = (reactionPhase === 'Liquid') ? rateBasis[p.name] : rateBasis[p.name];
+                    rate_f *= Math.pow(Math.max(0, basisValue), p.order);
                 }
                 if (p.stoichiometry > 0 && p.orderReverse > 0) {
-                    const basis = usePartialPressure ? partialPressures_Pa[p.name] : concentrations_L[p.name];
-                    rate_r *= Math.pow(Math.max(0, basis), p.orderReverse);
+                    const basisValue = (reactionPhase === 'Liquid') ? rateBasis[p.name] : rateBasis[p.name];
+                    rate_r *= Math.pow(Math.max(0, basisValue), p.orderReverse);
                 }
             });
             return rate_f - (pReaction.isEquilibrium ? rate_r : 0);
@@ -1024,9 +1104,13 @@ const calculatePfrData_Optimized = (
             });
         });
 
+        // The ODE solver expects dF/dV in mol/L/s for liquid and mol/m³/s for gas.
+        // Our rate laws are already in mol/L/s (for liquid) or based on Pa (for gas).
+        // The gas phase rate calculation needs a conversion factor.
         if (reactionPhase === 'Gas') {
-            for (let i = 0; i < dF_vec.length; i++) dF_vec[i] *= 1000;
+             for (let i = 0; i < dF_vec.length; i++) dF_vec[i] *= 1000;
         }
+
         return dF_vec;
     };
 
@@ -2150,31 +2234,36 @@ const KineticsInput = ({
                     {/* ▼▼▼ CHANGE IS HERE ▼▼▼ */}
                     {/* The <div> with "overflow-x-auto" has been removed to fix clipping */}
                     <>
-                                                {/* --- FIX: Restored and Corrected Two-Row Header --- */}
+                                                {/* --- UPDATED TWO-ROW HEADER --- */}
                                                 <div
                                                     className="grid items-center text-xs font-medium text-muted-foreground"
                                                     style={{ gridTemplateColumns: componentsGridCols }}
                                                 >
-                                                    {/* This div now correctly spans the columns before the reactions */}
-                                                    <div
-                                                        style={{
-                                                            gridColumn: reactionPhase === 'Gas' ? 'span 3' : 'span 4',
-                                                        }}
-                                                    />
+                                                    {/* Row 1: Main Labels */}
+                                                    <div /> {/* Spacer for trash icon */}
+                                                    <div className="text-center">Name</div>
+                                                    <div className="text-center">Molar Weight</div>
+                                                    {reactionPhase === 'Mixed' ? (
+                                                        <div className="text-center">Phase</div>
+                                                    ) : reactionPhase === 'Liquid' ? (
+                                                        <div className="text-center">Density</div>
+                                                    ) : null}
+
+                                                    {/* Reaction Titles */}
                                                     {reactionsSetup.map((r, index) => {
-                                                        const numSideReactions = reactionsSetup.length - 1;
-                                                        let reactionTitle = 'Primary Reaction';
+                                                        const numSideReactions = reactionsSetup.length - 1
+                                                        let reactionTitle = 'Primary Reaction'
                                                         if (index > 0) {
                                                             reactionTitle =
                                                                 numSideReactions === 1
                                                                     ? 'Side Reaction'
-                                                                    : `Side Reaction ${index}`;
+                                                                    : `Side Reaction ${index}`
                                                         }
                                                         return (
                                                             <div key={r.id} className="text-center col-span-2">
                                                                 {reactionTitle}
                                                             </div>
-                                                        );
+                                                        )
                                                     })}
                                                 </div>
 
@@ -2182,14 +2271,17 @@ const KineticsInput = ({
                                                     className="grid items-center text-xs font-medium text-muted-foreground pb-2 border-b"
                                                     style={{ gridTemplateColumns: componentsGridCols }}
                                                 >
+                                                    {/* Row 2: Units and Sub-headers */}
                                                     <div /> {/* Spacer for trash icon */}
-                                                    <div className="text-center">Name</div>
+                                                    <div /> {/* Spacer for Name */}
                                                     <div className="text-center">(g/mol)</div>
                                                     {reactionPhase === 'Mixed' ? (
-                                                        <div className="text-center">Phase</div>
+                                                        <div /> 
                                                     ) : reactionPhase === 'Liquid' ? (
                                                         <div className="text-center">(g/L)</div>
                                                     ) : null}
+
+                                                    {/* Reaction Sub-headers */}
                                                     {reactionsSetup.map(r => (
                                                         <React.Fragment key={r.id}>
                                                             <div className="text-center">Stoich.</div>
@@ -2523,6 +2615,9 @@ const ReactorSimulator = ({
     reactorTypes, setReactorTypes,
     henryTemperatures,
     henryUnit,
+    fluidPackage,
+    vleComponentData,
+    interactionParameters,
 }: { 
     onBack: () => void, 
     reactions: ReactionSetup[], 
@@ -2541,6 +2636,9 @@ const ReactorSimulator = ({
     setReactorTypes: React.Dispatch<React.SetStateAction<{ pfr: boolean; cstr: boolean }>>,
     henryTemperatures: { id: string; temp: string }[],
     henryUnit: 'Pa' | 'kPa' | 'bar',
+    fluidPackage: VleFluidPackage,
+    vleComponentData: Map<string, CompoundData>,
+    interactionParameters: Map<string, InteractionParams | null>,
 }) => {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === 'dark';
@@ -2612,7 +2710,11 @@ const ReactorSimulator = ({
             if (reactorType === 'PFR') {
                 const pfrPhase: 'Liquid' | 'Gas' = (reactionPhase === 'Mixed') ? 'Gas' : reactionPhase;
                 dataToShow = calculatePfrData_Optimized(
-                    reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate), pfrPhase
+                    reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate), pfrPhase,
+                    // --- ADD THESE ---
+                    fluidPackage,
+                    vleComponentData,
+                    interactionParameters
                 );
             } else { // CSTR
                 const F_A0_guess = 10.0;
@@ -2627,7 +2729,9 @@ const ReactorSimulator = ({
                 
                 dataToShow = calculateCstrData(
                     reactions, components, initialFlowRates, tempK, simBasis, 
-                    reactionPhase, pressure, parseFloat(prodRate)
+                    reactionPhase, pressure, parseFloat(prodRate), henryUnit,
+                    fluidPackage, vleComponentData, interactionParameters,
+                    henryTemperatures // 👈 ADD THIS
                 );
             }
             
@@ -2705,7 +2809,7 @@ const ReactorSimulator = ({
     // Return ALL series and legends. ECharts handles showing/hiding.
     return { series: allSeries, xAxis: xLabel, yAxis: yLabel, legend: allLegends, yMax: yAxisMax }
 
-}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate, henryTemperatures, henryUnit])
+}, [reactorTypes, reactionPhase, pressure, molarRatios, temperature, graphType, reactions, components, simBasis, prodRate, henryTemperatures, henryUnit, fluidPackage, vleComponentData, interactionParameters])
 
   const graphData = generateGraphData();
     // --- MODIFICATION: Set chart title based on selection ---
@@ -3256,20 +3360,24 @@ export default function Home() {
   }
 
   // --- NEW: Prepare VLE data function (fetches pure component data and binary params) ---
-  const prepareVleData = async () => {
-    if (fluidPackage === 'Ideal' || !supabase) {
-      return true; // Nothing to fetch for Ideal model
-    }
+    const prepareVleData = async () => {
+        // Skip fetching VLE params when using Ideal model or when the reaction phase is not Mixed
+        if (fluidPackage === 'Ideal' || reactionPhase !== 'Mixed' || !supabase) {
+            setInteractionParameters(new Map()); // Clear params just in case
+            return true; // Immediately exit with success
+        }
     
-    setLoading(true); // Assuming you have a loading state
-    setError(null);   // Assuming you have an error state
+    console.log(`[DEBUG] 🚀 Starting VLE data preparation for: ${fluidPackage}`);
+    console.log(`🔵 [Debug] Starting to build ${fluidPackage} Parameter Map for ${componentsSetup.length} components...`);
+    setLoading(true);
+    setError(null);
 
     try {
-      // 1. Fetch Pure Component VLE Data
+      // 1. Fetch Pure Component VLE Data (this part is unchanged)
       const fetchedVleData = new Map(vleComponentData);
       const dataPromises = componentsSetup.map(async (comp) => {
-        if (!comp.name || fetchedVleData.has(comp.id)) return; // Skip if no name or already cached
-        const data = await fetchCompoundDataLocal(comp.name); // Use the same fetcher as McCabe-Thiele
+        if (!comp.name || fetchedVleData.has(comp.id)) return;
+        const data = await fetchCompoundDataLocal(comp.name);
         if (data) {
           fetchedVleData.set(comp.id, data);
         } else {
@@ -3279,34 +3387,75 @@ export default function Home() {
       await Promise.all(dataPromises);
       setVleComponentData(fetchedVleData);
 
-      // 2. Fetch Binary Interaction Parameters
-      const newInteractionParams = new Map(interactionParameters);
-      const componentPairs: [CompoundData, CompoundData][] = [];
-      for (let i = 0; i < componentsSetup.length; i++) {
-        for (let j = i + 1; j < componentsSetup.length; j++) {
-            const comp1Data = fetchedVleData.get(componentsSetup[i].id);
-            const comp2Data = fetchedVleData.get(componentsSetup[j].id);
-            if (comp1Data && comp2Data) {
-                componentPairs.push([comp1Data, comp2Data]);
-            }
-        }
-      }
-
-      const paramPromises = componentPairs.map(async ([comp1, comp2]) => {
-        const key = [comp1.cas_number, comp2.cas_number].sort().join('_');
-        if (newInteractionParams.has(key)) return; // Skip if already cached
-
-        let params: InteractionParams | null = null;
-        switch (fluidPackage) {
-            case 'NRTL':
-                params = await fetchNrtlParameters(supabase, comp1.cas_number!, comp2.cas_number!);
-                break;
-            // Add cases for Wilson, UNIQUAC, PR, SRK here...
-        }
-        newInteractionParams.set(key, params);
+      // 2. Fetch Binary Interaction Parameters and store by INDEX
+      const newInteractionParams = new Map();
+      const componentIdToIndexMap = new Map<string, number>();
+      componentsSetup.forEach((comp, index) => {
+          componentIdToIndexMap.set(comp.id, index);
       });
+
+      const paramPromises = [];
+      for (let i = 0; i < componentsSetup.length; i++) {
+          for (let j = i + 1; j < componentsSetup.length; j++) {
+              const comp1_setup = componentsSetup[i];
+              const comp2_setup = componentsSetup[j];
+              
+              const comp1_vle = fetchedVleData.get(comp1_setup.id);
+              const comp2_vle = fetchedVleData.get(comp2_setup.id);
+
+              if (!comp1_vle?.cas_number || !comp2_vle?.cas_number) continue;
+
+              const key = `${i}-${j}`;
+
+              const promise = (async () => {
+                  let params: InteractionParams | null = null;
+                  let sourceType = 'Unknown';
+                  try {
+                      const isLiquidModel = fluidPackage === 'NRTL' || fluidPackage === 'Wilson' || fluidPackage === 'UNIQUAC';
+                      const involvesGas = comp1_setup.phase === 'Gas' || comp2_setup.phase === 'Gas';
+
+                      if (isLiquidModel && involvesGas) return; 
+
+                      switch (fluidPackage) {
+                          case 'NRTL':
+                              params = await fetchNrtlParameters(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!, (source) => { sourceType = source; });
+                              break;
+                          case 'Wilson':
+                              params = await fetchWilsonInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
+                              sourceType = 'Database'; // Assuming no estimation for now
+                              break;
+                          case 'UNIQUAC':
+                              params = await fetchUniquacInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
+                              sourceType = 'Database'; // Assuming no estimation for now
+                              break;
+                          case 'Peng-Robinson':
+                              params = await fetchPrInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
+                              sourceType = 'Database'; // Assuming no estimation for now
+                              break;
+                          case 'SRK':
+                              params = await fetchSrkInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
+                              sourceType = 'Database'; // Assuming no estimation for now
+                              break;
+                      }
+                  } catch (err) {
+                      console.error(`Error fetching params for pair ${i}-${j}:`, err);
+                      params = null;
+                  }
+
+                  if (params) {
+                      console.log(`- ✅ VLE params for pair ${i}-${j} (${comp1_setup.name} - ${comp2_setup.name}) [Source: ${sourceType}]:`, params);
+                      newInteractionParams.set(key, params);
+                  } else if (sourceType !== 'Unknown'){
+                      console.error(`❌ FETCH FAILED for pair: ${comp1_setup.name} - ${comp2_setup.name}`);
+                  }
+              })();
+              paramPromises.push(promise);
+          }
+      }
+            
       await Promise.all(paramPromises);
-      setInteractionParameters(newInteractionParams);
+      console.log('[DEBUG] 🏁 Final interaction parameter map:', newInteractionParams);
+      setInteractionParameters(newInteractionParams as any);
 
       return true;
 
@@ -3514,13 +3663,21 @@ export default function Home() {
                             setReactorTypes={setReactorTypes}
                             henryTemperatures={henryTemperatures}
                             henryUnit={henryUnit}
+                            fluidPackage={fluidPackage}
+                            vleComponentData={vleComponentData}
+                            interactionParameters={interactionParameters}
                         />
   } else {
         return <KineticsInput 
-                            onNext={() => {
-                                // A trick to make Henry's Law data available to the CSTR solver
-                                (window as any).__HENRY_TEMPS = henryTemperatures;
-                                setShowSimulator(true)
+                            onNext={async () => { // Make this function async
+                                const success = await prepareVleData(); // Await the data fetching
+                                if (success) { // Only proceed if data was fetched successfully
+                                    (window as any).__HENRY_TEMPS = henryTemperatures;
+                                    setShowSimulator(true)
+                                } else {
+                                    // Optionally, you can alert the user that something went wrong
+                                    console.error("Failed to prepare VLE data. Cannot proceed to simulator.");
+                                }
                             }} 
                             reactionsSetup={reactionsSetup}
                             setReactionsSetup={setReactionsSetup}
