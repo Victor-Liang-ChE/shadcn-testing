@@ -296,7 +296,7 @@ export function calculatePropertyByEquation(
     case 101: return Math.exp(A + B / T + C * Math.log(T) + D * Math.pow(T, E));
     case 102: return A * Math.pow(T, B) / (1 + C / T + D / Math.pow(T, 2));
     case 103: return A + B * Math.exp(-C / Math.pow(T, D));
-    case 104: return A + B / T + C / Math.pow(T, 3) + D / Math.pow(T, 8) + E / Math.pow(T, 9);
+    case 104: return A + B / T + C * Math.pow(10, 6) / Math.pow(T, 3) + D * Math.pow(10, 16) / Math.pow(T, 8) + E * Math.pow(10, 18) / Math.pow(T, 9);
     case 105: return A / Math.pow(B, 1 + Math.pow(1 - T / C, D));
     case 106: return (Tc) ? A * Math.pow(1 - Tr, B + C * Tr + D * Math.pow(Tr, 2) + E * Math.pow(Tr, 3)) : null; // Tc is required
     case 107: return A + B * Math.pow(C / T / Math.sinh(C / T), 2) + D * Math.pow(E / T / Math.cosh(E / T), 2);

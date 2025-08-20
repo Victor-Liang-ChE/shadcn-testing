@@ -1843,15 +1843,7 @@ export default function CompoundPropertiesPage() {
                   )}
                 </div>
 
-                {/* Warning for Second Virial Coefficient */}
-                {plotMode === 'tempDependent' && selectedPropertyKey === 'Second Virial Coefficient' && (
-                  <Alert className="mt-4">
-                    <AlertTitle>Data Quality Warning</AlertTitle>
-                    <AlertDescription>
-                      The Second Virial Coefficient data may be incorrect. Please use these results with caution and verify against other sources.
-                    </AlertDescription>
-                  </Alert>
-                )}
+                {/* Second Virial Coefficient warning removed per user request */}
 
                 <Button onClick={handleFetchButtonClick} disabled={loading} className="w-full">
                   {loading ? 'Fetching...' : 'Fetch & Plot Properties'}
