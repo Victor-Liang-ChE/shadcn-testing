@@ -930,11 +930,12 @@ const calculatePfrData_Optimized = (
     molarRatios: Array<{ numeratorId: string; value: number }>,
     simBasis: { limitingReactantId: string; desiredProductId: string },
     targetProduction_kta: number,
-    reactionPhase: 'Liquid' | 'Gas',
-    // --- ADD THESE NEW PARAMETERS ---
+    reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
     fluidPackage?: VleFluidPackage,
     vleComponentData?: Map<string, CompoundData>,
-    interactionParameters?: Map<string, InteractionParams | null>
+    interactionParameters?: Map<string, InteractionParams | null>,
+    henryTemperatures?: { id: string; temp: string }[],
+    henryUnit?: 'Pa' | 'kPa' | 'bar'
 ) => {
     // Add this log at the top
     console.log(`[DEBUG-PFR] 🧠 PFR solver using package: ${fluidPackage}. Received interaction params:`, interactionParameters);
@@ -996,76 +997,108 @@ const calculatePfrData_Optimized = (
         const F_total = F_vec.reduce((sum, f) => sum + Math.max(0, f), 0);
         if (F_total < 1e-12) return Array(allComponentNames.length).fill(0);
 
+        const F_dict = allComponentNames.reduce((acc, name, i) => { acc[name] = F_vec[i]; return acc; }, {} as {[key:string]:number});
         const moleFractions = F_vec.map(f => Math.max(0, f) / F_total);
-        const R_Pa_m3_molK = 8.314; // Gas constant in Pa*m^3/(mol*K)
+        
+        // Define basis dictionaries
+        const concentrations_L: { [key: string]: number } = {};
+        const partialPressures_Pa: { [key: string]: number } = {};
 
-        // --- START: REPLACED RATE LAW LOGIC ---
-        // This new logic calculates rates in mol/(L*s) and then converts to mol/(m^3*s) for the gas phase solver.
-    const R_L_Pa_molK = 8314; // Gas constant in L*Pa/(mol*K)
+        // === START PHASE DISCRIMINATION LOGIC ===
+        if (reactionPhase === 'Mixed') {
+            const liquidComps = components.filter(c => c.phase === 'Liquid');
+            const gasComps = components.filter(c => c.phase === 'Gas');
 
-    // Local basis maps used by the rate law calculation. Populate these below for each phase.
-    const concentrationBasis: { [key: string]: number } = {};
-    const rateBasis: { [key: string]: number } = {};
-    const fugacityBasis: { [key: string]: number } = {};
+            // 1. Calculate Liquid Phase Properties
+            let q_liquid_L_per_s = 0;
+            let F_liquid_total = 0;
+            liquidComps.forEach(comp => {
+                const flow = F_dict[comp.name] || 0;
+                if (flow > 0) {
+                    q_liquid_L_per_s += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
+                    F_liquid_total += flow;
+                }
+            });
+            if (q_liquid_L_per_s < 1e-12) q_liquid_L_per_s = 1e-12;
+            const C_total_liquid_mol_L = F_liquid_total > 0 ? F_liquid_total / q_liquid_L_per_s : 0;
 
-    // For gas phase, concentrations must be in mol/L to match the k-values based on Liters.
-        if (reactionPhase === 'Gas') {
+            // 2. Set concentrations for liquid and dissolved gas components
+            liquidComps.forEach(comp => {
+                concentrations_L[comp.name] = (F_dict[comp.name] || 0) / q_liquid_L_per_s;
+            });
+            
+            gasComps.forEach(comp => {
+                const partial_pressure_bar = (F_dict[comp.name] / F_total) * pressure_bar;
+                let H_val = getHenryConstant(tempK - 273.15, comp.henryData, henryTemperatures || []);
+                if (H_val !== null && henryUnit) {
+                    if (henryUnit === 'Pa') H_val /= 1e5;
+                    else if (henryUnit === 'kPa') H_val /= 100;
+                }
+                concentrations_L[comp.name] = (H_val && H_val > 0) 
+                    ? (partial_pressure_bar / H_val) * C_total_liquid_mol_L 
+                    : 0;
+            });
+
+        } else if (reactionPhase === 'Liquid') {
+            let q_L_per_s = 0;
+            components.forEach((comp, i) => {
+                const flow = F_vec[i] || 0;
+                if (flow > 0) {
+                  q_L_per_s += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
+                }
+            });
+            if (q_L_per_s < 1e-12) q_L_per_s = 1e-12;
+            components.forEach((comp, i) => {
+                concentrations_L[comp.name] = (F_vec[i] || 0) / q_L_per_s;
+            });
+
+        } else { // Gas Phase
             const P_Pa = convertUnit.pressure.barToPa(pressure_bar);
             allComponentNames.forEach((name, i) => {
-                const partialPressure = moleFractions[i] * P_Pa;
-                concentrationBasis[name] = partialPressure / (R_L_Pa_molK * tempK); // C = P/RT, gives mol/L
+                const C_m3 = moleFractions[i] * P_Pa / (R * tempK);
+                concentrations_L[name] = convertUnit.concentration.molPerCubicMeterToMolPerLiter(C_m3);
+                partialPressures_Pa[name] = C_m3 * R * tempK;
             });
         }
+        // === END PHASE DISCRIMINATION LOGIC ===
 
-        // If Liquid phase, approximate concentration/rate basis from mole fractions (unitless basis) unless more detailed VLE data is available.
-        if (reactionPhase === 'Liquid') {
-            allComponentNames.forEach((name, i) => {
-                // Without explicit volume or density here, use mole fraction as a normalized basis for rate expressions.
-                concentrationBasis[name] = moleFractions[i];
-                rateBasis[name] = concentrationBasis[name];
-            });
-        }
-
-        // Calculate net rates, assuming k is already correct for its basis (conc. or pressure) and is in Liter units.
+        // Calculate net rates using pre-calculated constants
         const reactionNetRates = parsedReactions.map(pReaction => {
             let rate_f = pReaction.k_f;
             let rate_r = pReaction.k_r;
-
-            const basisToUse = reactionPhase === 'Liquid' 
-                ? rateBasis // Liquid uses activity, which is based on mol/L
-                : pReaction.rateLawBasis === 'concentration' 
-                    ? concentrationBasis // Gas (conc. basis) uses mol/L
-                    : fugacityBasis; // Gas (pressure basis) uses Pa
-
+            
+            // For mixed phase, we assume the rate law is based on liquid concentrations
+            const usePartialPressure = reactionPhase === 'Gas' && pReaction.rateLawBasis === 'partialPressure';
+            
             pReaction.participants.forEach(p => {
-                const basisValue = basisToUse[p.name] || 0;
+                const basis = usePartialPressure ? partialPressures_Pa[p.name] : concentrations_L[p.name];
+                
                 if (p.stoichiometry < 0 && p.order > 0) {
-                    rate_f *= Math.pow(Math.max(0, basisValue), p.order);
+                    rate_f *= Math.pow(Math.max(0, basis), p.order);
                 }
                 if (pReaction.isEquilibrium && p.stoichiometry > 0 && p.orderReverse > 0) {
-                    rate_r *= Math.pow(Math.max(0, basisValue), p.orderReverse);
+                    rate_r *= Math.pow(Math.max(0, basis), p.orderReverse);
                 }
             });
-            return rate_f - (pReaction.isEquilibrium ? rate_r : 0);
+            return rate_f - rate_r;
         });
 
+        // Calculate dF/dV for each component
         const dF_vec = Array(allComponentNames.length).fill(0);
         parsedReactions.forEach((pReaction, i) => {
             pReaction.participants.forEach((p, j) => {
                 dF_vec[j] += p.stoichiometry * reactionNetRates[i];
             });
         });
-
-        // The ODE solver expects dF/dV in mol/m³/s for gas phase.
-        // Our rate is in mol/L/s, so we convert it.
+        
+        // Scale rate for gas phase (solver expects mol/m^3/s, rate is in mol/L/s)
         if (reactionPhase === 'Gas') {
              for (let i = 0; i < dF_vec.length; i++) {
                  dF_vec[i] *= 1000;
              }
         }
-
+        
         return dF_vec;
-        // --- END: REPLACED RATE LAW LOGIC ---
     };
 
     // 4. Set up and run the ODE solver ONCE
@@ -2678,20 +2711,14 @@ const ReactorSimulator = ({
 
             // --- Calculation for each type ---
             if (reactorType === 'PFR') {
-                const pfrPhase: 'Liquid' | 'Gas' = (reactionPhase === 'Mixed') ? 'Gas' : reactionPhase;
-                
-                // --- START: ADD THIS LOGIC ---
-                // Only use the selected fluid package if the original phase was 'Mixed'.
-                // Otherwise, force the calculation to be ideal.
-                const effectiveFluidPackage = reactionPhase === 'Mixed' ? fluidPackage : 'Ideal';
-                // --- END: ADD THIS LOGIC ---
-
+                // Pass the full reactionPhase through (allowing 'Mixed') and forward VLE/Henry parameters
                 dataToShow = calculatePfrData_Optimized(
-                    reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate), pfrPhase,
-                    // --- USE THE NEW VARIABLE HERE ---
-                    effectiveFluidPackage,
+                    reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate), reactionPhase,
+                    fluidPackage,
                     vleComponentData,
-                    interactionParameters
+                    interactionParameters,
+                    henryTemperatures,
+                    henryUnit
                 );
             } else { // CSTR
                 const F_A0_guess = 10.0;
