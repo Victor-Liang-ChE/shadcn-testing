@@ -136,8 +136,7 @@ export default function VleDiagramPage() {
 
     const input1Ref = useRef<HTMLInputElement>(null);
     const input2Ref = useRef<HTMLInputElement>(null);
-    const suggestions1Ref = useRef<HTMLDivElement>(null);
-    const suggestions2Ref = useRef<HTMLDivElement>(null);
+    const activeComponentRef = useRef<HTMLDivElement>(null);
 
     const generateEchartsOptions = useCallback((data: any, params = displayedParams, themeOverride?: string) => {
         if (!data || data.x.length === 0) return;
@@ -769,11 +768,11 @@ export default function VleDiagramPage() {
     useEffect(() => {
         function handleClickOutside(event: MouseEvent) {
             const target = event.target as Node;
-            if (activeSuggestionInput === 'comp1' && suggestions1Ref.current && !suggestions1Ref.current.contains(target) && input1Ref.current && !input1Ref.current.contains(target)) {
-                    setShowComp1Suggestions(false);
-            }
-            if (activeSuggestionInput === 'comp2' && suggestions2Ref.current && !suggestions2Ref.current.contains(target) && input2Ref.current && !input2Ref.current.contains(target)) {
-                    setShowComp2Suggestions(false);
+            
+            // If there's an active component with suggestions showing, check if click is outside
+            if (activeComponentRef.current && !activeComponentRef.current.contains(target)) {
+                setShowComp1Suggestions(false);
+                setShowComp2Suggestions(false);
             }
         }
         document.addEventListener("mousedown", handleClickOutside);
@@ -799,7 +798,7 @@ export default function VleDiagramPage() {
                                             placeholder="Methanol" required className="w-full" autoComplete="off"
                                         />
                                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
-                                            <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
+                                            <div ref={activeSuggestionInput === 'comp1' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                                                 {comp1Suggestions.map((suggestion, index) => (
                                                     <div key={index} onClick={() => handleSuggestionClick(suggestion, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
                                                         {suggestion}
@@ -822,7 +821,7 @@ export default function VleDiagramPage() {
                                             placeholder="Water" required className="w-full" autoComplete="off"
                                         />
                                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
-                                            <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
+                                            <div ref={activeSuggestionInput === 'comp2' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                                                 {comp2Suggestions.map((suggestion, index) => (
                                                     <div key={index} onClick={() => handleSuggestionClick(suggestion, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
                                                         {suggestion}

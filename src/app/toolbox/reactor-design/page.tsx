@@ -1288,7 +1288,7 @@ const KineticsInput = ({
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [activeInputId, setActiveInputId] = useState<string | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const activeComponentRef = useRef<HTMLDivElement>(null)
 
   const handleFetchSuggestions = useCallback(async (value: string) => {
     if (!value || value.length < 2 || !supabase) {
@@ -1349,8 +1349,8 @@ const KineticsInput = ({
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
-        containerRef.current &&
-        !containerRef.current.contains(event.target as Node)
+        activeComponentRef.current &&
+        !activeComponentRef.current.contains(event.target as Node)
       ) {
         setShowSuggestions(false)
         setActiveInputId(null)
@@ -1478,33 +1478,105 @@ const KineticsInput = ({
   }
 
   // --- HDA Preset Data ---
-    const loadHdaPreset = () => {
-        // --- START: MODIFICATION ---
+    const loadHdaPreset = async () => {
+        if (!supabase) {
+            console.error('Supabase client not available.');
+            return;
+        }
+
         // First set up the reaction data with the correct Gas phase units
         const hdaReactions: ReactionSetup[] = [
                 // HDA Rxn 1 (Gas phase, Concentration basis -> simple units)
-                // Python units were sqrt(L/gmol)/h. The closest available unit is mol,L,h. The value is correct for this time basis.
                 { id: '1', AValue: '1.188e14', AUnit: 'mol,L,Pa,h', EaValue: '52.0', EaUnit: 'kcal/mol', isEquilibrium: false, rateLawBasis: 'concentration' },
                 // HDA Rxn 2 (Gas phase, Pressure basis -> pressure units)
-                // Python units were gmol/(L*Pa^2*h). The closest available unit is mol,L,Pa,h. The rate law uses the correct squared order.
                 { id: '2', AValue: '1.1647e-5', AUnit: 'mol,L,Pa,h', EaValue: '30.19', EaUnit: 'kcal/mol', isEquilibrium: true, AValueBackward: '4.56e-7', AUnitBackward: 'mol,L,Pa,h', EaValueBackward: '23.35', EaUnitBackward: 'kcal/mol', rateLawBasis: 'partialPressure'}
         ];
-        
         setReactionsSetup(hdaReactions);
-        // --- END: MODIFICATION ---
-        setComponentsSetup([
-                { id: 'comp-T', name: 'Toluene', molarMass: '92.14', density: '867', reactionData: { '1': { stoichiometry: '-1', order: '1' } } },
-                { id: 'comp-H2', name: 'Hydrogen', molarMass: '2.016', density: '89.9', reactionData: { '1': { stoichiometry: '-1', order: '0.5' }, '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
-                { id: 'comp-B', name: 'Benzene', molarMass: '78.11', density: '876', reactionData: { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-2', order: '2' } } },
-                { id: 'comp-CH4', name: 'Methane', molarMass: '16.04', density: '717', reactionData: { '1': { stoichiometry: '1', order: '0' } } },
-                { id: 'comp-D', name: 'Diphenyl', molarMass: '154.21', density: '1080', reactionData: { '2': { stoichiometry: '1', order: '0', orderReverse: '1' } } },
-        ]);
-        setSimBasis({ limitingReactantId: 'comp-T', desiredProductId: 'comp-B' });
-        setReactionPhase('Gas'); // Set phase directly since we already have the correct units
+
+        // Fetch HDA components from Supabase
+        const componentNames = ['Toluene', 'Hydrogen', 'Benzene', 'Methane', 'Biphenyl'];
+        const gasPhaseNames = ['Hydrogen', 'Methane'];
+
+        const fetchPromises = componentNames.map(async name => {
+            try {
+                const { data: compoundDbData, error: compoundError } = await supabase
+                    .from('compound_properties')
+                    .select('id, name, properties')
+                    .ilike('name', name)
+                    .limit(1)
+                    .single();
+                if (compoundError) throw compoundError;
+                if (!compoundDbData || !compoundDbData.properties) {
+                    throw new Error(`No properties found for compound '${name}'`);
+                }
+
+                // Extract molecular weight from properties JSON - handle objects and alternative keys
+                let molecularWeight = compoundDbData.properties.MolecularWeight || compoundDbData.properties.molecular_weight;
+                if (!molecularWeight) {
+                    const possibleKeys = ['MW', 'mw', 'MolarMass', 'molar_mass', 'mol_weight'];
+                    for (const key of possibleKeys) {
+                        if (compoundDbData.properties[key]) {
+                            molecularWeight = compoundDbData.properties[key];
+                            break;
+                        }
+                    }
+                }
+                if (typeof molecularWeight === 'object' && molecularWeight !== null) {
+                    molecularWeight = molecularWeight.value || molecularWeight.Value || molecularWeight.val || Object.values(molecularWeight)[0];
+                }
+
+                return {
+                    id: `comp-${compoundDbData.name.replace(/\s/g, '')}`,
+                    name: compoundDbData.name,
+                    molarMass: String(molecularWeight),
+                    density: '',
+                    reactionData: {},
+                    isDbLocked: true,
+                    liquidDensityData: compoundDbData.properties['LiquidDensity'] || compoundDbData.properties['Liquid density'],
+                    criticalTemp: parseCoefficient(compoundDbData.properties['CriticalTemperature'] || compoundDbData.properties['Critical temperature']),
+                    phase: gasPhaseNames.includes(compoundDbData.name) ? 'Gas' : 'Liquid',
+                } as ComponentSetup;
+            } catch (error) {
+                console.error(`Failed to fetch HDA component: '${name}'. Check database for this entry.`, error);
+                return null;
+            }
+        });
+
+        const fetchedRaw = await Promise.all(fetchPromises);
+        const fetchedComponents = fetchedRaw.filter(Boolean) as ComponentSetup[];
+        if (fetchedComponents.length !== componentNames.length) {
+            console.error('Could not fetch all HDA components. Check the log above for details.');
+            return;
+        }
+
+        // Add reaction stoichiometry/orders
+        const finalComponents = fetchedComponents.map(c => {
+            switch (c.name) {
+                case 'Toluene':
+                    c.reactionData = { '1': { stoichiometry: '-1', order: '1' } };
+                    break;
+                case 'Hydrogen':
+                    c.reactionData = { '1': { stoichiometry: '-1', order: '0.5' }, '2': { stoichiometry: '1', order: '0', orderReverse: '1' } };
+                    break;
+                case 'Benzene':
+                    c.reactionData = { '1': { stoichiometry: '1', order: '0' }, '2': { stoichiometry: '-2', order: '2' } };
+                    break;
+                case 'Methane':
+                    c.reactionData = { '1': { stoichiometry: '1', order: '0' } };
+                    break;
+                case 'Biphenyl':
+                    c.reactionData = { '2': { stoichiometry: '1', order: '0', orderReverse: '1' } };
+                    break;
+            }
+            return c;
+        });
+
+        setComponentsSetup(finalComponents);
+        setSimBasis({ limitingReactantId: 'comp-Toluene', desiredProductId: 'comp-Benzene' });
+        setReactionPhase('Gas');
         setProdRate('100');
         setTemperature(650);
         setPressure(30);
-        // ▼▼▼ ADD THIS LINE ▼▼▼
         setReactorTypes({ pfr: true, cstr: false }); // HDA defaults to PFR
     };
 
@@ -2222,7 +2294,6 @@ const KineticsInput = ({
 
                 {/* Components Card */}
                 <div
-                    ref={containerRef}
                     className={`p-6 rounded-lg shadow-lg bg-card text-card-foreground`}
                 >
                     <div className="mb-4">
@@ -2317,7 +2388,10 @@ const KineticsInput = ({
                                     </Button>
                                 )}
 
-                                <div className="relative">
+                                <div 
+                                    className="relative"
+                                    ref={activeInputId === comp.id ? activeComponentRef : null}
+                                >
                                     <div className="flex items-center">
                                         <Input
                                             value={comp.name}

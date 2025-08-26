@@ -162,7 +162,7 @@ export default function PhaseDiagramPage() {
   const [error, setError] = useState<string | null>(null);
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
   const inputRef = useRef<HTMLInputElement>(null);
-  const suggestionsRef = useRef<HTMLDivElement>(null);
+  const activeComponentRef = useRef<HTMLDivElement>(null);
   const [tempUnit, setTempUnit] = useState<'C' | 'K' | 'F'>('C');
   const [pressureUnit, setPressureUnit] = useState<'Pa' | 'kPa' | 'bar' | 'atm'>('bar');
   const [logScaleY, setLogScaleY] = useState<boolean>(false);
@@ -452,7 +452,7 @@ export default function PhaseDiagramPage() {
   };
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (suggestionsRef.current && !suggestionsRef.current.contains(event.target as Node) && inputRef.current && !inputRef.current.contains(event.target as Node)) {
+      if (activeComponentRef.current && !activeComponentRef.current.contains(event.target as Node)) {
         setShowSuggestions(false);
       }
     }
@@ -472,7 +472,7 @@ export default function PhaseDiagramPage() {
                     <div className="relative">
                         <Input id="compound-input" ref={inputRef} value={compoundName} onChange={handleNameChange} onFocus={() => handleFetchSuggestions(compoundName)} onKeyDown={handleInputKeyDown} placeholder="e.g., Water" autoComplete="off" />
                         {showSuggestions && compoundSuggestions.length > 0 && (
-                            <div ref={suggestionsRef} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 top-full">
+                            <div ref={activeComponentRef} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1 top-full">
                                 {compoundSuggestions.map((s, i) => (<div key={i} onClick={() => handleSuggestionClick(s)} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>))}
                             </div>
                         )}

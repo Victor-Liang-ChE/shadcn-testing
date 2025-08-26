@@ -218,8 +218,7 @@ export default function McCabeThielePage() {
 
   const input1Ref = useRef<HTMLInputElement>(null);
   const input2Ref = useRef<HTMLInputElement>(null);
-  const suggestions1Ref = useRef<HTMLDivElement>(null);
-  const suggestions2Ref = useRef<HTMLDivElement>(null);
+  const activeComponentRef = useRef<HTMLDivElement>(null);
 
   // Flag to trigger automatic graph regeneration after UI actions like swap, toggle, or fluid-package change
   const [autoGeneratePending, setAutoGeneratePending] = useState(false);
@@ -455,24 +454,14 @@ export default function McCabeThielePage() {
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       const target = event.target as Node;
-      if (activeSuggestionInput === 'comp1') {
-        if (suggestions1Ref.current && !suggestions1Ref.current.contains(target) && input1Ref.current && !input1Ref.current.contains(target)) {
-          setShowComp1Suggestions(false);
-        }
-      }
-      if (activeSuggestionInput === 'comp2') {
-        if (suggestions2Ref.current && !suggestions2Ref.current.contains(target) && input2Ref.current && !input2Ref.current.contains(target)) {
-          setShowComp2Suggestions(false);
-        }
-      }
-      // If click is outside any active suggestion area, reset active input
-      if (input1Ref.current && !input1Ref.current.contains(target) &&
-          input2Ref.current && !input2Ref.current.contains(target) &&
-          suggestions1Ref.current && !suggestions1Ref.current.contains(target) &&
-          suggestions2Ref.current && !suggestions2Ref.current.contains(target)) {
-        // setActiveSuggestionInput(null); // This might be too aggressive, let focus changes manage active state
+      
+      // If there's an active component with suggestions showing, check if click is outside
+      if (activeComponentRef.current && !activeComponentRef.current.contains(target)) {
+        setShowComp1Suggestions(false);
+        setShowComp2Suggestions(false);
       }
     }
+    
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
@@ -1266,7 +1255,7 @@ export default function McCabeThielePage() {
                         autoComplete="off"
                       />
                       {showComp1Suggestions && comp1Suggestions.length > 0 && (
-                        <div ref={suggestions1Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
+                        <div ref={activeSuggestionInput === 'comp1' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                           {comp1Suggestions.map((suggestion, index) => (
                             <div
                               key={index}
@@ -1300,7 +1289,7 @@ export default function McCabeThielePage() {
                         autoComplete="off"
                       />
                       {showComp2Suggestions && comp2Suggestions.length > 0 && (
-                        <div ref={suggestions2Ref} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
+                        <div ref={activeSuggestionInput === 'comp2' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
                           {comp2Suggestions.map((suggestion, index) => (
                             <div
                               key={index}
