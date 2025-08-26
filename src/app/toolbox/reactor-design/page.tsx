@@ -981,6 +981,7 @@ const calculatePfrData_Optimized = (
             };
         });
 
+
         return {
             rateLawBasis: reactionInfo.rateLawBasis,
             isEquilibrium: reactionInfo.isEquilibrium,
@@ -992,105 +993,56 @@ const calculatePfrData_Optimized = (
 
     // 3. Define a ROBUST Rate Law Function (dF/dV = r)
     const dFdV = (V: number, F_vec: number[]): number[] => {
-        // This object will hold the basis for the rate law (activity or fugacity)
-        const rateBasis: { [key: string]: number } = {};
         const F_total = F_vec.reduce((sum, f) => sum + Math.max(0, f), 0);
         if (F_total < 1e-12) return Array(allComponentNames.length).fill(0);
 
         const moleFractions = F_vec.map(f => Math.max(0, f) / F_total);
+        const R_Pa_m3_molK = 8.314; // Gas constant in Pa*m^3/(mol*K)
 
-        if (reactionPhase === 'Liquid') {
-            // --- Activity Coefficient Models ---
-            let gammas: number[] = Array(allComponentNames.length).fill(1.0); // Default to ideal
+        // --- START: REPLACED RATE LAW LOGIC ---
+        // This new logic calculates rates in mol/(L*s) and then converts to mol/(m^3*s) for the gas phase solver.
+    const R_L_Pa_molK = 8314; // Gas constant in L*Pa/(mol*K)
 
-            // Get component data for multicomponent calculations
-            const allCompData = components.map(c => {
-                const data = vleComponentData?.get(c.id);
-                if (!data) return null;
-                return { ...data, phase: c.phase }; // Merge phase property
-            }).filter(Boolean) as (CompoundData & { phase?: 'Liquid' | 'Gas' })[];
-            
-            if (fluidPackage !== 'Ideal' && allCompData.length === allComponentNames.length && interactionParameters) {
-                switch (fluidPackage) {
-                    case 'NRTL':
-                        gammas = calculateNrtlGammaMulticomponent(allCompData, moleFractions, tempK, interactionParameters as unknown as NrtlParameterMatrix) || gammas;
-                        // Add this log to see the result
-                        console.log('[DEBUG-PFR] NRTL gammas:', gammas);
-                        break;
-                    case 'Wilson':
-                        gammas = calculateWilsonGammaMulticomponent(allCompData, moleFractions, tempK, interactionParameters as unknown as WilsonParameterMatrix) || gammas;
-                        // Add this log to see the result
-                        console.log('[DEBUG-PFR] Wilson gammas:', gammas);
-                        break;
-                    case 'UNIQUAC':
-                        gammas = calculateUniquacGammaMulticomponent(allCompData, moleFractions, tempK, interactionParameters as unknown as UniquacParameterMatrix) || gammas;
-                        // Add this log to see the result
-                        console.log('[DEBUG-PFR] UNIQUAC gammas:', gammas);
-                        break;
-                }
-            }
+    // Local basis maps used by the rate law calculation. Populate these below for each phase.
+    const concentrationBasis: { [key: string]: number } = {};
+    const rateBasis: { [key: string]: number } = {};
+    const fugacityBasis: { [key: string]: number } = {};
 
-            // Calculate liquid volumetric flow rate and concentrations
-            let q_Liters = 0;
-            allComponentNames.forEach((name, i) => {
-                const flow = F_vec[i];
-                if (flow > 0) {
-                    const comp = components[i];
-                    q_Liters += (flow * parseFloat(comp.molarMass || '1')) / parseFloat(comp.density || '1000');
-                }
-            });
-            if (q_Liters < 1e-9) q_Liters = 1e-9;
-            
-            // Calculate activity = gamma * concentration
-            allComponentNames.forEach((name, i) => {
-                const concentration = Math.max(0, F_vec[i]) / q_Liters;
-                rateBasis[name] = gammas[i] * concentration;
-            });
-
-        } else { // Gas Phase
-            // --- Fugacity Coefficient Models (Equations of State) ---
-            let phis: number[] = Array(allComponentNames.length).fill(1.0); // Default to ideal
-
-            // Get component data for multicomponent calculations
-            const allCompData = components.map(c => vleComponentData?.get(c.id)).filter(Boolean) as CompoundData[];
-
-            if (fluidPackage !== 'Ideal' && allCompData.length === allComponentNames.length && interactionParameters) {
-                switch (fluidPackage) {
-                    case 'Peng-Robinson':
-                        phis = calculatePrFugacityCoefficientsMulticomponent(allCompData, moleFractions, tempK, pressure_bar * 1e5, interactionParameters as unknown as PrSrkParameterMatrix, 'vapor') || phis;
-                        // Add this log to see the result
-                        console.log('[DEBUG-PFR] Peng-Robinson phis:', phis);
-                        break;
-                    case 'SRK':
-                        phis = calculateSrkFugacityCoefficientsMulticomponent(allCompData, moleFractions, tempK, pressure_bar * 1e5, interactionParameters as unknown as PrSrkParameterMatrix, 'vapor') || phis;
-                        // Add this log to see the result
-                        console.log('[DEBUG-PFR] SRK phis:', phis);
-                        break;
-                }
-            }
-
-            // Calculate fugacity = phi * partial pressure
+    // For gas phase, concentrations must be in mol/L to match the k-values based on Liters.
+        if (reactionPhase === 'Gas') {
             const P_Pa = convertUnit.pressure.barToPa(pressure_bar);
             allComponentNames.forEach((name, i) => {
                 const partialPressure = moleFractions[i] * P_Pa;
-                rateBasis[name] = phis[i] * partialPressure;
+                concentrationBasis[name] = partialPressure / (R_L_Pa_molK * tempK); // C = P/RT, gives mol/L
             });
         }
-        
-        // --- Calculate net rates using the new rateBasis (activity or fugacity) ---
+
+        // If Liquid phase, approximate concentration/rate basis from mole fractions (unitless basis) unless more detailed VLE data is available.
+        if (reactionPhase === 'Liquid') {
+            allComponentNames.forEach((name, i) => {
+                // Without explicit volume or density here, use mole fraction as a normalized basis for rate expressions.
+                concentrationBasis[name] = moleFractions[i];
+                rateBasis[name] = concentrationBasis[name];
+            });
+        }
+
+        // Calculate net rates, assuming k is already correct for its basis (conc. or pressure) and is in Liter units.
         const reactionNetRates = parsedReactions.map(pReaction => {
             let rate_f = pReaction.k_f;
             let rate_r = pReaction.k_r;
-            // Use pressure-based rate constants if the basis is fugacity
-            const usePartialPressure = pReaction.rateLawBasis === 'partialPressure' || reactionPhase === 'Gas';
+
+            const basisToUse = reactionPhase === 'Liquid' 
+                ? rateBasis // Liquid uses activity, which is based on mol/L
+                : pReaction.rateLawBasis === 'concentration' 
+                    ? concentrationBasis // Gas (conc. basis) uses mol/L
+                    : fugacityBasis; // Gas (pressure basis) uses Pa
 
             pReaction.participants.forEach(p => {
+                const basisValue = basisToUse[p.name] || 0;
                 if (p.stoichiometry < 0 && p.order > 0) {
-                    const basisValue = (reactionPhase === 'Liquid') ? rateBasis[p.name] : rateBasis[p.name];
                     rate_f *= Math.pow(Math.max(0, basisValue), p.order);
                 }
-                if (p.stoichiometry > 0 && p.orderReverse > 0) {
-                    const basisValue = (reactionPhase === 'Liquid') ? rateBasis[p.name] : rateBasis[p.name];
+                if (pReaction.isEquilibrium && p.stoichiometry > 0 && p.orderReverse > 0) {
                     rate_r *= Math.pow(Math.max(0, basisValue), p.orderReverse);
                 }
             });
@@ -1104,14 +1056,16 @@ const calculatePfrData_Optimized = (
             });
         });
 
-        // The ODE solver expects dF/dV in mol/L/s for liquid and mol/m³/s for gas.
-        // Our rate laws are already in mol/L/s (for liquid) or based on Pa (for gas).
-        // The gas phase rate calculation needs a conversion factor.
+        // The ODE solver expects dF/dV in mol/m³/s for gas phase.
+        // Our rate is in mol/L/s, so we convert it.
         if (reactionPhase === 'Gas') {
-             for (let i = 0; i < dF_vec.length; i++) dF_vec[i] *= 1000;
+             for (let i = 0; i < dF_vec.length; i++) {
+                 dF_vec[i] *= 1000;
+             }
         }
 
         return dF_vec;
+        // --- END: REPLACED RATE LAW LOGIC ---
     };
 
     // 4. Set up and run the ODE solver ONCE
@@ -2725,10 +2679,17 @@ const ReactorSimulator = ({
             // --- Calculation for each type ---
             if (reactorType === 'PFR') {
                 const pfrPhase: 'Liquid' | 'Gas' = (reactionPhase === 'Mixed') ? 'Gas' : reactionPhase;
+                
+                // --- START: ADD THIS LOGIC ---
+                // Only use the selected fluid package if the original phase was 'Mixed'.
+                // Otherwise, force the calculation to be ideal.
+                const effectiveFluidPackage = reactionPhase === 'Mixed' ? fluidPackage : 'Ideal';
+                // --- END: ADD THIS LOGIC ---
+
                 dataToShow = calculatePfrData_Optimized(
                     reactions, components, tempK, pressure, molarRatios, simBasis, parseFloat(prodRate), pfrPhase,
-                    // --- ADD THESE ---
-                    fluidPackage,
+                    // --- USE THE NEW VARIABLE HERE ---
+                    effectiveFluidPackage,
                     vleComponentData,
                     interactionParameters
                 );
