@@ -183,8 +183,26 @@ export default function Home() {
             </CardDescription>
           </CardHeader>
 
-          <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-6 bio-section">
-            <div className="md:col-span-3 space-y-4">
+          <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-2 bio-section">
+            <div className="md:col-span-5">
+              <div className="bio-paragraph flex items-center flex-wrap gap-2">
+                <span>Software Experience:</span>
+                <span className="">
+                  SolidWorks, Aspen HYSYS, Aspen Plus, MATLAB, Microsoft Excel, VS Code, Arduino, OBS
+                </span>
+                <span className="ml-1">💻</span>
+              </div>
+            </div>
+            <div className="md:col-span-3 space-y-3">
+              <div className="bio-paragraph flex items-center flex-wrap gap-2">
+                <span>Python Packages:</span>
+                <span className="">
+                  NumPy, SciPy, Pandas, Matplotlib, Scikit-learn, Plotly, RegEx,
+                  Control, BeautifulSoup4, OpenCV
+                </span>
+                <span className="ml-1">📦</span>
+              </div>
+
               <div className="bio-paragraph flex items-center flex-wrap gap-2">
                 <span>Languages and Frameworks:</span>
                 <span className="lang-icons flex flex-wrap gap-3 items-center">
@@ -343,15 +361,6 @@ export default function Home() {
                     </TooltipContent>
                   </Tooltip>
                 </span>
-              </div>
-
-              <div className="bio-paragraph flex items-center flex-wrap gap-2">
-                <span>Python Packages:</span>
-                <span className="">
-                  NumPy, SciPy, Pandas, Matplotlib, Scikit-learn, Plotly, RegEx,
-                  Control, BeautifulSoup4
-                </span>
-                <span className="ml-1">📦</span>
               </div>
 
               <div className="bio-paragraph flex items-center gap-2">
