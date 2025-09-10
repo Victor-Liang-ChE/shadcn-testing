@@ -365,7 +365,7 @@ export default function Home() {
 
               <div className="bio-paragraph flex items-center gap-2">
                 <p>
-                  Based in San Francisco, but currently a senior at the University of California, Santa
+                  Based in San Francisco, currently pursuing a MS in Materials Science at the University of California, Santa
                   Barbara.
                 </p>
                 <Image
@@ -378,7 +378,7 @@ export default function Home() {
               </div>
 
               <p className="bio-paragraph">
-                Will pursue a masters degree in materials science next year. 🎓
+                I have a BS in Chemical Engineering.
               </p>
 
               <div className="bio-paragraph flex items-baseline gap-2">
