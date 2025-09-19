@@ -257,11 +257,11 @@ async function fetchInteractionParams(pkg: FluidPackageType, c1: CompoundData, c
         if (!groupData || groupData.length < allSgIds.length) throw new Error("Missing UNIFAC Rk/Qk data for some subgroups.");
         const Rk: UnifacParameters['Rk'] = {}, Qk: UnifacParameters['Qk'] = {}, mainGroupMap: UnifacParameters['mainGroupMap'] = {};
         const mainGroupIds = new Set<number>();
-        groupData.forEach(g => { const sgId=g["Subgroup #"]; const mgId=g["Main Group #"]; if (sgId!=null && mgId!=null && g.Rk!=null && g.Qk!=null) { Rk[sgId]=g.Rk; Qk[sgId]=g.Qk; mainGroupMap[sgId]=mgId; mainGroupIds.add(mgId); } });
+    groupData.forEach((g: any) => { const sgId=g["Subgroup #"]; const mgId=g["Main Group #"]; if (sgId!=null && mgId!=null && g.Rk!=null && g.Qk!=null) { Rk[sgId]=g.Rk; Qk[sgId]=g.Qk; mainGroupMap[sgId]=mgId; mainGroupIds.add(mgId); } });
         const { data: intData, error: intError } = await supabase.from('UNIFAC - a(ij)').select('i,j,"a(ij)"').in('i', Array.from(mainGroupIds)).in('j', Array.from(mainGroupIds));
         if (intError) throw intError;
         const a_mk = new Map<string, number>();
-        intData?.forEach(i => { if(i.i != null && i.j != null && i["a(ij)"] != null) a_mk.set(`${i.i}-${i.j}`, i["a(ij)"]) });
+    intData?.forEach((i: any) => { if(i.i != null && i.j != null && i["a(ij)"] != null) a_mk.set(`${i.i}-${i.j}`, i["a(ij)"]) });
         return { Rk, Qk, mainGroupMap, a_mk };
     }
 

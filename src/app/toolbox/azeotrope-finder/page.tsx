@@ -300,7 +300,7 @@ export default function AzeotropeFinderPage() {
         .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
         .limit(5);
       if (error) { console.error("Azeo: Supabase suggestion fetch error:", error); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); return; }
-      const suggestions = data ? data.map(item => item.name) : [];
+      const suggestions = data ? data.map((item: any) => item.name) : [];
       if (inputTarget === 'comp1') { setComp1Suggestions(suggestions); setShowComp1Suggestions(suggestions.length > 0); }
       else { setComp2Suggestions(suggestions); setShowComp2Suggestions(suggestions.length > 0); }
     } catch (err) { console.error("Azeo: Error fetching suggestions:", err); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); }

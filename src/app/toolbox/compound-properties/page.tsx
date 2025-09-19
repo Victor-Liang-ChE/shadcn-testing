@@ -1369,8 +1369,8 @@ export default function CompoundPropertiesPage() {
         .ilike('name', `${trimmedInputValue}%`) 
         .limit(5);
 
-      if (fetchError) { console.error("Supabase suggestion fetch error:", fetchError); return; }
-      setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: data ? data.map(item => item.name) : [], showSuggestions: data && data.length > 0 } : c));
+  if (fetchError) { console.error("Supabase suggestion fetch error:", fetchError); return; }
+  setCompounds(prev => prev.map(c => c.id === compoundId ? { ...c, suggestions: data ? data.map((item: any) => item.name) : [], showSuggestions: data && data.length > 0 } : c));
     } catch (err) { console.error("Error fetching suggestions:", err); }
   }, [supabase]); 
 

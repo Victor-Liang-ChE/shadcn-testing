@@ -399,7 +399,7 @@ export default function McCabeThielePage() {
         return;
       }
 
-      const suggestions = data ? data.map(item => item.name) : [];
+      const suggestions = data ? data.map((item: any) => item.name) : [];
       if (inputTarget === 'comp1') {
         setComp1Suggestions(suggestions);
         setShowComp1Suggestions(suggestions.length > 0);

@@ -640,12 +640,12 @@ async function _getUnifacParams(supabase: SupabaseClient): Promise<UnifacParamet
         return null;
     }
 
-    const Rk = Object.fromEntries(subGroupsData.map(row => [row['Subgroup #'], row.Rk]));
-    const Qk = Object.fromEntries(subGroupsData.map(row => [row['Subgroup #'], row.Qk]));
-    const mainGroupMap = Object.fromEntries(subGroupsData.map(row => [row['Subgroup #'], row['Main Group #']]));
-    const a_mk = new Map(interactionData.map(row => [`${row.i}-${row.j}`, row['a(ij)']]));
+    const Rk = Object.fromEntries(subGroupsData.map((row: any) => [row['Subgroup #'], row.Rk]));
+    const Qk = Object.fromEntries(subGroupsData.map((row: any) => [row['Subgroup #'], row.Qk]));
+    const mainGroupMap = Object.fromEntries(subGroupsData.map((row: any) => [row['Subgroup #'], row['Main Group #']]));
+    const a_mk = new Map(interactionData.map((row: any) => [`${row.i}-${row.j}`, row['a(ij)']]));
 
-    unifacParamsCache = { Rk, Qk, mainGroupMap, a_mk };
+    unifacParamsCache = { Rk, Qk, mainGroupMap, a_mk: a_mk as Map<string, number> };
     return unifacParamsCache;
 }
 

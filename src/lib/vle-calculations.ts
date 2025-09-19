@@ -1332,7 +1332,7 @@ export async function fetchUnifacInteractionParams(
   const Qk: { [id: number]: number } = {};
   const mainMap: { [id: number]: number } = {};
   const mainIds = new Set<number>();
-  data.forEach(row => {
+  data.forEach((row: any) => {
     const sg = row["Subgroup #"];
     Rk[sg] = row["Rk"];
     Qk[sg] = row["Qk"];
@@ -1346,7 +1346,7 @@ export async function fetchUnifacInteractionParams(
     .in('j', Array.from(mainIds));
   if (intErr) throw intErr;
   const a_mk = new Map<string, number>();
-  intData?.forEach(row => {
+  intData?.forEach((row: any) => {
     a_mk.set(`${row.i}-${row.j}`, row["a(ij)"] ?? 0);
   });
   return { Rk, Qk, mainGroupMap: mainMap, a_mk };

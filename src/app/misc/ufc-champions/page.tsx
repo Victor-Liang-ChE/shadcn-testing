@@ -845,7 +845,7 @@ const UfcChampionsDisplay: React.FC = () => {
       <AnimatePresence>
         {showDetailsView && selectedFighter && (
           <motion.div key="overlay-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }} className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 md:p-8" onClick={handleCloseDetails}>
-            <motion.div layoutId={getLayoutId(selectedFighter)} className="bg-card text-card-foreground rounded-md shadow-xl w-full max-w-6xl h-[90vh] max-h-[800px] flex flex-col relative overflow-hidden z-50" onClick={(e) => e.stopPropagation()}>
+            <motion.div layoutId={getLayoutId(selectedFighter)} className="bg-card text-card-foreground rounded-md shadow-xl w-full max-w-6xl h-[90vh] max-h-[800px] flex flex-col relative overflow-hidden z-50" onClick={(e: any) => e.stopPropagation()}>
               <motion.button initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1, transition: { delay: 0.2 } }} exit={{ opacity: 0 }} onClick={handleCloseDetails} className="absolute top-3 right-3 text-muted-foreground hover:text-foreground z-50 p-1 rounded-full bg-card hover:bg-muted" aria-label="Close details"> <X size={20} /> </motion.button>
               <div className="flex flex-1 h-full overflow-hidden pt-10">
                   {isLoading && ( <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-20"> <Loader2 className="h-8 w-8 animate-spin text-primary" /> </div> )}

@@ -1303,7 +1303,7 @@ const KineticsInput = ({
         .ilike('name', `${value}%`)
         .limit(5)
       if (error) throw error
-      const fetchedNames = data?.map(d => d.name) || []
+      const fetchedNames = data?.map((d: any) => d.name) || []
       setSuggestions(fetchedNames)
       setShowSuggestions(fetchedNames.length > 0)
     } catch (err) {

@@ -428,7 +428,7 @@ export default function PhaseDiagramPage() {
     try {
         const { data, error } = await supabase.from('compound_properties').select('name').ilike('name', `${value}%`).limit(5);
         if (error) throw error;
-        setCompoundSuggestions(data?.map(d => d.name) || []);
+        setCompoundSuggestions(data?.map((d: any) => d.name) || []);
         setShowSuggestions((data?.length || 0) > 0);
     } catch (err) { console.error("Suggestion fetch error:", err); }
   }, []);

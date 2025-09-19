@@ -729,7 +729,7 @@ export default function VleDiagramPage() {
         try {
             const { data, error } = await supabase.from('compound_properties').select('name').ilike('name', `${inputValue}%`).limit(5);
             if (error) { throw error; }
-            const suggestions = data ? data.map(item => item.name) : [];
+            const suggestions = data ? data.map((item: any) => item.name) : [];
             if (inputTarget === 'comp1') {
                 setComp1Suggestions(suggestions);
                 setShowComp1Suggestions(suggestions.length > 0);
