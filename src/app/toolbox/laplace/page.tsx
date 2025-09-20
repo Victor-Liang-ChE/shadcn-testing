@@ -421,6 +421,54 @@ function simplifyAst(node: ASTNode | null): ASTNode | null {
       if (isConstant(left, 1)) return right;
       if (isConstant(right, 1)) return left;
       if (isConstant(left, 0) || isConstant(right, 0)) return Const(0);
+      // Cancel constants like (1/2) * (2 / expr) -> 1 / expr
+      if (isBinaryOp(node.left, '/') && isConstant(node.left.left, 1) && isConstant(node.left.right, 2)) {
+        if (isBinaryOp(node.right, '/') && isConstant(node.right.left, 2)) {
+          return BinOp("/", Const(1), node.right.right);
+        }
+      }
+      if (isBinaryOp(node.right, '/') && isConstant(node.right.left, 1) && isConstant(node.right.right, 2)) {
+        if (isBinaryOp(node.left, '/') && isConstant(node.left.left, 2)) {
+          return BinOp("/", Const(1), node.left.right);
+        }
+      }
+      // Correctly flatten (1/3) * (1/(s+1/2)) → 2/(3(2s+1))
+      if (
+        node.operator === "*" &&
+        isBinaryOp(node.left, "/") &&
+        isConstant(node.left.left, 1) &&
+        isConstant(node.left.right) &&
+        isBinaryOp(node.right, "/") &&
+        isConstant(node.right.left, 1) &&
+        isBinaryOp(node.right.right, "+") &&
+        isVariable(node.right.right.left, "s") &&
+        isBinaryOp(node.right.right.right, "/") &&
+        isConstant(node.right.right.right.left, 1) &&
+        isConstant(node.right.right.right.right, 2)
+      ) {
+        // matches (1/3) * (1/(s+1/2))
+        return BinOp(
+          "/",
+          Const(2),
+          BinOp("*", node.left.right, BinOp("+", BinOp("*", Const(2), Var("s")), Const(1)))
+        );
+      }
+      // Flatten (a/b) * (c/d) -> (a*c)/(b*d)
+      if (isBinaryOp(node.left, '/') && isBinaryOp(node.right, '/')) {
+        return simplifyAst(BinOp(
+          '/',
+          BinOp('*', node.left.left, node.right.left),   // numerator = a*c
+          BinOp('*', node.left.right, node.right.right) // denominator = b*d
+        ));
+      }
+      // Flatten (a/b) * c -> (a*c)/b
+      if (isBinaryOp(node.left, '/') && isConstant(node.right)) {
+        return simplifyAst(BinOp('/', BinOp('*', node.left.left, node.right), node.left.right));
+      }
+      // Flatten c * (a/b) -> (c*a)/b
+      if (isConstant(node.left) && isBinaryOp(node.right, '/')) {
+        return simplifyAst(BinOp('/', BinOp('*', node.left, node.right.left), node.right.right));
+      }
     }
     if (node.operator === '+' || node.operator === '-') {
       if (isConstant(right, 0)) return left;
@@ -435,6 +483,60 @@ function simplifyAst(node: ASTNode | null): ASTNode | null {
         const newNumerator = BinOp(node.operator, BinOp('*', A, D), BinOp('*', C, B));
         const newDenominator = BinOp('*', B, D);
         return simplifyAst(BinOp('/', newNumerator, newDenominator));
+      }
+    }
+    // Flatten (A/s)/B -> A/(B*s)
+    if (node.operator === '/' && isBinaryOp(node.left, '/') && isVariable(node.left.right, 's') && isConstant(node.right)) {
+      return simplifyAst(BinOp("/", node.left.left, BinOp("*", node.right, Var("s"))));
+    }
+    // --- NEW: Simplify numeric coefficients in fractions (FIXED) ---
+    // Rule: C1 / (C2 * expr) -> (C1/gcd) / ((C2/gcd) * expr)
+    if (node.operator === '/') {
+      let num: Constant | null = isConstant(node.left) ? node.left : null;
+      let den: ASTNode | null = node.right;
+
+      if (num && isBinaryOp(den, '*')) {
+        let denConstNode: Constant | null = null;
+        let denExprNode: ASTNode | null = null;
+
+        if (isConstant(den.left)) {
+          denConstNode = den.left;
+          denExprNode = den.right;
+        } else if (isConstant(den.right)) {
+          // handles the case where the expression is (expr * C2)
+          denConstNode = den.right;
+          denExprNode = den.left;
+        }
+
+        if (denConstNode && denExprNode) {
+          const numVal = num.value;
+          const denConstVal = denConstNode.value;
+
+          if (denConstVal !== 0 && Number.isInteger(numVal) && Number.isInteger(denConstVal)) {
+            const commonDivisor = gcd(numVal, denConstVal);
+
+            // GUARD CONDITION: If already simplified, stop to prevent infinite loop.
+            if (commonDivisor <= 1) {
+                return node;
+            }
+
+            const newNumVal = numVal / commonDivisor;
+            const newDenConstVal = denConstVal / commonDivisor;
+
+            const newNumNode = Const(newNumVal);
+
+            if (newDenConstVal === 1) {
+              // Denominator's constant factor is 1, so it disappears
+              // e.g., 2 / (2 * (s+1)) becomes 1 / (s+1)
+              return simplifyAst(BinOp('/', newNumNode, denExprNode));
+            } else {
+              // Denominator's constant is just reduced
+              // e.g., 2 / (4 * (s+1)) becomes 1 / (2 * (s+1))
+              const newDenNode = BinOp('*', Const(newDenConstVal), denExprNode);
+              return simplifyAst(BinOp('/', newNumNode, newDenNode));
+            }
+          }
+        }
       }
     }
   }
@@ -472,7 +574,7 @@ function simplifyAst(node: ASTNode | null): ASTNode | null {
       };
       const newNum = multiplyByTwo(node.left);
       const newDenom = multiplyByTwo(node.right);
-      return BinOp('/', newNum, newDenom);
+      return simplifyAst(BinOp('/', newNum, newDenom));
     }
   }
 
@@ -709,9 +811,21 @@ function isDiffOfExponentialsWithTau(ast: ASTNode): boolean {
 // Core Laplace Transform Rules
 const laplaceRules: LaplaceRule[] = [
   {
-    name: "Unit Step: 1 → 1/s",
-    match: ast => ast.type === "Constant" && ast.value === 1,
-    apply: _ => BinOp("/", Const(1), Var("s"))
+    name: "Constant or Fraction C → C/s",
+    match: ast =>
+      isConstant(ast) ||
+      (isBinaryOp(ast, '/') && isConstant(ast.left) && isConstant(ast.right)),
+    apply: ast => {
+      if (isConstant(ast)) {
+        // e.g. 2 → 2/s
+        return BinOp("/", Const(ast.value), Var("s"));
+      }
+      if (isBinaryOp(ast, '/') && isConstant(ast.left) && isConstant(ast.right)) {
+        // e.g. (5)/(2) → 5/(2*s)
+        return BinOp("/", ast.left, BinOp("*", ast.right, Var("s")));
+      }
+      return null as any;
+    }
   },
   {
     name: "Ramp: t → 1/s^2",
