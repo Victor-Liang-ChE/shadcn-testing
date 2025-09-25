@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
 import ReactECharts from 'echarts-for-react';
@@ -137,9 +137,14 @@ export default function VleDiagramPage() {
     const input1Ref = useRef<HTMLInputElement>(null);
     const input2Ref = useRef<HTMLInputElement>(null);
     const activeComponentRef = useRef<HTMLDivElement>(null);
+    const echartsRef = useRef<ReactECharts | null>(null);
+    const plotDataRef = useRef<{ bubble: [number, number][], dew: [number, number][] }>({ bubble: [], dew: [] });
+    const yMinRef = useRef<number | undefined>(undefined);
 
     const generateEchartsOptions = useCallback((data: any, params = displayedParams, themeOverride?: string) => {
         if (!data || data.x.length === 0) return;
+        // Reset plot data on each generation
+        plotDataRef.current = { bubble: [], dew: [] };
         const series: SeriesOption[] = [];
         let yAxisName = "Mole Fraction", titleConditionText = "";
         const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
@@ -183,8 +188,14 @@ export default function VleDiagramPage() {
             const dewPointData = sortedData.map((d: {y: number}, i: number) => ({ y: d.y, t: tC![i] })).sort((a: {y: number}, b: {y: number}) => a.y - b.y);
             dewTArray = dewPointData.map((p: {t: number}) => p.t); // for tooltip interpolation
             
-            series.push({ name: 'Bubble Point', type: 'line', data: sortedX.map((x: any, i: number) => [x, tC![i]]), symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
-            series.push({ name: 'Dew Point',    type: 'line', data: dewPointData.map((p: {y: number, t: number}) => [p.y, p.t]), symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
+            const bubblePoints = sortedX.map((x: any, i: number) => [x, tC![i]]);
+            const dewPoints = dewPointData.map((p: {y: number, t: number}) => [p.y, p.t]);
+            
+            // Store the plot data for tie line calculations
+            plotDataRef.current = { bubble: bubblePoints, dew: dewPoints };
+            
+            series.push({ name: 'Bubble Point', type: 'line', data: bubblePoints, symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
+            series.push({ name: 'Dew Point',    type: 'line', data: dewPoints, symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
 
         } else if (diagramType === 'pxy' && data.p) {
             yAxisName = "Pressure (bar)";
@@ -194,8 +205,14 @@ export default function VleDiagramPage() {
             const dewPointData = sortedData.map((d: {y: number}, i: number) => ({ y: d.y, p: pressBar![i] })).sort((a: {y: number}, b: {y: number}) => a.y - b.y);
             dewPArray = dewPointData.map((p: { p: number; }) => p.p); // for tooltip interpolation
 
-            series.push({ name: 'Bubble Point', type: 'line', data: sortedX.map((x: any,i: number)=>[x, pressBar![i]]), symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
-            series.push({ name: 'Dew Point',    type: 'line', data: dewPointData.map((p: {y: number, p: number}) => [p.y, p.p]), symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
+            const bubblePoints = sortedX.map((x: any,i: number)=>[x, pressBar![i]]);
+            const dewPoints = dewPointData.map((p: {y: number, p: number}) => [p.y, p.p]);
+            
+            // Store the plot data for tie line calculations
+            plotDataRef.current = { bubble: bubblePoints, dew: dewPoints };
+
+            series.push({ name: 'Bubble Point', type: 'line', data: bubblePoints, symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
+            series.push({ name: 'Dew Point',    type: 'line', data: dewPoints, symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
         } else {
             yAxisName = `Vapor Mole Fraction ${comp1Label} (y)`;
             titleConditionText = useTemperatureForXY ? `at ${formatNumberToPrecision(params.temp ?? 0)} °C` : `at ${formatNumberToPrecision(params.pressure ?? 0)} bar`;
@@ -227,12 +244,66 @@ export default function VleDiagramPage() {
             yMin = 0;
             yMax = 1;
         }
+        // Store the calculated y-axis minimum so we can position labels/vertical lines
+        yMinRef.current = yMin;
         
         const themeToUse = themeOverride ?? resolvedTheme;
         const isDark = themeToUse === 'dark';
         const textColor = isDark ? 'white' : '#000000';
         const tooltipBg = isDark ? '#08306b' : '#ffffff';
         const tooltipBorder = isDark ? '#55aaff' : '#333333';
+        
+        // Add tie-line series for txy and pxy diagrams
+        if (diagramType === 'txy' || diagramType === 'pxy') {
+            series.push({
+                id: 'tie-line',
+                type: 'line',
+                data: [], // This series doesn't plot main points
+                markLine: {
+                    symbol: ['none', 'none'],
+                    animation: false,
+                    label: { show: false },
+                    lineStyle: { type: 'dashed' },
+                    data: [] // Tie line data will be dynamically inserted here
+                },
+                // markPoint used to show the custom x/y labels at the bottom
+                markPoint: {
+                    animation: false,
+                    symbol: 'circle',
+                    symbolSize: 8,
+                    itemStyle: {
+                        color: 'white',
+                        borderColor: textColor,
+                        borderWidth: 2
+                    },
+                    label: {
+                        show: true,
+                        position: 'bottom',
+                        backgroundColor: tooltipBg,
+                        borderColor: tooltipBorder,
+                        color: textColor,
+                        padding: [5, 8],
+                        borderRadius: 4,
+                        fontFamily: 'Merriweather Sans',
+                        offset: [0, 5]
+                    },
+                    data: [],
+                }
+            });
+        }
+        
+        // ADD THIS NEW SERIES FOR THE CURSOR DOT
+        series.push({
+            id: 'cursor-dot',
+            type: 'scatter',
+            symbolSize: 10,
+            itemStyle: {
+                color: '#ef4444' // A nice red color
+            },
+            data: [],
+            z: 100,
+            silent: true // Prevents dot from triggering tooltips
+        });
         
         const titleText = `${comp1Label}-${comp2Label} ${diagramType.toUpperCase()} Diagram ${titleConditionText}`;
         const xAxisName = diagramType === 'xy' ? `Liquid Mole Fraction ${comp1Label} (x)` : `Mole Fraction ${comp1Label} (x/y)`;
@@ -247,6 +318,22 @@ export default function VleDiagramPage() {
                 nameLocation: 'middle', nameGap: 40, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
                 axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor } },
                 axisLabel: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' }, splitLine: { show: false },
+                // Keep vertical axis pointer active but invisible (labels are from tooltip.axisPointer.label)
+                axisPointer: {
+                    show: true,
+                    type: 'line',
+                    lineStyle: {
+                        color: 'transparent'
+                    },
+                    label: {
+                        show: true,
+                        backgroundColor: tooltipBg,
+                        color: textColor,
+                        borderColor: tooltipBorder,
+                        fontFamily: 'Merriweather Sans',
+                        formatter: (params: any) => `x/y: ${formatNumberToPrecision(Number(params.value), 3)}`
+                    }
+                }
             },
             yAxis: {
                 type: 'value', name: yAxisName,
@@ -268,6 +355,20 @@ export default function VleDiagramPage() {
                     }
                 }, 
                 splitLine: { show: false },
+                // Keep a y-axis pointer active but invisible (prevents horizontal crosshair)
+                axisPointer: {
+                    show: true,
+                    type: 'line',
+                    lineStyle: { color: 'transparent' },
+                    label: {
+                        show: true,
+                        backgroundColor: tooltipBg,
+                        color: textColor,
+                        borderColor: tooltipBorder,
+                        fontFamily: 'Merriweather Sans',
+                        formatter: (params: any) => `${(diagramType === 'txy' ? 'T' : 'P')}: ${formatNumberToPrecision(Number(params.value), 3)}`
+                    }
+                }
             },
             legend: {
                 orient: 'horizontal', bottom: 10, left: 'center',
@@ -279,11 +380,13 @@ export default function VleDiagramPage() {
                 trigger: 'axis', backgroundColor: tooltipBg, borderColor: tooltipBorder, borderWidth: 1,
                 textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
                 axisPointer: {
-                    type: 'cross',
                     label: {
-                        backgroundColor: tooltipBg, color: textColor, borderColor: tooltipBorder,
+                        backgroundColor: tooltipBg,
+                        color: textColor,
+                        borderColor: tooltipBorder,
+                        fontFamily: 'Merriweather Sans',
                         formatter: (params: any) => `${params.axisDimension === 'x' ? 'x/y' : (diagramType==='txy' ? 'T' : 'P')}: ${formatNumberToPrecision(params.value, 3)}`
-                    },
+                    }
                 },
                 formatter: (params: any) => {
                     if (!params || !Array.isArray(params) || params.length === 0) return '';
@@ -323,6 +426,8 @@ export default function VleDiagramPage() {
             },
         });
     }, [diagramType, useTemperatureForXY, displayedParams, resolvedTheme]);
+
+    // ...existing code... (event handlers replaced by memoized versions below)
 
     async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
         if (!supabase) { throw new Error("Supabase client not initialized."); }
@@ -779,6 +884,100 @@ export default function VleDiagramPage() {
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, [activeSuggestionInput]);
 
+    // Memoized event handlers for the chart
+    const handleAxisPointerUpdate = useCallback((params: any) => {
+        const echartsInstance = echartsRef.current?.getEchartsInstance();
+        if (!echartsInstance || !params.axesInfo || params.axesInfo.length < 2) {
+            return;
+        }
+
+        const cursorX = params.axesInfo[0].value;
+        const cursorY = params.axesInfo[1].value;
+
+        // Logic for T-x-y and P-x-y diagrams
+        if (diagramType === 'txy' || diagramType === 'pxy') {
+            const { bubble, dew } = plotDataRef.current;
+            if (bubble.length < 2 || dew.length < 2) {
+                // If plot data is not ready, just update the dot
+                echartsInstance.setOption({
+                    series: [{ id: 'cursor-dot', data: [[cursorX, cursorY]] }]
+                });
+                return;
+            }
+
+            const interpInverse = (yTarget: number, data: [number, number][]): number | null => {
+                for (let i = 0; i < data.length - 1; i++) {
+                    const [x1, y1] = data[i];
+                    const [x2, y2] = data[i + 1];
+                    if ((y1 <= yTarget && yTarget <= y2) || (y2 <= yTarget && yTarget <= y1)) {
+                        if (Math.abs(y2 - y1) < 1e-9) return x1;
+                        const t = (yTarget - y1) / (y2 - y1);
+                        return x1 + t * (x2 - x1);
+                    }
+                }
+                return null;
+            };
+
+            const bubbleX = interpInverse(cursorY, bubble);
+            const dewX = interpInverse(cursorY, dew);
+            const yAxisMin = yMinRef.current ?? 0;
+
+            const inRegion = bubbleX !== null && dewX !== null && cursorX >= bubbleX && cursorX <= dewX;
+
+            if (inRegion) {
+                const tieLineData = [
+                    [{ xAxis: bubbleX, yAxis: cursorY, lineStyle: { color: '#ef4444' } }, { xAxis: cursorX, yAxis: cursorY }],
+                    [{ xAxis: cursorX, yAxis: cursorY, lineStyle: { color: '#3b82f6' } }, { xAxis: dewX, yAxis: cursorY }],
+                    [{ xAxis: bubbleX, yAxis: cursorY }, { xAxis: bubbleX, yAxis: yAxisMin }],
+                    [{ xAxis: dewX, yAxis: cursorY }, { xAxis: dewX, yAxis: yAxisMin }]
+                ];
+                const markPointData = [
+                    { name: 'Bubble', value: `x: ${formatNumberToPrecision(bubbleX, 3)}`, xAxis: bubbleX, yAxis: yAxisMin },
+                    { name: 'Dew', value: `y: ${formatNumberToPrecision(dewX, 3)}`, xAxis: dewX, yAxis: yAxisMin }
+                ];
+
+                echartsInstance.setOption({
+                    xAxis: { axisPointer: { label: { show: false } } },
+                    series: [
+                        { id: 'tie-line', markLine: { data: tieLineData }, markPoint: { data: markPointData } },
+                        { id: 'cursor-dot', data: [[cursorX, cursorY]] }
+                    ]
+                });
+            } else {
+                echartsInstance.setOption({
+                    xAxis: { axisPointer: { label: { show: true } } },
+                    series: [
+                        { id: 'tie-line', markLine: { data: [] }, markPoint: { data: [] } },
+                        { id: 'cursor-dot', data: [[cursorX, cursorY]] }
+                    ]
+                });
+            }
+        // Logic for other diagrams (like x-y)
+        } else {
+            echartsInstance.setOption({
+                series: [
+                    { id: 'cursor-dot', data: [[cursorX, cursorY]] }
+                ]
+            });
+        }
+    }, [diagramType]);
+
+    const handleChartMouseOut = useCallback(() => {
+        const echartsInstance = echartsRef.current?.getEchartsInstance();
+        if (!echartsInstance) return;
+        echartsInstance.setOption({
+            series: [
+                { id: 'tie-line', markLine: { data: [] } },
+                { id: 'cursor-dot', data: [] }
+            ]
+        });
+    }, []);
+
+    const onEvents = useMemo(() => ({
+        'updateAxisPointer': handleAxisPointerUpdate,
+        'mouseout': handleChartMouseOut,
+    }), [handleAxisPointerUpdate, handleChartMouseOut]);
+
     return (
         <div className="container mx-auto p-4 md:p-8">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -883,12 +1082,20 @@ export default function VleDiagramPage() {
                 </div>
                 <div className="lg:col-span-2">
                     <Card className="h-full"><CardContent className="py-2 h-full">
-                        <div className="relative aspect-square rounded-md h-full">
+                                <div className="relative aspect-square rounded-md h-full z-10">
                            {loading && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Loading & Calculating...</div><div className="text-sm text-muted-foreground/70">Using { fluidPackage.toUpperCase()} model.</div></div></div> )}
                            {!loading && !chartData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Provide inputs and generate a diagram.</div> )}
                            {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div> )}
                            {!loading && chartData && Object.keys(echartsOptions).length > 0 && (
-                            <ReactECharts echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={false} lazyUpdate={true} />
+                            <ReactECharts 
+                                ref={echartsRef}
+                                echarts={echarts} 
+                                style={{ height: '100%', width: '100%' }} 
+                                option={echartsOptions} 
+                                notMerge={false} 
+                                lazyUpdate={true}
+                                onEvents={onEvents}
+                            />
                            )}
                         </div>
                     </CardContent></Card>
