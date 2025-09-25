@@ -266,15 +266,14 @@ export default function VleDiagramPage() {
                     lineStyle: { type: 'dashed' },
                     data: [] // Tie line data will be dynamically inserted here
                 },
-                // markPoint used to show the custom x/y labels at the bottom
                 markPoint: {
                     animation: false,
                     symbol: 'circle',
-                    symbolSize: 8,
+                    // This makes the dot invisible but keeps its label
+                    symbolSize: 0, 
                     itemStyle: {
-                        color: 'white',
-                        borderColor: textColor,
-                        borderWidth: 2
+                        // This style is for the invisible dot's border
+                        borderColor: textColor
                     },
                     label: {
                         show: true,
