@@ -264,6 +264,9 @@ export default function VleDiagramPage() {
                     animation: false,
                     label: { show: false },
                     lineStyle: { type: 'dashed' },
+                    emphasis: {
+                        disabled: true
+                    },
                     data: [] // Tie line data will be dynamically inserted here
                 },
                 markPoint: {
@@ -297,7 +300,8 @@ export default function VleDiagramPage() {
             type: 'scatter',
             symbolSize: 10,
             itemStyle: {
-                color: '#ef4444' // A nice red color
+                color: '#ef4444', // A nice red color
+                shadowBlur: 0
             },
             data: [],
             z: 100,
@@ -365,7 +369,12 @@ export default function VleDiagramPage() {
                         color: textColor,
                         borderColor: tooltipBorder,
                         fontFamily: 'Merriweather Sans',
-                        formatter: (params: any) => `${(diagramType === 'txy' ? 'T' : 'P')}: ${formatNumberToPrecision(Number(params.value), 3)}`
+                        formatter: (params: any) => {
+                            // Determine appropriate unit depending on diagram type or XY mode selection
+                            const unit = diagramType === 'txy' ? '°C' : (diagramType === 'pxy' ? 'bar' : (useTemperatureForXY ? '°C' : 'bar'));
+                            const prefix = (diagramType === 'txy' || (diagramType === 'xy' && useTemperatureForXY)) ? 'T' : 'P';
+                            return `${prefix}: ${formatNumberToPrecision(Number(params.value), 3)} ${unit}`;
+                        }
                     }
                 }
             },
@@ -384,7 +393,12 @@ export default function VleDiagramPage() {
                         color: textColor,
                         borderColor: tooltipBorder,
                         fontFamily: 'Merriweather Sans',
-                        formatter: (params: any) => `${params.axisDimension === 'x' ? 'x/y' : (diagramType==='txy' ? 'T' : 'P')}: ${formatNumberToPrecision(params.value, 3)}`
+                        formatter: (params: any) => {
+                            if (params.axisDimension === 'x') return `x/y: ${formatNumberToPrecision(params.value, 3)}`;
+                            const unit = diagramType === 'txy' ? '°C' : (diagramType === 'pxy' ? 'bar' : (useTemperatureForXY ? '°C' : 'bar'));
+                            const prefix = (diagramType === 'txy' || (diagramType === 'xy' && useTemperatureForXY)) ? 'T' : 'P';
+                            return `${prefix}: ${formatNumberToPrecision(params.value, 3)} ${unit}`;
+                        }
                     }
                 },
                 formatter: (params: any) => {
@@ -925,10 +939,14 @@ export default function VleDiagramPage() {
 
             if (inRegion) {
                 const tieLineData = [
-                    [{ xAxis: bubbleX, yAxis: cursorY, lineStyle: { color: '#ef4444' } }, { xAxis: cursorX, yAxis: cursorY }],
-                    [{ xAxis: cursorX, yAxis: cursorY, lineStyle: { color: '#3b82f6' } }, { xAxis: dewX, yAxis: cursorY }],
-                    [{ xAxis: bubbleX, yAxis: cursorY }, { xAxis: bubbleX, yAxis: yAxisMin }],
-                    [{ xAxis: dewX, yAxis: cursorY }, { xAxis: dewX, yAxis: yAxisMin }]
+                    // Horizontal segment from bubble curve to cursor
+                    [{ xAxis: bubbleX, yAxis: cursorY, lineStyle: { color: 'green', type: [4, 4] } }, { xAxis: cursorX, yAxis: cursorY }],
+                    // Horizontal segment from cursor to dew curve
+                    [{ xAxis: cursorX, yAxis: cursorY, lineStyle: { color: '#3b82f6', type: [4, 4] } }, { xAxis: dewX, yAxis: cursorY }],
+                    // Vertical segment from bubble curve to x-axis
+                    [{ xAxis: bubbleX, yAxis: cursorY, lineStyle: { color: 'green', type: [4, 4] } }, { xAxis: bubbleX, yAxis: yAxisMin }],
+                    // Vertical segment from dew curve to x-axis
+                    [{ xAxis: dewX, yAxis: cursorY, lineStyle: { color: '#3b82f6', type: [4, 4] } }, { xAxis: dewX, yAxis: yAxisMin }]
                 ];
                 const markPointData = [
                     { name: 'Bubble', value: `x: ${formatNumberToPrecision(bubbleX, 3)}`, xAxis: bubbleX, yAxis: yAxisMin },
