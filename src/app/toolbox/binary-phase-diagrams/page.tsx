@@ -139,6 +139,7 @@ export default function VleDiagramPage() {
     const activeComponentRef = useRef<HTMLDivElement>(null);
     const echartsRef = useRef<ReactECharts | null>(null);
     const plotDataRef = useRef<{ bubble: [number, number][], dew: [number, number][] }>({ bubble: [], dew: [] });
+    const leverRuleDataRef = useRef<{ liquid: number | null, vapor: number | null }>({ liquid: null, vapor: null });
     const yMinRef = useRef<number | undefined>(undefined);
 
     const generateEchartsOptions = useCallback((data: any, params = displayedParams, themeOverride?: string) => {
@@ -372,8 +373,12 @@ export default function VleDiagramPage() {
                         formatter: (params: any) => {
                             // Determine appropriate unit depending on diagram type or XY mode selection
                             const unit = diagramType === 'txy' ? '°C' : (diagramType === 'pxy' ? 'bar' : (useTemperatureForXY ? '°C' : 'bar'));
-                            const prefix = (diagramType === 'txy' || (diagramType === 'xy' && useTemperatureForXY)) ? 'T' : 'P';
-                            return `${prefix}: ${formatNumberToPrecision(Number(params.value), 3)} ${unit}`;
+                            if (diagramType === 'xy') {
+                                return `y: ${formatNumberToPrecision(Number(params.value), 3)}`;
+                            } else {
+                                const prefix = diagramType === 'txy' ? 'T' : 'P';
+                                return `${prefix}: ${formatNumberToPrecision(Number(params.value), 3)} ${unit}`;
+                            }
                         }
                     }
                 }
@@ -404,7 +409,7 @@ export default function VleDiagramPage() {
                 formatter: (params: any) => {
                     if (!params || !Array.isArray(params) || params.length === 0) return '';
                     const xVal = params[0].axisValue ?? params[0].value[0];
-                    let html = `x/y: ${formatNumberToPrecision(xVal, 3)}<br/>`;
+                    let html = `Overall Comp: ${formatNumberToPrecision(xVal, 3)}<br/>`;
 
                     if (diagramType === 'txy') {
                         const unit='°C';
@@ -413,22 +418,33 @@ export default function VleDiagramPage() {
                         const dewTPoints = sortedData.map((d: {t:number}) => d.t - 273.15).sort((a:number,b:number)=> a - (interp(b,dewYPoints, sortedData.map((d: {t:number})=>d.t-273.15))??0) );
                         const dewT = dewTArray ? interp(xVal, dewYPoints, dewTArray) : null;
                         
-                        if(bubbleT!==null) html += `<span style=\"color: green;\">Bubble T: ${formatNumberToPrecision(bubbleT,3)} ${unit}</span><br/>`;
-                        if(dewT!==null)    html += `<span style=\"color: #3b82f6;\">Dew T: ${formatNumberToPrecision(dewT,3)} ${unit}</span><br/>`;
+                        if(bubbleT!==null) html += `<span style="color: green;">Bubble Temp: ${formatNumberToPrecision(bubbleT,3)} ${unit}</span><br/>`;
+                        if(dewT!==null)    html += `<span style="color: #3b82f6;">Dew Temp: ${formatNumberToPrecision(dewT,3)} ${unit}</span><br/>`;
                     } else if (diagramType === 'pxy') {
                         const unit='bar';
                         const bubbleP = pressBar ? interp(xVal, sortedX, pressBar) : null;
                         const dewYPoints = sortedData.map((d: {y: number}) => d.y).sort((a: number,b: number)=>a-b);
                         const dewP = pressBar && dewPArray ? interp(xVal, dewYPoints, dewPArray) : null;
-                        if(bubbleP!==null) html += `<span style=\"color: green;\">Bubble P: ${formatNumberToPrecision(bubbleP,3)} ${unit}</span><br/>`;
-                        if(dewP!==null)    html += `<span style=\"color: #3b82f6;\">Dew P: ${formatNumberToPrecision(dewP,3)} ${unit}</span><br/>`;
+                        if(bubbleP!==null) html += `<span style="color: green;">Bubble P: ${formatNumberToPrecision(bubbleP,3)} ${unit}</span><br/>`;
+                        if(dewP!==null)    html += `<span style="color: #3b82f6;">Dew P: ${formatNumberToPrecision(dewP,3)} ${unit}</span><br/>`;
                     } else { // xy
                         html = `x: ${formatNumberToPrecision(xVal, 3)}<br/>`;
                         const yVal = interp(xVal, sortedX, sortedY);
                         if (yVal !== null) {
-                            html += `<span style=\"color: red;\">y: ${formatNumberToPrecision(yVal,3)}</span><br/>`;
+                            html += `<span style="color: red;">y: ${formatNumberToPrecision(yVal,3)}</span><br/>`;
                         }
                     }
+
+                    // Add Lever Rule Info
+                    const leverData = leverRuleDataRef.current;
+                    if (leverData && leverData.liquid !== null) {
+                        html += `<hr style="border-color: #888; margin-top: 5px; margin-bottom: 5px;" />`;
+                        // Match bubble curve color (green) for liquid phase
+                        html += `<span style="color: green;">Liquid Phase: <strong style=\"color: green;\">${formatNumberToPrecision(leverData.liquid * 100, 3)}%</strong></span><br/>`;
+                        // Match dew curve color (#3b82f6) for vapor phase
+                        html += `<span style="color: #3b82f6;">Vapor Phase: <strong style=\"color: #3b82f6;\">${formatNumberToPrecision(leverData.vapor! * 100, 3)}%</strong></span>`;
+                    }
+
                     return html;
                 }
             },
@@ -899,45 +915,54 @@ export default function VleDiagramPage() {
 
     // Memoized event handlers for the chart
     const handleAxisPointerUpdate = useCallback((params: any) => {
-        const echartsInstance = echartsRef.current?.getEchartsInstance();
+        const echartsInstance = echartsRef.current?.getEchartsInstance()
         if (!echartsInstance || !params.axesInfo || params.axesInfo.length < 2) {
-            return;
+            return
         }
 
-        const cursorX = params.axesInfo[0].value;
-        const cursorY = params.axesInfo[1].value;
+        const cursorX = params.axesInfo[0].value
+        const cursorY = params.axesInfo[1].value
 
         // Logic for T-x-y and P-x-y diagrams
         if (diagramType === 'txy' || diagramType === 'pxy') {
-            const { bubble, dew } = plotDataRef.current;
+            const { bubble, dew } = plotDataRef.current
             if (bubble.length < 2 || dew.length < 2) {
                 // If plot data is not ready, just update the dot
                 echartsInstance.setOption({
                     series: [{ id: 'cursor-dot', data: [[cursorX, cursorY]] }]
-                });
-                return;
+                })
+                return
             }
 
             const interpInverse = (yTarget: number, data: [number, number][]): number | null => {
                 for (let i = 0; i < data.length - 1; i++) {
-                    const [x1, y1] = data[i];
-                    const [x2, y2] = data[i + 1];
+                    const [x1, y1] = data[i]
+                    const [x2, y2] = data[i + 1]
                     if ((y1 <= yTarget && yTarget <= y2) || (y2 <= yTarget && yTarget <= y1)) {
-                        if (Math.abs(y2 - y1) < 1e-9) return x1;
-                        const t = (yTarget - y1) / (y2 - y1);
-                        return x1 + t * (x2 - x1);
+                        if (Math.abs(y2 - y1) < 1e-9) return x1
+                        const t = (yTarget - y1) / (y2 - y1)
+                        return x1 + t * (x2 - x1)
                     }
                 }
-                return null;
-            };
+                return null
+            }
 
-            const bubbleX = interpInverse(cursorY, bubble);
-            const dewX = interpInverse(cursorY, dew);
-            const yAxisMin = yMinRef.current ?? 0;
+            const bubbleX = interpInverse(cursorY, bubble)
+            const dewX = interpInverse(cursorY, dew)
+            const yAxisMin = yMinRef.current ?? 0
 
-            const inRegion = bubbleX !== null && dewX !== null && cursorX >= bubbleX && cursorX <= dewX;
+            const inRegion = bubbleX !== null && dewX !== null && cursorX >= Math.min(bubbleX, dewX) && cursorX <= Math.max(bubbleX, dewX)
+
+            // *** UNCOMMENT THE LINE BELOW TO DEBUG IN YOUR BROWSER'S CONSOLE ***
+            // console.log(`Cursor: (${cursorX.toFixed(3)}, ${cursorY.toFixed(3)}), BubbleX: ${bubbleX?.toFixed(3)}, DewX: ${dewX?.toFixed(3)}, InRegion: ${inRegion}`)
 
             if (inRegion) {
+                // Added Math.abs for robustness in lever rule calculation
+                leverRuleDataRef.current = {
+                    liquid: Math.abs((dewX - cursorX) / (dewX - bubbleX)),
+                    vapor: Math.abs((cursorX - bubbleX) / (dewX - bubbleX))
+                }
+                
                 const tieLineData = [
                     // Horizontal segment from bubble curve to cursor
                     [{ xAxis: bubbleX, yAxis: cursorY, lineStyle: { color: 'green', type: [4, 4] } }, { xAxis: cursorX, yAxis: cursorY }],
@@ -947,27 +972,101 @@ export default function VleDiagramPage() {
                     [{ xAxis: bubbleX, yAxis: cursorY, lineStyle: { color: 'green', type: [4, 4] } }, { xAxis: bubbleX, yAxis: yAxisMin }],
                     // Vertical segment from dew curve to x-axis
                     [{ xAxis: dewX, yAxis: cursorY, lineStyle: { color: '#3b82f6', type: [4, 4] } }, { xAxis: dewX, yAxis: yAxisMin }]
-                ];
-                const markPointData = [
-                    { name: 'Bubble', value: `x: ${formatNumberToPrecision(bubbleX, 3)}`, xAxis: bubbleX, yAxis: yAxisMin },
-                    { name: 'Dew', value: `y: ${formatNumberToPrecision(dewX, 3)}`, xAxis: dewX, yAxis: yAxisMin }
-                ];
+                ]
+                
+                const intersectionPoints = [
+                    {
+                        name: 'BubbleIntersection',
+                        xAxis: bubbleX,
+                        yAxis: cursorY,
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        label: { show: false },
+                        silent: true,
+                        itemStyle: { color: 'green', borderColor: 'transparent', borderWidth: 0 },
+                        z: 100
+                    },
+                    {
+                        name: 'DewIntersection',
+                        xAxis: dewX,
+                        yAxis: cursorY,
+                        symbol: 'circle',
+                        symbolSize: 8,
+                        label: { show: false },
+                        silent: true,
+                        itemStyle: { color: '#3b82f6', borderColor: 'transparent', borderWidth: 0 },
+                        z: 100
+                    }
+                ]
+
+                // Add bottom labels at the vertical line intersections with x-axis
+                const isDark = resolvedTheme === 'dark'
+                const labelBg = isDark ? '#08306b' : '#ffffff'
+                const labelBorder = isDark ? '#55aaff' : '#333333'
+                const labelColor = isDark ? 'white' : '#000000'
+                
+                const bottomLabels = [
+                    { 
+                        name: 'BubbleLabel', 
+                        value: `x: ${formatNumberToPrecision(bubbleX, 3)}`, 
+                        xAxis: bubbleX, 
+                        yAxis: yAxisMin,
+                        label: {
+                            show: true,
+                            position: 'bottom',
+                            backgroundColor: labelBg,
+                            borderColor: labelBorder,
+                            color: labelColor,
+                            padding: [5, 8],
+                            borderRadius: 4,
+                            fontFamily: 'Merriweather Sans',
+                            offset: [0, 5]
+                        },
+                        itemStyle: { color: 'transparent' },
+                        symbolSize: 0
+                    },
+                    { 
+                        name: 'DewLabel', 
+                        value: `y: ${formatNumberToPrecision(dewX, 3)}`, 
+                        xAxis: dewX, 
+                        yAxis: yAxisMin,
+                        label: {
+                            show: true,
+                            position: 'bottom',
+                            backgroundColor: labelBg,
+                            borderColor: labelBorder,
+                            color: labelColor,
+                            padding: [5, 8],
+                            borderRadius: 4,
+                            fontFamily: 'Merriweather Sans',
+                            offset: [0, 5]
+                        },
+                        itemStyle: { color: 'transparent' },
+                        symbolSize: 0
+                    }
+                ]
+
+                const markPointData = [ ...intersectionPoints, ...bottomLabels ]
 
                 echartsInstance.setOption({
+                    // Hide the x-axis axisPointer label while inside the two-phase region
                     xAxis: { axisPointer: { label: { show: false } } },
+                    yAxis: { axisPointer: { label: { show: true } } },
                     series: [
                         { id: 'tie-line', markLine: { data: tieLineData }, markPoint: { data: markPointData } },
                         { id: 'cursor-dot', data: [[cursorX, cursorY]] }
                     ]
-                });
+                })
             } else {
+                leverRuleDataRef.current = { liquid: null, vapor: null }
                 echartsInstance.setOption({
                     xAxis: { axisPointer: { label: { show: true } } },
+                    yAxis: { axisPointer: { label: { show: true } } },
                     series: [
                         { id: 'tie-line', markLine: { data: [] }, markPoint: { data: [] } },
                         { id: 'cursor-dot', data: [[cursorX, cursorY]] }
                     ]
-                });
+                })
             }
         // Logic for other diagrams (like x-y)
         } else {
@@ -975,13 +1074,14 @@ export default function VleDiagramPage() {
                 series: [
                     { id: 'cursor-dot', data: [[cursorX, cursorY]] }
                 ]
-            });
+            })
         }
-    }, [diagramType]);
+    }, [diagramType, resolvedTheme])
 
     const handleChartMouseOut = useCallback(() => {
         const echartsInstance = echartsRef.current?.getEchartsInstance();
         if (!echartsInstance) return;
+        leverRuleDataRef.current = { liquid: null, vapor: null };
         echartsInstance.setOption({
             series: [
                 { id: 'tie-line', markLine: { data: [] } },
@@ -1028,7 +1128,9 @@ export default function VleDiagramPage() {
                                         setComp1Name(comp2Name);
                                         setComp2Name(temp);
                                         setAutoGenerateOnCompChange(true);
-                                        generateDiagram();
+                                        // REMOVED: generateDiagram();
+                                        // By removing the direct call, we let the useEffect hook handle
+                                        // the diagram generation after the state has been correctly updated.
                                     }} title="Swap Components"><ArrowLeftRight className="h-4 w-4" /></Button>
                                     <div className="relative flex-1">
                                         <Input
