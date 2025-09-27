@@ -1066,16 +1066,16 @@ export default function VleDiagramPage() {
                       <Card>
                         <CardHeader><CardTitle>Pure Component Boiling Points</CardTitle></CardHeader>
                         <CardContent>
-                          <div className="grid grid-cols-2 gap-4 text-center">
-                            <div className="p-4 bg-muted rounded-md">
-                              <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
-                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.t[chartData.x.indexOf(1)] - 273.15, 3)} °C</p>
-                            </div>
-                            <div className="p-4 bg-muted rounded-md">
-                              <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
-                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.t[chartData.x.indexOf(0)] - 273.15, 3)} °C</p>
-                            </div>
-                          </div>
+                                                                                <div className="grid grid-cols-2 gap-4 text-center">
+                                                                                    <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
+                                                            <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
+                                                            <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.t[chartData.x.indexOf(1)] - 273.15, 3)} °C</p>
+                                                                                    </div>
+                                                                                    <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
+                                                            <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
+                                                            <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.t[chartData.x.indexOf(0)] - 273.15, 3)} °C</p>
+                                                                                    </div>
+                                                    </div>
                         </CardContent>
                       </Card>
                     )}
@@ -1083,16 +1083,16 @@ export default function VleDiagramPage() {
                       <Card>
                         <CardHeader><CardTitle>Pure Component Vapor Pressures</CardTitle></CardHeader>
                         <CardContent>
-                          <div className="grid grid-cols-2 gap-4 text-center">
-                            <div className="p-4 bg-muted rounded-md">
-                              <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
-                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.p[chartData.x.indexOf(1)] / 1e5, 3)} bar</p>
-                            </div>
-                            <div className="p-4 bg-muted rounded-md">
-                              <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
-                              <p className="text-2xl font-bold">{formatNumberToPrecision(chartData.p[chartData.x.indexOf(0)] / 1e5, 3)} bar</p>
-                            </div>
-                          </div>
+                                                                                <div className="grid grid-cols-2 gap-4 text-center">
+                                                                                    <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
+                                                            <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
+                                                            <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.p[chartData.x.indexOf(1)] / 1e5, 3)} bar</p>
+                                                                                    </div>
+                                                                                    <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
+                                                            <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
+                                                            <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.p[chartData.x.indexOf(0)] / 1e5, 3)} bar</p>
+                                                                                    </div>
+                                                    </div>
                         </CardContent>
                       </Card>
                     )}

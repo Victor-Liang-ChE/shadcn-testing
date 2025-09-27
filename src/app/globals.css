@@ -148,3 +148,14 @@ input[type=number] {
       @apply my-3; /* Adjust spacing if needed */
     }
   }
+
+/* Responsive text helpers used by the VLE diagram cards */
+.responsive-text-container {
+  container-type: inline-size;
+}
+
+.shrinkable-text {
+  /* This reduces the minimum font size to prevent overflow
+     Prefer a font size in the range: min 0.75rem, preferred 12% of container width, max 1.5rem */
+  font-size: clamp(0.75rem, 12cqw, 1.5rem);
+}
