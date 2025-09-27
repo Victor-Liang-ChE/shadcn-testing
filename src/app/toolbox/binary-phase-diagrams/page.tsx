@@ -195,8 +195,8 @@ export default function VleDiagramPage() {
             // Store the plot data for tie line calculations
             plotDataRef.current = { bubble: bubblePoints, dew: dewPoints };
             
-            series.push({ name: 'Bubble Point', type: 'line', data: bubblePoints, symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
-            series.push({ name: 'Dew Point',    type: 'line', data: dewPoints, symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
+            series.push({ name: 'Bubble Point Curve', type: 'line', data: bubblePoints, symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
+            series.push({ name: 'Dew Point Curve',    type: 'line', data: dewPoints, symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
 
         } else if (diagramType === 'pxy' && data.p) {
             yAxisName = "Pressure (bar)";
@@ -212,8 +212,8 @@ export default function VleDiagramPage() {
             // Store the plot data for tie line calculations
             plotDataRef.current = { bubble: bubblePoints, dew: dewPoints };
 
-            series.push({ name: 'Bubble Point', type: 'line', data: bubblePoints, symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
-            series.push({ name: 'Dew Point',    type: 'line', data: dewPoints, symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
+            series.push({ name: 'Bubble Point Curve', type: 'line', data: bubblePoints, symbol: 'none', color: 'green', lineStyle: { width: 2.5 } });
+            series.push({ name: 'Dew Point Curve',    type: 'line', data: dewPoints, symbol: 'none', color: '#3b82f6', lineStyle: { width: 2.5 } });
         } else {
             yAxisName = `Vapor Mole Fraction ${comp1Label} (y)`;
             titleConditionText = useTemperatureForXY ? `at ${formatNumberToPrecision(params.temp ?? 0)} °C` : `at ${formatNumberToPrecision(params.pressure ?? 0)} bar`;
@@ -1103,7 +1103,7 @@ export default function VleDiagramPage() {
                         <CardHeader><CardTitle>VLE Diagram Generator</CardTitle></CardHeader>
                         <CardContent className="space-y-6">
                             <Tabs value={diagramType} onValueChange={(v) => setDiagramType(v as DiagramType)} className="w-full">
-                                <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="txy">T-x-y</TabsTrigger><TabsTrigger value="pxy">P-x-y</TabsTrigger><TabsTrigger value="xy">x-y</TabsTrigger></TabsList>
+                                <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="txy">Txy</TabsTrigger><TabsTrigger value="pxy">Pxy</TabsTrigger><TabsTrigger value="xy">xy</TabsTrigger></TabsList>
                             </Tabs>
                             <div className="space-y-4">
                                 <div className="flex items-center gap-2">
