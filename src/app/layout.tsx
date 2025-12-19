@@ -21,7 +21,7 @@ export default function RootLayout({
         />
       </head>
       {/* Remove inter.className to use default font from globals.css */}
-      <body>
+      <body suppressHydrationWarning>
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
