@@ -58,6 +58,11 @@ const RDF_BIN_WIDTH = RDF_CUTOFF / RDF_BINS
 
 export default function MolecularDynamicsPage() {
   const { resolvedTheme } = useTheme()
+    const isDarkTheme = resolvedTheme === 'dark'
+    const velColor = isDarkTheme ? '#4ade80' : '#16a34a'
+    const forceColor = isDarkTheme ? '#facc15' : '#d97706'
+    const [mounted, setMounted] = useState(false)
+    useEffect(() => { setMounted(true) }, [])
   
   // --- Simulation State ---
   const [running, setRunning] = useState(false)
@@ -849,19 +854,21 @@ export default function MolecularDynamicsPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                    <Button 
-                        variant={showVelocity ? "default" : "outline"} 
+                    <Button
+                        variant={showVelocity ? "default" : "outline"}
                         onClick={() => setShowVelocity(!showVelocity)}
-                        className="text-xs"
+                        className={`text-xs cursor-pointer ${showVelocity ? 'bg-green-600 text-white' : 'text-green-600'}`}
+                        style={mounted ? (showVelocity ? { backgroundColor: velColor, color: '#ffffff' } : { color: velColor }) : undefined}
                     >
-                        <ArrowRight className="mr-2 h-3 w-3" /> Velocity
+                        Velocity
                     </Button>
-                    <Button 
+                    <Button
                         variant={showForce ? "default" : "outline"}
                         onClick={() => setShowForce(!showForce)}
-                        className="text-xs"
+                        className={`text-xs cursor-pointer ${showForce ? 'bg-amber-500 text-black' : 'text-amber-500'}`}
+                        style={mounted ? (showForce ? { backgroundColor: forceColor, color: '#111827' } : { color: forceColor }) : undefined}
                     >
-                        <Move className="mr-2 h-3 w-3" /> Force
+                        Force
                     </Button>
                 </div>
               </div>
