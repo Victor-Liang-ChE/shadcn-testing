@@ -32,6 +32,8 @@ const heatTransferThumbnailPath = "/thumbnails/1d-heat-transfer-thumbnail.png";
 const heatTransferThumbnailLightPath = "/thumbnails/1d-heat-transfer-thumbnail-light.png";
 const unaryPhaseThumbnailPath = "/thumbnails/unary-phase-diagrams-thumbnail.png";
 const unaryPhaseThumbnailLightPath = "/thumbnails/unary-phase-diagrams-thumbnail-light.png";
+const molecularDynamicsThumbnailPath = "/thumbnails/molecular-dynamics-thumbnail.png";
+const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thumbnail-light.png";
 
 export default function Page() {
   const { resolvedTheme } = useTheme();
@@ -125,6 +127,13 @@ export default function Page() {
       description: "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
       thumbnailPath: dynamicsThumbnailPath,
       thumbnailLightPath: dynamicsThumbnailLightPath
+    },
+    {
+      name: "Molecular Dynamics",
+      path: "/toolbox/molecular-dynamics",
+      description: "Interactive molecular dynamics simulator for studying particle interactions, energy evolution, and radial distribution functions.",
+      thumbnailPath: molecularDynamicsThumbnailPath,
+      thumbnailLightPath: molecularDynamicsThumbnailLightPath
     }
   ];
 

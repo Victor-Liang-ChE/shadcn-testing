@@ -87,7 +87,14 @@ export default function MolecularDynamicsPage() {
   const [thermostatZeta, setThermostatZeta] = useState<number>(0) // Visualizing the friction
   const [rdfData, setRdfData] = useState<{r: number, g: number}[]>([])
   const [energyHistory, setEnergyHistory] = useState<{time: number, ke: number, pe: number, tot: number}[]>([])
+    const energyHistoryRef = useRef<{time: number, ke: number, pe: number, tot: number}[]>([])
   const [analysisView, setAnalysisView] = useState<'rdf' | 'energy'>('rdf')
+
+    // Keep tooltips visible while data updates
+    const analysisChartRef = useRef<any>(null)
+    const analysisHoverRef = useRef(false)
+    const analysisPointerRef = useRef<{ x: number; y: number } | null>(null)
+    const analysisTooltipTimerRef = useRef<number | null>(null)
   
   // --- Selected Particle View State ---
   const particleHistoryRef = useRef<{time: number, vx: number, vy: number, f: number}[]>([])
@@ -353,6 +360,11 @@ export default function MolecularDynamicsPage() {
     for (let p of newParticles) { vcmX += p.vx; vcmY += p.vy }
     vcmX /= numParticles; vcmY /= numParticles
     for (let p of newParticles) { p.vx -= vcmX; p.vy -= vcmY }
+
+    // Seed energy history at t=0 so the chart doesn't start with an empty left section.
+    const pe0 = calculateForces(newParticles)
+    let ke0 = 0
+    for (const p of newParticles) ke0 += 0.5 * (p.vx * p.vx + p.vy * p.vy)
     
     setParticles(newParticles)
     particlesRef.current = newParticles
@@ -361,6 +373,11 @@ export default function MolecularDynamicsPage() {
     rdfHistogramRef.current = new Array(RDF_BINS).fill(0) // Clear RDF bins
     rdfFramesRef.current = 0 // Reset RDF frame counter
     setRdfData([]) // Clear RDF display
+        energyHistoryRef.current = [{ time: 0, ke: ke0, pe: pe0, tot: ke0 + pe0 }]
+        setEnergyHistory(energyHistoryRef.current)
+        setKineticEnergy(ke0)
+        setThermostatZeta(0)
+        setHistoryTrigger(0)
     timeRef.current = 0
     nhStateRef.current.zeta = 0 // Reset Thermostat
   }, [numParticles, temperature])
@@ -442,6 +459,16 @@ export default function MolecularDynamicsPage() {
     particlesRef.current = currentParticles
     setKineticEnergy(kineticEnergyFull)
     setThermostatZeta(zeta)
+
+    // Track Energy History every physics step (real samples, no synthetic padding)
+    const tot = kineticEnergyFull + pe
+    energyHistoryRef.current.push({ time: timeRef.current, ke: kineticEnergyFull, pe, tot })
+    // Keep a bit more than the visible window so the chart can scroll smoothly.
+    const keepSeconds = 1.0
+    const cutoff = timeRef.current - keepSeconds
+    while (energyHistoryRef.current.length > 2 && energyHistoryRef.current[0].time < cutoff) {
+        energyHistoryRef.current.shift()
+    }
     
     // Sample RDF statistics (every step)
     sampleRDF(currentParticles)
@@ -455,17 +482,8 @@ export default function MolecularDynamicsPage() {
             const newRdfData = computeRDFGraph()
             setRdfData(newRdfData)
             
-            // Track Energy History
-            setEnergyHistory(prev => {
-                const newHistory = [...prev, { 
-                    time: timeRef.current, 
-                    ke: kineticEnergyFull, 
-                    pe: pe, 
-                    tot: kineticEnergyFull + pe 
-                }]
-                if (newHistory.length > 100) newHistory.shift()
-                return newHistory
-            })
+            // Update chart data (batched to UI render frames)
+            setEnergyHistory([...energyHistoryRef.current])
             
             if (selectedId !== null) setHistoryTrigger(prev => prev + 1)
         }
@@ -511,6 +529,39 @@ export default function MolecularDynamicsPage() {
   useEffect(() => {
       initializeParticles()
   }, [numParticles])
+
+  const refreshAnalysisTooltip = useCallback(() => {
+      if (!analysisHoverRef.current) return
+      const pt = analysisPointerRef.current
+      if (!pt) return
+      const inst = analysisChartRef.current?.getEchartsInstance?.()
+      if (!inst) return
+      inst.dispatchAction({ type: 'showTip', x: pt.x, y: pt.y })
+  }, [])
+
+  const stopAnalysisTooltipLoop = useCallback(() => {
+      if (analysisTooltipTimerRef.current !== null) {
+          window.clearInterval(analysisTooltipTimerRef.current)
+          analysisTooltipTimerRef.current = null
+      }
+  }, [])
+
+  const startAnalysisTooltipLoop = useCallback(() => {
+      if (analysisTooltipTimerRef.current !== null) return
+      analysisTooltipTimerRef.current = window.setInterval(() => {
+          refreshAnalysisTooltip()
+      }, 50)
+  }, [refreshAnalysisTooltip])
+
+  // After each data refresh, re-show the tooltip at the last cursor position.
+  useEffect(() => {
+      // Defer to the next frame so it runs after ECharts applies setOption.
+      requestAnimationFrame(() => refreshAnalysisTooltip())
+  }, [rdfData, energyHistory, analysisView, refreshAnalysisTooltip])
+
+  useEffect(() => {
+      return () => stopAnalysisTooltipLoop()
+  }, [stopAnalysisTooltipLoop])
 
   const onChartClick = (params: any) => {
       const dataValues = params.data.value || params.data;
@@ -657,21 +708,26 @@ export default function MolecularDynamicsPage() {
   // --- RDF Visualization ---
   const getRdfOption = (): EChartsOption => {
       const isDark = resolvedTheme === 'dark'
+      const textColor = isDark ? '#ffffff' : '#000000'
       
       return {
           backgroundColor: 'transparent',
           title: {
               text: 'Radial Distribution Function g(r)',
               left: 'center',
-              textStyle: { fontSize: 12, color: isDark ? '#fff' : '#000', fontFamily: 'Merriweather Sans' }
+              textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' }
           },
           tooltip: { 
               trigger: 'axis',
+              triggerOn: 'mousemove|click',
+              alwaysShowContent: false,
+              hideDelay: 100,
               confine: true,
               enterable: true,
               backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
               borderColor: isDark ? '#374151' : '#e5e7eb',
-              textStyle: { fontFamily: 'Merriweather Sans', color: '#ffffff' },
+              textStyle: { fontFamily: 'Merriweather Sans', color: textColor },
+              axisPointer: { type: 'line' },
               formatter: (params: any) => {
                   if (!Array.isArray(params)) return ''
                   const p = params[0]
@@ -687,18 +743,18 @@ export default function MolecularDynamicsPage() {
               name: 'r (Distance) [σ]',
               nameLocation: 'middle',
               nameGap: 30,
-              nameTextStyle: { color: '#ffffff', fontSize: 10, fontFamily: 'Merriweather Sans' },
-              axisLabel: { color: '#ffffff', fontSize: 10, fontFamily: 'Merriweather Sans' },
-              axisLine: { show: true, lineStyle: { color: '#ffffff' } },
+              nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisLabel: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisLine: { show: true, lineStyle: { color: textColor } },
               splitLine: { show: false }
           },
           yAxis: {
               type: 'value',
               name: 'g(r)',
               min: 0,
-              nameTextStyle: { color: '#ffffff', fontSize: 10, fontFamily: 'Merriweather Sans' },
-              axisLabel: { color: '#ffffff', fontSize: 10, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toPrecision(3) },
-              axisLine: { show: true, lineStyle: { color: '#ffffff' } },
+              nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisLabel: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans', formatter: (v: number) => v.toPrecision(3) },
+              axisLine: { show: true, lineStyle: { color: textColor } },
               splitLine: { show: false }
           },
           series: [
@@ -724,31 +780,71 @@ export default function MolecularDynamicsPage() {
   // --- Energy Chart Configuration ---
   const getEnergyOption = (): EChartsOption => {
       const isDark = resolvedTheme === 'dark'
-      const times = energyHistory.map(h => h.time.toFixed(1))
-      const displayTimes = times.map((t, i) => (i === 0 || t !== times[i - 1]) ? t : '')
-      
-      return {
-          title: { text: 'Energy', left: 'center', textStyle: { fontSize: 12, color: isDark ? '#fff' : '#000', fontFamily: 'Merriweather Sans' } },
-          tooltip: { 
+      const textColor = isDark ? '#ffffff' : '#000000'
+        // Sliding window parameters (always show the last 0.5 ps)
+        const windowSize = 0.5 // ps
+        const maxTime = Math.max(timeRef.current, windowSize)
+        const minTime = Math.max(0, maxTime - windowSize)
+
+        // No filtering/padding here: we always plot real samples only.
+        // ECharts will clip to [minTime, maxTime] via the xAxis min/max.
+        const totalData = energyHistory.map((h): [number, number] => [h.time, h.tot])
+        const peData = energyHistory.map((h): [number, number] => [h.time, h.pe])
+        const keData = energyHistory.map((h): [number, number] => [h.time, h.ke])
+
+            return {
+          title: { text: 'Energy', left: 'center', textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' } },
+          tooltip: {
               trigger: 'axis',
+              triggerOn: 'mousemove|click',
+              alwaysShowContent: false,
+              hideDelay: 100,
               confine: true,
               enterable: true,
               backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
               borderColor: isDark ? '#374151' : '#e5e7eb',
-              textStyle: { fontFamily: 'Merriweather Sans', color: '#ffffff' },
+              textStyle: { fontFamily: 'Merriweather Sans', color: textColor },
               formatter: (params: any) => {
-                  if (!Array.isArray(params)) return ''
-                  return params.map((p: any) => `${p.seriesName}: ${Number(p.value).toPrecision(3)}`).join('<br/>')
+                  if (!Array.isArray(params) || params.length === 0) return ''
+                  // Show the time once, then unique series entries (dedupe by seriesName)
+                  const first = params[0]
+                  const time = first && Array.isArray(first.value) ? Number(first.value[0]) : NaN
+                  const timeLine = `Time: ${Number.isFinite(time) ? time.toFixed(3) + ' ps' : '—'}`
+                  const seen = new Set<string>()
+                  const lines: string[] = []
+                  for (const p of params) {
+                      const name = String(p.seriesName ?? p.seriesIndex)
+                      if (seen.has(name)) continue
+                      seen.add(name)
+                      const val = Array.isArray(p.value) ? p.value[1] : p.value
+                      lines.push(`${name}: ${Number(val).toPrecision(4)} ε`)
+                  }
+                  return [timeLine, ...lines].join('<br/>')
               }
           },
-          legend: { bottom: -5, symbolKeepAspect: true, itemWidth: 8, itemHeight: 8, textStyle: { color: isDark ? '#fff' : '#000', fontFamily: 'Merriweather Sans' } },
+          legend: { bottom: -5, symbolKeepAspect: true, itemWidth: 8, itemHeight: 8, textStyle: { color: textColor, fontFamily: 'Merriweather Sans' } },
           grid: { left: 70, right: 20, top: 50, bottom: 60, containLabel: false },
-          xAxis: { type: 'category', data: times, boundaryGap: false, show: true, position: 'bottom', name: 'Time (ps)', nameLocation: 'middle', nameGap: 25, nameTextStyle: { color: '#ffffff', fontSize: 10, fontFamily: 'Merriweather Sans' }, axisLine: { show: true, lineStyle: { color: '#ffffff' }, onZero: false }, axisTick: { show: true, alignWithLabel: true, interval: 'auto' }, axisLabel: { show: times.length > 0, showMinLabel: false, color: '#ffffff', margin: 12, interval: 'auto', formatter: (_: string, index: number) => displayTimes[index] } },
-          yAxis: { type: 'value', name: 'Energy (ε)', nameLocation: 'middle', nameGap: 55, nameTextStyle: { color: '#ffffff', fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: '#ffffff' }, onZero: false }, axisTick: { show: true }, axisLabel: { color: isDark ? '#fff' : '#000', fontFamily: 'Merriweather Sans', margin: 5 } },
+          xAxis: {
+              type: 'value',
+              min: minTime,
+              max: maxTime,
+              boundaryGap: [0, 0],
+              show: true,
+              position: 'bottom',
+              name: 'Time (ps)',
+              nameLocation: 'middle',
+              nameGap: 25,
+              nameTextStyle: { color: isDark ? '#ffffff' : '#000', fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisLine: { show: true, lineStyle: { color: isDark ? '#ffffff' : '#000' }, onZero: false },
+              axisTick: { show: true },
+              splitLine: { show: false },
+              axisLabel: { showMinLabel: false, showMaxLabel: false, color: isDark ? '#ffffff' : '#000', fontFamily: 'Merriweather Sans', margin: 5, formatter: (v: number) => v.toFixed(3) }
+          },
+          yAxis: { type: 'value', name: 'Energy (ε)', nameLocation: 'middle', nameGap: 55, nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: textColor }, onZero: false }, axisTick: { show: true }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 } },
           series: [
-              { name: 'Total E', type: 'line', data: energyHistory.map(h => h.tot), showSymbol: false, lineStyle: { width: 2, color: '#10b981' } },
-              { name: 'Potential (PE)', type: 'line', data: energyHistory.map(h => h.pe), showSymbol: false, lineStyle: { width: 1.5, color: '#3b82f6' } },
-              { name: 'Kinetic (KE)', type: 'line', data: energyHistory.map(h => h.ke), showSymbol: false, lineStyle: { width: 1.5, color: '#ef4444' } }
+              { name: 'Total E', type: 'line', data: totalData, showSymbol: false, lineStyle: { width: 2, color: '#10b981' } },
+              { name: 'Potential (PE)', type: 'line', data: peData, showSymbol: false, lineStyle: { width: 1.5, color: '#3b82f6' } },
+              { name: 'Kinetic (KE)', type: 'line', data: keData, showSymbol: false, lineStyle: { width: 1.5, color: '#ef4444' } }
           ],
           animation: false
       }
@@ -804,11 +900,10 @@ export default function MolecularDynamicsPage() {
                   />
                 </div>
 
-                {/* TIME STEP: Unsafe during run */}
-                <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
+                {/* TIME STEP: Safe to change during run */}
+                <div className="space-y-2">
                     <Label>Time Step (dt): {timeStep.toFixed(4)} ps</Label>
                     <Slider
-                        disabled={running}
                         value={[timeStep]} min={0.0005} max={0.005} step={0.0005}
                         onValueChange={(v) => setTimeStep(v[0])}
                     />
@@ -928,7 +1023,12 @@ export default function MolecularDynamicsPage() {
                           size="sm"
                           variant={analysisView === 'rdf' ? 'default' : 'outline'}
                           onClick={() => setAnalysisView('rdf')}
-                          className="h-8 text-xs bg-background/80 text-white border border-white/20 shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans]"
+                          className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                              mounted ? (isDarkTheme
+                                  ? 'bg-background/80 text-white border border-white/20'
+                                  : 'bg-background/80 text-black border border-black/20')
+                              : ''
+                          }`}
                       >
                           RDF
                       </Button>
@@ -936,16 +1036,47 @@ export default function MolecularDynamicsPage() {
                           size="sm"
                           variant={analysisView === 'energy' ? 'default' : 'outline'}
                           onClick={() => setAnalysisView('energy')}
-                          className="h-8 text-xs bg-background/80 text-white border border-white/20 shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans]"
+                          className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                              mounted ? (isDarkTheme
+                                  ? 'bg-background/80 text-white border border-white/20'
+                                  : 'bg-background/80 text-black border border-black/20')
+                              : ''
+                          }`}
                       >
                           Energy
                       </Button>
                   </div>
-                  <ReactECharts
-                      option={analysisView === 'rdf' ? getRdfOption() : getEnergyOption()}
-                      style={{ height: '100%', width: '100%' }}
-                      notMerge={true}
-                  />
+                  <div
+                      className="h-full w-full"
+                      onMouseEnter={() => {
+                          analysisHoverRef.current = true
+                          startAnalysisTooltipLoop()
+                          refreshAnalysisTooltip()
+                      }}
+                      onMouseMove={(e) => {
+                          analysisHoverRef.current = true
+                          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect()
+                          analysisPointerRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+                          startAnalysisTooltipLoop()
+                          refreshAnalysisTooltip()
+                      }}
+                      onMouseLeave={() => {
+                          analysisHoverRef.current = false
+                          analysisPointerRef.current = null
+                          stopAnalysisTooltipLoop()
+                          const inst = analysisChartRef.current?.getEchartsInstance?.()
+                          inst?.dispatchAction({ type: 'hideTip' })
+                      }}
+                  >
+                      <ReactECharts
+                          key={analysisView}
+                          ref={analysisChartRef}
+                          option={analysisView === 'rdf' ? getRdfOption() : getEnergyOption()}
+                          style={{ height: '100%', width: '100%' }}
+                          notMerge={false}
+                          lazyUpdate={true}
+                      />
+                  </div>
               </CardContent>
            </Card>
         </div>
@@ -953,4 +1084,5 @@ export default function MolecularDynamicsPage() {
       </div>
     </div>
   )
+
 }

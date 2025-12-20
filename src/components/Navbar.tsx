@@ -67,6 +67,9 @@ function Navbar() {
       case "/toolbox/1d-heat-transfer":
         return "1D Heat Transfer";
 
+      case "/toolbox/molecular-dynamics":
+        return "Molecular Dynamics Simulator";
+
       case "/misc":
           return "Miscellaneous Projects";
   
