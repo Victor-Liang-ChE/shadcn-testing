@@ -33,7 +33,25 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
-import { Play, Pause, RotateCcw, Move, ArrowRight, MousePointer2, Activity, List, Zap } from 'lucide-react'
+import 'katex/dist/katex.min.css'
+import { BlockMath } from 'react-katex'
+import { 
+  Play, 
+  Pause, 
+  RotateCcw, 
+  Move, 
+  ArrowRight, 
+  MousePointer2, 
+  Activity, 
+  List, 
+  Zap,
+  Info
+} from 'lucide-react'
+
+// Type declaration for react-katex
+declare module 'react-katex' {
+  export function BlockMath(props: { math: string }): React.ReactElement
+}
 
 // Types for our simulation
 type Particle = {
@@ -77,6 +95,11 @@ export default function MolecularDynamicsPage() {
   // New L-J Parameters
   const [epsilon, setEpsilon] = useState<number>(50.0)
   const [sigma, setSigma] = useState<number>(5.0)
+  
+  // Potential Type and Generic Parameter C
+    type PotentialType = 'LJ' | 'WCA' | 'MORSE' | 'SOFT' | 'YUKAWA' | 'GAUSS' | 'BUCK'
+  const [potentialType, setPotentialType] = useState<PotentialType>('LJ')
+  const [paramC, setParamC] = useState<number>(1.5) // Width for Morse, Exponent for Soft
 
   // --- Visualization States ---
   const [showForce, setShowForce] = useState(false)
@@ -109,6 +132,8 @@ export default function MolecularDynamicsPage() {
       dt: DT_DEFAULT,
       epsilon: 50.0,
       sigma: 5.0,
+      paramC: 1.5,
+      potentialType: 'LJ' as PotentialType,
       box: BOX_SIZE,
       targetTemp: 1.0
   })
@@ -131,12 +156,14 @@ export default function MolecularDynamicsPage() {
       paramsRef.current.dt = timeStep
       paramsRef.current.epsilon = epsilon
       paramsRef.current.sigma = sigma
+      paramsRef.current.paramC = paramC
+      paramsRef.current.potentialType = potentialType
       paramsRef.current.targetTemp = temperature
       
       // Update NH Thermal Mass Q roughly based on system size
       // Q approx N * T * tau^2. Let tau = 0.5ps
       nhStateRef.current.Q = numParticles * temperature * 0.25
-  }, [timeStep, epsilon, sigma, temperature, numParticles])
+  }, [timeStep, epsilon, sigma, paramC, potentialType, temperature, numParticles])
 
   // --- PHYSICS KERNEL: Force Calculation ---
   // Abstracted so it can be used by both MD Loop and Minimizer
@@ -206,18 +233,123 @@ export default function MolecularDynamicsPage() {
 
                       if (distSq > cutoff * cutoff) continue
 
-                      // STRICT: No force clamping needed due to minimization
-                      const r2 = Math.max(1e-6, distSq)
-                      const invR2 = 1.0 / r2
-                      const s2 = sig * sig
-                      const s2_r2 = s2 * invR2
-                      const s6_r6 = s2_r2 * s2_r2 * s2_r2
-                      const s12_r12 = s6_r6 * s6_r6
+                      // PRE-CALCULATIONS
+                      const r = Math.sqrt(distSq)
+                      const r_inv = 1.0 / r
+                      const r2_inv = r_inv * r_inv
 
-                      const forceScalar = (24 * eps * invR2) * (2 * s12_r12 - s6_r6)
-                      
-                      // Lennard-Jones Potential Energy: V = 4*eps*(s12 - s6)
-                      potentialEnergy += 4 * eps * (s12_r12 - s6_r6)
+                      let forceScalar = 0 // This represents F(r) / r
+                      let pairPotential = 0
+
+                      switch (paramsRef.current.potentialType) {
+                          case 'LJ': {
+                              // Lennard-Jones: Standard
+                              const s2 = sig * sig
+                              const s2_r2 = s2 * r2_inv
+                              const s6_r6 = s2_r2 * s2_r2 * s2_r2
+                              const s12_r12 = s6_r6 * s6_r6
+                              
+                              forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
+                              pairPotential = 4 * eps * (s12_r12 - s6_r6)
+                              break
+                          }
+                          case 'WCA': {
+                              // WCA: Purely Repulsive (LJ truncated at r = 2^(1/6)σ)
+                              const cutoffSq = 1.25992 * sig * sig // 2^(1/3) * sigma^2
+                              if (distSq < cutoffSq) {
+                                  const s2 = sig * sig
+                                  const s2_r2 = s2 * r2_inv
+                                  const s6_r6 = s2_r2 * s2_r2 * s2_r2
+                                  const s12_r12 = s6_r6 * s6_r6
+                                  
+                                  forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
+                                  // Shift potential up by epsilon so V=0 at cutoff
+                                  pairPotential = 4 * eps * (s12_r12 - s6_r6) + eps
+                              } else {
+                                  forceScalar = 0
+                                  pairPotential = 0
+                              }
+                              break
+                          }
+                          case 'MORSE': {
+                              // Morse: V = D(1 - e^(-a(r-re)))^2
+                              // eps = Depth (D), sig = Equilibrium (re), paramC = Width (a)
+                              const width = paramsRef.current.paramC
+                              const displacement = r - sig
+                              const expTerm = Math.exp(-width * displacement)
+                              const term = 1 - expTerm
+                              
+                              pairPotential = eps * term * term
+                              
+                              // Force F(r) = 2 * D * a * (1 - e^-...) * e^-...
+                              const f_r = 2 * eps * width * term * expTerm
+                              forceScalar = f_r * r_inv
+                              break
+                          }
+                          case 'YUKAWA': {
+                              // Yukawa / Screened Coulomb: V = (epsilon / r) * exp(-r / sigma)
+                              // eps = coupling strength, sig = screening length (lambda)
+                              const screened = Math.exp(-r / sig)
+                              pairPotential = (eps * screened) * r_inv
+
+                              // Force F(r) = V(r) * (1/r + 1/sig)
+                              const f_r_yuk = pairPotential * (r_inv + (1.0 / sig))
+                              forceScalar = f_r_yuk * r_inv
+                              break
+                          }
+                          case 'GAUSS': {
+                              // Gaussian Core: V = epsilon * exp(-r^2 / (2 * sigma^2))
+                              const r2_s2 = distSq / (sig * sig)
+                              const gauss = Math.exp(-0.5 * r2_s2)
+
+                              pairPotential = eps * gauss
+
+                              // F/r = epsilon * exp(-r^2/(2 sigma^2)) / sigma^2
+                              forceScalar = (eps * gauss) / (sig * sig)
+                              break
+                          }
+                          case 'BUCK': {
+                              // Buckingham: V(r) = A * exp(-r/rho) - C / r^6
+                              // eps = A (Repulsion), sig = rho (Decay Length), paramC = C (Attraction)
+
+                              // Safety: cap radius to avoid singular attraction at r->0
+                              const r_safe = Math.max(r, 0.5 * sig)
+
+                              const A = eps
+                              const rho = sig
+                              const C = paramsRef.current.paramC
+
+                              const expTerm = Math.exp(-r_safe / rho)
+                              const r2 = r_safe * r_safe
+                              const r6 = r2 * r2 * r2
+                              const r7 = r6 * r_safe
+
+                              pairPotential = A * expTerm - (C / r6)
+
+                              // Force F(r) = (A/rho) * exp(-r/rho) - (6C / r^7)
+                              const f_r_buck = (A / rho) * expTerm - (6 * C / r7)
+
+                              forceScalar = f_r_buck / r_safe
+                              break
+                          }
+                          case 'SOFT': {
+                              // Soft Sphere: V = eps * (sigma/r)^n
+                              // paramC = exponent n (usually 12)
+                              const n = Math.max(1, paramsRef.current.paramC)
+                              const ratio = sig * r_inv
+                              const ratio_n = Math.pow(ratio, n)
+                              
+                              pairPotential = eps * ratio_n
+                              
+                              // F(r) = n * eps * sigma^n / r^(n+1)
+                              const f_r = n * eps * ratio_n * r_inv
+                              forceScalar = f_r * r_inv
+                              break
+                          }
+                      }
+
+                      // Apply Forces
+                      potentialEnergy += pairPotential
 
                       const fx = dx * forceScalar
                       const fy = dy * forceScalar
@@ -792,8 +924,10 @@ export default function MolecularDynamicsPage() {
         const peData = energyHistory.map((h): [number, number] => [h.time, h.pe])
         const keData = energyHistory.map((h): [number, number] => [h.time, h.ke])
 
-            return {
-          title: { text: 'Energy', left: 'center', textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' } },
+                        return {
+                    // Explicit palette ensures legend markers match series line colors
+                    color: ['#10b981', '#3b82f6', '#ef4444'],
+                    title: { text: 'Energy', left: 'center', textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' } },
           tooltip: {
               trigger: 'axis',
               triggerOn: 'mousemove|click',
@@ -838,7 +972,7 @@ export default function MolecularDynamicsPage() {
               axisLine: { show: true, lineStyle: { color: isDark ? '#ffffff' : '#000' }, onZero: false },
               axisTick: { show: true },
               splitLine: { show: false },
-              axisLabel: { showMinLabel: false, showMaxLabel: false, color: isDark ? '#ffffff' : '#000', fontFamily: 'Merriweather Sans', margin: 5, formatter: (v: number) => v.toFixed(3) }
+              axisLabel: { showMinLabel: false, showMaxLabel: false, color: isDark ? '#ffffff' : '#000', fontFamily: 'Merriweather Sans', margin: 5, formatter: (v: number) => v.toFixed(1) }
           },
           yAxis: { type: 'value', name: 'Energy (ε)', nameLocation: 'middle', nameGap: 55, nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: textColor }, onZero: false }, axisTick: { show: true }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 } },
           series: [
@@ -849,6 +983,119 @@ export default function MolecularDynamicsPage() {
           animation: false
       }
   }
+
+  // Helper to get labels based on current potential type
+  const getLabels = () => {
+      switch (potentialType) {
+          case 'MORSE': return {
+              eps: 'Well Depth (D)',
+              sig: <span className="font-mono">Equilibrium (r<sub className="font-mono">e</sub>)</span>
+          }
+          case 'SOFT': return {
+              eps: 'Strength (ε)',
+              sig: 'Scale (σ)'
+          }
+          case 'WCA': return {
+              eps: 'Repulsion Strength (ε)',
+              sig: 'Core Radius (σ)'
+          }
+          case 'YUKAWA': return {
+              eps: 'Coupling (ε)',
+              sig: 'Screening Length (λ)'
+          }
+          case 'BUCK': return {
+              eps: 'Repulsion (A)',
+              sig: 'Decay Length (ρ)'
+          }
+          case 'GAUSS': return {
+              eps: 'Energy Barrier (ε)',
+              sig: 'Gaussian Width (σ)'
+          }
+          default: return {
+              eps: 'L-J Epsilon (ε)',
+              sig: 'L-J Sigma (σ)'
+          }
+      }
+  }
+
+  const labels = getLabels()
+
+  const getEquationInfo = (type: string) => {
+    switch (type) {
+      case 'LJ':
+        return (
+          <>
+            <p className="font-bold mb-1 text-center">Lennard-Jones</p>
+            <div className="text-xs">
+              <BlockMath math={'V(r) = 4\\epsilon \\left[ \\left(\\frac{\\sigma}{r}\\right)^{12} - \\left(\\frac{\\sigma}{r}\\right)^{6} \\right]'} />
+            </div>
+            <p className="text-[10px] mt-2 text-muted-foreground text-center">Standard model for noble gases.</p>
+          </>
+        )
+      case 'WCA':
+        return (
+          <>
+            <p className="font-bold mb-1 text-center">WCA Potential</p>
+            <div className="text-xs">
+               <BlockMath math={'V(r) = \\begin{cases} V_{LJ}(r) + \\epsilon & r < 2^{1/6}\\sigma \\\\ 0 & r \\ge 2^{1/6}\\sigma \\end{cases}'} />
+            </div>
+            <p className="text-[10px] mt-2 text-muted-foreground text-center">Purely repulsive hard-sphere approximation.</p>
+          </>
+        )
+            case 'MORSE':
+                return (
+                    <>
+                        <p className="font-bold mb-1 text-center">Morse Potential</p>
+                        <div className="text-xs">
+                            <BlockMath math={'V(r) = D \\left[ 1 - e^{-a(r-r_e)} \\right]^2'} />
+                        </div>
+                        <p className="text-[10px] mt-2 text-muted-foreground text-center">Models chemical bonds and vibrations.</p>
+                    </>
+                )
+            case 'YUKAWA':
+                return (
+                    <>
+                        <p className="font-bold mb-1 text-center">Yukawa (Screened Coulomb)</p>
+                        <div className="text-xs">
+                            <BlockMath math={'V(r) = \\epsilon \\frac{e^{-r/\\lambda}}{r}'} />
+                        </div>
+                        <p className="text-[10px] mt-2 text-muted-foreground text-center">Models charged particles in plasma or salt solution.</p>
+                    </>
+                )
+            case 'GAUSS':
+                return (
+                    <>
+                        <p className="font-bold mb-1 text-center">Gaussian Core</p>
+                        <div className="text-xs">
+                            <BlockMath math={'V(r) = \\epsilon e^{-r^2 / 2\\sigma^2}'} />
+                        </div>
+                        <p className="text-[10px] mt-2 text-muted-foreground text-center">Finite repulsion at overlap. Used for polymers.</p>
+                    </>
+                )
+            case 'BUCK':
+                return (
+                    <>
+                        <p className="font-bold mb-1 text-center">Buckingham</p>
+                        <div className="text-xs">
+                            <BlockMath math={'V(r) = A e^{-r/\\rho} - \\frac{C}{r^6}'} />
+                        </div>
+                        <p className="text-[10px] mt-2 text-muted-foreground text-center">More accurate repulsion for ionic crystals.</p>
+                    </>
+                )
+            case 'SOFT':
+                return (
+                    <>
+                        <p className="font-bold mb-1 text-center">Soft Sphere</p>
+                        <div className="text-xs">
+                            <BlockMath math={'V(r) = \\epsilon \\left( \\frac{\\sigma}{r} \\right)^n'} />
+                        </div>
+                        <p className="text-[10px] mt-2 text-muted-foreground text-center">Generic inverse-power repulsion.</p>
+                    </>
+                )
+            default:
+                return null
+        }
+    }
 
   return (
     <div className="container mx-auto p-4 md:p-8 px-4 md:px-16">
@@ -909,9 +1156,43 @@ export default function MolecularDynamicsPage() {
                     />
                 </div>
 
-                {/* EPSILON: Unsafe during run */}
+                {/* 1. POTENTIAL SELECTOR WITH TOOLTIP */}
                 <div className={`space-y-2 pt-2 border-t ${running ? 'opacity-50 pointer-events-none' : ''}`}>
-                    <Label className="text-amber-600">L-J Epsilon: {epsilon.toFixed(1)} ε</Label>
+                    <div className="flex items-center justify-between">
+                        <Label>Interatomic Potential</Label>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <select 
+                            className="flex-1 h-9 items-center rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                            value={potentialType}
+                            onChange={(e) => setPotentialType(e.target.value as any)}
+                            disabled={running}
+                        >
+                            <option value="LJ">Lennard-Jones (Standard)</option>
+                            <option value="WCA">WCA (Pure Repulsion)</option>
+                            <option value="MORSE">Morse (Bonding)</option>
+                            <option value="SOFT">Soft Sphere (Power Law)</option>
+                            <option value="YUKAWA">Yukawa (Screened Coulomb)</option>
+                            <option value="GAUSS">Gaussian Core (Polymers)</option>
+                            <option value="BUCK">Buckingham (Ionic)</option>
+                        </select>
+
+                        {/* Info icon placed to the right of the select */}
+                        <div className="relative group flex items-center justify-center">
+                            <Info className="h-4 w-4 text-muted-foreground cursor-help hover:text-foreground transition-colors" />
+                            <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-50 hidden w-80 p-3 text-sm bg-popover text-popover-foreground border rounded-md shadow-md group-hover:block animate-in fade-in zoom-in-95 duration-200">
+                                {getEquationInfo(potentialType)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* EPSILON / DEPTH / STRENGTH */}
+                <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
+                    <Label className="text-white">
+                        {labels.eps}: {epsilon.toFixed(1)}
+                    </Label>
                     <Slider
                         disabled={running}
                         value={[epsilon]} min={1.0} max={200.0} step={1.0}
@@ -919,15 +1200,36 @@ export default function MolecularDynamicsPage() {
                     />
                 </div>
 
-                {/* SIGMA: HIGHLY Unsafe during run */}
+                {/* SIGMA / EQUILIBRIUM / RADIUS */}
                 <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
-                    <Label className="text-amber-600">L-J Sigma: {sigma.toFixed(1)} σ</Label>
+                    <Label className="text-white">
+                        {labels.sig}: {sigma.toFixed(1)}
+                    </Label>
                     <Slider
                         disabled={running}
                         value={[sigma]} min={1.0} max={15.0} step={0.5}
                         onValueChange={(v) => setSigma(v[0])}
                     />
                 </div>
+
+                {/* DYNAMIC "PARAMETER C" SLIDER */}
+                {(potentialType === 'MORSE' || potentialType === 'SOFT' || potentialType === 'BUCK') && (
+                    <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <Label className="text-white">
+                            {potentialType === 'MORSE' ? `Width (a): ${paramC.toFixed(2)}` : 
+                             potentialType === 'BUCK' ? `Attraction (C): ${paramC.toFixed(1)}` :
+                             `Exponent (n): ${paramC.toFixed(1)}`}
+                        </Label>
+                        <Slider
+                            disabled={running}
+                            value={[paramC]} 
+                            min={potentialType === 'MORSE' ? 0.5 : (potentialType === 'BUCK' ? 0.0 : 1.0)} 
+                            max={potentialType === 'MORSE' ? 3.0 : (potentialType === 'BUCK' ? 500.0 : 18.0)} 
+                            step={potentialType === 'BUCK' ? 10.0 : 0.1}
+                            onValueChange={(v) => setParamC(v[0])}
+                        />
+                    </div>
+                )}
               </div>
 
               <div className="pt-4 border-t space-y-4">
