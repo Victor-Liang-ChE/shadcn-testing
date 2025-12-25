@@ -17,6 +17,11 @@ import {
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 
+// React Three Fiber imports for 3D visualization
+import { Canvas } from "@react-three/fiber"
+import { OrbitControls, PerspectiveCamera } from "@react-three/drei"
+import * as THREE from "three"
+
 echarts.use([
   TitleComponent,
   TooltipComponent,
@@ -58,10 +63,13 @@ type Particle = {
   id: number
   x: number
   y: number
+  z: number
   vx: number
   vy: number
+  vz: number
   fx: number
   fy: number
+  fz: number
 }
 
 // Simulation Constants
@@ -86,6 +94,7 @@ export default function MolecularDynamicsPage() {
   const [running, setRunning] = useState(false)
   const [particles, setParticles] = useState<Particle[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [isThreeD, setIsThreeD] = useState(false)
   
   // --- Control States ---
   const [numParticles, setNumParticles] = useState<number>(50)
@@ -108,6 +117,7 @@ export default function MolecularDynamicsPage() {
   // --- Analysis State ---
   const [kineticEnergy, setKineticEnergy] = useState<number>(0)
   const [thermostatZeta, setThermostatZeta] = useState<number>(0) // Visualizing the friction
+  const [pressure, setPressure] = useState<number>(0)
   const [rdfData, setRdfData] = useState<{r: number, g: number}[]>([])
   const [energyHistory, setEnergyHistory] = useState<{time: number, ke: number, pe: number, tot: number}[]>([])
     const energyHistoryRef = useRef<{time: number, ke: number, pe: number, tot: number}[]>([])
@@ -126,6 +136,8 @@ export default function MolecularDynamicsPage() {
   // Refs for Simulation Loop
   const requestRef = useRef<number | null>(null)
   const particlesRef = useRef<Particle[]>([])
+  const isThreeDRef = useRef(isThreeD)
+  const initial3DViewRef = useRef(true)
   
   // Refs for current parameter values
   const paramsRef = useRef({
@@ -165,239 +177,172 @@ export default function MolecularDynamicsPage() {
       nhStateRef.current.Q = numParticles * temperature * 0.25
   }, [timeStep, epsilon, sigma, paramC, potentialType, temperature, numParticles])
 
-  // --- PHYSICS KERNEL: Force Calculation ---
-  // Abstracted so it can be used by both MD Loop and Minimizer
-  const calculateForces = (currentParticles: Particle[]): number => {
+  // --- PHYSICS KERNEL: Force Calculation (3D O(N^2)) ---
+  const calculateForces = (currentParticles: Particle[]): { pe: number, virial: number } => {
       const { epsilon: eps, sigma: sig, box } = paramsRef.current
       
       let potentialEnergy = 0
+      let virialSum = 0
       
-      // 1. Reset Forces
+      // Reset Forces
       for (let p of currentParticles) {
-          p.fx = 0
-          p.fy = 0
+          p.fx = 0; p.fy = 0; p.fz = 0
       }
 
-      // 2. Cell Lists Setup
-      const cutoff = 2.5 * sig
-      const cellSize = Math.max(cutoff, 2.0)
-      const gridCols = Math.floor(box / cellSize)
-      const gridRows = Math.floor(box / cellSize)
+      const N = currentParticles.length
+      const cutoffSq = 6.25 * sig * sig
       
-      if (gridCols <= 0 || gridRows <= 0) return 0
+      // O(N^2) for simplicity in 3D transition
+      for (let i = 0; i < N; i++) {
+          const p1 = currentParticles[i]
+          for (let j = i + 1; j < N; j++) {
+              const p2 = currentParticles[j]
 
-      const getGridIndex = (x: number, y: number) => {
-          const cx = Math.max(0, Math.min(gridCols - 1, Math.floor(x / cellSize)))
-          const cy = Math.max(0, Math.min(gridRows - 1, Math.floor(y / cellSize)))
-          return cy * gridCols + cx
-      }
+              let dx = p2.x - p1.x
+              let dy = p2.y - p1.y
+              let dz = p2.z - p1.z
 
-      const grid: number[][] = Array.from({ length: gridCols * gridRows }, () => [])
-      for (let p of currentParticles) {
-          const idx = getGridIndex(p.x, p.y)
-          grid[idx].push(p.id)
-      }
+              // Minimum Image Convention (3D)
+              dx -= box * Math.round(dx / box)
+              dy -= box * Math.round(dy / box)
+              dz -= box * Math.round(dz / box)
 
-      // 3. Pairwise Interactions
-      for (let p1 of currentParticles) {
-          const cx = Math.max(0, Math.min(gridCols - 1, Math.floor(p1.x / cellSize)))
-          const cy = Math.max(0, Math.min(gridRows - 1, Math.floor(p1.y / cellSize)))
+              const distSq = dx*dx + dy*dy + dz*dz
+              
+              if (distSq > cutoffSq) continue
 
-          for (let i = -1; i <= 1; i++) {
-              for (let j = -1; j <= 1; j++) {
-                  let nx = cx + i
-                  let ny = cy + j
-                  
-                  // Periodic wrapping
-                  if (nx < 0) nx += gridCols
-                  if (nx >= gridCols) nx -= gridCols
-                  if (ny < 0) ny += gridRows
-                  if (ny >= gridRows) ny -= gridRows
+              const r = Math.sqrt(distSq)
+              const r_inv = 1.0 / r
+              const r2_inv = r_inv * r_inv
+              
+              let forceScalar = 0 
+              let pairPotential = 0
 
-                  const cellParticles = grid[ny * gridCols + nx]
-                  if (!cellParticles) continue
-
-                  for (let otherId of cellParticles) {
-                      if (otherId <= p1.id) continue
-                      const p2 = currentParticles[otherId]
-                      if (!p2) continue
-
-                      let dx = p2.x - p1.x
-                      let dy = p2.y - p1.y
-
-                      // Minimum Image Convention
-                      dx -= box * Math.round(dx / box)
-                      dy -= box * Math.round(dy / box)
-
-                      const distSq = dx * dx + dy * dy
-
-                      if (distSq > cutoff * cutoff) continue
-
-                      // PRE-CALCULATIONS
-                      const r = Math.sqrt(distSq)
-                      const r_inv = 1.0 / r
-                      const r2_inv = r_inv * r_inv
-
-                      let forceScalar = 0 // This represents F(r) / r
-                      let pairPotential = 0
-
-                      switch (paramsRef.current.potentialType) {
-                          case 'LJ': {
-                              // Lennard-Jones: Standard
-                              const s2 = sig * sig
-                              const s2_r2 = s2 * r2_inv
-                              const s6_r6 = s2_r2 * s2_r2 * s2_r2
-                              const s12_r12 = s6_r6 * s6_r6
-                              
-                              forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
-                              pairPotential = 4 * eps * (s12_r12 - s6_r6)
-                              break
-                          }
-                          case 'WCA': {
-                              // WCA: Purely Repulsive (LJ truncated at r = 2^(1/6)σ)
-                              const cutoffSq = 1.25992 * sig * sig // 2^(1/3) * sigma^2
-                              if (distSq < cutoffSq) {
-                                  const s2 = sig * sig
-                                  const s2_r2 = s2 * r2_inv
-                                  const s6_r6 = s2_r2 * s2_r2 * s2_r2
-                                  const s12_r12 = s6_r6 * s6_r6
-                                  
-                                  forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
-                                  // Shift potential up by epsilon so V=0 at cutoff
-                                  pairPotential = 4 * eps * (s12_r12 - s6_r6) + eps
-                              } else {
-                                  forceScalar = 0
-                                  pairPotential = 0
-                              }
-                              break
-                          }
-                          case 'MORSE': {
-                              // Morse: V = D(1 - e^(-a(r-re)))^2
-                              // eps = Depth (D), sig = Equilibrium (re), paramC = Width (a)
-                              const width = paramsRef.current.paramC
-                              const displacement = r - sig
-                              const expTerm = Math.exp(-width * displacement)
-                              const term = 1 - expTerm
-                              
-                              pairPotential = eps * term * term
-                              
-                              // Force F(r) = 2 * D * a * (1 - e^-...) * e^-...
-                              const f_r = 2 * eps * width * term * expTerm
-                              forceScalar = f_r * r_inv
-                              break
-                          }
-                          case 'YUKAWA': {
-                              // Yukawa / Screened Coulomb: V = (epsilon / r) * exp(-r / sigma)
-                              // eps = coupling strength, sig = screening length (lambda)
-                              const screened = Math.exp(-r / sig)
-                              pairPotential = (eps * screened) * r_inv
-
-                              // Force F(r) = V(r) * (1/r + 1/sig)
-                              const f_r_yuk = pairPotential * (r_inv + (1.0 / sig))
-                              forceScalar = f_r_yuk * r_inv
-                              break
-                          }
-                          case 'GAUSS': {
-                              // Gaussian Core: V = epsilon * exp(-r^2 / (2 * sigma^2))
-                              const r2_s2 = distSq / (sig * sig)
-                              const gauss = Math.exp(-0.5 * r2_s2)
-
-                              pairPotential = eps * gauss
-
-                              // F/r = epsilon * exp(-r^2/(2 sigma^2)) / sigma^2
-                              forceScalar = (eps * gauss) / (sig * sig)
-                              break
-                          }
-                          case 'BUCK': {
-                              // Buckingham: V(r) = A * exp(-r/rho) - C / r^6
-                              // eps = A (Repulsion), sig = rho (Decay Length), paramC = C (Attraction)
-
-                              // Safety: cap radius to avoid singular attraction at r->0
-                              const r_safe = Math.max(r, 0.5 * sig)
-
-                              const A = eps
-                              const rho = sig
-                              const C = paramsRef.current.paramC
-
-                              const expTerm = Math.exp(-r_safe / rho)
-                              const r2 = r_safe * r_safe
-                              const r6 = r2 * r2 * r2
-                              const r7 = r6 * r_safe
-
-                              pairPotential = A * expTerm - (C / r6)
-
-                              // Force F(r) = (A/rho) * exp(-r/rho) - (6C / r^7)
-                              const f_r_buck = (A / rho) * expTerm - (6 * C / r7)
-
-                              forceScalar = f_r_buck / r_safe
-                              break
-                          }
-                          case 'SOFT': {
-                              // Soft Sphere: V = eps * (sigma/r)^n
-                              // paramC = exponent n (usually 12)
-                              const n = Math.max(1, paramsRef.current.paramC)
-                              const ratio = sig * r_inv
-                              const ratio_n = Math.pow(ratio, n)
-                              
-                              pairPotential = eps * ratio_n
-                              
-                              // F(r) = n * eps * sigma^n / r^(n+1)
-                              const f_r = n * eps * ratio_n * r_inv
-                              forceScalar = f_r * r_inv
-                              break
-                          }
+              switch (paramsRef.current.potentialType) {
+                  case 'LJ': {
+                      const s2 = sig * sig
+                      const s2_r2 = s2 * r2_inv
+                      const s6_r6 = s2_r2 * s2_r2 * s2_r2
+                      const s12_r12 = s6_r6 * s6_r6
+                      
+                      forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
+                      pairPotential = 4 * eps * (s12_r12 - s6_r6)
+                      break
+                  }
+                  case 'WCA': {
+                      const cutoffSq = 1.25992 * sig * sig 
+                      if (distSq < cutoffSq) {
+                          const s2 = sig * sig
+                          const s2_r2 = s2 * r2_inv
+                          const s6_r6 = s2_r2 * s2_r2 * s2_r2
+                          const s12_r12 = s6_r6 * s6_r6
+                          
+                          forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
+                          pairPotential = 4 * eps * (s12_r12 - s6_r6) + eps
+                      } else {
+                          forceScalar = 0
+                          pairPotential = 0
                       }
-
-                      // Apply Forces
-                      potentialEnergy += pairPotential
-
-                      const fx = dx * forceScalar
-                      const fy = dy * forceScalar
-
-                      p1.fx -= fx
-                      p1.fy -= fy
-                      p2.fx += fx
-                      p2.fy += fy
+                      break
+                  }
+                  case 'MORSE': {
+                      const width = paramsRef.current.paramC
+                      const displacement = r - sig
+                      const expTerm = Math.exp(-width * displacement)
+                      const term = 1 - expTerm
+                      
+                      pairPotential = eps * term * term
+                      
+                      const f_r = 2 * eps * width * term * expTerm
+                      forceScalar = f_r * r_inv
+                      break
+                  }
+                  case 'YUKAWA': {
+                      const screened = Math.exp(-r / sig)
+                      pairPotential = (eps * screened) * r_inv
+                      const f_r_yuk = pairPotential * (r_inv + (1.0 / sig))
+                      forceScalar = f_r_yuk * r_inv
+                      break
+                  }
+                  case 'GAUSS': {
+                      const r2_s2 = distSq / (sig * sig)
+                      const gauss = Math.exp(-0.5 * r2_s2)
+                      pairPotential = eps * gauss
+                      forceScalar = (eps * gauss) / (sig * sig)
+                      break
+                  }
+                  case 'BUCK': {
+                      const r_safe = Math.max(r, 0.5 * sig)
+                      const A = eps
+                      const rho = sig
+                      const C = paramsRef.current.paramC
+                      const expTerm = Math.exp(-r_safe / rho)
+                      const r2 = r_safe * r_safe
+                      const r6 = r2 * r2 * r2
+                      const r7 = r6 * r_safe
+                      pairPotential = A * expTerm - (C / r6)
+                      const f_r_buck = (A / rho) * expTerm - (6 * C / r7)
+                      forceScalar = f_r_buck / r_safe
+                      break
+                  }
+                  case 'SOFT': {
+                      const n = Math.max(1, paramsRef.current.paramC)
+                      const ratio = sig * r_inv
+                      const ratio_n = Math.pow(ratio, n)
+                      pairPotential = eps * ratio_n
+                      const f_r = n * eps * ratio_n * r_inv
+                      forceScalar = f_r * r_inv
+                      break
                   }
               }
+
+              // Accumulate Energy & Virial
+              potentialEnergy += pairPotential
+              virialSum += forceScalar * distSq 
+
+              // Force Components
+              const fx = dx * forceScalar
+              const fy = dy * forceScalar
+              const fz = dz * forceScalar
+
+              p1.fx -= fx; p1.fy -= fy; p1.fz -= fz
+              p2.fx += fx; p2.fy += fy; p2.fz += fz
           }
       }
-      
-      return potentialEnergy
+      return { pe: potentialEnergy, virial: virialSum }
   }
 
   // --- ALGORITHM 1: Steepest Descent Minimization ---
   // Strictly moves particles "downhill" to fix overlaps
   const runMinimization = (pList: Particle[]) => {
       const MAX_STEPS = 200
-      const GAMMA = 0.01 // Descent rate
+      const GAMMA = 0.01 
       const box = paramsRef.current.box
 
       for (let step = 0; step < MAX_STEPS; step++) {
-          calculateForces(pList)
+          const { pe: _ } = calculateForces(pList)
           
           let maxForce = 0
           for (let p of pList) {
-              const fMag = Math.sqrt(p.fx * p.fx + p.fy * p.fy)
+              // 3D Magnitude
+              const fMag = Math.sqrt(p.fx**2 + p.fy**2 + p.fz**2)
               if (fMag > maxForce) maxForce = fMag
               
-              // Move particle along force vector (Gradient Descent)
               const scale = Math.min(GAMMA, 0.5 / (fMag + 1e-6))
               
               p.x += p.fx * scale
               p.y += p.fy * scale
+              p.z += p.fz * scale
               
-              // Enforce PBC
-              if (p.x < 0) p.x += box
-              if (p.x >= box) p.x -= box
-              if (p.y < 0) p.y += box
-              if (p.y >= box) p.y -= box
+              // Enforce PBC 3D
+              if (p.x < 0) p.x += box; if (p.x >= box) p.x -= box
+              if (p.y < 0) p.y += box; if (p.y >= box) p.y -= box
+              if (p.z < 0) p.z += box; if (p.z >= box) p.z -= box
               
-              // Zero out velocity (Descent extracts energy)
-              p.vx = 0
-              p.vy = 0
+              // Zero velocities
+              p.vx = 0; p.vy = 0; p.vz = 0
           }
-          if (maxForce < 10.0) break // Converged
+          if (maxForce < 10.0) break 
       }
   }
 
@@ -461,42 +406,78 @@ export default function MolecularDynamicsPage() {
   // --- Initialization Logic ---
   const initializeParticles = useCallback(() => {
     const newParticles: Particle[] = []
-    const gridDim = Math.ceil(Math.sqrt(numParticles))
-    const spacing = BOX_SIZE / gridDim
+    
+    // 3D Logic: Cube Root vs Square Root
+    // If 125 particles -> 5x5x5 grid
+    const dim = isThreeD 
+      ? Math.ceil(Math.pow(numParticles, 1/3)) 
+      : Math.ceil(Math.sqrt(numParticles))
+      
+    const spacing = BOX_SIZE / dim
 
-    // 1. Grid Placement
+    // 1. Grid Placement (3D or 2D)
     for (let i = 0; i < numParticles; i++) {
+      let x, y, z
+
+      if (isThreeD) {
+          // 3D Grid Indices
+          const ix = i % dim
+          const iy = Math.floor(i / dim) % dim
+          const iz = Math.floor(i / (dim * dim))
+          
+          x = ix * spacing + spacing / 2
+          y = iy * spacing + spacing / 2
+          z = iz * spacing + spacing / 2
+      } else {
+          // 2D Grid Indices
+          const ix = i % dim
+          const iy = Math.floor(i / dim)
+          
+          x = ix * spacing + spacing / 2
+          y = iy * spacing + spacing / 2
+          z = 0
+      }
+
+      // Add jitter to avoid perfect lattice (helps minimizer)
+      x += (Math.random() - 0.5) * (spacing * 0.5)
+      y += (Math.random() - 0.5) * (spacing * 0.5)
+      z += isThreeD ? (Math.random() - 0.5) * (spacing * 0.5) : 0
+
+      // Safety Clamp to prevent initial wrapping
+      if (x < 0) x += BOX_SIZE; if (x >= BOX_SIZE) x -= BOX_SIZE;
+      if (y < 0) y += BOX_SIZE; if (y >= BOX_SIZE) y -= BOX_SIZE;
+      if (isThreeD) {
+          if (z < 0) z += BOX_SIZE; if (z >= BOX_SIZE) z -= BOX_SIZE;
+      } else {
+          z = 0; // Force flat 0 for 2D
+      }
+
       newParticles.push({
         id: i,
-        x: (i % gridDim) * spacing + spacing / 2 + (Math.random() - 0.5),
-        y: Math.floor(i / gridDim) * spacing + spacing / 2 + (Math.random() - 0.5),
-        vx: 0,
-        vy: 0,
-        fx: 0,
-        fy: 0
+        x, y, z,
+        vx: (Math.random() - 0.5) * temperature,
+        vy: (Math.random() - 0.5) * temperature,
+        vz: isThreeD ? (Math.random() - 0.5) * temperature : 0,
+        fx: 0, fy: 0, fz: 0
       })
     }
-    
-    // 2. Run Energy Minimization (Steepest Descent)
-    // This fixes the "Exploding Atom" problem scientifically
-    runMinimization(newParticles)
-
     // 3. Assign Maxwell-Boltzmann Velocities
     for (let p of newParticles) {
         p.vx = (Math.random() - 0.5) * temperature
         p.vy = (Math.random() - 0.5) * temperature
+        p.vz = isThreeD ? (Math.random() - 0.5) * temperature : 0
     }
 
     // 4. Remove Center of Mass Motion (Optional but good practice)
-    let vcmX = 0, vcmY = 0
-    for (let p of newParticles) { vcmX += p.vx; vcmY += p.vy }
-    vcmX /= numParticles; vcmY /= numParticles
-    for (let p of newParticles) { p.vx -= vcmX; p.vy -= vcmY }
+    let vcmX = 0, vcmY = 0, vcmZ = 0
+    for (let p of newParticles) { vcmX += p.vx; vcmY += p.vy; vcmZ += p.vz }
+    vcmX /= numParticles; vcmY /= numParticles; vcmZ /= numParticles
+    for (let p of newParticles) { p.vx -= vcmX; p.vy -= vcmY; p.vz -= vcmZ }
 
     // Seed energy history at t=0 so the chart doesn't start with an empty left section.
-    const pe0 = calculateForces(newParticles)
+    const { pe: pe0 } = calculateForces(newParticles) // <--- Destructure just PE
     let ke0 = 0
-    for (const p of newParticles) ke0 += 0.5 * (p.vx * p.vx + p.vy * p.vy)
+    for (const p of newParticles) ke0 += 0.5 * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
     
     setParticles(newParticles)
     particlesRef.current = newParticles
@@ -509,10 +490,11 @@ export default function MolecularDynamicsPage() {
         setEnergyHistory(energyHistoryRef.current)
         setKineticEnergy(ke0)
         setThermostatZeta(0)
+        setPressure(0)
         setHistoryTrigger(0)
     timeRef.current = 0
     nhStateRef.current.zeta = 0 // Reset Thermostat
-  }, [numParticles, temperature])
+  }, [numParticles, temperature, isThreeD])
 
   useEffect(() => {
     initializeParticles()
@@ -528,64 +510,71 @@ export default function MolecularDynamicsPage() {
     timeRef.current += dt
 
     const N = currentParticles.length
-    const dof = 2 * N - 2 // Degrees of freedom (minus constraints)
+    // Degrees of Freedom: 3N - 3 for 3D, 2N - 2 for 2D
+    const dof = isThreeDRef.current ? (3 * N - 3) : (2 * N - 2)
     
     // 1. Calculate Forces at t
     calculateForces(currentParticles)
 
     // 2. First Half-step Update
-    // v(t + dt/2) and zeta(t + dt/2)
-    // We use a simplified explicit update for stability in JS
-    
     for (let p of currentParticles) {
         // Update Velocity (Half Step) with thermostat
-        // v <- v + 0.5 * dt * (F - zeta * v)
         p.vx += 0.5 * dt * (p.fx - zeta * p.vx)
         p.vy += 0.5 * dt * (p.fy - zeta * p.vy)
-        
+        p.vz += 0.5 * dt * (p.fz - zeta * p.vz)
+
         // Update Position (Full Step)
         p.x += p.vx * dt
         p.y += p.vy * dt
+        p.z += p.vz * dt
 
         // PBC
         if (p.x < 0) p.x += box
         if (p.x >= box) p.x -= box
         if (p.y < 0) p.y += box
         if (p.y >= box) p.y -= box
+        if (p.z < 0) p.z += box
+        if (p.z >= box) p.z -= box
     }
 
     // 3. Calculate Forces at t + dt
-    const pe = calculateForces(currentParticles)
+    const { pe, virial } = calculateForces(currentParticles)
 
     // 4. Update Thermostat Variable (Zeta)
-    // Based on kinetic energy at half-step (approx using current v)
     let keSum = 0
     for (let p of currentParticles) {
-        keSum += 0.5 * (p.vx * p.vx + p.vy * p.vy)
+        keSum += 0.5 * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
     }
     const currentTemp = (2.0 * keSum) / dof
     
-    // Zeta integration: dZeta/dt = (KE - TargetKE) / Q
     zeta += dt * (dof * BOLTZMANN_K * (currentTemp - targetTemp)) / Q
 
     // 5. Second Half-step Update
     let kineticEnergyFull = 0
     for (let p of currentParticles) {
-        // Explicit approximation for v(t+dt)
-        // Note: Strict NH requires iterative solution here
         const vxh = p.vx
         const vyh = p.vy
+        const vzh = p.vz
         
         p.vx = (vxh + 0.5 * dt * p.fx) / (1.0 + 0.5 * dt * zeta)
         p.vy = (vyh + 0.5 * dt * p.fy) / (1.0 + 0.5 * dt * zeta)
+        p.vz = (vzh + 0.5 * dt * p.fz) / (1.0 + 0.5 * dt * zeta)
         
-        // STRICT: Removed MAX_VELOCITY
-        // If simulation explodes, it's because dt is too high, which is scientifically accurate.
-        
-        kineticEnergyFull += 0.5 * (p.vx * p.vx + p.vy * p.vy)
+        kineticEnergyFull += 0.5 * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
     }
 
     nhStateRef.current.zeta = zeta
+
+    // --- Calculate Pressure ---
+    // 2D: Volume = L^2, Divisor = 2
+    // 3D: Volume = L^3, Divisor = 3
+    const volume = isThreeD ? Math.pow(box, 3) : Math.pow(box, 2)
+    const virialDivisor = isThreeD ? 3.0 : 2.0
+    
+    const finalTemp = (2.0 * kineticEnergyFull) / dof
+    const pressureVal = (N * BOLTZMANN_K * finalTemp + (virial / virialDivisor)) / volume
+
+    setPressure(pressureVal)
 
     // Update State
     particlesRef.current = currentParticles
@@ -660,7 +649,21 @@ export default function MolecularDynamicsPage() {
   // Reset effect when numParticles changes
   useEffect(() => {
       initializeParticles()
-  }, [numParticles])
+  }, [initializeParticles])
+
+  // Keep isThreeDRef in sync with isThreeD state
+  useEffect(() => {
+      isThreeDRef.current = isThreeD
+  }, [isThreeD])
+
+  // Reset camera view flag when switching to 3D
+  useEffect(() => {
+      if (isThreeD) {
+          initial3DViewRef.current = true
+          // Force a re-init to generate Z coordinates
+          initializeParticles()
+      }
+  }, [isThreeD, initializeParticles])
 
   const refreshAnalysisTooltip = useCallback(() => {
       if (!analysisHoverRef.current) return
@@ -715,6 +718,7 @@ export default function MolecularDynamicsPage() {
   const getParticleOption = (): EChartsOption => {
     const isDark = resolvedTheme === 'dark'
 
+    // --- 2D MODE CONFIGURATION ---
     const renderArrow = (params: any, api: any) => {
         const x = api.value(0)
         const y = api.value(1)
@@ -725,8 +729,6 @@ export default function MolecularDynamicsPage() {
         
         const isSelected = id === selectedId
         
-        // If ANY particle is selected, only show arrows for THAT particle.
-        // If NO particle is selected, show arrows based on global toggles.
         let isVisible = false
         if (selectedId !== null) {
             isVisible = isSelected
@@ -738,7 +740,7 @@ export default function MolecularDynamicsPage() {
 
         if (Math.abs(dxVal) < 0.1 && Math.abs(dyVal) < 0.1) return
 
-        const scale = type === 0 ? 0.5 : 0.05 // Reduced scale for Force vectors as L-J forces can be large
+        const scale = type === 0 ? 0.5 : 0.05
         const start = api.coord([x, y])
         const end = api.coord([x + dxVal * scale, y + dyVal * scale])
         
@@ -819,15 +821,10 @@ export default function MolecularDynamicsPage() {
         {
           type: 'scatter',
           symbolSize: (data: any) => {
-             // Visual size proportional to Sigma, but clamped so it doesn't get too crazy
-             // Sigma 5.0 -> approx 12px
              return Math.max(5, Math.min(30, sigma * 2.5))
           },
           data: scatterData,
-          emphasis: {
-             scale: false,
-             focus: 'none'
-          },
+          emphasis: { scale: false, focus: 'none' },
           z: 10,
           animation: false
         } as any
@@ -1233,11 +1230,7 @@ export default function MolecularDynamicsPage() {
               </div>
 
               <div className="pt-4 border-t space-y-4">
-                 <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="p-2 bg-muted rounded">
-                        <p className="text-[10px] text-muted-foreground">Total KE</p>
-                        <p className="font-mono font-bold text-xs">{kineticEnergy.toFixed(1)} ε</p>
-                    </div>
+                 <div className="grid grid-cols-2 gap-2 text-center">
                     <div className="p-2 bg-muted rounded">
                         <p className="text-[10px] text-muted-foreground">Thermostat (ζ)</p>
                         <p className={`font-mono font-bold text-xs ${thermostatZeta > 0 ? 'text-red-500' : 'text-blue-500'}`}>
@@ -1245,8 +1238,10 @@ export default function MolecularDynamicsPage() {
                         </p>
                     </div>
                     <div className="p-2 bg-muted rounded">
-                        <p className="text-[10px] text-muted-foreground">Particles</p>
-                        <p className="font-mono font-bold text-xs">{particles.length}</p>
+                        <p className="text-[10px] text-muted-foreground">Pressure (P)</p>
+                        <p className="font-mono font-bold text-xs text-purple-600">
+                            {pressure.toFixed(3)} ε/σ²
+                        </p>
                     </div>
                 </div>
 
@@ -1308,14 +1303,69 @@ export default function MolecularDynamicsPage() {
         {/* Right Column: Simulation & RDF */}
         <div className="lg:col-span-2 flex flex-col gap-6">
            <Card className="w-full p-0 overflow-hidden bg-muted/20 border-border relative" style={{ height: '500px' }}>
-              <ReactECharts
-                  option={getParticleOption()}
-                  style={{ height: '100%', width: '100%' }}
-                  onEvents={{
-                      click: onChartClick
-                  }}
-                  notMerge={true} 
-              />
+              {/* NEW: 2D/3D Switch Overlay (Top Right) */}
+              <div className="absolute top-2 right-2 z-10 flex gap-2 items-center">
+                  <Button
+                      size="sm"
+                      variant={!isThreeD ? 'default' : 'outline'}
+                      onClick={() => {
+                          setIsThreeD(false)
+                          setRunning(false) // Stop simulation on switch for safety
+                      }}
+                      className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                          mounted ? (isDarkTheme
+                              ? 'bg-background/80 text-white border border-white/20'
+                              : 'bg-background/80 text-black border border-black/20')
+                          : ''
+                      }`}
+                  >
+                      2D View
+                  </Button>
+                  <Button
+                      size="sm"
+                      variant={isThreeD ? 'default' : 'outline'}
+                      onClick={() => {
+                          setIsThreeD(true)
+                          setRunning(false)
+                      }}
+                      className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                          mounted ? (isDarkTheme
+                              ? 'bg-background/80 text-white border border-white/20'
+                              : 'bg-background/80 text-black border border-black/20')
+                          : ''
+                      }`}
+                  >
+                      3D View
+                  </Button>
+              </div>
+
+              {/* Chart Component Swap */}
+              {mounted && (
+                isThreeD ? (
+                    <div className="h-full w-full">
+                        <Canvas>
+                            <PerspectiveCamera makeDefault position={[BOX_SIZE * 2.5, BOX_SIZE * 2, BOX_SIZE * 2.5]} fov={45} />
+                            <OrbitControls target={[BOX_SIZE/2, BOX_SIZE/2, BOX_SIZE/2]} />
+                            <Molecule3D 
+                                particles={particles} 
+                                boxSize={BOX_SIZE} 
+                                sigma={sigma} 
+                                selectedId={selectedId}
+                                isDark={isDarkTheme}
+                            />
+                        </Canvas>
+                    </div>
+                ) : (
+                    <ReactECharts
+                        key='2d-mode'
+                        option={getParticleOption()}
+                        style={{ height: '100%', width: '100%' }}
+                        onEvents={{ click: onChartClick }}
+                        notMerge={false}
+                        lazyUpdate={true}
+                    />
+                )
+              )}
            </Card>
 
            <Card className="relative">
@@ -1387,4 +1437,55 @@ export default function MolecularDynamicsPage() {
     </div>
   )
 
+}
+
+// --- 3D SCENE COMPONENT ---
+const Molecule3D = ({ 
+  particles, 
+  boxSize, 
+  sigma, 
+  selectedId, 
+  isDark 
+}: { 
+  particles: Particle[], 
+  boxSize: number, 
+  sigma: number, 
+  selectedId: number | null, 
+  isDark: boolean 
+}) => {
+  // Use theme-aware colors: white particles in dark mode, blue in light mode
+  const particleColor = isDark ? "#ffffff" : "#3b82f6"
+  const wireframeColor = isDark ? "#ffffff" : "#000000"
+  
+  return (
+    <group>
+      {/* Simulation Bounding Box */}
+      <mesh position={[boxSize/2, boxSize/2, boxSize/2]}>
+        <boxGeometry args={[boxSize, boxSize, boxSize]} />
+        <meshBasicMaterial 
+          color={wireframeColor}
+          wireframe 
+          transparent 
+          opacity={0.15} 
+        />
+      </mesh>
+      
+      {/* Particles */}
+      {particles.map((p) => (
+        <mesh key={p.id} position={[p.x, p.y, p.z]}>
+          <sphereGeometry args={[sigma * 0.5, 16, 16]} />
+          <meshStandardMaterial 
+            color={p.id === selectedId ? "#facc15" : particleColor}
+            emissive={p.id === selectedId ? "#facc15" : "#000000"}
+            emissiveIntensity={p.id === selectedId ? 0.5 : 0}
+            roughness={0.2}
+            metalness={0.5}
+          />
+        </mesh>
+      ))}
+      
+      <ambientLight intensity={0.6} />
+      <pointLight position={[boxSize * 1.5, boxSize * 1.5, boxSize * 1.5]} intensity={1} />
+    </group>
+  )
 }
