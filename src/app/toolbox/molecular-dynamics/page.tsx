@@ -121,7 +121,21 @@ export default function MolecularDynamicsPage() {
   const [rdfData, setRdfData] = useState<{r: number, g: number}[]>([])
   const [energyHistory, setEnergyHistory] = useState<{time: number, ke: number, pe: number, tot: number}[]>([])
     const energyHistoryRef = useRef<{time: number, ke: number, pe: number, tot: number}[]>([])
-  const [analysisView, setAnalysisView] = useState<'rdf' | 'energy'>('rdf')
+  const [analysisView, setAnalysisView] = useState<'rdf' | 'energy' | 'msd'>('rdf')
+  const [energyMode, setEnergyMode] = useState<'sliding' | 'expanding'>('sliding')
+  
+  // Add MSD state and refs
+  const [msdData, setMsdData] = useState<{time: number, msd: number}[]>([])
+  const unwrappedRef = useRef<{x: number, y: number, z: number, x0: number, y0: number, z0: number}[]>([])
+  
+  // Structure Metrics State
+  const [structureMetrics, setStructureMetrics] = useState({
+      peakDist: 0,
+      peakHeight: 0,
+      coordination: 0,
+      phaseEstimate: 'Unknown'
+  })
+  const msdHistoryRef = useRef<{time: number, msd: number}[]>([])
 
     // Keep tooltips visible while data updates
     const analysisChartRef = useRef<any>(null)
@@ -388,7 +402,7 @@ export default function MolecularDynamicsPage() {
       const density = N / (box * box)
       
       return hist.map((count, i) => {
-          const r = (i + 0.5) * RDF_BIN_WIDTH
+          const r = (i + 1) * RDF_BIN_WIDTH
           // Area of annulus shell in 2D: dA = 2 * pi * r * dr
           const area = 2 * Math.PI * r * RDF_BIN_WIDTH
           
@@ -401,6 +415,142 @@ export default function MolecularDynamicsPage() {
           
           return { r, g }
       })
+  }
+
+  // Analyze RDF to find Peak and Coordination Number
+  const analyzeStructure = (data: {r: number, g: number}[]) => {
+      if (data.length < 5) return
+
+      // 1. Find First Peak (Location and Height)
+      let maxVal = 0
+      let maxIdx = 0
+      // Only look in the first half of the box to avoid PBC noise
+      const searchLimit = data.length / 2 
+      
+      for (let i = 0; i < searchLimit; i++) {
+          if (data[i].g > maxVal) {
+              maxVal = data[i].g
+              maxIdx = i
+          }
+      }
+      
+      const r_peak = data[maxIdx].r
+
+      // 2. Find First Minimum after the peak (The "First Shell" Cutoff)
+      // We look for the point where slope turns positive or g drops to ~1
+      let minIdx = maxIdx
+      for (let i = maxIdx + 1; i < data.length - 1; i++) {
+          // Simple local minimum detection
+          if (data[i].g < data[i+1].g && data[i].g < 1.5) { 
+              minIdx = i
+              break
+          }
+      }
+      // Fallback: if no minimum found (e.g. gas), integrate up to 1.5 * peak
+      if (minIdx === maxIdx) minIdx = Math.min(data.length - 1, Math.floor(maxIdx * 1.5))
+
+      // 3. Compute Coordination Number (Integration)
+      // 3D: Integral of 4 * pi * r^2 * rho * g(r) dr
+      // 2D: Integral of 2 * pi * r * rho * g(r) dr
+      const { box } = paramsRef.current
+      const N = numParticles
+      const volume = isThreeD ? Math.pow(box, 3) : Math.pow(box, 2)
+      const rho = N / volume
+      
+      let integral = 0
+      for (let i = 0; i < minIdx; i++) {
+          const r = data[i].r
+          const g = data[i].g
+          const dr = RDF_BIN_WIDTH
+          
+          // Geometry factor depends on 2D vs 3D
+          const shellVolume = isThreeD 
+              ? 4 * Math.PI * r * r * dr 
+              : 2 * Math.PI * r * dr
+              
+          integral += shellVolume * rho * g
+      }
+
+      // 4. Estimate Phase (Updated Logic)
+      let phase = 'Fluid'
+      
+      // Heuristic: Check the peak height. 
+      // Liquids usually have a first peak height < 2.5. 
+      // Solids usually have sharp peaks > 3.0.
+      const isStructurallyOrdered = maxVal > 2.8 
+      
+      if (isThreeD) {
+          if (integral > 10.0) phase = 'Solid (FCC/HCP)'     // Perfect Crystal
+          else if (integral > 7.0) phase = 'Solid (BCC)'     // Less dense Crystal
+          else if (isStructurallyOrdered) phase = 'Solid (Amorphous)' // Sharp peak, low coord (Glass)
+          else phase = 'Liquid/Gas'
+      } else {
+          // 2D Logic
+          if (integral > 5.0) phase = 'Solid (Hexagonal)'
+          else if (integral > 3.5) phase = 'Solid (Square)'
+          else if (isStructurallyOrdered) phase = 'Solid (Glassy)'
+          else phase = 'Liquid'
+      }
+      
+      // Override: If density is very low, it's likely a gas regardless of local structure
+      const globalRho = numParticles / (isThreeD ? Math.pow(box, 3) : Math.pow(box, 2))
+      if (globalRho < 0.05) phase = 'Gas'
+
+      setStructureMetrics({
+          peakDist: r_peak,
+          peakHeight: maxVal,
+          coordination: integral,
+          phaseEstimate: phase
+      })
+  }
+
+  // Detect System State (Liquid vs Crystalline vs Amorphous Solid)
+  const detectSystemState = () => {
+      // 1. DYNAMICS CHECK (Is it Solid or Liquid?)
+      // Calculate Slope of MSD (Diffusion Coefficient)
+      let isLiquid = false
+      let diffusionCoeff = 0
+      
+      if (msdData.length > 20) {
+          // Look at last 50% of data to ignore initial ballistic regime
+          const window = msdData.slice(Math.floor(msdData.length * 0.5))
+          const dt = window[window.length - 1].time - window[0].time
+          const dMSD = window[window.length - 1].msd - window[0].msd
+          
+          // Slope = MSD / t. 
+          // In 3D, D = Slope / 6. In 2D, D = Slope / 4. 
+          // We just check the raw slope for a threshold.
+          const slope = dMSD / dt
+          diffusionCoeff = slope
+          
+          // Threshold: If slope > 0.1 sigma^2/ps, it's diffusing significantly
+          isLiquid = slope > 0.1
+      }
+
+      // 2. STRUCTURE CHECK (Is it Crystalline or Amorphous?)
+      // We use the "Peak Height" from your existing structureMetrics
+      // Crystalline solids usually have g(r) peaks > 3.0 or 4.0
+      // Amorphous solids/Liquids usually have g(r) peaks < 2.8
+      const isOrdered = structureMetrics.peakHeight > 2.8
+
+      // 3. COMBINE
+      let detectedState = 'Unknown'
+      let color = 'text-gray-500'
+
+      if (isLiquid) {
+          detectedState = 'Liquid'
+          color = 'text-blue-500'
+      } else {
+          if (isOrdered) {
+              detectedState = 'Crystalline Solid'
+              color = 'text-green-500'
+          } else {
+              detectedState = 'Amorphous Solid (Glass)'
+              color = 'text-amber-500'
+          }
+      }
+      
+      return { state: detectedState, color, diffusion: diffusionCoeff }
   }
 
   // --- Initialization Logic ---
@@ -486,6 +636,16 @@ export default function MolecularDynamicsPage() {
     rdfHistogramRef.current = new Array(RDF_BINS).fill(0) // Clear RDF bins
     rdfFramesRef.current = 0 // Reset RDF frame counter
     setRdfData([]) // Clear RDF display
+    
+    // Initialize Unwrapped Coordinates for MSD
+    unwrappedRef.current = newParticles.map(p => ({
+        x: p.x, y: p.y, z: p.z,
+        x0: p.x, y0: p.y, z0: p.z
+    }))
+    
+    // Reset MSD History
+    msdHistoryRef.current = [{ time: 0, msd: 0 }]
+    setMsdData(msdHistoryRef.current)
         energyHistoryRef.current = [{ time: 0, ke: ke0, pe: pe0, tot: ke0 + pe0 }]
         setEnergyHistory(energyHistoryRef.current)
         setKineticEnergy(ke0)
@@ -518,6 +678,8 @@ export default function MolecularDynamicsPage() {
 
     // 2. First Half-step Update
     for (let p of currentParticles) {
+        const u = unwrappedRef.current[p.id]
+        
         // Update Velocity (Half Step) with thermostat
         p.vx += 0.5 * dt * (p.fx - zeta * p.vx)
         p.vy += 0.5 * dt * (p.fy - zeta * p.vy)
@@ -527,6 +689,11 @@ export default function MolecularDynamicsPage() {
         p.x += p.vx * dt
         p.y += p.vy * dt
         p.z += p.vz * dt
+
+        // Update UNWRAPPED Position (Full Step) - FOR MSD
+        u.x += p.vx * dt
+        u.y += p.vy * dt
+        u.z += p.vz * dt
 
         // PBC
         if (p.x < 0) p.x += box
@@ -576,6 +743,21 @@ export default function MolecularDynamicsPage() {
 
     setPressure(pressureVal)
 
+    // --- Calculate MSD ---
+    let sqDispSum = 0
+    for (let i = 0; i < N; i++) {
+        const u = unwrappedRef.current[i]
+        const dx = u.x - u.x0
+        const dy = u.y - u.y0
+        const dz = u.z - u.z0
+        // Use 3D distance if isThreeD, otherwise 2D
+        sqDispSum += (dx*dx + dy*dy + (isThreeDRef.current ? dz*dz : 0))
+    }
+    const currentMSD = sqDispSum / N
+    
+    // Update MSD History
+    msdHistoryRef.current.push({ time: timeRef.current, msd: currentMSD })
+
     // Update State
     particlesRef.current = currentParticles
     setKineticEnergy(kineticEnergyFull)
@@ -584,12 +766,6 @@ export default function MolecularDynamicsPage() {
     // Track Energy History every physics step (real samples, no synthetic padding)
     const tot = kineticEnergyFull + pe
     energyHistoryRef.current.push({ time: timeRef.current, ke: kineticEnergyFull, pe, tot })
-    // Keep a bit more than the visible window so the chart can scroll smoothly.
-    const keepSeconds = 1.0
-    const cutoff = timeRef.current - keepSeconds
-    while (energyHistoryRef.current.length > 2 && energyHistoryRef.current[0].time < cutoff) {
-        energyHistoryRef.current.shift()
-    }
     
     // Sample RDF statistics (every step)
     sampleRDF(currentParticles)
@@ -603,8 +779,12 @@ export default function MolecularDynamicsPage() {
             const newRdfData = computeRDFGraph()
             setRdfData(newRdfData)
             
+            // Analyze structure metrics from RDF
+            analyzeStructure(newRdfData)
+            
             // Update chart data (batched to UI render frames)
             setEnergyHistory([...energyHistoryRef.current])
+            setMsdData([...msdHistoryRef.current])
             
             if (selectedId !== null) setHistoryTrigger(prev => prev + 1)
         }
@@ -861,7 +1041,8 @@ export default function MolecularDynamicsPage() {
                   if (!Array.isArray(params)) return ''
                   const p = params[0]
                   if (!p || p.seriesName === 'Ideal Gas') return ''
-                  const r = parseFloat(p.value[0]).toFixed(3)
+                  // Remove trailing zeros from distance
+                  const r = parseFloat(p.value[0]).toFixed(3).replace(/\.?0+$/, '')
                   const g = parseFloat(p.value[1]).toPrecision(3)
                   return `r: ${r} σ<br/>g(r): ${g}`
               }
@@ -892,7 +1073,17 @@ export default function MolecularDynamicsPage() {
                   showSymbol: false,
                   data: rdfData.map(d => [d.r, d.g]),
                   lineStyle: { color: '#8b5cf6', width: 2 },
-                  areaStyle: { opacity: 0.1, color: '#8b5cf6' }
+                  areaStyle: { opacity: 0.1, color: '#8b5cf6' },
+                  markLine: rdfData.length > 0 ? {
+                      symbol: 'none',
+                      data: [
+                          { 
+                              xAxis: structureMetrics.peakDist, 
+                              lineStyle: { type: 'dashed', color: '#f59e0b' },
+                              label: { formatter: 'Peak', position: 'end', color: textColor, fontFamily: 'Merriweather Sans', fontSize: 10 }
+                          }
+                      ]
+                  } : undefined
               },
               {
                   type: 'line',
@@ -910,10 +1101,17 @@ export default function MolecularDynamicsPage() {
   const getEnergyOption = (): EChartsOption => {
       const isDark = resolvedTheme === 'dark'
       const textColor = isDark ? '#ffffff' : '#000000'
-        // Sliding window parameters (always show the last 0.5 ps)
-        const windowSize = 0.5 // ps
-        const maxTime = Math.max(timeRef.current, windowSize)
-        const minTime = Math.max(0, maxTime - windowSize)
+        // Choose window mode based on energyMode state
+        let minTime: number, maxTime: number
+        if (energyMode === 'sliding') {
+            const windowSize = 0.5 // ps
+            maxTime = Math.max(timeRef.current, windowSize)
+            minTime = Math.max(0, maxTime - windowSize)
+        } else {
+            // expanding mode: min at 0, max at current time
+            minTime = 0
+            maxTime = timeRef.current
+        }
 
         // No filtering/padding here: we always plot real samples only.
         // ECharts will clip to [minTime, maxTime] via the xAxis min/max.
@@ -977,6 +1175,129 @@ export default function MolecularDynamicsPage() {
               { name: 'Potential (PE)', type: 'line', data: peData, showSymbol: false, lineStyle: { width: 1.5, color: '#3b82f6' } },
               { name: 'Kinetic (KE)', type: 'line', data: keData, showSymbol: false, lineStyle: { width: 1.5, color: '#ef4444' } }
           ],
+          animation: false
+      }
+  }
+
+  const getMsdOption = (): EChartsOption => {
+      const isDark = resolvedTheme === 'dark'
+      const textColor = isDark ? '#ffffff' : '#000000'
+
+      // Expanding window: min stays at 0, max continuously grows
+      const minTime = 0
+      const maxTime = timeRef.current
+      
+      // --- PLATEAU DETECTION LOGIC ---
+      let markLineOpt: any = undefined
+      
+      // Only check if we have enough data points (e.g., > 50 frames) and time has passed
+      if (msdData.length > 50 && timeRef.current > 2.0) {
+          // Look at the last 20% of the data
+          const windowSize = Math.floor(msdData.length * 0.2)
+          const recentData = msdData.slice(-windowSize)
+          
+          // Calculate Average MSD in this window
+          const sum = recentData.reduce((acc, cur) => acc + cur.msd, 0)
+          const avg = sum / recentData.length
+          
+          // Calculate Slope (End - Start) / Time
+          const start = recentData[0]
+          const end = recentData[recentData.length - 1]
+          const slope = (end.msd - start.msd) / (end.time - start.time)
+          
+          // Heuristic: If slope is very small (< 0.1), we consider it a "Plateau" (Solid)
+          // If slope is high, it's diffusing (Liquid), so we don't show a plateau line.
+          if (Math.abs(slope) < 0.1) {
+              markLineOpt = {
+                  symbol: ['none', 'none'],
+                  label: {
+                      position: 'insideEndTop',
+                      formatter: '{b}: {c}',
+                      color: textColor,
+                      fontFamily: 'Merriweather Sans',
+                      fontSize: 11
+                  },
+                  data: [
+                      {
+                          yAxis: parseFloat(avg.toPrecision(3)),
+                          name: 'Vibration Limit (Solid)',
+                          lineStyle: { type: 'dashed', color: '#ef4444', width: 2 },
+                          label: {
+                              show: true,
+                              position: 'insideEndTop',
+                              formatter: (params: any) => {
+                                  const val = Number(params.value)
+                                  return `${params.name}: ${val.toPrecision(3)}`
+                              },
+                              color: textColor,
+                              fontFamily: 'Merriweather Sans',
+                              fontSize: 11
+                          }
+                      }
+                  ]
+              }
+          }
+      }
+
+      return {
+          title: { 
+              text: 'Mean Squared Displacement', 
+              left: 'center', 
+              textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' } 
+          },
+          tooltip: {
+              trigger: 'axis',
+              triggerOn: 'mousemove|click',
+              alwaysShowContent: false,
+              hideDelay: 100,
+              confine: true,
+              enterable: true,
+              backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+              borderColor: isDark ? '#374151' : '#e5e7eb',
+              textStyle: { fontFamily: 'Merriweather Sans', color: textColor },
+              formatter: (params: any) => {
+                  if (!params[0]) return ''
+                  const t = params[0].value[0].toFixed(2)
+                  const msd = params[0].value[1].toFixed(3)
+                  return `Time: ${t} ps<br/>MSD: ${msd} σ²`
+              }
+          },
+          grid: { left: 50, right: 20, top: 40, bottom: 40 },
+          xAxis: {
+              type: 'value',
+              min: minTime,
+              max: maxTime,
+              boundaryGap: [0, 0],
+              show: true,
+              position: 'bottom',
+              name: 'Time (ps)',
+              nameLocation: 'middle',
+              nameGap: 25,
+              nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisLine: { show: true, lineStyle: { color: textColor }, onZero: false },
+              axisTick: { show: true },
+              splitLine: { show: false },
+              axisLabel: { showMinLabel: false, showMaxLabel: false, color: textColor, fontFamily: 'Merriweather Sans', margin: 5, formatter: (v: number) => v.toFixed(1) }
+          },
+          yAxis: {
+              type: 'value',
+              name: 'MSD (σ²)',
+              nameLocation: 'middle',
+              nameGap: 35,
+              nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisLine: { show: true, lineStyle: { color: textColor }, onZero: false },
+              axisTick: { show: true },
+              splitLine: { show: false },
+              axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 }
+          },
+          series: [{
+              type: 'line',
+              showSymbol: false,
+              data: msdData.map(d => [d.time, d.msd]),
+              lineStyle: { width: 2, color: '#f59e0b' },
+              areaStyle: { opacity: 0.1, color: '#f59e0b' },
+              markLine: markLineOpt
+          }],
           animation: false
       }
   }
@@ -1148,7 +1469,7 @@ export default function MolecularDynamicsPage() {
                 <div className="space-y-2">
                     <Label>Time Step (dt): {timeStep.toFixed(4)} ps</Label>
                     <Slider
-                        value={[timeStep]} min={0.0005} max={0.005} step={0.0005}
+                        value={[timeStep]} min={0.0005} max={0.05} step={0.0005}
                         onValueChange={(v) => setTimeStep(v[0])}
                     />
                 </div>
@@ -1276,25 +1597,62 @@ export default function MolecularDynamicsPage() {
               <CardContent className="pt-0">
                 {selectedParticleData ? (
                     <div className="grid grid-cols-2 gap-3 text-sm">
-                        <div className="p-2 bg-muted rounded">
-                            <p className="text-muted-foreground text-xs mb-1">Velocity</p>
-                            <p className="font-mono font-bold">{Math.sqrt(selectedParticleData.vx**2 + selectedParticleData.vy**2).toFixed(2)} σ/ps</p>
+                        {/* Magnitudes */}
+                        <div className="p-2 bg-muted rounded col-span-1">
+                            <p className="text-muted-foreground text-xs mb-1">Speed</p>
+                            <p className="font-mono font-bold">
+                                {Math.sqrt(selectedParticleData.vx**2 + selectedParticleData.vy**2 + selectedParticleData.vz**2).toFixed(2)} σ/ps
+                            </p>
                         </div>
-                        <div className="p-2 bg-muted rounded">
+                        <div className="p-2 bg-muted rounded col-span-1">
                             <p className="text-muted-foreground text-xs mb-1">Force</p>
-                            <p className="font-mono font-bold">{Math.sqrt(selectedParticleData.fx**2 + selectedParticleData.fy**2).toFixed(2)} ε/σ</p>
+                            <p className="font-mono font-bold">
+                                {Math.sqrt(selectedParticleData.fx**2 + selectedParticleData.fy**2 + selectedParticleData.fz**2).toFixed(2)} ε/σ
+                            </p>
                         </div>
-                        <div className="p-2 bg-muted rounded">
-                            <p className="text-muted-foreground text-xs mb-1">Vx</p>
-                            <p className="font-mono font-bold">{selectedParticleData.vx.toFixed(2)} σ/ps</p>
+
+                        {/* Velocity Components */}
+                        <div className={`col-span-2 grid ${isThreeD ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
+                             <div className="p-2 bg-muted rounded text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1">Vx</p>
+                                <p className="font-mono font-bold text-xs">{selectedParticleData.vx.toFixed(2)}</p>
+                             </div>
+                             <div className="p-2 bg-muted rounded text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1">Vy</p>
+                                <p className="font-mono font-bold text-xs">{selectedParticleData.vy.toFixed(2)}</p>
+                             </div>
+                             {isThreeD && (
+                                 <div className="p-2 bg-muted rounded text-center">
+                                    <p className="text-muted-foreground text-[10px] mb-1">Vz</p>
+                                    <p className="font-mono font-bold text-xs">{selectedParticleData.vz.toFixed(2)}</p>
+                                 </div>
+                             )}
                         </div>
-                        <div className="p-2 bg-muted rounded">
-                            <p className="text-muted-foreground text-xs mb-1">Vy</p>
-                            <p className="font-mono font-bold">{selectedParticleData.vy.toFixed(2)} σ/ps</p>
+
+                        {/* Force Components */}
+                        <div className={`col-span-2 grid ${isThreeD ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
+                             <div className="p-2 bg-muted rounded text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1">Fx</p>
+                                <p className="font-mono font-bold text-xs">{selectedParticleData.fx.toFixed(2)}</p>
+                             </div>
+                             <div className="p-2 bg-muted rounded text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1">Fy</p>
+                                <p className="font-mono font-bold text-xs">{selectedParticleData.fy.toFixed(2)}</p>
+                             </div>
+                             {isThreeD && (
+                                 <div className="p-2 bg-muted rounded text-center">
+                                    <p className="text-muted-foreground text-[10px] mb-1">Fz</p>
+                                    <p className="font-mono font-bold text-xs">{selectedParticleData.fz.toFixed(2)}</p>
+                                 </div>
+                             )}
                         </div>
                     </div>
                 ) : (
-                    <p className="text-xs text-muted-foreground">Click on a particle while paused to show its values.</p>
+                    <p className="text-xs text-muted-foreground">
+                        {running 
+                            ? "Pause simulation to select a particle." 
+                            : "Click on a particle to view its properties."}
+                    </p>
                 )}
               </CardContent>
           </Card>
@@ -1352,6 +1710,13 @@ export default function MolecularDynamicsPage() {
                                 sigma={sigma} 
                                 selectedId={selectedId}
                                 isDark={isDarkTheme}
+                                showVelocity={showVelocity}
+                                showForce={showForce}
+                                onParticleClick={(id) => {
+                                    if (!running) {
+                                        setSelectedId(prev => prev === id ? null : id)
+                                    }
+                                }}
                             />
                         </Canvas>
                     </div>
@@ -1370,6 +1735,63 @@ export default function MolecularDynamicsPage() {
 
            <Card className="relative">
               <CardContent className="p-1 h-[320px]">
+                  {/* Energy Mode Switcher (Top Left) - Only show for Energy graph */}
+                  {analysisView === 'energy' && (
+                      <div className="absolute top-2 left-2 z-10 flex gap-2 items-center">
+                          <Button
+                              size="sm"
+                              variant={energyMode === 'sliding' ? 'default' : 'outline'}
+                              onClick={() => setEnergyMode('sliding')}
+                              className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                                  mounted ? (isDarkTheme
+                                      ? 'bg-background/80 text-white border border-white/20'
+                                      : 'bg-background/80 text-black border border-black/20')
+                                  : ''
+                              }`}
+                          >
+                              Sliding
+                          </Button>
+                          <Button
+                              size="sm"
+                              variant={energyMode === 'expanding' ? 'default' : 'outline'}
+                              onClick={() => setEnergyMode('expanding')}
+                              className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                                  mounted ? (isDarkTheme
+                                      ? 'bg-background/80 text-white border border-white/20'
+                                      : 'bg-background/80 text-black border border-black/20')
+                                  : ''
+                              }`}
+                          >
+                              Expanding
+                          </Button>
+                      </div>
+                  )}
+
+                  {/* Structure Metrics Info Card (Center Right) - Only show for RDF */}
+                  {mounted && analysisView === 'rdf' && (() => {
+                      const { state, color } = detectSystemState()
+                      return (
+                          <div className={`absolute top-1/4 -translate-y-1/2 right-2 z-10 backdrop-blur-sm p-2 rounded border text-[10px] space-y-1 shadow-sm w-40 ${
+                              isDarkTheme
+                                  ? 'bg-background/80 border-white/20'
+                                  : 'bg-background/80 border-black/20'
+                          }`}>
+                              <div className="flex justify-between">
+                                  <span className="text-muted-foreground">1st Peak (r):</span>
+                                  <span className="font-mono font-bold">{structureMetrics.peakDist.toFixed(2)} σ</span>
+                              </div>
+                              <div className="flex justify-between">
+                                  <span className="text-muted-foreground">Coordination Number:</span>
+                                  <span className="font-mono font-bold text-blue-500">{structureMetrics.coordination.toFixed(2)}</span>
+                              </div>
+                              <div className="flex justify-between border-t pt-1 mt-1">
+                                  <span className="text-muted-foreground">System State:</span>
+                                  <span className={`font-bold ${color}`}>{state}</span>
+                              </div>
+                          </div>
+                      )
+                  })()}
+
                   <div className="absolute top-2 right-2 z-10 flex gap-2 items-center">
                       <Button
                           size="sm"
@@ -1397,6 +1819,19 @@ export default function MolecularDynamicsPage() {
                       >
                           Energy
                       </Button>
+                      <Button
+                          size="sm"
+                          variant={analysisView === 'msd' ? 'default' : 'outline'}
+                          onClick={() => setAnalysisView('msd')}
+                          className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                              mounted ? (isDarkTheme
+                                  ? 'bg-background/80 text-white border border-white/20'
+                                  : 'bg-background/80 text-black border border-black/20')
+                              : ''
+                          }`}
+                      >
+                          MSD
+                      </Button>
                   </div>
                   <div
                       className="h-full w-full"
@@ -1423,7 +1858,11 @@ export default function MolecularDynamicsPage() {
                       <ReactECharts
                           key={analysisView}
                           ref={analysisChartRef}
-                          option={analysisView === 'rdf' ? getRdfOption() : getEnergyOption()}
+                          option={
+                              analysisView === 'rdf' ? getRdfOption() : 
+                              analysisView === 'energy' ? getEnergyOption() : 
+                              getMsdOption()
+                          }
                           style={{ height: '100%', width: '100%' }}
                           notMerge={false}
                           lazyUpdate={true}
@@ -1439,24 +1878,73 @@ export default function MolecularDynamicsPage() {
 
 }
 
-// --- 3D SCENE COMPONENT ---
+// Helper component for rendering 3D arrows
+const Arrow3D = ({ 
+  start, 
+  vector, 
+  color, 
+  scale 
+}: { 
+  start: [number, number, number], 
+  vector: [number, number, number], 
+  color: string, 
+  scale: number 
+}) => {
+  const dir = new THREE.Vector3(...vector)
+  const length = dir.length()
+  
+  // Don't render tiny vectors
+  if (length < 1e-6) return null
+
+  dir.normalize()
+  const arrowLength = length * scale
+  
+  // Create the ArrowHelper once per render cycle
+  // args: [dir, origin, length, color, headLength, headWidth]
+  return (
+    <primitive 
+      object={new THREE.ArrowHelper(
+        dir, 
+        new THREE.Vector3(...start), 
+        arrowLength, 
+        color, 
+        Math.min(arrowLength * 0.2, 2), // Cap head size
+        Math.min(arrowLength * 0.08, 1)
+      )} 
+    />
+  )
+}
+
 const Molecule3D = ({ 
   particles, 
   boxSize, 
   sigma, 
   selectedId, 
-  isDark 
+  isDark,
+  showVelocity,
+  showForce,
+  onParticleClick
 }: { 
   particles: Particle[], 
   boxSize: number, 
   sigma: number, 
   selectedId: number | null, 
-  isDark: boolean 
+  isDark: boolean,
+  showVelocity: boolean,
+  showForce: boolean,
+  onParticleClick: (id: number) => void
 }) => {
-  // Use theme-aware colors: white particles in dark mode, blue in light mode
   const particleColor = isDark ? "#ffffff" : "#3b82f6"
   const wireframeColor = isDark ? "#ffffff" : "#000000"
   
+  // Colors for arrows
+  const velColor = isDark ? '#4ade80' : '#16a34a'
+  const forceColor = isDark ? '#facc15' : '#d97706'
+
+  // Arrow Scaling Factors (matching 2D logic)
+  const VEL_SCALE = 0.5
+  const FORCE_SCALE = 0.05
+
   return (
     <group>
       {/* Simulation Bounding Box */}
@@ -1471,18 +1959,57 @@ const Molecule3D = ({
       </mesh>
       
       {/* Particles */}
-      {particles.map((p) => (
-        <mesh key={p.id} position={[p.x, p.y, p.z]}>
-          <sphereGeometry args={[sigma * 0.5, 16, 16]} />
-          <meshStandardMaterial 
-            color={p.id === selectedId ? "#facc15" : particleColor}
-            emissive={p.id === selectedId ? "#facc15" : "#000000"}
-            emissiveIntensity={p.id === selectedId ? 0.5 : 0}
-            roughness={0.2}
-            metalness={0.5}
-          />
-        </mesh>
-      ))}
+      {particles.map((p) => {
+        const isSelected = p.id === selectedId
+        
+        // Visibility Logic:
+        // 1. If a particle is selected, ONLY show arrows for that particle.
+        // 2. If nothing is selected, show arrows based on global toggles.
+        const showV = selectedId !== null ? isSelected : showVelocity
+        const showF = selectedId !== null ? isSelected : showForce
+
+        return (
+          <group key={p.id}>
+             {/* The Particle Sphere */}
+             <mesh 
+                position={[p.x, p.y, p.z]} 
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onParticleClick(p.id)
+                }}
+             >
+              <sphereGeometry args={[sigma * 0.5, 16, 16]} />
+              <meshStandardMaterial 
+                color={isSelected ? "#facc15" : particleColor}
+                emissive={isSelected ? "#facc15" : "#000000"}
+                emissiveIntensity={isSelected ? 0.5 : 0}
+                roughness={0.2}
+                metalness={0.5}
+              />
+            </mesh>
+
+            {/* Velocity Arrow */}
+            {showV && (
+              <Arrow3D 
+                start={[p.x, p.y, p.z]} 
+                vector={[p.vx, p.vy, p.vz]} 
+                color={velColor} 
+                scale={VEL_SCALE} 
+              />
+            )}
+
+            {/* Force Arrow */}
+            {showF && (
+              <Arrow3D 
+                start={[p.x, p.y, p.z]} 
+                vector={[p.fx, p.fy, p.fz]} 
+                color={forceColor} 
+                scale={FORCE_SCALE} 
+              />
+            )}
+          </group>
+        )
+      })}
       
       <ambientLight intensity={0.6} />
       <pointLight position={[boxSize * 1.5, boxSize * 1.5, boxSize * 1.5]} intensity={1} />
