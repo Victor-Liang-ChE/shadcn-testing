@@ -1,13 +1,13 @@
 'use client'
 
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useTheme } from "next-themes"
 
 // ECharts imports
 import ReactECharts from 'echarts-for-react'
 import * as echarts from 'echarts/core'
 import type { EChartsOption } from 'echarts'
-import { LineChart, ScatterChart, CustomChart } from 'echarts/charts'
+import { LineChart, ScatterChart } from 'echarts/charts'
 import {
   TitleComponent,
   TooltipComponent,
@@ -30,7 +30,6 @@ echarts.use([
   VisualMapComponent,
   LineChart,
   ScatterChart,
-  CustomChart,
   CanvasRenderer
 ])
 
@@ -44,8 +43,6 @@ import {
   Play, 
   Pause, 
   RotateCcw, 
-  Move, 
-  ArrowRight, 
   MousePointer2, 
   Activity, 
   List, 
@@ -61,6 +58,7 @@ declare module 'react-katex' {
 // Types for our simulation
 type Particle = {
   id: number
+  type: 0 | 1
   x: number
   y: number
   z: number
@@ -72,15 +70,135 @@ type Particle = {
   fz: number
 }
 
+// --- UNIT CONSTANTS & CONVERSIONS ---
+// System: Energy=Kelvin, Dist=Angstrom, Mass=Dalton, Time=ps
+// Boltzmann constant is 1.0 in internal units (E/kB).
+// The real conversion factors are needed for derived properties.
+//
+// 1. Acceleration Factor (a = F/m conversion)
+// Acceleration = Force / Mass
+// Units: Å² / (ps²·K)
+// Conversion: 1 K/(Å·Da) ≈ 0.831446 Å²/(ps²·K)
+const KB_OVER_MU = 0.831446
+
+// 2. Pressure Factor
+// P = Energy/Volume. Units: K/Å³.
+// 1 K/Å³ = 138.06 bar
+const PRESSURE_CONV_BAR = 138.06
+
+const MASS_ARGON = 39.948 // Daltons
+
 // Simulation Constants
-const BOX_SIZE = 100
-const DT_DEFAULT = 0.002 // Strict: Lower timestep for stability without velocity caps
-const BOLTZMANN_K = 1.0 // Normalized units
+const BOX_SIZE = 40.0 // Angstroms (typical nano-box for Argon)
+const DT_DEFAULT = 0.005 // 5 femtoseconds (0.005 ps)
 
 // RDF Configuration
 const RDF_BINS = 100
 const RDF_CUTOFF = BOX_SIZE / 2.0
 const RDF_BIN_WIDTH = RDF_CUTOFF / RDF_BINS
+
+// History caps (prevents unbounded memory growth)
+const MAX_HISTORY_POINTS = 12000
+
+type LJReference = {
+    formula: string
+    substance: string
+    sigmaAngstrom: number
+    epsilonOverKbK: number
+}
+
+// Reference Lennard-Jones parameters (σ in Å, ε/kB in K).
+// Used only for UI hints to help users recognize common fluids.
+const LJ_REFERENCES: LJReference[] = [
+    { formula: 'Ar', substance: 'Argon', sigmaAngstrom: 3.542, epsilonOverKbK: 93.3 },
+    { formula: 'He', substance: 'Helium', sigmaAngstrom: 2.551, epsilonOverKbK: 10.22 },
+    { formula: 'Kr', substance: 'Krypton', sigmaAngstrom: 3.655, epsilonOverKbK: 178.9 },
+    { formula: 'Ne', substance: 'Neon', sigmaAngstrom: 2.82, epsilonOverKbK: 32.8 },
+    { formula: 'Xe', substance: 'Xenon', sigmaAngstrom: 4.047, epsilonOverKbK: 231 },
+    { formula: 'Air', substance: 'Air', sigmaAngstrom: 3.711, epsilonOverKbK: 78.6 },
+    { formula: 'AsH3', substance: 'Arsine', sigmaAngstrom: 4.145, epsilonOverKbK: 259.8 },
+    { formula: 'BCl3', substance: 'Boron chloride', sigmaAngstrom: 5.127, epsilonOverKbK: 337.7 },
+    { formula: 'BF3', substance: 'Boron floride', sigmaAngstrom: 4.198, epsilonOverKbK: 186.3 },
+    { formula: 'B(OCH3)3', substance: 'Methyl borate', sigmaAngstrom: 5.503, epsilonOverKbK: 396.7 },
+    { formula: 'Br2', substance: 'Bromine', sigmaAngstrom: 4.296, epsilonOverKbK: 507.9 },
+    { formula: 'CCl4', substance: 'Carbon tetrachloride', sigmaAngstrom: 5.947, epsilonOverKbK: 322.7 },
+    { formula: 'CF4', substance: 'Carbon tetrafluoride', sigmaAngstrom: 4.662, epsilonOverKbK: 134 },
+    { formula: 'CHCl3', substance: 'Chloroform', sigmaAngstrom: 5.389, epsilonOverKbK: 340.2 },
+    { formula: 'CH2Cl2', substance: 'Methylene chloride', sigmaAngstrom: 4.898, epsilonOverKbK: 356.3 },
+    { formula: 'CH3Br', substance: 'Methyl bromide', sigmaAngstrom: 4.118, epsilonOverKbK: 449.2 },
+    { formula: 'CH3Cl', substance: 'Methyl chloride', sigmaAngstrom: 4.182, epsilonOverKbK: 350 },
+    { formula: 'CH3OH', substance: 'Methanol', sigmaAngstrom: 3.626, epsilonOverKbK: 481.8 },
+    { formula: 'CH4', substance: 'Methane', sigmaAngstrom: 3.758, epsilonOverKbK: 148.6 },
+    { formula: 'CO', substance: 'Carbon monoxide', sigmaAngstrom: 3.69, epsilonOverKbK: 91.7 },
+    { formula: 'COS', substance: 'Carbonyl sulfide', sigmaAngstrom: 4.13, epsilonOverKbK: 336 },
+    { formula: 'CO2', substance: 'Carbon dioxide', sigmaAngstrom: 3.941, epsilonOverKbK: 195.2 },
+    { formula: 'CS2', substance: 'Carbon disulfide', sigmaAngstrom: 4.483, epsilonOverKbK: 467 },
+    { formula: 'C2H2', substance: 'Acetylene', sigmaAngstrom: 4.033, epsilonOverKbK: 231.8 },
+    { formula: 'C2H4', substance: 'Ethylene', sigmaAngstrom: 4.163, epsilonOverKbK: 224.7 },
+    { formula: 'C2H6', substance: 'Ethane', sigmaAngstrom: 4.443, epsilonOverKbK: 215.7 },
+    { formula: 'C2H5Cl', substance: 'Ethyl chloride', sigmaAngstrom: 4.898, epsilonOverKbK: 300 },
+    { formula: 'C2H5OH', substance: 'Ethanol', sigmaAngstrom: 4.53, epsilonOverKbK: 362.6 },
+    { formula: 'C2N2', substance: 'Cyanogen', sigmaAngstrom: 4.361, epsilonOverKbK: 348.6 },
+    { formula: 'CH3OCH3', substance: 'Methyl ether', sigmaAngstrom: 4.307, epsilonOverKbK: 395 },
+    { formula: 'CH2CHCH3', substance: 'Propylene', sigmaAngstrom: 4.678, epsilonOverKbK: 298.9 },
+    { formula: 'CH3CCH', substance: 'Methylacetylene', sigmaAngstrom: 4.761, epsilonOverKbK: 251.8 },
+    { formula: 'C3H6', substance: 'Cyclopropane', sigmaAngstrom: 4.807, epsilonOverKbK: 248.9 },
+    { formula: 'C3H8', substance: 'Propane', sigmaAngstrom: 5.118, epsilonOverKbK: 237.1 },
+    { formula: 'n-C3H7OH', substance: 'n-Propyl alcohol', sigmaAngstrom: 4.549, epsilonOverKbK: 576.7 },
+    { formula: 'CH3COCH3', substance: 'Acetone', sigmaAngstrom: 4.6, epsilonOverKbK: 560.2 },
+    { formula: 'CH3COOCH3', substance: 'Methyl acetate', sigmaAngstrom: 4.936, epsilonOverKbK: 469.8 },
+    { formula: 'n-C4H10', substance: 'n-Butane', sigmaAngstrom: 4.687, epsilonOverKbK: 531.4 },
+    { formula: 'iso-C4H10', substance: 'Isobutane', sigmaAngstrom: 5.278, epsilonOverKbK: 330.1 },
+    { formula: 'C2H5OC2H5', substance: 'Ethyl ether', sigmaAngstrom: 5.678, epsilonOverKbK: 313.8 },
+    { formula: 'CH3COOC2H5', substance: 'Ethyl acetate', sigmaAngstrom: 5.205, epsilonOverKbK: 521.3 },
+    { formula: 'n-C5H12', substance: 'n-Pentane', sigmaAngstrom: 5.784, epsilonOverKbK: 341.1 },
+    { formula: 'C(CH3)4', substance: '2,2-Dimethylpropane', sigmaAngstrom: 6.464, epsilonOverKbK: 193.4 },
+    { formula: 'C6H6', substance: 'Benzene', sigmaAngstrom: 5.349, epsilonOverKbK: 412.3 },
+    { formula: 'C6H12', substance: 'Cyclohexane', sigmaAngstrom: 6.182, epsilonOverKbK: 297.1 },
+    { formula: 'n-C6H14', substance: 'n-Hexane', sigmaAngstrom: 5.949, epsilonOverKbK: 399.3 },
+    { formula: 'Cl2', substance: 'Chlorine', sigmaAngstrom: 4.217, epsilonOverKbK: 316 },
+    { formula: 'F2', substance: 'Fluorine', sigmaAngstrom: 3.357, epsilonOverKbK: 112.6 },
+    { formula: 'HBr', substance: 'Hydrogen bromide', sigmaAngstrom: 3.353, epsilonOverKbK: 449 },
+    { formula: 'HCN', substance: 'Hydrogen cyanide', sigmaAngstrom: 3.63, epsilonOverKbK: 569.1 },
+    { formula: 'HCl', substance: 'Hydrogen chloride', sigmaAngstrom: 3.339, epsilonOverKbK: 344.7 },
+    { formula: 'HF', substance: 'Hydrogen fluoride', sigmaAngstrom: 3.148, epsilonOverKbK: 330 },
+    { formula: 'HI', substance: 'Hydrogen iodide', sigmaAngstrom: 4.211, epsilonOverKbK: 288.7 },
+    { formula: 'H2', substance: 'Hydrogen', sigmaAngstrom: 2.827, epsilonOverKbK: 59.7 },
+    { formula: 'H2O', substance: 'Water', sigmaAngstrom: 2.641, epsilonOverKbK: 809.1 },
+    { formula: 'H2O2', substance: 'Hydrogen peroxide', sigmaAngstrom: 4.196, epsilonOverKbK: 289.3 },
+    { formula: 'H2S', substance: 'Hydrogen sulfide', sigmaAngstrom: 3.623, epsilonOverKbK: 301.1 },
+    { formula: 'Hg', substance: 'Mercury', sigmaAngstrom: 2.969, epsilonOverKbK: 750 },
+    { formula: 'HgBr2', substance: 'Mercuric bromide', sigmaAngstrom: 5.08, epsilonOverKbK: 686.2 },
+    { formula: 'HgCl2', substance: 'Mercuric chloride', sigmaAngstrom: 4.55, epsilonOverKbK: 750 },
+    { formula: 'HgI2', substance: 'Mercuric iodide', sigmaAngstrom: 5.625, epsilonOverKbK: 695.6 },
+    { formula: 'I2', substance: 'Iodine', sigmaAngstrom: 5.16, epsilonOverKbK: 474.2 },
+    { formula: 'NH3', substance: 'Ammonia', sigmaAngstrom: 2.9, epsilonOverKbK: 558.3 },
+    { formula: 'NO', substance: 'Nitric oxide', sigmaAngstrom: 3.492, epsilonOverKbK: 116.7 },
+    { formula: 'NOCl', substance: 'Nitrosyl chloride', sigmaAngstrom: 4.112, epsilonOverKbK: 395.3 },
+    { formula: 'N2', substance: 'Nitrogen', sigmaAngstrom: 3.798, epsilonOverKbK: 71.4 },
+    { formula: 'N2O', substance: 'Nitrous oxide', sigmaAngstrom: 3.828, epsilonOverKbK: 232.4 },
+    { formula: 'O2', substance: 'Oxygen', sigmaAngstrom: 3.467, epsilonOverKbK: 106.7 },
+    { formula: 'PH3', substance: 'Phosphine', sigmaAngstrom: 3.981, epsilonOverKbK: 251.5 },
+    { formula: 'SF6', substance: 'Sulfur hexafluoride', sigmaAngstrom: 5.128, epsilonOverKbK: 222.1 },
+    { formula: 'SO2', substance: 'Sulfur dioxide', sigmaAngstrom: 4.112, epsilonOverKbK: 335.4 },
+    { formula: 'SiF4', substance: 'Silicon tetrafluoride', sigmaAngstrom: 4.88, epsilonOverKbK: 171.9 },
+    { formula: 'SiH4', substance: 'Silicon hydride', sigmaAngstrom: 4.084, epsilonOverKbK: 207.6 },
+    { formula: 'SnBr4', substance: 'Stannic bromide', sigmaAngstrom: 6.388, epsilonOverKbK: 563.7 },
+    { formula: 'UF6', substance: 'Uranium hexafluoride', sigmaAngstrom: 5.967, epsilonOverKbK: 236.8 }
+]
+
+const getNearestLJ = (
+    value: number,
+    key: 'sigmaAngstrom' | 'epsilonOverKbK'
+): LJReference[] => {
+    if (!Number.isFinite(value)) return []
+    // Determine tolerance based on the parameter type and slider precision
+    const tolerance = key === 'epsilonOverKbK' ? 5 : 0.15 // ±5 K for epsilon, ±0.15 Å for sigma
+    const matches = LJ_REFERENCES.filter((ref) => Math.abs(ref[key] - value) <= tolerance)
+    // Sort by distance to current value
+    matches.sort((a, b) => Math.abs(a[key] - value) - Math.abs(b[key] - value))
+    return matches
+}
 
 export default function MolecularDynamicsPage() {
   const { resolvedTheme } = useTheme()
@@ -92,23 +210,90 @@ export default function MolecularDynamicsPage() {
   
   // --- Simulation State ---
   const [running, setRunning] = useState(false)
+  const [isCrashed, setIsCrashed] = useState(false)
   const [particles, setParticles] = useState<Particle[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [isThreeD, setIsThreeD] = useState(false)
   
-  // --- Control States ---
-  const [numParticles, setNumParticles] = useState<number>(50)
-  const [temperature, setTemperature] = useState<number>(1.0)
+  // --- Binary Mixture State ---
+  const [isBinary, setIsBinary] = useState(false)
+  
+  // Particle Counts
+  const [numParticles, setNumParticles] = useState<number>(60)
+  const [numParticlesA, setNumParticlesA] = useState(40)
+  const [numParticlesB, setNumParticlesB] = useState(40)
+  
+  // --- Control States (Real Units for Argon) ---
+  const [temperature, setTemperature] = useState<number>(120.0) // Kelvin (Liquid Argon region)
   const [timeStep, setTimeStep] = useState<number>(DT_DEFAULT)
   
-  // New L-J Parameters
-  const [epsilon, setEpsilon] = useState<number>(50.0)
-  const [sigma, setSigma] = useState<number>(5.0)
+  // Parameters for Species A (Default Argon)
+  const [epsilonA, setEpsilonA] = useState<number>(120.0) // Kelvin (eps/kB)
+  const [sigmaA, setSigmaA] = useState<number>(3.4) // Angstroms
+
+  // Parameters for Species B (Default Krypton-ish)
+  const [epsilonB, setEpsilonB] = useState<number>(160.0)
+  const [sigmaB, setSigmaB] = useState<number>(4.0)
+  
+  // Keep backward-compat alias for existing code
+  const epsilon = epsilonA
+  const setEpsilon = setEpsilonA
+  const sigma = sigmaA
+  const setSigma = setSigmaA
+
+    // Use reduced temperature T* = T/ε as the primary UI control.
+    // Note: since ε is stored in Kelvin (i.e., ε/kB), reduced temperature is simply T/ε.
+    const REDUCED_STEP = 0.01
+    const snapToStep = (v: number, step: number) => Math.round(v / step) * step
+    const [reducedTemp, setReducedTemp] = useState<number>(() => snapToStep(temperature / epsilon, REDUCED_STEP))
+
+    // Compute slider-friendly min/max for reduced temperature so endpoints land on "nice" multiples
+    const reducedMinRaw = 10 / epsilon
+    const reducedMaxRaw = 500 / epsilon
+    let reducedMin = Math.ceil(reducedMinRaw / REDUCED_STEP) * REDUCED_STEP
+    let reducedMax = Math.floor(reducedMaxRaw / REDUCED_STEP) * REDUCED_STEP
+    if (reducedMin > reducedMax) {
+        // Fallback: if epsilon is such that no multiple exists within range, use raw values
+        reducedMin = reducedMinRaw
+        reducedMax = reducedMaxRaw
+    }
+
+    // Keep reducedTemp in-range and snapped when epsilon changes
+    useEffect(() => {
+        setReducedTemp((prev) => {
+            const snapped = snapToStep(prev, REDUCED_STEP)
+            const clamped = Math.min(reducedMax, Math.max(reducedMin, snapped))
+            return clamped
+        })
+    }, [epsilon])
+
+    // Keep the actual target temperature consistent with the reduced temperature.
+    useEffect(() => {
+        setTemperature(Number((reducedTemp * epsilon).toFixed(3)))
+    }, [reducedTemp, epsilon])
   
   // Potential Type and Generic Parameter C
     type PotentialType = 'LJ' | 'WCA' | 'MORSE' | 'SOFT' | 'YUKAWA' | 'GAUSS' | 'BUCK'
   const [potentialType, setPotentialType] = useState<PotentialType>('LJ')
   const [paramC, setParamC] = useState<number>(1.5) // Width for Morse, Exponent for Soft
+
+    const showLJReferenceHints = potentialType === 'LJ'
+    const nearestEpsilonA = useMemo(
+        () => (showLJReferenceHints ? getNearestLJ(epsilonA, 'epsilonOverKbK') : []),
+        [showLJReferenceHints, epsilonA]
+    )
+    const nearestSigmaA = useMemo(
+        () => (showLJReferenceHints ? getNearestLJ(sigmaA, 'sigmaAngstrom') : []),
+        [showLJReferenceHints, sigmaA]
+    )
+    const nearestEpsilonB = useMemo(
+        () => (showLJReferenceHints ? getNearestLJ(epsilonB, 'epsilonOverKbK') : []),
+        [showLJReferenceHints, epsilonB]
+    )
+    const nearestSigmaB = useMemo(
+        () => (showLJReferenceHints ? getNearestLJ(sigmaB, 'sigmaAngstrom') : []),
+        [showLJReferenceHints, sigmaB]
+    )
 
   // --- Visualization States ---
   const [showForce, setShowForce] = useState(false)
@@ -151,17 +336,19 @@ export default function MolecularDynamicsPage() {
   const requestRef = useRef<number | null>(null)
   const particlesRef = useRef<Particle[]>([])
   const isThreeDRef = useRef(isThreeD)
-  const initial3DViewRef = useRef(true)
   
   // Refs for current parameter values
   const paramsRef = useRef({
       dt: DT_DEFAULT,
-      epsilon: 50.0,
-      sigma: 5.0,
+      epsilonA: 120.0,
+      sigmaA: 3.4,
+      epsilonB: 160.0,
+      sigmaB: 4.0,
       paramC: 1.5,
       potentialType: 'LJ' as PotentialType,
       box: BOX_SIZE,
-      targetTemp: 1.0
+      targetTemp: 120.0,
+      isBinary: false
   })
   
   // Nosé-Hoover State Variable
@@ -180,20 +367,23 @@ export default function MolecularDynamicsPage() {
   // Update refs when state changes
   useEffect(() => {
       paramsRef.current.dt = timeStep
-      paramsRef.current.epsilon = epsilon
-      paramsRef.current.sigma = sigma
+      paramsRef.current.epsilonA = epsilonA
+      paramsRef.current.sigmaA = sigmaA
+      paramsRef.current.epsilonB = epsilonB
+      paramsRef.current.sigmaB = sigmaB
       paramsRef.current.paramC = paramC
       paramsRef.current.potentialType = potentialType
       paramsRef.current.targetTemp = temperature
+      paramsRef.current.isBinary = isBinary
       
-      // Update NH Thermal Mass Q roughly based on system size
-      // Q approx N * T * tau^2. Let tau = 0.5ps
-      nhStateRef.current.Q = numParticles * temperature * 0.25
-  }, [timeStep, epsilon, sigma, paramC, potentialType, temperature, numParticles])
+      // Update Mass/Q if needed (assuming same mass for now to keep simple)
+      const totalN = isBinary ? (numParticlesA + numParticlesB) : numParticles
+      nhStateRef.current.Q = totalN * temperature * 0.25
+  }, [timeStep, epsilonA, sigmaA, epsilonB, sigmaB, paramC, potentialType, temperature, numParticles, numParticlesA, numParticlesB, isBinary])
 
-  // --- PHYSICS KERNEL: Force Calculation (3D O(N^2)) ---
+  // --- PHYSICS KERNEL: Force Calculation (3D O(N^2)) with Mixing Rules ---
   const calculateForces = (currentParticles: Particle[]): { pe: number, virial: number } => {
-      const { epsilon: eps, sigma: sig, box } = paramsRef.current
+      const { epsilonA, sigmaA, epsilonB, sigmaB, box, isBinary } = paramsRef.current
       
       let potentialEnergy = 0
       let virialSum = 0
@@ -204,7 +394,10 @@ export default function MolecularDynamicsPage() {
       }
 
       const N = currentParticles.length
-      const cutoffSq = 6.25 * sig * sig
+      
+      // Determine max sigma for cutoff (use larger of the two in binary mode)
+      const maxSigma = isBinary ? Math.max(sigmaA, sigmaB) : sigmaA
+      const cutoffSq = 6.25 * maxSigma * maxSigma
       
       // O(N^2) for simplicity in 3D transition
       for (let i = 0; i < N; i++) {
@@ -229,24 +422,54 @@ export default function MolecularDynamicsPage() {
               const r_inv = 1.0 / r
               const r2_inv = r_inv * r_inv
               
+              // --- SELECT PARAMETERS via Lorentz-Berthelot Mixing Rules ---
+              let eps, sig
+              
+              if (!isBinary) {
+                  // Simple Case: Pure substance
+                  eps = epsilonA
+                  sig = sigmaA
+              } else {
+                  // Binary Case: Apply mixing rules for cross interactions
+                  if (p1.type === 0 && p2.type === 0) {
+                      eps = epsilonA
+                      sig = sigmaA
+                  } else if (p1.type === 1 && p2.type === 1) {
+                      eps = epsilonB
+                      sig = sigmaB
+                  } else {
+                      // Cross interaction: σ_mix = (σ_A + σ_B)/2, ε_mix = sqrt(ε_A * ε_B)
+                      sig = 0.5 * (sigmaA + sigmaB)
+                      eps = Math.sqrt(epsilonA * epsilonB)
+                  }
+              }
+              
+              // Pre-compute LJ shift at cutoff for this pair's parameters
+              const rc = 2.5 * sig
+              const rc_inv = 1.0 / rc
+              const rc2_inv = rc_inv * rc_inv
+              const s2 = sig * sig
+              const s2_rc2 = s2 * rc2_inv
+              const s6_rc6 = s2_rc2 * s2_rc2 * s2_rc2
+              const s12_rc12 = s6_rc6 * s6_rc6
+              const ljShiftAtCutoff = 4 * eps * (s12_rc12 - s6_rc6)
+              
               let forceScalar = 0 
               let pairPotential = 0
 
               switch (paramsRef.current.potentialType) {
                   case 'LJ': {
-                      const s2 = sig * sig
                       const s2_r2 = s2 * r2_inv
                       const s6_r6 = s2_r2 * s2_r2 * s2_r2
                       const s12_r12 = s6_r6 * s6_r6
                       
                       forceScalar = (24 * eps * r2_inv) * (2 * s12_r12 - s6_r6)
-                      pairPotential = 4 * eps * (s12_r12 - s6_r6)
+                      pairPotential = 4 * eps * (s12_r12 - s6_r6) - ljShiftAtCutoff
                       break
                   }
                   case 'WCA': {
-                      const cutoffSq = 1.25992 * sig * sig 
-                      if (distSq < cutoffSq) {
-                          const s2 = sig * sig
+                      const wcaCutoffSq = 1.25992 * sig * sig 
+                      if (distSq < wcaCutoffSq) {
                           const s2_r2 = s2 * r2_inv
                           const s6_r6 = s2_r2 * s2_r2 * s2_r2
                           const s12_r12 = s6_r6 * s6_r6
@@ -272,6 +495,12 @@ export default function MolecularDynamicsPage() {
                       break
                   }
                   case 'YUKAWA': {
+                      // V(r) = eps * exp(-r/sig) / r
+                      // F(r) = -dV/dr
+                      // Using product rule: d/dr (u*v) where u = exp(-r/sig) and v = 1/r
+                      // d/dr[exp(-r/sig)] = -(1/sig) * exp(-r/sig)
+                      // d/dr[1/r] = -1/r²
+                      // Result: F(r) = V(r) * (1/r + 1/sig)
                       const screened = Math.exp(-r / sig)
                       pairPotential = (eps * screened) * r_inv
                       const f_r_yuk = pairPotential * (r_inv + (1.0 / sig))
@@ -279,6 +508,11 @@ export default function MolecularDynamicsPage() {
                       break
                   }
                   case 'GAUSS': {
+                      // V(r) = eps * exp(-r²/2σ²)
+                      // F(r) = -dV/dr = (eps * r / σ²) * exp(...)
+                      // Force vector form: F_vec = F(r) * (r_vec / r) = (eps / σ²) * exp(...) * r_vec
+                      // code uses: fx = dx * forceScalar, so forceScalar = (eps / σ²) * exp(...)
+                      // No extra r_inv is needed here.
                       const r2_s2 = distSq / (sig * sig)
                       const gauss = Math.exp(-0.5 * r2_s2)
                       pairPotential = eps * gauss
@@ -372,12 +606,19 @@ export default function MolecularDynamicsPage() {
           for (let j = i + 1; j < N; j++) {
               let dx = currentParticles[j].x - currentParticles[i].x
               let dy = currentParticles[j].y - currentParticles[i].y
+              let dz = currentParticles[j].z - currentParticles[i].z
 
               // MIC (Minimum Image Convention)
               dx -= box * Math.round(dx / box)
               dy -= box * Math.round(dy / box)
 
-              const r = Math.sqrt(dx*dx + dy*dy)
+              if (isThreeDRef.current) {
+                  dz -= box * Math.round(dz / box)
+              } else {
+                  dz = 0
+              }
+
+              const r = Math.sqrt(dx*dx + dy*dy + dz*dz)
 
               if (r < RDF_CUTOFF) {
                   const bin = Math.floor(r / RDF_BIN_WIDTH)
@@ -399,15 +640,20 @@ export default function MolecularDynamicsPage() {
       if (frames === 0 || N === 0) return []
 
       // Global Density (rho)
-      const density = N / (box * box)
+      const volume = isThreeDRef.current ? Math.pow(box, 3) : Math.pow(box, 2)
+      const density = N / volume
       
       return hist.map((count, i) => {
           const r = (i + 1) * RDF_BIN_WIDTH
-          // Area of annulus shell in 2D: dA = 2 * pi * r * dr
-          const area = 2 * Math.PI * r * RDF_BIN_WIDTH
+          // Shell measure depends on dimensionality
+          // 2D: dA = 2π r dr
+          // 3D: dV = 4π r^2 dr
+          const shell = isThreeDRef.current
+              ? 4 * Math.PI * r * r * RDF_BIN_WIDTH
+              : 2 * Math.PI * r * RDF_BIN_WIDTH
           
-          // Expected count for ideal gas = rho * area
-          const idealCount = density * area
+          // Expected count for ideal gas = rho * shell
+          const idealCount = density * shell
           
           // g(r) = Observed / (Ideal * N * Frames)
           // We divide by N because the histogram sums over ALL particles as centers
@@ -554,19 +800,31 @@ export default function MolecularDynamicsPage() {
   }
 
   // --- Initialization Logic ---
+    const randomNormal = useCallback((): number => {
+        // Box–Muller transform
+        let u = 0
+        let v = 0
+        while (u === 0) u = Math.random()
+        while (v === 0) v = Math.random()
+        return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v)
+    }, [])
+
   const initializeParticles = useCallback(() => {
     const newParticles: Particle[] = []
+    
+    // Determine Total Count
+    const totalParticles = isBinary ? (numParticlesA + numParticlesB) : numParticles
     
     // 3D Logic: Cube Root vs Square Root
     // If 125 particles -> 5x5x5 grid
     const dim = isThreeD 
-      ? Math.ceil(Math.pow(numParticles, 1/3)) 
-      : Math.ceil(Math.sqrt(numParticles))
+      ? Math.ceil(Math.pow(totalParticles, 1/3)) 
+      : Math.ceil(Math.sqrt(totalParticles))
       
     const spacing = BOX_SIZE / dim
 
     // 1. Grid Placement (3D or 2D)
-    for (let i = 0; i < numParticles; i++) {
+    for (let i = 0; i < totalParticles; i++) {
       let x, y, z
 
       if (isThreeD) {
@@ -602,32 +860,45 @@ export default function MolecularDynamicsPage() {
           z = 0; // Force flat 0 for 2D
       }
 
+      // Determine Type: First N_A are type 0, rest are type 1
+      let pType: 0 | 1 = 0
+      if (isBinary) {
+          pType = i < numParticlesA ? 0 : 1
+      }
+
       newParticles.push({
         id: i,
+        type: pType,
         x, y, z,
-        vx: (Math.random() - 0.5) * temperature,
-        vy: (Math.random() - 0.5) * temperature,
-        vz: isThreeD ? (Math.random() - 0.5) * temperature : 0,
+                vx: 0,
+                vy: 0,
+                vz: 0,
         fx: 0, fy: 0, fz: 0
       })
     }
-    // 3. Assign Maxwell-Boltzmann Velocities
-    for (let p of newParticles) {
-        p.vx = (Math.random() - 0.5) * temperature
-        p.vy = (Math.random() - 0.5) * temperature
-        p.vz = isThreeD ? (Math.random() - 0.5) * temperature : 0
-    }
+
+// 3. Assign Maxwell–Boltzmann Velocities (Gaussian with std = sqrt(kT/m))
+    // v_std = sqrt(T * KB_OVER_MU / m) where T is in Kelvin, m in Daltons
+    // This gives velocities in Å/ps
+    const vStd = Math.sqrt((temperature * KB_OVER_MU) / MASS_ARGON)
+        for (const p of newParticles) {
+            p.vx = randomNormal() * vStd
+            p.vy = randomNormal() * vStd
+            p.vz = isThreeD ? randomNormal() * vStd : 0
+        }
 
     // 4. Remove Center of Mass Motion (Optional but good practice)
     let vcmX = 0, vcmY = 0, vcmZ = 0
     for (let p of newParticles) { vcmX += p.vx; vcmY += p.vy; vcmZ += p.vz }
-    vcmX /= numParticles; vcmY /= numParticles; vcmZ /= numParticles
+    vcmX /= totalParticles; vcmY /= totalParticles; vcmZ /= totalParticles
     for (let p of newParticles) { p.vx -= vcmX; p.vy -= vcmY; p.vz -= vcmZ }
 
     // Seed energy history at t=0 so the chart doesn't start with an empty left section.
-    const { pe: pe0 } = calculateForces(newParticles) // <--- Destructure just PE
-    let ke0 = 0
-    for (const p of newParticles) ke0 += 0.5 * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
+    const { pe: pe0 } = calculateForces(newParticles)
+    let sumV2 = 0
+    for (const p of newParticles) sumV2 += (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
+    // KE in Kelvin = 0.5 * m * sum(v^2) / KB_OVER_MU
+    const ke0 = 0.5 * MASS_ARGON * sumV2 / KB_OVER_MU
     
     setParticles(newParticles)
     particlesRef.current = newParticles
@@ -654,17 +925,16 @@ export default function MolecularDynamicsPage() {
         setHistoryTrigger(0)
     timeRef.current = 0
     nhStateRef.current.zeta = 0 // Reset Thermostat
-  }, [numParticles, temperature, isThreeD])
+    }, [numParticles, numParticlesA, numParticlesB, isBinary, temperature, isThreeD, randomNormal])
 
   useEffect(() => {
     initializeParticles()
   }, [])
 
-  // --- ALGORITHM 2: Velocity Verlet with Nosé-Hoover Thermostat ---
-  const updatePhysics = () => {
+  // --- ALGORITHM 2: Velocity Verlet with Nosé-Hoover Thermostat (Real Units) ---
+  const updatePhysics = (): boolean => {
     const currentParticles = [...particlesRef.current]
     const { dt, box, targetTemp } = paramsRef.current
-    const { Q } = nhStateRef.current
     let zeta = nhStateRef.current.zeta
     
     timeRef.current += dt
@@ -672,6 +942,9 @@ export default function MolecularDynamicsPage() {
     const N = currentParticles.length
     // Degrees of Freedom: 3N - 3 for 3D, 2N - 2 for 2D
     const dof = isThreeDRef.current ? (3 * N - 3) : (2 * N - 2)
+    
+    // Pre-calculate acceleration factor: (0.5 * dt * KB_OVER_MU) / MASS_ARGON
+    const accFactor = (0.5 * dt * KB_OVER_MU) / MASS_ARGON
     
     // 1. Calculate Forces at t
     calculateForces(currentParticles)
@@ -681,9 +954,10 @@ export default function MolecularDynamicsPage() {
         const u = unwrappedRef.current[p.id]
         
         // Update Velocity (Half Step) with thermostat
-        p.vx += 0.5 * dt * (p.fx - zeta * p.vx)
-        p.vy += 0.5 * dt * (p.fy - zeta * p.vy)
-        p.vz += 0.5 * dt * (p.fz - zeta * p.vz)
+        // F[K/Å] * accFactor -> a[Å/ps²]
+        p.vx += (p.fx * accFactor) - (0.5 * dt * zeta * p.vx)
+        p.vy += (p.fy * accFactor) - (0.5 * dt * zeta * p.vy)
+        p.vz += (p.fz * accFactor) - (0.5 * dt * zeta * p.vz)
 
         // Update Position (Full Step)
         p.x += p.vx * dt
@@ -708,40 +982,69 @@ export default function MolecularDynamicsPage() {
     const { pe, virial } = calculateForces(currentParticles)
 
     // 4. Update Thermostat Variable (Zeta)
-    let keSum = 0
+    // T_inst (K) = (m * sum(v^2)) / (N_dof * KB_OVER_MU)
+    let sumV2 = 0
     for (let p of currentParticles) {
-        keSum += 0.5 * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
+        sumV2 += (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
     }
-    const currentTemp = (2.0 * keSum) / dof
-    
-    zeta += dt * (dof * BOLTZMANN_K * (currentTemp - targetTemp)) / Q
+    const tempKelvin = (MASS_ARGON * sumV2) / (dof * KB_OVER_MU)
+
+    // Update Thermostat (Zeta)
+    // Q should have units of [Energy * Time^2]. In internal units: [K * ps^2].
+    // Reference: Frenkel & Smit (common choice): Q = dof * T_target * (tau/2π)^2
+    // Note: dof already scales with N, so we do NOT multiply by N again.
+    const tau = 0.5
+    const Q = (dof * targetTemp * tau * tau) / (4 * Math.PI * Math.PI)
+    zeta += dt * (dof * (tempKelvin - targetTemp)) / Q
 
     // 5. Second Half-step Update
-    let kineticEnergyFull = 0
+    let sumV2Full = 0
     for (let p of currentParticles) {
         const vxh = p.vx
         const vyh = p.vy
         const vzh = p.vz
         
-        p.vx = (vxh + 0.5 * dt * p.fx) / (1.0 + 0.5 * dt * zeta)
-        p.vy = (vyh + 0.5 * dt * p.fy) / (1.0 + 0.5 * dt * zeta)
-        p.vz = (vzh + 0.5 * dt * p.fz) / (1.0 + 0.5 * dt * zeta)
+        // Standard Nosé-Hoover update
+        const divisor = 1.0 + 0.5 * dt * zeta
+        p.vx = (vxh + p.fx * accFactor) / divisor
+        p.vy = (vyh + p.fy * accFactor) / divisor
+        p.vz = (vzh + p.fz * accFactor) / divisor
         
-        kineticEnergyFull += 0.5 * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
+        sumV2Full += (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz)
     }
 
     nhStateRef.current.zeta = zeta
 
-    // --- Calculate Pressure ---
-    // 2D: Volume = L^2, Divisor = 2
-    // 3D: Volume = L^3, Divisor = 3
-    const volume = isThreeD ? Math.pow(box, 3) : Math.pow(box, 2)
-    const virialDivisor = isThreeD ? 3.0 : 2.0
-    
-    const finalTemp = (2.0 * kineticEnergyFull) / dof
-    const pressureVal = (N * BOLTZMANN_K * finalTemp + (virial / virialDivisor)) / volume
+    // Final KE in Kelvin: KE = 0.5 * m * sum(v^2) / KB_OVER_MU
+    const kineticEnergyFull = 0.5 * MASS_ARGON * sumV2Full / KB_OVER_MU
 
-    setPressure(pressureVal)
+    // --- Calculate Pressure ---
+    // 2D vs 3D Pressure Logic
+    const volume = isThreeDRef.current ? Math.pow(box, 3) : Math.pow(box, 2)
+    const virialDivisor = isThreeDRef.current ? 3.0 : 2.0
+
+    // Temperature from full-step velocities (more consistent with pressure sampling)
+    const tempKelvinFull = (MASS_ARGON * sumV2Full) / (dof * KB_OVER_MU)
+
+    let pressureBar = NaN
+    if (isThreeDRef.current) {
+        // Standard 3D Pressure: (N k T + W/d) / V
+        // internalPressure is in K/Å³
+        const internalPressure = (N * tempKelvinFull + virial / virialDivisor) / volume
+        pressureBar = internalPressure * PRESSURE_CONV_BAR
+    } else {
+        // 2D Pressure is ill-defined in "bar" without a thickness.
+        pressureBar = NaN
+    }
+    
+    // --- CRASH DETECTION ---
+    // Check 1: Is the Temperature absurdly high? (e.g. > 10,000 K)
+    // Check 2: Are the numbers broken? (NaN or Infinity)
+    if (Number.isNaN(tempKelvinFull) || !Number.isFinite(tempKelvinFull) || tempKelvinFull > 10000) {
+        return false // FAILURE: Simulation Exploded
+    }
+    
+    setPressure(pressureBar)
 
     // --- Calculate MSD ---
     let sqDispSum = 0
@@ -758,14 +1061,23 @@ export default function MolecularDynamicsPage() {
     // Update MSD History
     msdHistoryRef.current.push({ time: timeRef.current, msd: currentMSD })
 
+        if (msdHistoryRef.current.length > MAX_HISTORY_POINTS) {
+            msdHistoryRef.current.splice(0, msdHistoryRef.current.length - MAX_HISTORY_POINTS)
+        }
+
     // Update State
     particlesRef.current = currentParticles
     setKineticEnergy(kineticEnergyFull)
     setThermostatZeta(zeta)
 
     // Track Energy History every physics step (real samples, no synthetic padding)
+    // Both KE and PE are in Kelvin (kB-normalized)
     const tot = kineticEnergyFull + pe
     energyHistoryRef.current.push({ time: timeRef.current, ke: kineticEnergyFull, pe, tot })
+
+        if (energyHistoryRef.current.length > MAX_HISTORY_POINTS) {
+            energyHistoryRef.current.splice(0, energyHistoryRef.current.length - MAX_HISTORY_POINTS)
+        }
     
     // Sample RDF statistics (every step)
     sampleRDF(currentParticles)
@@ -790,6 +1102,8 @@ export default function MolecularDynamicsPage() {
         }
         return next
     })
+    
+    return true // SUCCESS: Physics step valid
   }
 
   // Helper for re-render
@@ -797,7 +1111,14 @@ export default function MolecularDynamicsPage() {
 
   // --- Animation Loop ---
   const animate = () => {
-    updatePhysics()
+    const isValid = updatePhysics()
+    
+    if (!isValid) {
+        setRunning(false)
+        setIsCrashed(true)
+        return // Stop the loop immediately
+    }
+    
     requestRef.current = requestAnimationFrame(animate)
   }
 
@@ -823,6 +1144,7 @@ export default function MolecularDynamicsPage() {
   const handleStartStop = () => setRunning(!running)
   const handleReset = () => {
       setRunning(false)
+      setIsCrashed(false)
       initializeParticles()
   }
   
@@ -836,11 +1158,9 @@ export default function MolecularDynamicsPage() {
       isThreeDRef.current = isThreeD
   }, [isThreeD])
 
-  // Reset camera view flag when switching to 3D
+  // Re-initialize particles with Z coordinates when switching to 3D
   useEffect(() => {
       if (isThreeD) {
-          initial3DViewRef.current = true
-          // Force a re-init to generate Z coordinates
           initializeParticles()
       }
   }, [isThreeD, initializeParticles])
@@ -898,6 +1218,21 @@ export default function MolecularDynamicsPage() {
   const getParticleOption = (): EChartsOption => {
     const isDark = resolvedTheme === 'dark'
 
+        const getPercentile = (values: number[], p: number) => {
+                if (values.length === 0) return 0
+                const sorted = [...values].sort((a, b) => a - b)
+                const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * (sorted.length - 1))))
+                return sorted[idx]
+        }
+
+        // Keep arrow lengths visually stable across parameter/temperature changes.
+        // We normalize by the 95th percentile magnitude (avoids single outliers dominating).
+        const maxArrowLenData = BOX_SIZE * 0.12
+        const velRef2D = getPercentile(particles.map(p => Math.hypot(p.vx, p.vy)), 0.95)
+        const forceRef2D = getPercentile(particles.map(p => Math.hypot(p.fx, p.fy)), 0.95)
+        const velScale2D = velRef2D > 1e-12 ? (maxArrowLenData / velRef2D) : 0
+        const forceScale2D = forceRef2D > 1e-12 ? (maxArrowLenData / forceRef2D) : 0
+
     // --- 2D MODE CONFIGURATION ---
     const renderArrow = (params: any, api: any) => {
         const x = api.value(0)
@@ -920,9 +1255,16 @@ export default function MolecularDynamicsPage() {
 
         if (Math.abs(dxVal) < 0.1 && Math.abs(dyVal) < 0.1) return
 
-        const scale = type === 0 ? 0.5 : 0.05
-        const start = api.coord([x, y])
-        const end = api.coord([x + dxVal * scale, y + dyVal * scale])
+        const scale = type === 0 ? velScale2D : forceScale2D
+    // Hard clamp per-arrow length so a single extreme outlier cannot draw across the box.
+    const dxScaled = dxVal * scale
+    const dyScaled = dyVal * scale
+    const lenScaled = Math.hypot(dxScaled, dyScaled)
+    if (!Number.isFinite(lenScaled) || lenScaled < 1e-9) return
+    const clampFactor = lenScaled > maxArrowLenData ? (maxArrowLenData / lenScaled) : 1
+
+    const start = api.coord([x, y])
+    const end = api.coord([x + dxScaled * clampFactor, y + dyScaled * clampFactor])
         
         const dx = end[0] - start[0]
         const dy = end[1] - start[1]
@@ -961,13 +1303,14 @@ export default function MolecularDynamicsPage() {
     
     const scatterData = particles.map(p => {
         const isSelected = p.id === selectedId
+        // Color Logic: Type 0 = Blue, Type 1 = Red
+        const baseColor = p.type === 0 ? '#3b82f6' : '#ef4444'
+        
         return {
-            value: [p.x, p.y, Math.sqrt(p.vx**2 + p.vy**2), p.id, 0, p.id],
+            // Keep id at index 5 for click handler; store type at index 6 for symbol sizing.
+            value: [p.x, p.y, Math.sqrt(p.vx**2 + p.vy**2), p.id, 0, p.id, p.type],
             itemStyle: {
-                color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-                    { offset: 0, color: '#3b82f6' },
-                    { offset: 1, color: '#ef4444' } 
-                ]),
+                color: baseColor,
                 borderColor: isSelected ? '#facc15' : 'transparent',
                 borderWidth: isSelected ? 3 : 0,
                 shadowBlur: isSelected ? 10 : 0,
@@ -1001,7 +1344,10 @@ export default function MolecularDynamicsPage() {
         {
           type: 'scatter',
           symbolSize: (data: any) => {
-             return Math.max(5, Math.min(30, sigma * 2.5))
+                         // data is the raw `value` array; we stash particle type at index 6.
+                         const pType = (Array.isArray(data) && (data[6] === 1 || data[6] === 0)) ? (data[6] as 0 | 1) : 0
+                         const sigLocal = pType === 0 ? sigmaA : sigmaB
+                         return Math.max(5, Math.min(30, sigLocal * 2.5))
           },
           data: scatterData,
           emphasis: { scale: false, focus: 'none' },
@@ -1044,13 +1390,13 @@ export default function MolecularDynamicsPage() {
                   // Remove trailing zeros from distance
                   const r = parseFloat(p.value[0]).toFixed(3).replace(/\.?0+$/, '')
                   const g = parseFloat(p.value[1]).toPrecision(3)
-                  return `r: ${r} σ<br/>g(r): ${g}`
+                  return `r: ${r} Å<br/>g(r): ${g}`
               }
           },
           grid: { left: 40, right: 10, top: 30, bottom: 40 },
           xAxis: {
               type: 'value',
-              name: 'r (Distance) [σ]',
+              name: 'r (Distance) [Å]',
               nameLocation: 'middle',
               nameGap: 30,
               nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -1146,7 +1492,7 @@ export default function MolecularDynamicsPage() {
                       if (seen.has(name)) continue
                       seen.add(name)
                       const val = Array.isArray(p.value) ? p.value[1] : p.value
-                      lines.push(`${name}: ${Number(val).toPrecision(4)} ε`)
+                      lines.push(`${name}: ${Number(val).toPrecision(4)} K`)
                   }
                   return [timeLine, ...lines].join('<br/>')
               }
@@ -1169,7 +1515,7 @@ export default function MolecularDynamicsPage() {
               splitLine: { show: false },
               axisLabel: { showMinLabel: false, showMaxLabel: false, color: isDark ? '#ffffff' : '#000', fontFamily: 'Merriweather Sans', margin: 5, formatter: (v: number) => v.toFixed(1) }
           },
-          yAxis: { type: 'value', name: 'Energy (ε)', nameLocation: 'middle', nameGap: 55, nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: textColor }, onZero: false }, axisTick: { show: true }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 } },
+          yAxis: { type: 'value', name: 'Energy (K)', nameLocation: 'middle', nameGap: 55, nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: textColor }, onZero: false }, axisTick: { show: true }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 } },
           series: [
               { name: 'Total E', type: 'line', data: totalData, showSymbol: false, lineStyle: { width: 2, color: '#10b981' } },
               { name: 'Potential (PE)', type: 'line', data: peData, showSymbol: false, lineStyle: { width: 1.5, color: '#3b82f6' } },
@@ -1259,7 +1605,7 @@ export default function MolecularDynamicsPage() {
                   if (!params[0]) return ''
                   const t = params[0].value[0].toFixed(2)
                   const msd = params[0].value[1].toFixed(3)
-                  return `Time: ${t} ps<br/>MSD: ${msd} σ²`
+                  return `Time: ${t} ps<br/>MSD: ${msd} Å²`
               }
           },
           grid: { left: 50, right: 20, top: 40, bottom: 40 },
@@ -1281,7 +1627,7 @@ export default function MolecularDynamicsPage() {
           },
           yAxis: {
               type: 'value',
-              name: 'MSD (σ²)',
+              name: 'MSD (Å²)',
               nameLocation: 'middle',
               nameGap: 35,
               nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -1330,7 +1676,7 @@ export default function MolecularDynamicsPage() {
               sig: 'Gaussian Width (σ)'
           }
           default: return {
-              eps: 'L-J Epsilon (ε)',
+              eps: <span>L-J Epsilon (ε/k<sub>B</sub>)</span>,
               sig: 'L-J Sigma (σ)'
           }
       }
@@ -1442,38 +1788,82 @@ export default function MolecularDynamicsPage() {
                 </Button>
               </div>
 
-              <div className="space-y-4">
-                {/* PARTICLE COUNT: Unsafe during run */}
+              <div className="space-y-4 border-b pb-4">
+                <div className="flex items-center justify-between">
+                    <Label>Mode: {isBinary ? "Binary Mixture" : "Pure Substance"}</Label>
+                    <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => {
+                            const newState = !isBinary
+                            setIsBinary(newState)
+                            // Trigger reset when switching modes
+                            setTimeout(() => initializeParticles(), 0)
+                        }}
+                    >
+                        Switch to {isBinary ? "Pure" : "Binary"}
+                    </Button>
+                </div>
+
+                {/* PARTICLE COUNTS */}
                 <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
-                  <Label>Particle Count: {numParticles}</Label>
-                  <Slider 
-                    disabled={running}
-                    value={[numParticles]} min={10} max={200} step={10}
-                    onValueChange={(v) => handleParticleCountChange(v[0])}
-                  />
+                    {!isBinary ? (
+                        <>
+                            <Label>Count: {numParticles}</Label>
+                            <Slider 
+                                disabled={running}
+                                value={[numParticles]} min={10} max={200} step={10}
+                                onValueChange={(v) => handleParticleCountChange(v[0])}
+                            />
+                        </>
+                    ) : (
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                                <Label className="text-blue-500">Count A: {numParticlesA}</Label>
+                                <Slider 
+                                    disabled={running}
+                                    value={[numParticlesA]} min={5} max={100} step={5}
+                                    onValueChange={(v) => setNumParticlesA(v[0])}
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <Label className="text-red-500">Count B: {numParticlesB}</Label>
+                                <Slider 
+                                    disabled={running}
+                                    value={[numParticlesB]} min={5} max={100} step={5}
+                                    onValueChange={(v) => setNumParticlesB(v[0])}
+                                />
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* TEMPERATURE: SAFE to change during run */}
                 <div className="space-y-2">
-                  <Label>Target Temp (T): {temperature.toFixed(1)} K</Label>
-                  <Slider 
-                    value={[temperature]} 
-                    min={0.1} 
-                    max={5.0} 
-                    step={0.1}
-                    onValueChange={(v) => setTemperature(v[0])}
-                  />
+                    <div className="flex justify-between items-center">
+                        <Label><span>Reduced Temp (T/ε): {reducedTemp.toFixed(2)}</span></Label>
+                        <Label className="text-muted-foreground text-xs"><span>(T = {temperature.toFixed(1)} K)</span></Label>
+                    </div>
+                    <Slider 
+                        value={[reducedTemp]} 
+                        min={reducedMin} 
+                        max={reducedMax} 
+                        step={REDUCED_STEP}
+                        onValueChange={(v) => setReducedTemp(snapToStep(v[0], REDUCED_STEP))}
+                    />
                 </div>
 
                 {/* TIME STEP: Safe to change during run */}
                 <div className="space-y-2">
                     <Label>Time Step (dt): {timeStep.toFixed(4)} ps</Label>
                     <Slider
-                        value={[timeStep]} min={0.0005} max={0.05} step={0.0005}
+                        value={[timeStep]} min={0.0005} max={0.03} step={0.0005}
                         onValueChange={(v) => setTimeStep(v[0])}
                     />
                 </div>
+              </div>
 
+              <div className="space-y-4">
                 {/* 1. POTENTIAL SELECTOR WITH TOOLTIP */}
                 <div className={`space-y-2 pt-2 border-t ${running ? 'opacity-50 pointer-events-none' : ''}`}>
                     <div className="flex items-center justify-between">
@@ -1506,28 +1896,121 @@ export default function MolecularDynamicsPage() {
                     </div>
                 </div>
 
-                {/* EPSILON / DEPTH / STRENGTH */}
+                {/* PARAMETERS (Epsilon & Sigma) */}
                 <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
-                    <Label className="text-white">
-                        {labels.eps}: {epsilon.toFixed(1)}
-                    </Label>
-                    <Slider
-                        disabled={running}
-                        value={[epsilon]} min={1.0} max={200.0} step={1.0}
-                        onValueChange={(v) => setEpsilon(v[0])}
-                    />
-                </div>
+                     {!isBinary ? (
+                         /* OLD SINGLE SLIDERS */
+                         <>
+                             <Label className="text-white"><span>{labels.eps}: {epsilonA.toFixed(1)} K</span></Label>
+                             <Slider
+                                 disabled={running}
+                                 value={[epsilonA]} min={5} max={1000} step={5}
+                                 onValueChange={(v) => setEpsilonA(v[0])}
+                             />
+                             {showLJReferenceHints && (
+                                 <div className="text-[10px] leading-tight text-muted-foreground">
+                                     {nearestEpsilonA.map((m) => (
+                                         <div key={`epsA-${m.formula}`}>
+                                             {m.substance} ({m.formula}) — {m.epsilonOverKbK.toFixed(1)} K
+                                         </div>
+                                     ))}
+                                 </div>
+                             )}
+                             
+                             <Label className="text-white"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
+                             <Slider
+                                 disabled={running}
+                                 value={[sigmaA]} min={2.0} max={6.5} step={0.01}
+                                 onValueChange={(v) => setSigmaA(v[0])}
+                             />
+                             {showLJReferenceHints && (
+                                 <div className="text-[10px] leading-tight text-muted-foreground">
+                                     {nearestSigmaA.map((m) => (
+                                         <div key={`sigA-${m.formula}`}>
+                                             {m.substance} ({m.formula}) — {m.sigmaAngstrom.toFixed(3)} Å
+                                         </div>
+                                     ))}
+                                 </div>
+                             )}
+                         </>
+                     ) : (
+                         /* NEW SPLIT SLIDERS */
+                         <div className="grid grid-cols-2 gap-4">
+                             {/* Left Column: Species A (Blue) */}
+                             <div className="space-y-2 border-r pr-2">
+                                 <Label className="text-blue-500 text-xs font-bold">Species A (Blue)</Label>
+                                 
+                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonA.toFixed(1)} K</span></Label>
+                                 <Slider 
+                                     disabled={running}
+                                     value={[epsilonA]} min={5} max={1000} step={5}
+                                     onValueChange={(v) => setEpsilonA(v[0])} 
+                                 />
+                                 {showLJReferenceHints && (
+                                     <div className="text-[10px] leading-tight text-muted-foreground">
+                                         {nearestEpsilonA.map((m) => (
+                                             <div key={`epsA2-${m.formula}`}>
+                                                 {m.substance} ({m.formula})
+                                             </div>
+                                         ))}
+                                     </div>
+                                 )}
+                                 
+                                 <Label className="text-[10px]"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
+                                 <Slider 
+                                     disabled={running}
+                                     value={[sigmaA]} min={2} max={6} step={0.01}
+                                     onValueChange={(v) => setSigmaA(v[0])} 
+                                 />
+                                 {showLJReferenceHints && (
+                                     <div className="text-[10px] leading-tight text-muted-foreground">
+                                         {nearestSigmaA.map((m) => (
+                                             <div key={`sigA2-${m.formula}`}>
+                                                 {m.substance} ({m.formula})
+                                             </div>
+                                         ))}
+                                     </div>
+                                 )}
+                             </div>
 
-                {/* SIGMA / EQUILIBRIUM / RADIUS */}
-                <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
-                    <Label className="text-white">
-                        {labels.sig}: {sigma.toFixed(1)}
-                    </Label>
-                    <Slider
-                        disabled={running}
-                        value={[sigma]} min={1.0} max={15.0} step={0.5}
-                        onValueChange={(v) => setSigma(v[0])}
-                    />
+                             {/* Right Column: Species B (Red) */}
+                             <div className="space-y-2">
+                                 <Label className="text-red-500 text-xs font-bold">Species B (Red)</Label>
+                                 
+                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonB.toFixed(1)} K</span></Label>
+                                 <Slider 
+                                     disabled={running}
+                                     value={[epsilonB]} min={5} max={1000} step={5}
+                                     onValueChange={(v) => setEpsilonB(v[0])} 
+                                 />
+                                 {showLJReferenceHints && (
+                                     <div className="text-[10px] leading-tight text-muted-foreground">
+                                         {nearestEpsilonB.map((m) => (
+                                             <div key={`epsB-${m.formula}`}>
+                                                 {m.substance} ({m.formula})
+                                             </div>
+                                         ))}
+                                     </div>
+                                 )}
+                                 
+                                 <Label className="text-[10px]"><span>{labels.sig}: {sigmaB.toFixed(2)} Å</span></Label>
+                                 <Slider 
+                                     disabled={running}
+                                     value={[sigmaB]} min={2} max={6} step={0.01}
+                                     onValueChange={(v) => setSigmaB(v[0])} 
+                                 />
+                                 {showLJReferenceHints && (
+                                     <div className="text-[10px] leading-tight text-muted-foreground">
+                                         {nearestSigmaB.map((m) => (
+                                             <div key={`sigB-${m.formula}`}>
+                                                 {m.substance} ({m.formula})
+                                             </div>
+                                         ))}
+                                     </div>
+                                 )}
+                             </div>
+                         </div>
+                     )}
                 </div>
 
                 {/* DYNAMIC "PARAMETER C" SLIDER */}
@@ -1552,18 +2035,20 @@ export default function MolecularDynamicsPage() {
 
               <div className="pt-4 border-t space-y-4">
                  <div className="grid grid-cols-2 gap-2 text-center">
-                    <div className="p-2 bg-muted rounded">
+                    <div className={`p-2 bg-muted rounded ${!isThreeD ? 'col-span-2' : ''}`}>
                         <p className="text-[10px] text-muted-foreground">Thermostat (ζ)</p>
                         <p className={`font-mono font-bold text-xs ${thermostatZeta > 0 ? 'text-red-500' : 'text-blue-500'}`}>
                             {thermostatZeta.toFixed(3)}
                         </p>
                     </div>
-                    <div className="p-2 bg-muted rounded">
-                        <p className="text-[10px] text-muted-foreground">Pressure (P)</p>
-                        <p className="font-mono font-bold text-xs text-purple-600">
-                            {pressure.toFixed(3)} ε/σ²
-                        </p>
-                    </div>
+                    {isThreeD && (
+                        <div className="p-2 bg-muted rounded">
+                            <p className="text-[10px] text-muted-foreground">Pressure (P)</p>
+                            <p className="font-mono font-bold text-xs text-purple-600">
+                                {pressure.toFixed(1)} bar
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -1594,7 +2079,7 @@ export default function MolecularDynamicsPage() {
                   <CardTitle className="text-sm">Selected Particle</CardTitle>
               </CardHeader>
               
-              <CardContent className="pt-0">
+              <CardContent className="pt-0 -mt-5">
                 {selectedParticleData ? (
                     <div className="grid grid-cols-2 gap-3 text-sm">
                         {/* Magnitudes */}
@@ -1661,6 +2146,35 @@ export default function MolecularDynamicsPage() {
         {/* Right Column: Simulation & RDF */}
         <div className="lg:col-span-2 flex flex-col gap-6">
            <Card className="w-full p-0 overflow-hidden bg-muted/20 border-border relative" style={{ height: '500px' }}>
+              {/* CRASH WARNING ALERT - Centered Overlay */}
+              {isCrashed && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                      <div className="bg-red-500/15 border border-red-500/50 rounded-lg p-6 flex items-start gap-4 animate-in fade-in zoom-in-95 w-96 shadow-2xl pointer-events-auto">
+                          <div className="p-1 bg-red-500 rounded-full mt-1 flex-shrink-0">
+                              <Activity className="h-5 w-5 text-white" />
+                          </div>
+                          <div className="space-y-2">
+                              <h4 className="font-bold text-base text-red-500">Simulation Unstable!</h4>
+                              <p className="text-sm text-muted-foreground">
+                                  The system exploded. This could be due to <strong>Time Step (dt)</strong> being too high, model parameters (ε, σ) being too extreme, or too many particles. Try reducing dt, lowering particle count, or adjusting potential parameters.
+                              </p>
+                              <div className="pt-3">
+                                  <Button 
+                                      size="sm" 
+                                      variant="destructive" 
+                                      onClick={() => {
+                                          handleReset()
+                                      }}
+                                      className="h-8 text-sm"
+                                  >
+                                      Reset
+                                  </Button>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              )}
+              
               {/* NEW: 2D/3D Switch Overlay (Top Right) */}
               <div className="absolute top-2 right-2 z-10 flex gap-2 items-center">
                   <Button
@@ -1707,7 +2221,8 @@ export default function MolecularDynamicsPage() {
                             <Molecule3D 
                                 particles={particles} 
                                 boxSize={BOX_SIZE} 
-                                sigma={sigma} 
+                                sigmaA={sigmaA}
+                                sigmaB={sigmaB}
                                 selectedId={selectedId}
                                 isDark={isDarkTheme}
                                 showVelocity={showVelocity}
@@ -1767,8 +2282,8 @@ export default function MolecularDynamicsPage() {
                       </div>
                   )}
 
-                  {/* Structure Metrics Info Card (Center Right) - Only show for RDF */}
-                  {mounted && analysisView === 'rdf' && (() => {
+                  {/* Structure Metrics Info Card (Center Right) - Only show for RDF when simulation has data */}
+                  {mounted && analysisView === 'rdf' && rdfData.length > 0 && (() => {
                       const { state, color } = detectSystemState()
                       return (
                           <div className={`absolute top-1/4 -translate-y-1/2 right-2 z-10 backdrop-blur-sm p-2 rounded border text-[10px] space-y-1 shadow-sm w-40 ${
@@ -1778,7 +2293,7 @@ export default function MolecularDynamicsPage() {
                           }`}>
                               <div className="flex justify-between">
                                   <span className="text-muted-foreground">1st Peak (r):</span>
-                                  <span className="font-mono font-bold">{structureMetrics.peakDist.toFixed(2)} σ</span>
+                                  <span className="font-mono font-bold">{structureMetrics.peakDist.toFixed(2)} Å</span>
                               </div>
                               <div className="flex justify-between">
                                   <span className="text-muted-foreground">Coordination Number:</span>
@@ -1786,6 +2301,40 @@ export default function MolecularDynamicsPage() {
                               </div>
                               <div className="flex justify-between border-t pt-1 mt-1">
                                   <span className="text-muted-foreground">System State:</span>
+                                  <span className={`font-bold ${color}`}>{state}</span>
+                              </div>
+                          </div>
+                      )
+                  })()}
+
+                  {/* MSD Diffusion Info Box (Placed at top-3/4 as requested) */}
+                  {mounted && analysisView === 'msd' && msdData.length > 20 && (() => {
+                      // 1. Get raw slope from your existing detector
+                      const { state, color, diffusion } = detectSystemState()
+                      
+                      // 2. Calculate D based on dimensionality
+                      // D = Slope / (2 * dimensions)
+                      const dimDivisor = isThreeD ? 6.0 : 4.0
+                      const diffCoeff = diffusion / dimDivisor
+
+                      return (
+                          <div className={`absolute top-3/5 -translate-y-1/2 right-2 z-10 backdrop-blur-sm p-2 rounded border text-[10px] space-y-1 shadow-sm w-44 ${
+                              isDarkTheme
+                                  ? 'bg-background/80 border-white/20'
+                                  : 'bg-background/80 border-black/20'
+                          }`}>
+                              <div className="flex justify-between">
+                                  <span className="text-muted-foreground">Slope (MSD/t):</span>
+                                  <span className="font-mono font-bold">{diffusion.toFixed(3)}</span>
+                              </div>
+                              <div className="flex justify-between items-center">
+                                  <span className="text-muted-foreground">Diff. Coeff (D):</span>
+                                  <span className="font-mono font-bold text-amber-500 text-xs">
+                                    {diffCoeff.toFixed(4)} Å²/ps
+                                  </span>
+                              </div>
+                              <div className="flex justify-between border-t pt-1 mt-1">
+                                  <span className="text-muted-foreground">Est. Phase:</span>
                                   <span className={`font-bold ${color}`}>{state}</span>
                               </div>
                           </div>
@@ -1883,12 +2432,14 @@ const Arrow3D = ({
   start, 
   vector, 
   color, 
-  scale 
+    scale,
+    maxLength
 }: { 
   start: [number, number, number], 
   vector: [number, number, number], 
   color: string, 
-  scale: number 
+    scale: number,
+    maxLength: number
 }) => {
   const dir = new THREE.Vector3(...vector)
   const length = dir.length()
@@ -1897,28 +2448,44 @@ const Arrow3D = ({
   if (length < 1e-6) return null
 
   dir.normalize()
-  const arrowLength = length * scale
-  
-  // Create the ArrowHelper once per render cycle
-  // args: [dir, origin, length, color, headLength, headWidth]
+    // Scale by percentile reference, then hard clamp so outliers never draw absurdly long arrows.
+    const arrowLengthRaw = length * scale
+    const arrowLength = Math.min(arrowLengthRaw, Math.max(0, maxLength))
+    if (!Number.isFinite(arrowLength) || arrowLength < 1e-6) return null
+
+    // Ensure geometry stays valid even when clamped very small.
+    const headLength = Math.min(arrowLength * 0.2, 2, arrowLength)
+    const headWidth = Math.min(arrowLength * 0.08, 1)
+    const shaftLength = Math.max(0, arrowLength - headLength)
+  const shaftRadius = headWidth * 0.25
+
+  // Calculate rotation to align with direction vector
+  const quaternion = new THREE.Quaternion()
+  quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir)
+
+  // Memoize material to avoid recreating on every render
+  const material = useMemo(() => new THREE.MeshBasicMaterial({ color }), [color])
+
   return (
-    <primitive 
-      object={new THREE.ArrowHelper(
-        dir, 
-        new THREE.Vector3(...start), 
-        arrowLength, 
-        color, 
-        Math.min(arrowLength * 0.2, 2), // Cap head size
-        Math.min(arrowLength * 0.08, 1)
-      )} 
-    />
+    <group position={start} quaternion={[quaternion.x, quaternion.y, quaternion.z, quaternion.w]}>
+      {/* Shaft (cylinder) */}
+      <mesh position={[0, shaftLength / 2, 0]} material={material}>
+        <cylinderGeometry args={[shaftRadius, shaftRadius, shaftLength, 8]} />
+      </mesh>
+      
+      {/* Head (cone) */}
+      <mesh position={[0, shaftLength + headLength / 2, 0]} material={material}>
+        <coneGeometry args={[headWidth, headLength, 8]} />
+      </mesh>
+    </group>
   )
 }
 
 const Molecule3D = ({ 
   particles, 
   boxSize, 
-  sigma, 
+    sigmaA,
+    sigmaB,
   selectedId, 
   isDark,
   showVelocity,
@@ -1927,7 +2494,8 @@ const Molecule3D = ({
 }: { 
   particles: Particle[], 
   boxSize: number, 
-  sigma: number, 
+    sigmaA: number,
+    sigmaB: number,
   selectedId: number | null, 
   isDark: boolean,
   showVelocity: boolean,
@@ -1941,9 +2509,25 @@ const Molecule3D = ({
   const velColor = isDark ? '#4ade80' : '#16a34a'
   const forceColor = isDark ? '#facc15' : '#d97706'
 
-  // Arrow Scaling Factors (matching 2D logic)
-  const VEL_SCALE = 0.5
-  const FORCE_SCALE = 0.05
+    const getPercentile = (values: number[], p: number) => {
+        if (values.length === 0) return 0
+        const sorted = [...values].sort((a, b) => a - b)
+        const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor(p * (sorted.length - 1))))
+        return sorted[idx]
+    }
+
+    // Normalize arrow sizes by current magnitudes so they don't explode with temperature/params.
+    const maxArrowLen3D = boxSize * 0.12
+    const velRef3D = useMemo(
+        () => getPercentile(particles.map(p => Math.hypot(p.vx, p.vy, p.vz)), 0.95),
+        [particles]
+    )
+    const forceRef3D = useMemo(
+        () => getPercentile(particles.map(p => Math.hypot(p.fx, p.fy, p.fz)), 0.95),
+        [particles]
+    )
+    const velScale3D = velRef3D > 1e-12 ? (maxArrowLen3D / velRef3D) : 0
+    const forceScale3D = forceRef3D > 1e-12 ? (maxArrowLen3D / forceRef3D) : 0
 
   return (
     <group>
@@ -1967,6 +2551,11 @@ const Molecule3D = ({
         // 2. If nothing is selected, show arrows based on global toggles.
         const showV = selectedId !== null ? isSelected : showVelocity
         const showF = selectedId !== null ? isSelected : showForce
+        
+        // Color by type: Type 0 = Blue, Type 1 = Red
+        const baseColor = p.type === 0 
+            ? (isDark ? "#60a5fa" : "#3b82f6") // Blue for A
+            : (isDark ? "#f87171" : "#ef4444") // Red for B
 
         return (
           <group key={p.id}>
@@ -1978,9 +2567,9 @@ const Molecule3D = ({
                   onParticleClick(p.id)
                 }}
              >
-              <sphereGeometry args={[sigma * 0.5, 16, 16]} />
+                            <sphereGeometry args={[(p.type === 0 ? sigmaA : sigmaB) * 0.5, 16, 16]} />
               <meshStandardMaterial 
-                color={isSelected ? "#facc15" : particleColor}
+                color={isSelected ? "#facc15" : baseColor}
                 emissive={isSelected ? "#facc15" : "#000000"}
                 emissiveIntensity={isSelected ? 0.5 : 0}
                 roughness={0.2}
@@ -1994,7 +2583,8 @@ const Molecule3D = ({
                 start={[p.x, p.y, p.z]} 
                 vector={[p.vx, p.vy, p.vz]} 
                 color={velColor} 
-                scale={VEL_SCALE} 
+                                                                scale={velScale3D}
+                                                                maxLength={maxArrowLen3D}
               />
             )}
 
@@ -2004,7 +2594,8 @@ const Molecule3D = ({
                 start={[p.x, p.y, p.z]} 
                 vector={[p.fx, p.fy, p.fz]} 
                 color={forceColor} 
-                scale={FORCE_SCALE} 
+                                                                scale={forceScale3D}
+                                                                maxLength={maxArrowLen3D}
               />
             )}
           </group>
