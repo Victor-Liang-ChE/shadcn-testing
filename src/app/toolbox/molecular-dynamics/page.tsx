@@ -2373,7 +2373,7 @@ export default function MolecularDynamicsPage() {
 
         {/* Right Column: Simulation & RDF */}
           <div className="lg:col-span-2 flex flex-col gap-6">
-              <Card className={`w-full p-0 overflow-hidden bg-muted/20 border border-border relative transition-colors duration-700 ${!isThreeD && showGravityNotice && !gravityNoticeFading ? 'border-b-amber-500' : 'border-b-border'}`} style={{ height: '500px' }}>
+               <Card className={`w-full p-0 overflow-hidden bg-card border border-border relative transition-colors duration-700 ${!isThreeD && showGravityNotice && !gravityNoticeFading ? 'border-b-amber-500' : 'border-b-border'}`} style={{ height: '500px' }}>
               {/* Gravity Toggle - Top Left */}
               <div className="absolute top-2 left-2 z-10">
                   <Button
@@ -2497,7 +2497,13 @@ export default function MolecularDynamicsPage() {
               {mounted && (
                 isThreeD ? (
                     <div className="h-full w-full">
-                        <Canvas>
+                        <Canvas
+                            gl={{ alpha: true, antialias: true }}
+                            onCreated={({ gl }) => {
+                                // Keep canvas transparent so the Card's `bg-card` shows through
+                                gl.setClearColor(0x000000, 0)
+                            }}
+                        >
                             <PerspectiveCamera makeDefault position={[BOX_SIZE * 2.5, BOX_SIZE * 2, BOX_SIZE * 2.5]} fov={45} />
                             <OrbitControls target={[BOX_SIZE/2, BOX_SIZE/2, BOX_SIZE/2]} />
                             <Molecule3D 
