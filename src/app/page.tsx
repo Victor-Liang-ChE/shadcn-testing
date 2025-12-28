@@ -20,6 +20,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import CSTRVisualization from "@/components/CSTRVisualization";
+import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
 
 // Replace external URLs with local paths from public folder
 const githubLogoPath = "/logos/github.svg";
@@ -61,6 +62,8 @@ const heatTransferThumbnailPath = "/thumbnails/1d-heat-transfer-thumbnail.png";
 const heatTransferThumbnailLightPath = "/thumbnails/1d-heat-transfer-thumbnail-light.png";
 const unaryPhaseThumbnailPath = "/thumbnails/unary-phase-diagrams-thumbnail.png";
 const unaryPhaseThumbnailLightPath = "/thumbnails/unary-phase-diagrams-thumbnail-light.png";
+const molecularDynamicsThumbnailPath = "/thumbnails/molecular-dynamics-thumbnail.png";
+const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thumbnail-light.png";
 
 export default function Home() {
   const { resolvedTheme } = useTheme();
@@ -104,12 +107,12 @@ export default function Home() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "1D Heat Transfer",
-      path: "/toolbox/1d-heat-transfer",
+      name: "Molecular Dynamics",
+      path: "/toolbox/molecular-dynamics",
       description:
-        "Interactive heat transfer visualization through multiple layers with temperature controls.",
-      thumbnailPath: heatTransferThumbnailPath,
-      thumbnailLightPath: heatTransferThumbnailLightPath
+        "Interactive molecular dynamics simulator for studying particle interactions, energy evolution, and radial distribution functions.",
+      thumbnailPath: molecularDynamicsThumbnailPath,
+      thumbnailLightPath: molecularDynamicsThumbnailLightPath
     },
     {
       name: "Unary Phase Diagram",
@@ -166,6 +169,14 @@ export default function Home() {
         "Simulate process dynamics with various inputs and understand system behavior in chemical processes.",
       thumbnailPath: dynamicsThumbnailPath,
       thumbnailLightPath: dynamicsThumbnailLightPath,
+    },
+    {
+      name: "1D Heat Transfer",
+      path: "/toolbox/1d-heat-transfer",
+      description:
+        "Interactive heat transfer visualization through multiple layers with temperature controls.",
+      thumbnailPath: heatTransferThumbnailPath,
+      thumbnailLightPath: heatTransferThumbnailLightPath
     }
   ];
 
@@ -471,6 +482,11 @@ export default function Home() {
                     <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
                       {simulation.name === "Reactor Design" ? (
                         <CSTRVisualization className="w-full h-full" showLabel={true} />
+                      ) : simulation.name === "Molecular Dynamics" ? (
+                        <MolecularDynamicsThumbnail
+                          className="w-full h-full"
+                          isDark={mounted ? resolvedTheme !== 'light' : true}
+                        />
                       ) : (
                         <Image
                           src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}

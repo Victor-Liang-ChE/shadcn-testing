@@ -6,6 +6,7 @@ import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import CSTRVisualization from "@/components/CSTRVisualization";
+import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
 
 // Define the paths for the thumbnails
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
@@ -73,11 +74,11 @@ export default function Page() {
       thumbnailLightPath: mccabeThumbnailLightPath
     },
     {
-      name: "1D Heat Transfer",
-      path: "/toolbox/1d-heat-transfer",
-      description: "Interactive heat transfer visualization through multiple layers with temperature controls.",
-      thumbnailPath: heatTransferThumbnailPath,
-      thumbnailLightPath: heatTransferThumbnailLightPath
+      name: "Molecular Dynamics",
+      path: "/toolbox/molecular-dynamics",
+      description: "Interactive molecular dynamics simulator for studying particle interactions, energy evolution, and radial distribution functions.",
+      thumbnailPath: molecularDynamicsThumbnailPath,
+      thumbnailLightPath: molecularDynamicsThumbnailLightPath
     },
     {
       name: "Unary Phase Diagram",
@@ -129,11 +130,11 @@ export default function Page() {
       thumbnailLightPath: dynamicsThumbnailLightPath
     },
     {
-      name: "Molecular Dynamics",
-      path: "/toolbox/molecular-dynamics",
-      description: "Interactive molecular dynamics simulator for studying particle interactions, energy evolution, and radial distribution functions.",
-      thumbnailPath: molecularDynamicsThumbnailPath,
-      thumbnailLightPath: molecularDynamicsThumbnailLightPath
+      name: "1D Heat Transfer",
+      path: "/toolbox/1d-heat-transfer",
+      description: "Interactive heat transfer visualization through multiple layers with temperature controls.",
+      thumbnailPath: heatTransferThumbnailPath,
+      thumbnailLightPath: heatTransferThumbnailLightPath
     }
   ];
 
@@ -156,6 +157,11 @@ export default function Page() {
                       <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
                         {simulation.name === "Reactor Design" ? (
                           <CSTRVisualization className="w-full h-full" showLabel={true} />
+                        ) : simulation.name === "Molecular Dynamics" ? (
+                          <MolecularDynamicsThumbnail
+                            className="w-full h-full"
+                            isDark={mounted ? resolvedTheme !== 'light' : true}
+                          />
                         ) : (
                           <Image
                             src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
