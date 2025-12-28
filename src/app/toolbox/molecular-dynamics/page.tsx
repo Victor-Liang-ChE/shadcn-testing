@@ -18,7 +18,7 @@ import {
 import { CanvasRenderer } from 'echarts/renderers'
 
 // React Three Fiber imports for 3D visualization
-import { Canvas } from "@react-three/fiber"
+import { Canvas, useFrame } from "@react-three/fiber"
 import { OrbitControls, PerspectiveCamera } from "@react-three/drei"
 import * as THREE from "three"
 
@@ -47,7 +47,8 @@ import {
   Activity, 
   List, 
   Zap,
-  Info
+  Info,
+  AlertCircle
 } from 'lucide-react'
 
 // Type declaration for react-katex
@@ -187,17 +188,43 @@ const LJ_REFERENCES: LJReference[] = [
     { formula: 'UF₆', substance: 'Uranium hexafluoride', sigmaAngstrom: 5.967, epsilonOverKbK: 236.8 }
 ]
 
-const getNearestLJ = (
+const LJ_EPSILON_STEP_K = 5
+const LJ_SIGMA_STEP_A = 0.01
+
+const roundToStep = (value: number, step: number) => Math.round(value / step) * step
+const nearlyEqual = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) <= eps
+
+const getLJMatchesForPair = (epsilonK: number, sigmaA: number): LJReference[] => {
+    if (!Number.isFinite(epsilonK) || !Number.isFinite(sigmaA)) return []
+
+    const epsRounded = roundToStep(epsilonK, LJ_EPSILON_STEP_K)
+    const sigRounded = roundToStep(sigmaA, LJ_SIGMA_STEP_A)
+
+    return LJ_REFERENCES.filter((ref) => {
+        const refEpsRounded = roundToStep(ref.epsilonOverKbK, LJ_EPSILON_STEP_K)
+        const refSigRounded = roundToStep(ref.sigmaAngstrom, LJ_SIGMA_STEP_A)
+        return nearlyEqual(refEpsRounded, epsRounded) && nearlyEqual(refSigRounded, sigRounded)
+    })
+}
+
+const getLJMatchesForValue = (
     value: number,
     key: 'sigmaAngstrom' | 'epsilonOverKbK'
 ): LJReference[] => {
     if (!Number.isFinite(value)) return []
-    // Determine tolerance based on the parameter type and slider precision
+    // Keep this slightly looser than the slider step so users can still see nearby references.
     const tolerance = key === 'epsilonOverKbK' ? 5 : 0.15 // ±5 K for epsilon, ±0.15 Å for sigma
     const matches = LJ_REFERENCES.filter((ref) => Math.abs(ref[key] - value) <= tolerance)
-    // Sort by distance to current value
     matches.sort((a, b) => Math.abs(a[key] - value) - Math.abs(b[key] - value))
     return matches
+}
+
+const POLAR_LJ_FORMULAS = new Set(['H₂O', 'NH₃', 'HF'])
+const isPolarLJReference = (ref: LJReference): boolean => {
+    if (POLAR_LJ_FORMULAS.has(ref.formula)) return true
+    const substance = ref.substance.toLowerCase()
+    // Alcohols (and a couple of common explicit names) are hydrogen-bonding / polar.
+    return substance.includes('alcohol') || substance === 'methanol' || substance === 'ethanol'
 }
 
 export default function MolecularDynamicsPage() {
@@ -225,6 +252,7 @@ export default function MolecularDynamicsPage() {
   
   // --- Control States (Real Units for Argon) ---
   const [temperature, setTemperature] = useState<number>(120.0) // Kelvin (Liquid Argon region)
+  const [temperatureUnit, setTemperatureUnit] = useState<'K' | 'C' | 'F'>('K')
   const [timeStep, setTimeStep] = useState<number>(DT_DEFAULT)
   
   // Parameters for Species A (Default Argon)
@@ -276,24 +304,119 @@ export default function MolecularDynamicsPage() {
     type PotentialType = 'LJ' | 'WCA' | 'MORSE' | 'SOFT' | 'YUKAWA' | 'GAUSS' | 'BUCK'
   const [potentialType, setPotentialType] = useState<PotentialType>('LJ')
   const [paramC, setParamC] = useState<number>(1.5) // Width for Morse, Exponent for Soft
+  const [useGravity, setUseGravity] = useState(false)
+  const [gravityStrength, setGravityStrength] = useState<number>(5.0)
+
+    const [showGravityNotice, setShowGravityNotice] = useState(false)
+    const [gravityNoticeFading, setGravityNoticeFading] = useState(false)
+    const gravityNoticeTimersRef = useRef<{ fade: number | null; hide: number | null }>({ fade: null, hide: null })
 
     const showLJReferenceHints = potentialType === 'LJ'
-    const nearestEpsilonA = useMemo(
-        () => (showLJReferenceHints ? getNearestLJ(epsilonA, 'epsilonOverKbK') : []),
+
+    const ljEpsilonMatchesA = useMemo(
+        () => (showLJReferenceHints ? getLJMatchesForValue(epsilonA, 'epsilonOverKbK') : []),
         [showLJReferenceHints, epsilonA]
     )
-    const nearestSigmaA = useMemo(
-        () => (showLJReferenceHints ? getNearestLJ(sigmaA, 'sigmaAngstrom') : []),
+    const ljSigmaMatchesA = useMemo(
+        () => (showLJReferenceHints ? getLJMatchesForValue(sigmaA, 'sigmaAngstrom') : []),
         [showLJReferenceHints, sigmaA]
     )
-    const nearestEpsilonB = useMemo(
-        () => (showLJReferenceHints ? getNearestLJ(epsilonB, 'epsilonOverKbK') : []),
+    const ljEpsilonMatchesB = useMemo(
+        () => (showLJReferenceHints ? getLJMatchesForValue(epsilonB, 'epsilonOverKbK') : []),
         [showLJReferenceHints, epsilonB]
     )
-    const nearestSigmaB = useMemo(
-        () => (showLJReferenceHints ? getNearestLJ(sigmaB, 'sigmaAngstrom') : []),
+    const ljSigmaMatchesB = useMemo(
+        () => (showLJReferenceHints ? getLJMatchesForValue(sigmaB, 'sigmaAngstrom') : []),
         [showLJReferenceHints, sigmaB]
     )
+
+    const ljRefId = (ref: LJReference) => `${ref.substance}::${ref.formula}`
+
+    // Intersection-based “pair match”: whatever appears in BOTH the epsilon list and the sigma list.
+    const ljPairMatchesA = useMemo(() => {
+        if (!showLJReferenceHints) return []
+        const epsilonIds = new Set(ljEpsilonMatchesA.map(ljRefId))
+        return ljSigmaMatchesA.filter((ref) => epsilonIds.has(ljRefId(ref)))
+    }, [showLJReferenceHints, ljEpsilonMatchesA, ljSigmaMatchesA])
+
+    const ljPairMatchesB = useMemo(() => {
+        if (!showLJReferenceHints) return []
+        const epsilonIds = new Set(ljEpsilonMatchesB.map(ljRefId))
+        return ljSigmaMatchesB.filter((ref) => epsilonIds.has(ljRefId(ref)))
+    }, [showLJReferenceHints, ljEpsilonMatchesB, ljSigmaMatchesB])
+
+    const polarLJRefsShown = useMemo(() => {
+        if (!showLJReferenceHints) return [] as LJReference[]
+        const refs: LJReference[] = [
+            ...ljEpsilonMatchesA,
+            ...ljSigmaMatchesA,
+            ...ljPairMatchesA,
+            ...(isBinary ? [...ljEpsilonMatchesB, ...ljSigmaMatchesB, ...ljPairMatchesB] : [])
+        ]
+
+        const seen = new Set<string>()
+        const unique: LJReference[] = []
+        for (const ref of refs) {
+            const id = ljRefId(ref)
+            if (seen.has(id)) continue
+            seen.add(id)
+            unique.push(ref)
+        }
+
+        return unique.filter(isPolarLJReference)
+    }, [
+        showLJReferenceHints,
+        ljEpsilonMatchesA,
+        ljSigmaMatchesA,
+        ljPairMatchesA,
+        isBinary,
+        ljEpsilonMatchesB,
+        ljSigmaMatchesB,
+        ljPairMatchesB
+    ])
+
+    const showPolarLJWarning = showLJReferenceHints && polarLJRefsShown.length > 0
+    const polarLJNames = useMemo(() => {
+        if (!showPolarLJWarning) return ''
+        const names = polarLJRefsShown.map((r) => r.substance)
+        // Keep it short so it doesn't dominate the UI.
+        const uniqueNames = Array.from(new Set(names))
+        return uniqueNames.slice(0, 6).join(', ') + (uniqueNames.length > 6 ? ', …' : '')
+    }, [showPolarLJWarning, polarLJRefsShown])
+
+    useEffect(() => {
+        // Show a short-lived notice when gravity is enabled (because it changes Y boundary conditions).
+        if (!useGravity) return
+
+        const timers = gravityNoticeTimersRef.current
+        if (timers.fade !== null) window.clearTimeout(timers.fade)
+        if (timers.hide !== null) window.clearTimeout(timers.hide)
+
+        setGravityNoticeFading(false)
+        setShowGravityNotice(true)
+
+        timers.fade = window.setTimeout(() => setGravityNoticeFading(true), 2500)
+        timers.hide = window.setTimeout(() => {
+            setShowGravityNotice(false)
+            setGravityNoticeFading(false)
+        }, 3200)
+
+        return () => {
+            const t = gravityNoticeTimersRef.current
+            if (t.fade !== null) window.clearTimeout(t.fade)
+            if (t.hide !== null) window.clearTimeout(t.hide)
+            t.fade = null
+            t.hide = null
+        }
+    }, [useGravity])
+
+    // Recalculate forces when gravity settings change (even when paused/stopped) so force arrows update
+    useEffect(() => {
+        if (!running && particlesRef.current.length > 0) {
+            calculateForces(particlesRef.current)
+            setParticles([...particlesRef.current])
+        }
+    }, [useGravity, gravityStrength, running])
 
   // --- Visualization States ---
   const [showForce, setShowForce] = useState(false)
@@ -348,7 +471,9 @@ export default function MolecularDynamicsPage() {
       potentialType: 'LJ' as PotentialType,
       box: BOX_SIZE,
       targetTemp: 120.0,
-      isBinary: false
+      isBinary: false,
+      useGravity: false,
+      gravityStrength: 5.0
   })
   
   // Nosé-Hoover State Variable
@@ -375,15 +500,17 @@ export default function MolecularDynamicsPage() {
       paramsRef.current.potentialType = potentialType
       paramsRef.current.targetTemp = temperature
       paramsRef.current.isBinary = isBinary
+      paramsRef.current.useGravity = useGravity
+      paramsRef.current.gravityStrength = gravityStrength
       
       // Update Mass/Q if needed (assuming same mass for now to keep simple)
       const totalN = isBinary ? (numParticlesA + numParticlesB) : numParticles
       nhStateRef.current.Q = totalN * temperature * 0.25
-  }, [timeStep, epsilonA, sigmaA, epsilonB, sigmaB, paramC, potentialType, temperature, numParticles, numParticlesA, numParticlesB, isBinary])
+  }, [timeStep, epsilonA, sigmaA, epsilonB, sigmaB, paramC, potentialType, temperature, numParticles, numParticlesA, numParticlesB, isBinary, useGravity, gravityStrength])
 
   // --- PHYSICS KERNEL: Force Calculation (3D O(N^2)) with Mixing Rules ---
   const calculateForces = (currentParticles: Particle[]): { pe: number, virial: number } => {
-      const { epsilonA, sigmaA, epsilonB, sigmaB, box, isBinary } = paramsRef.current
+      const { epsilonA, sigmaA, epsilonB, sigmaB, box, isBinary, useGravity } = paramsRef.current
       
       let potentialEnergy = 0
       let virialSum = 0
@@ -391,6 +518,12 @@ export default function MolecularDynamicsPage() {
       // Reset Forces
       for (let p of currentParticles) {
           p.fx = 0; p.fy = 0; p.fz = 0
+          
+          // Add Gravity Force (External Field)
+          if (useGravity) {
+              // Apply a downward force (negative Y direction)
+              p.fy -= paramsRef.current.gravityStrength
+          }
       }
 
       const N = currentParticles.length
@@ -931,6 +1064,18 @@ export default function MolecularDynamicsPage() {
     initializeParticles()
   }, [])
 
+  const convertTemperature = (tempK: number, unit: 'K' | 'C' | 'F'): number => {
+    if (unit === 'K') return tempK
+    if (unit === 'C') return tempK - 273.15
+    if (unit === 'F') return (tempK - 273.15) * 9 / 5 + 32
+    return tempK
+  }
+
+  const handleTemperatureUnitClick = () => {
+    const nextUnit: 'K' | 'C' | 'F' = temperatureUnit === 'K' ? 'C' : temperatureUnit === 'C' ? 'F' : 'K'
+    setTemperatureUnit(nextUnit)
+  }
+
   // --- ALGORITHM 2: Velocity Verlet with Nosé-Hoover Thermostat (Real Units) ---
   const updatePhysics = (): boolean => {
     const currentParticles = [...particlesRef.current]
@@ -969,13 +1114,36 @@ export default function MolecularDynamicsPage() {
         u.y += p.vy * dt
         u.z += p.vz * dt
 
-        // PBC
+        // --- BOUNDARY CONDITIONS ---
+        const { useGravity, box } = paramsRef.current
+
+        // X-Axis: Always Periodic (Infinite sides)
         if (p.x < 0) p.x += box
         if (p.x >= box) p.x -= box
-        if (p.y < 0) p.y += box
-        if (p.y >= box) p.y -= box
-        if (p.z < 0) p.z += box
-        if (p.z >= box) p.z -= box
+
+        // Z-Axis: Always Periodic (Infinite depth)
+        if (isThreeDRef.current) {
+            if (p.z < 0) p.z += box
+            if (p.z >= box) p.z -= box
+        }
+
+        // Y-Axis: Conditional (Periodic vs Reflective)
+        if (useGravity) {
+            // FLOOR (Reflective Hard Wall)
+            if (p.y < 0) {
+                p.y = -p.y // Reflect position
+                p.vy *= -1 // Reverse velocity (Bounce)
+            }
+            // CEILING (Reflective Hard Wall)
+            if (p.y >= box) {
+                p.y = (2 * box) - p.y // Reflect position
+                p.vy *= -1 // Reverse velocity (Bounce)
+            }
+        } else {
+            // Standard Periodic Wrapping
+            if (p.y < 0) p.y += box
+            if (p.y >= box) p.y -= box
+        }
     }
 
     // 3. Calculate Forces at t + dt
@@ -1146,6 +1314,29 @@ export default function MolecularDynamicsPage() {
       setRunning(false)
       setIsCrashed(false)
       initializeParticles()
+  }
+
+  const handleExportData = () => {
+      // 1. Create CSV Header
+      let csvContent = "data:text/csv;charset=utf-8,"
+      csvContent += "Time(ps),TotalEnergy(K),Potential(K),Kinetic(K),MSD(A^2)\n"
+
+      // 2. Merge Energy and MSD history
+      // Assuming arrays are roughly synchronized by frame index
+      energyHistoryRef.current.forEach((row, index) => {
+          const msdVal = msdHistoryRef.current[index] ? msdHistoryRef.current[index].msd : 0
+          const rowString = `${row.time.toFixed(4)},${row.tot.toFixed(2)},${row.pe.toFixed(2)},${row.ke.toFixed(2)},${msdVal.toFixed(4)}`
+          csvContent += rowString + "\n"
+      })
+
+      // 3. Trigger Download
+      const encodedUri = encodeURI(csvContent)
+      const link = document.createElement("a")
+      link.setAttribute("href", encodedUri)
+      link.setAttribute("download", "simulation_data.csv")
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
   }
   
   // Reset effect when numParticles changes
@@ -1418,6 +1609,7 @@ export default function MolecularDynamicsPage() {
                   type: 'line',
                   showSymbol: false,
                   data: rdfData.map(d => [d.r, d.g]),
+                  smooth: true,
                   lineStyle: { color: '#8b5cf6', width: 2 },
                   areaStyle: { opacity: 0.1, color: '#8b5cf6' },
                   markLine: rdfData.length > 0 ? {
@@ -1780,34 +1972,25 @@ export default function MolecularDynamicsPage() {
                 >
                     {running ? <><Pause className="mr-2 h-4 w-4"/> Pause</> : <><Play className="mr-2 h-4 w-4"/> Start</>}
                 </Button>
-                <Button variant="outline" size="icon" onClick={handleReset} title="Reset">
-                    <RotateCcw className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" size="icon" onClick={() => initializeParticles()} title="Zap (Re-Minimize)">
-                    <Zap className="h-4 w-4 text-yellow-500" />
-                </Button>
+                <div className="relative group">
+                    <Button variant="outline" size="icon" onClick={handleReset} title="Reset">
+                        <RotateCcw className="h-4 w-4" />
+                    </Button>
+                    <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50 hidden w-32 p-2 text-xs bg-popover text-popover-foreground border rounded-md shadow-md group-hover:block animate-in fade-in zoom-in-95 duration-200 text-center whitespace-normal">
+                        Reset Simulation
+                    </div>
+                </div>
+                <div className="relative group">
+                    <Button variant="outline" size="icon" onClick={() => initializeParticles()} title="Zap (Re-Minimize)">
+                        <Zap className="h-4 w-4 text-yellow-500" />
+                    </Button>
+                    <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50 hidden w-32 p-2 text-xs bg-popover text-popover-foreground border rounded-md shadow-md group-hover:block animate-in fade-in zoom-in-95 duration-200 text-center whitespace-normal">
+                        Minimize Energy
+                    </div>
+                </div>
               </div>
 
               <div className="space-y-4 border-b pb-4">
-                <div className="flex items-center justify-between">
-                    <Label>Mode: {isBinary ? "Binary Mixture" : "Pure Substance"}</Label>
-                    <Button 
-                        variant="outline" 
-                        size="sm"
-                        disabled={running}
-                        onClick={() => {
-                            // Stop + clear UI state. Particles will be re-initialized by the
-                            // existing effect that runs when `initializeParticles` changes.
-                            setRunning(false)
-                            setIsCrashed(false)
-                            setSelectedId(null)
-                            setIsBinary(prev => !prev)
-                        }}
-                    >
-                        Switch to {isBinary ? "Pure" : "Binary"}
-                    </Button>
-                </div>
-
                 {/* PARTICLE COUNTS */}
                 <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
                     {!isBinary ? (
@@ -1821,7 +2004,7 @@ export default function MolecularDynamicsPage() {
                         </>
                     ) : (
                         <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1">
+                            <div className="space-y-2">
                                 <Label className="text-blue-500">Count A: {numParticlesA}</Label>
                                 <Slider 
                                     disabled={running}
@@ -1829,7 +2012,7 @@ export default function MolecularDynamicsPage() {
                                     onValueChange={(v) => setNumParticlesA(v[0])}
                                 />
                             </div>
-                            <div className="space-y-1">
+                            <div className="space-y-2">
                                 <Label className="text-red-500">Count B: {numParticlesB}</Label>
                                 <Slider 
                                     disabled={running}
@@ -1845,7 +2028,12 @@ export default function MolecularDynamicsPage() {
                 <div className="space-y-2">
                     <div className="flex justify-between items-center">
                         <Label><span>Reduced Temp (T/ε): {reducedTemp.toFixed(2)}</span></Label>
-                        <Label className="text-muted-foreground text-xs"><span>(T = {temperature.toFixed(1)} K)</span></Label>
+                        <Label 
+                            className="text-muted-foreground text-xs cursor-pointer hover:text-foreground transition-colors"
+                            onClick={handleTemperatureUnitClick}
+                        >
+                            <span>(T = {convertTemperature(temperature, temperatureUnit).toFixed(1)} {temperatureUnit})</span>
+                        </Label>
                     </div>
                     <Slider 
                         value={[reducedTemp]} 
@@ -1864,13 +2052,40 @@ export default function MolecularDynamicsPage() {
                         onValueChange={(v) => setTimeStep(v[0])}
                     />
                 </div>
+
+                {useGravity && (
+                    <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''} animate-in fade-in`}>
+                        <Label>
+                            Gravity Strength (G-Force): {gravityStrength.toFixed(1)} K/Å
+                        </Label>
+                        <Slider
+                            disabled={running}
+                            value={[gravityStrength]} min={0.1} max={20.0} step={0.5}
+                            onValueChange={(v) => setGravityStrength(v[0])}
+                        />
+                    </div>
+                )}
               </div>
 
               <div className="space-y-4">
                 {/* 1. POTENTIAL SELECTOR WITH TOOLTIP */}
-                <div className={`space-y-2 pt-2 border-t ${running ? 'opacity-50 pointer-events-none' : ''}`}>
+                <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
                     <div className="flex items-center justify-between">
-                        <Label>Interatomic Potential</Label>
+                        <div className="flex items-center gap-2">
+                            <Label>
+                                {!isBinary && showLJReferenceHints && ljPairMatchesA.length === 1
+                                    ? `${ljPairMatchesA[0].substance}'s Interatomic Potential`
+                                    : 'Interatomic Potential'}
+                            </Label>
+                            <div className={`relative group flex items-center justify-center ${showPolarLJWarning ? 'visible' : 'invisible'}`}>
+                                <AlertCircle className="h-4 w-4 text-amber-500 cursor-help hover:text-amber-400 transition-colors" />
+                                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 z-50 hidden w-80 p-3 text-xs bg-popover text-popover-foreground border rounded-md shadow-md group-hover:block animate-in fade-in zoom-in-95 duration-200 space-y-1">
+                                    <div className="font-semibold">Polar Molecules</div>
+                                    <div>Polar / hydrogen-bonding molecules shown use <span className="font-semibold">effective LJ parameters only</span> (no electrostatics / hydrogen bonding).</div>
+                                    <div>Results are <span className="font-semibold">qualitative</span>, not predictive.{polarLJNames ? ` Detected: ${polarLJNames}.` : ''}</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -1904,15 +2119,15 @@ export default function MolecularDynamicsPage() {
                      {!isBinary ? (
                          /* OLD SINGLE SLIDERS */
                          <>
-                             <Label className="text-white"><span>{labels.eps}: {epsilonA.toFixed(1)} K</span></Label>
+                             <Label className="text-white"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
                              <Slider
                                  disabled={running}
                                  value={[epsilonA]} min={5} max={1000} step={5}
                                  onValueChange={(v) => setEpsilonA(v[0])}
                              />
-                             {showLJReferenceHints && (
+                             {showLJReferenceHints && ljPairMatchesA.length !== 1 && (
                                  <div className="text-[10px] leading-tight text-muted-foreground">
-                                     {nearestEpsilonA.map((m) => (
+                                     {ljEpsilonMatchesA.map((m) => (
                                          <div key={`epsA-${m.formula}`}>
                                              {m.substance} ({m.formula}) — {m.epsilonOverKbK.toFixed(1)} K
                                          </div>
@@ -1926,9 +2141,9 @@ export default function MolecularDynamicsPage() {
                                  value={[sigmaA]} min={2.0} max={6.5} step={0.01}
                                  onValueChange={(v) => setSigmaA(v[0])}
                              />
-                             {showLJReferenceHints && (
+                             {showLJReferenceHints && ljPairMatchesA.length !== 1 && (
                                  <div className="text-[10px] leading-tight text-muted-foreground">
-                                     {nearestSigmaA.map((m) => (
+                                     {ljSigmaMatchesA.map((m) => (
                                          <div key={`sigA-${m.formula}`}>
                                              {m.substance} ({m.formula}) — {m.sigmaAngstrom.toFixed(3)} Å
                                          </div>
@@ -1941,17 +2156,21 @@ export default function MolecularDynamicsPage() {
                          <div className="grid grid-cols-2 gap-4">
                              {/* Left Column: Species A (Blue) */}
                              <div className="space-y-2 border-r pr-2">
-                                 <Label className="text-blue-500 text-xs font-bold">Species A (Blue)</Label>
+                                 <Label className="text-blue-500 text-xs font-bold">
+                                     {showLJReferenceHints && ljPairMatchesA.length === 1
+                                         ? ljPairMatchesA[0].substance
+                                         : 'Species A (Blue)'}
+                                 </Label>
                                  
-                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonA.toFixed(1)} K</span></Label>
+                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonA]} min={5} max={1000} step={5}
                                      onValueChange={(v) => setEpsilonA(v[0])} 
                                  />
-                                 {showLJReferenceHints && (
+                                 {showLJReferenceHints && ljPairMatchesA.length !== 1 && (
                                      <div className="text-[10px] leading-tight text-muted-foreground">
-                                         {nearestEpsilonA.map((m) => (
+                                         {ljEpsilonMatchesA.map((m) => (
                                              <div key={`epsA2-${m.formula}`}>
                                                  {m.substance} ({m.formula})
                                              </div>
@@ -1965,9 +2184,9 @@ export default function MolecularDynamicsPage() {
                                      value={[sigmaA]} min={2} max={6} step={0.01}
                                      onValueChange={(v) => setSigmaA(v[0])} 
                                  />
-                                 {showLJReferenceHints && (
+                                 {showLJReferenceHints && ljPairMatchesA.length !== 1 && (
                                      <div className="text-[10px] leading-tight text-muted-foreground">
-                                         {nearestSigmaA.map((m) => (
+                                         {ljSigmaMatchesA.map((m) => (
                                              <div key={`sigA2-${m.formula}`}>
                                                  {m.substance} ({m.formula})
                                              </div>
@@ -1978,17 +2197,21 @@ export default function MolecularDynamicsPage() {
 
                              {/* Right Column: Species B (Red) */}
                              <div className="space-y-2">
-                                 <Label className="text-red-500 text-xs font-bold">Species B (Red)</Label>
+                                 <Label className="text-red-500 text-xs font-bold">
+                                     {showLJReferenceHints && ljPairMatchesB.length === 1
+                                         ? ljPairMatchesB[0].substance
+                                         : 'Species B (Red)'}
+                                 </Label>
                                  
-                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonB.toFixed(1)} K</span></Label>
+                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonB.toFixed(0)} K</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonB]} min={5} max={1000} step={5}
                                      onValueChange={(v) => setEpsilonB(v[0])} 
                                  />
-                                 {showLJReferenceHints && (
+                                 {showLJReferenceHints && ljPairMatchesB.length !== 1 && (
                                      <div className="text-[10px] leading-tight text-muted-foreground">
-                                         {nearestEpsilonB.map((m) => (
+                                         {ljEpsilonMatchesB.map((m) => (
                                              <div key={`epsB-${m.formula}`}>
                                                  {m.substance} ({m.formula})
                                              </div>
@@ -2002,9 +2225,9 @@ export default function MolecularDynamicsPage() {
                                      value={[sigmaB]} min={2} max={6} step={0.01}
                                      onValueChange={(v) => setSigmaB(v[0])} 
                                  />
-                                 {showLJReferenceHints && (
+                                 {showLJReferenceHints && ljPairMatchesB.length !== 1 && (
                                      <div className="text-[10px] leading-tight text-muted-foreground">
-                                         {nearestSigmaB.map((m) => (
+                                         {ljSigmaMatchesB.map((m) => (
                                              <div key={`sigB-${m.formula}`}>
                                                  {m.substance} ({m.formula})
                                              </div>
@@ -2015,6 +2238,8 @@ export default function MolecularDynamicsPage() {
                          </div>
                      )}
                 </div>
+
+
 
                 {/* DYNAMIC "PARAMETER C" SLIDER */}
                 {(potentialType === 'MORSE' || potentialType === 'SOFT' || potentialType === 'BUCK') && (
@@ -2147,8 +2372,60 @@ export default function MolecularDynamicsPage() {
         </div>
 
         {/* Right Column: Simulation & RDF */}
-        <div className="lg:col-span-2 flex flex-col gap-6">
-           <Card className="w-full p-0 overflow-hidden bg-muted/20 border-border relative" style={{ height: '500px' }}>
+          <div className="lg:col-span-2 flex flex-col gap-6">
+              <Card className={`w-full p-0 overflow-hidden bg-muted/20 border border-border relative transition-colors duration-700 ${!isThreeD && showGravityNotice && !gravityNoticeFading ? 'border-b-amber-500' : 'border-b-border'}`} style={{ height: '500px' }}>
+              {/* Gravity Toggle - Top Left */}
+              <div className="absolute top-2 left-2 z-10">
+                  <Button
+                      size="sm"
+                      variant={useGravity ? 'default' : 'outline'}
+                      onClick={() => setUseGravity(!useGravity)}
+                      className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                          mounted ? (isDarkTheme
+                              ? 'bg-background/80 text-white border border-white/20'
+                              : 'bg-background/80 text-black border border-black/20')
+                          : ''
+                      }`}
+                  >
+                      {useGravity ? '⬇ Gravity ON' : '⬇ Gravity OFF'}
+                  </Button>
+              </div>
+
+              {/* Mode Switch - Bottom Left */}
+              <div className="absolute bottom-2 left-2 z-10">
+                  <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={running}
+                      onClick={() => {
+                          setRunning(false)
+                          setIsCrashed(false)
+                          setSelectedId(null)
+                          setIsBinary(prev => !prev)
+                      }}
+                      className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                          mounted ? (isDarkTheme
+                              ? 'bg-background/80 text-white border border-white/20'
+                              : 'bg-background/80 text-black border border-black/20')
+                          : ''
+                      }`}
+                  >
+                      {isBinary ? 'Switch to Pure' : 'Switch to Binary'}
+                  </Button>
+              </div>
+
+              {showGravityNotice && (
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+                      <div
+                          className={`rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-900 dark:text-amber-100 backdrop-blur-sm shadow-sm transition-opacity duration-700 whitespace-nowrap ${
+                              gravityNoticeFading ? 'opacity-0' : 'opacity-100'
+                          }`}
+                      >
+                          <span className="font-semibold">Gravity ON:</span> Y becomes a floor/ceiling (reflective walls; no periodic wrap).
+                      </div>
+                  </div>
+              )}
+
               {/* CRASH WARNING ALERT - Centered Overlay */}
               {isCrashed && (
                   <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
@@ -2158,9 +2435,11 @@ export default function MolecularDynamicsPage() {
                           </div>
                           <div className="space-y-2">
                               <h4 className="font-bold text-base text-red-500">Simulation Unstable!</h4>
-                              <p className="text-sm text-muted-foreground">
-                                  The system exploded. This could be due to <strong>Time Step (dt)</strong> being too high, model parameters (ε, σ) being too extreme, or too many particles. Try reducing dt, lowering particle count, or adjusting potential parameters.
-                              </p>
+                              <div className="text-sm text-muted-foreground space-y-1">
+                                  <div>The system exploded.</div>
+                                  <div>This could be due to <strong>Time Step (dt)</strong> being too high, model parameters (ε, σ) being too extreme, or too many particles.</div>
+                                  <div>Try reducing dt, lowering particle count, or adjusting potential parameters.</div>
+                              </div>
                               <div className="pt-3">
                                   <Button 
                                       size="sm" 
@@ -2230,6 +2509,8 @@ export default function MolecularDynamicsPage() {
                                 isDark={isDarkTheme}
                                 showVelocity={showVelocity}
                                 showForce={showForce}
+                                showGravityFloorHighlight={showGravityNotice}
+                                gravityFloorFading={gravityNoticeFading}
                                 onParticleClick={(id) => {
                                     if (!running) {
                                         setSelectedId(prev => prev === id ? null : id)
@@ -2420,6 +2701,23 @@ export default function MolecularDynamicsPage() {
                           lazyUpdate={true}
                       />
                   </div>
+
+                  {/* Export Data Button - Bottom Right */}
+                  <div className="absolute bottom-2 right-2 z-10">
+                      <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={handleExportData}
+                          className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                              mounted ? (isDarkTheme
+                                  ? 'bg-background/80 text-white border border-white/20'
+                                  : 'bg-background/80 text-black border border-black/20')
+                              : ''
+                          }`}
+                      >
+                          ⬇ Export
+                      </Button>
+                  </div>
               </CardContent>
            </Card>
         </div>
@@ -2493,6 +2791,8 @@ const Molecule3D = ({
   isDark,
   showVelocity,
   showForce,
+    showGravityFloorHighlight,
+    gravityFloorFading,
   onParticleClick
 }: { 
   particles: Particle[], 
@@ -2503,6 +2803,8 @@ const Molecule3D = ({
   isDark: boolean,
   showVelocity: boolean,
   showForce: boolean,
+    showGravityFloorHighlight: boolean,
+    gravityFloorFading: boolean,
   onParticleClick: (id: number) => void
 }) => {
   const particleColor = isDark ? "#ffffff" : "#3b82f6"
@@ -2532,8 +2834,39 @@ const Molecule3D = ({
     const velScale3D = velRef3D > 1e-12 ? (maxArrowLen3D / velRef3D) : 0
     const forceScale3D = forceRef3D > 1e-12 ? (maxArrowLen3D / forceRef3D) : 0
 
+    // Floor highlight (used when gravity notice is shown in 3D)
+    const FloorHighlight = ({ boxSize, isDark, show, fading }: { boxSize: number; isDark: boolean; show: boolean; fading: boolean }) => {
+        const materialRef = React.useRef<THREE.MeshBasicMaterial | null>(null)
+        const targetOpacity = show ? (fading ? 0 : 0.22) : 0
+
+        useFrame((_, delta) => {
+            if (!materialRef.current) return
+            const current = materialRef.current.opacity ?? 0
+            // Exponential smoothing; tuned to roughly match the 700ms UI fade.
+            const t = 1 - Math.exp(-delta * 10)
+            materialRef.current.opacity = THREE.MathUtils.lerp(current, targetOpacity, t)
+        })
+
+        if (!show) return null
+
+        return (
+            <mesh position={[boxSize / 2, 0.01, boxSize / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+                <planeGeometry args={[boxSize, boxSize]} />
+                <meshBasicMaterial
+                    ref={materialRef}
+                    color={isDark ? '#facc15' : '#f59e0b'}
+                    transparent
+                    opacity={0}
+                    depthWrite={false}
+                    side={THREE.DoubleSide}
+                />
+            </mesh>
+        )
+    }
+
   return (
     <group>
+            <FloorHighlight boxSize={boxSize} isDark={isDark} show={showGravityFloorHighlight} fading={gravityFloorFading} />
       {/* Simulation Bounding Box */}
       <mesh position={[boxSize/2, boxSize/2, boxSize/2]}>
         <boxGeometry args={[boxSize, boxSize, boxSize]} />
