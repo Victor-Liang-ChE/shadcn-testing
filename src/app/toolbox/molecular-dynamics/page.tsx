@@ -94,9 +94,9 @@ const BOX_SIZE = 40.0 // Angstroms (typical nano-box for Argon)
 const DT_DEFAULT = 0.005 // 5 femtoseconds (0.005 ps)
 
 // RDF Configuration
-const RDF_BINS = 100
+const RDF_BINS = 200
 const RDF_CUTOFF = BOX_SIZE / 2.0
-const RDF_BIN_WIDTH = RDF_CUTOFF / RDF_BINS
+const RDF_BIN_WIDTH = 0.1  // 0.1 Angstroms per bin for consistent resolution with Potential chart
 
 // History caps (prevents unbounded memory growth)
 const MAX_HISTORY_POINTS = 12000
@@ -301,17 +301,133 @@ export default function MolecularDynamicsPage() {
     }, [reducedTemp, epsilon])
   
   // Potential Type and Generic Parameter C
-    type PotentialType = 'LJ' | 'WCA' | 'MORSE' | 'SOFT' | 'YUKAWA' | 'GAUSS' | 'BUCK'
+    type PotentialType = 'LJ' | 'WCA' | 'MORSE' | 'SOFT' | 'YUKAWA' | 'GAUSS' | 'BUCK' | 'MIE'
   const [potentialType, setPotentialType] = useState<PotentialType>('LJ')
-  const [paramC, setParamC] = useState<number>(1.5) // Width for Morse, Exponent for Soft
+  const [paramC, setParamC] = useState<number>(1.5) // Width for Morse, Exponent for Soft, Repulsive Exp for Mie
+  const [paramD, setParamD] = useState<number>(6.0) // Attractive Exponent for Mie
+    const [paramC_B, setParamC_B] = useState<number>(1.5) // Binary: Species B paramC (Morse width / Soft exponent / Buckingham C)
+    const [mieParamC_B, setMieParamC_B] = useState<number>(14.0) // Binary: Species B repulsive exponent (n)
+    const [mieParamD_B, setMieParamD_B] = useState<number>(6.0) // Binary: Species B attractive exponent (m)
   const [useGravity, setUseGravity] = useState(false)
   const [gravityStrength, setGravityStrength] = useState<number>(5.0)
+
+  const prevPotentialTypeRef = useRef<PotentialType>('LJ')
+  const prevIsBinaryRef = useRef(false)
+
+  // When switching to binary, initialize B's model-specific parameter to match A.
+  // (We only do this on the toggle edge to avoid clobbering user edits.)
+  useEffect(() => {
+      if (isBinary && !prevIsBinaryRef.current) {
+          setParamC_B(paramC)
+          // For Mie, keep the B exponents aligned to A on first entry to binary.
+          if (potentialType === 'MIE') {
+              setMieParamC_B(paramC)
+              setMieParamD_B(paramD)
+          }
+      }
+      prevIsBinaryRef.current = isBinary
+  }, [isBinary, potentialType, paramC, paramD])
+
+  // Restore original non-Mie defaults when leaving Mie so its exponents don't pollute other models.
+  useEffect(() => {
+      const prev = prevPotentialTypeRef.current
+      if (prev === potentialType) return
+
+      // Ensure Buckingham always starts from its intended default when selected.
+      // This prevents inheriting paramC from other potentials (e.g. 1.5).
+      if (potentialType === 'BUCK') {
+          setParamC(30.0)
+      }
+
+      if (prev === 'MIE') {
+          if (potentialType === 'MORSE') {
+              setParamC(1.5)
+          } else if (potentialType === 'BUCK') {
+              setParamC(30.0)
+          }
+      }
+
+      prevPotentialTypeRef.current = potentialType
+  }, [potentialType])
+
+  const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
+
+  const getParamCRange = (type: PotentialType): { min: number; max: number } | null => {
+      switch (type) {
+          case 'MORSE':
+              return { min: 0.5, max: 3.0 }
+          case 'SOFT':
+              return { min: 1.0, max: 18.0 }
+          case 'BUCK':
+              return { min: 0.0, max: 500.0 }
+          default:
+              return null
+      }
+  }
+
+  // Keep potential-specific sliders in-range when switching potentials (prevents out-of-range defaults).
+  useEffect(() => {
+      if (potentialType === 'MIE') return
+      const range = getParamCRange(potentialType)
+      if (!range) return
+
+      if (paramC < range.min || paramC > range.max) {
+          setParamC(clamp(paramC, range.min, range.max))
+      }
+      if (isBinary && (paramC_B < range.min || paramC_B > range.max)) {
+          setParamC_B(clamp(paramC_B, range.min, range.max))
+      }
+  }, [potentialType, isBinary, paramC, paramC_B])
+
+  const mieInitializingRef = useRef(false)
+
+  useEffect(() => {
+      if (potentialType === 'MIE') {
+          mieInitializingRef.current = true
+          // Set MIE defaults on first selection
+          setParamC(14.0)
+          setParamD(6.0)
+          setMieParamC_B(14.0)
+          setMieParamD_B(6.0)
+      }
+  }, [potentialType])
+
+  useEffect(() => {
+      if (potentialType !== 'MIE') return
+
+      // During the same effect flush as the potential switch, paramC/paramD still reflect
+      // the previous potential's values; avoid clobbering the intended MIE defaults.
+      if (mieInitializingRef.current) {
+          if (paramC === 14.0 && paramD === 6.0 && mieParamC_B === 14.0 && mieParamD_B === 6.0) {
+              mieInitializingRef.current = false
+          }
+          return
+      }
+
+      // Clamp Mie exponents and keep m < n so the prefactor and minimum are well-defined.
+      if (paramC < 8.0 || paramC > 24.0) {
+          setParamC(clamp(paramC, 8.0, 24.0))
+          return
+      }
+      if (mieParamC_B < 8.0 || mieParamC_B > 24.0) {
+          setMieParamC_B(clamp(mieParamC_B, 8.0, 24.0))
+          return
+      }
+
+      if (paramD >= paramC) {
+          setParamD(Math.max(3.0, Math.min(12.0, paramC - 1.0)))
+      }
+      if (mieParamD_B >= mieParamC_B) {
+          setMieParamD_B(Math.max(3.0, Math.min(12.0, mieParamC_B - 1.0)))
+      }
+  }, [potentialType, paramC, paramD, mieParamC_B, mieParamD_B])
 
     const [showGravityNotice, setShowGravityNotice] = useState(false)
     const [gravityNoticeFading, setGravityNoticeFading] = useState(false)
     const gravityNoticeTimersRef = useRef<{ fade: number | null; hide: number | null }>({ fade: null, hide: null })
 
-    const showLJReferenceHints = potentialType === 'LJ'
+    // LJ reference hints are based on (ε, σ). These remain meaningful for Mie because it still uses (ε, σ).
+    const showLJReferenceHints = potentialType === 'LJ' || potentialType === 'MIE'
 
     const ljEpsilonMatchesA = useMemo(
         () => (showLJReferenceHints ? getLJMatchesForValue(epsilonA, 'epsilonOverKbK') : []),
@@ -429,7 +545,7 @@ export default function MolecularDynamicsPage() {
   const [rdfData, setRdfData] = useState<{r: number, g: number}[]>([])
   const [energyHistory, setEnergyHistory] = useState<{time: number, ke: number, pe: number, tot: number}[]>([])
     const energyHistoryRef = useRef<{time: number, ke: number, pe: number, tot: number}[]>([])
-  const [analysisView, setAnalysisView] = useState<'rdf' | 'energy' | 'msd'>('rdf')
+  const [analysisView, setAnalysisView] = useState<'potential' | 'rdf' | 'energy' | 'msd'>('potential')
   const [energyMode, setEnergyMode] = useState<'sliding' | 'expanding'>('sliding')
   
   // Add MSD state and refs
@@ -468,6 +584,10 @@ export default function MolecularDynamicsPage() {
       epsilonB: 160.0,
       sigmaB: 4.0,
       paramC: 1.5,
+      paramD: 6.0,
+      paramC_B: 1.5,
+      mieParamC_B: 14.0,
+      mieParamD_B: 6.0,
       potentialType: 'LJ' as PotentialType,
       box: BOX_SIZE,
       targetTemp: 120.0,
@@ -497,6 +617,10 @@ export default function MolecularDynamicsPage() {
       paramsRef.current.epsilonB = epsilonB
       paramsRef.current.sigmaB = sigmaB
       paramsRef.current.paramC = paramC
+      paramsRef.current.paramD = paramD
+    paramsRef.current.paramC_B = paramC_B
+    paramsRef.current.mieParamC_B = mieParamC_B
+    paramsRef.current.mieParamD_B = mieParamD_B
       paramsRef.current.potentialType = potentialType
       paramsRef.current.targetTemp = temperature
       paramsRef.current.isBinary = isBinary
@@ -506,7 +630,7 @@ export default function MolecularDynamicsPage() {
       // Update Mass/Q if needed (assuming same mass for now to keep simple)
       const totalN = isBinary ? (numParticlesA + numParticlesB) : numParticles
       nhStateRef.current.Q = totalN * temperature * 0.25
-  }, [timeStep, epsilonA, sigmaA, epsilonB, sigmaB, paramC, potentialType, temperature, numParticles, numParticlesA, numParticlesB, isBinary, useGravity, gravityStrength])
+    }, [timeStep, epsilonA, sigmaA, epsilonB, sigmaB, paramC, paramD, paramC_B, mieParamC_B, mieParamD_B, potentialType, temperature, numParticles, numParticlesA, numParticlesB, isBinary, useGravity, gravityStrength])
 
   // --- PHYSICS KERNEL: Force Calculation (3D O(N^2)) with Mixing Rules ---
   const calculateForces = (currentParticles: Particle[]): { pe: number, virial: number } => {
@@ -616,7 +740,14 @@ export default function MolecularDynamicsPage() {
                       break
                   }
                   case 'MORSE': {
-                      const width = paramsRef.current.paramC
+                      const widthA = paramsRef.current.paramC
+                      const widthB = paramsRef.current.paramC_B
+                      let width = widthA
+                      if (paramsRef.current.isBinary) {
+                          if (p1.type === 0 && p2.type === 0) width = widthA
+                          else if (p1.type === 1 && p2.type === 1) width = widthB
+                          else width = 0.5 * (widthA + widthB)
+                      }
                       const displacement = r - sig
                       const expTerm = Math.exp(-width * displacement)
                       const term = 1 - expTerm
@@ -656,7 +787,14 @@ export default function MolecularDynamicsPage() {
                       const r_safe = Math.max(r, 0.5 * sig)
                       const A = eps
                       const rho = sig
-                      const C = paramsRef.current.paramC
+                      const C_A = paramsRef.current.paramC
+                      const C_B = paramsRef.current.paramC_B
+                      let C = C_A
+                      if (paramsRef.current.isBinary) {
+                          if (p1.type === 0 && p2.type === 0) C = C_A
+                          else if (p1.type === 1 && p2.type === 1) C = C_B
+                          else C = 0.5 * (C_A + C_B)
+                      }
                       const expTerm = Math.exp(-r_safe / rho)
                       const r2 = r_safe * r_safe
                       const r6 = r2 * r2 * r2
@@ -666,8 +804,60 @@ export default function MolecularDynamicsPage() {
                       forceScalar = f_r_buck / r_safe
                       break
                   }
+                  case 'MIE': {
+                      const nA = paramsRef.current.paramC
+                      const mA = paramsRef.current.paramD
+                      const nB = paramsRef.current.mieParamC_B
+                      const mB = paramsRef.current.mieParamD_B
+
+                      // Choose per-pair (n, m). For cross interactions, use arithmetic mixing.
+                      let n = nA
+                      let m = mA
+                      if (paramsRef.current.isBinary) {
+                          if (p1.type === 0 && p2.type === 0) {
+                              n = nA
+                              m = mA
+                          } else if (p1.type === 1 && p2.type === 1) {
+                              n = nB
+                              m = mB
+                          } else {
+                              n = 0.5 * (nA + nB)
+                              m = 0.5 * (mA + mB)
+                          }
+                      }
+                      
+                      // Avoid divide-by-zero if n == m
+                      if (Math.abs(n - m) < 1e-6) {
+                          forceScalar = 0
+                          pairPotential = 0
+                          break
+                      }
+
+                      // Calculate Prefactor C to normalize min to -epsilon
+                      // C = (n / (n - m)) * (n / m)^(m / (n - m))
+                      const prefactor = (n / (n - m)) * Math.pow(n / m, m / (n - m))
+
+                      const r_inv_n = Math.pow(r_inv * sig, n) // (sigma/r)^n
+                      const r_inv_m = Math.pow(r_inv * sig, m) // (sigma/r)^m
+
+                      pairPotential = prefactor * eps * (r_inv_n - r_inv_m)
+
+                      // F(r) = -dV/dr
+                      // dV/dr = C * eps * [ n(sigma/r)^n * (-1/r) - m(sigma/r)^m * (-1/r) ]
+                      // F(r) = (C * eps / r) * [ n(sigma/r)^n - m(sigma/r)^m ]
+                      // forceScalar = F(r) / r
+                      forceScalar = (prefactor * eps * r2_inv) * (n * r_inv_n - m * r_inv_m)
+                      break
+                  }
                   case 'SOFT': {
-                      const n = Math.max(1, paramsRef.current.paramC)
+                      const nA = Math.max(1, paramsRef.current.paramC)
+                      const nB = Math.max(1, paramsRef.current.paramC_B)
+                      let n = nA
+                      if (paramsRef.current.isBinary) {
+                          if (p1.type === 0 && p2.type === 0) n = nA
+                          else if (p1.type === 1 && p2.type === 1) n = nB
+                          else n = 0.5 * (nA + nB)
+                      }
                       const ratio = sig * r_inv
                       const ratio_n = Math.pow(ratio, n)
                       pairPotential = eps * ratio_n
@@ -1317,23 +1507,124 @@ export default function MolecularDynamicsPage() {
   }
 
   const handleExportData = () => {
-      // 1. Create CSV Header
       let csvContent = "data:text/csv;charset=utf-8,"
-      csvContent += "Time(ps),TotalEnergy(K),Potential(K),Kinetic(K),MSD(A^2)\n"
+      let filename = "simulation_data.csv"
 
-      // 2. Merge Energy and MSD history
-      // Assuming arrays are roughly synchronized by frame index
-      energyHistoryRef.current.forEach((row, index) => {
-          const msdVal = msdHistoryRef.current[index] ? msdHistoryRef.current[index].msd : 0
-          const rowString = `${row.time.toFixed(4)},${row.tot.toFixed(2)},${row.pe.toFixed(2)},${row.ke.toFixed(2)},${msdVal.toFixed(4)}`
-          csvContent += rowString + "\n"
-      })
+      if (analysisView === 'rdf') {
+          // Export RDF Data
+          csvContent += "Distance(A),RDF(g)\n"
+          rdfData.forEach((row) => {
+              const rowString = `${row.r.toFixed(4)},${row.g.toFixed(6)}`
+              csvContent += rowString + "\n"
+          })
+          filename = "rdf_data.csv"
+      } else if (analysisView === 'potential') {
+          // Export Potential Data
+          csvContent += "Distance(A),Potential(K)\n"
+          
+          // Helper to generate curve data with rounder x-axis values
+          const generateCurveForExport = (eps: number, sig: number, pC: number, pD?: number) => {
+              const data: number[][] = []
+              const minSig = isBinary ? Math.min(sigmaA, sigmaB) : sigmaA
+              const maxSig = isBinary ? Math.max(sigmaA, sigmaB) : sigmaA
+              const start = potentialType === 'GAUSS' ? 0 : 0.05
+              const end = maxSig * 3.5
+              // Use 0.1 Å step increments for rounder numbers
+              const step = 0.1
+              
+              for (let r = start; r <= end; r += step) {
+                  let v = 0
+                  
+                  switch (potentialType) {
+                      case 'LJ': {
+                          const sr = sig / r
+                          const sr6 = Math.pow(sr, 6)
+                          v = 4 * eps * (Math.pow(sr6, 2) - sr6)
+                          break
+                      }
+                      case 'WCA': {
+                          const cutoff = Math.pow(2, 1/6) * sig
+                          if (r < cutoff) {
+                              const sr = sig / r
+                              const sr6 = Math.pow(sr, 6)
+                              v = 4 * eps * (Math.pow(sr6, 2) - sr6) + eps
+                          } else {
+                              v = 0
+                          }
+                          break
+                      }
+                      case 'MORSE': {
+                          const term = 1 - Math.exp(-pC * (r - sig))
+                          v = eps * term * term
+                          break
+                      }
+                      case 'SOFT': {
+                          const n = Math.max(1, pC)
+                          v = eps * Math.pow(sig / r, n)
+                          break
+                      }
+                      case 'YUKAWA': {
+                          v = eps * Math.exp(-r / sig) / r
+                          break
+                      }
+                      case 'GAUSS': {
+                          const r2 = r * r
+                          v = eps * Math.exp(-0.5 * r2 / (sig * sig))
+                          break
+                      }
+                      case 'BUCK': {
+                          v = eps * Math.exp(-r / sig) - (pC / Math.pow(r, 6))
+                          break
+                      }
+                      case 'MIE': {
+                          const n = pC
+                          const m = typeof pD === 'number' ? pD : paramD
+                          if (Math.abs(n - m) > 1e-6) {
+                              const C = (n / (n - m)) * Math.pow(n / m, m / (n - m))
+                              const ratio = sig / r
+                              const termN = Math.pow(ratio, n)
+                              const termM = Math.pow(ratio, m)
+                              v = C * eps * (termN - termM)
+                          }
+                          break
+                      }
+                  }
 
-      // 3. Trigger Download
+                  data.push([Math.round(r * 10) / 10, v])
+              }
+              return data
+          }
+
+          // Export Species A
+          const dataA = generateCurveForExport(epsilonA, sigmaA, paramC, potentialType === 'MIE' ? paramD : undefined)
+          dataA.forEach((point) => {
+              csvContent += `${point[0].toFixed(1)},${point[1].toFixed(4)}\n`
+          })
+          
+          filename = "potential_data.csv"
+      } else if (analysisView === 'energy') {
+          // Export Energy Data
+          csvContent += "Time(ps),TotalEnergy(K),Potential(K),Kinetic(K)\n"
+          energyHistoryRef.current.forEach((row) => {
+              const rowString = `${row.time.toFixed(4)},${row.tot.toFixed(2)},${row.pe.toFixed(2)},${row.ke.toFixed(2)}`
+              csvContent += rowString + "\n"
+          })
+          filename = "energy_data.csv"
+      } else if (analysisView === 'msd') {
+          // Export MSD Data
+          csvContent += "Time(ps),MSD(A^2)\n"
+          msdHistoryRef.current.forEach((row) => {
+              const rowString = `${row.time.toFixed(4)},${row.msd.toFixed(6)}`
+              csvContent += rowString + "\n"
+          })
+          filename = "msd_data.csv"
+      }
+
+      // Trigger Download
       const encodedUri = encodeURI(csvContent)
       const link = document.createElement("a")
       link.setAttribute("href", encodedUri)
-      link.setAttribute("download", "simulation_data.csv")
+      link.setAttribute("download", filename)
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
@@ -1550,6 +1841,399 @@ export default function MolecularDynamicsPage() {
   }
 
   const selectedParticleData = particles.find(p => p.id === selectedId)
+
+  // --- Potential Chart Configuration ---
+  const getPotentialOption = (): EChartsOption => {
+      const isDark = resolvedTheme === 'dark'
+      const textColor = isDark ? '#ffffff' : '#000000'
+
+      // Use a shared r-range so curves fill the chart consistently.
+      // Start small enough to show the repulsive wall trend without dividing by ~0.
+      const minSigma = isBinary ? Math.min(sigmaA, sigmaB) : sigmaA
+      const maxSigma = isBinary ? Math.max(sigmaA, sigmaB) : sigmaA
+    // Many potentials remain meaningful very close to r=0, but some have 1/r or 1/r^6 terms.
+    // Use a tiny positive start for singular forms, and include r=0 for the Gaussian core.
+    const rStep = 0.1
+    const rStart = potentialType === 'GAUSS' ? 0 : rStep
+      const rEnd = maxSigma * 3.5
+      const xAxisMax = Math.ceil(rEnd * 10) / 10
+      const scaleEps = isBinary ? Math.max(epsilonA, epsilonB) : epsilonA
+    const yMin = -scaleEps * 1.5
+    const yMax = scaleEps * 2.5
+
+      // Helper to generate curve data for a specific set of parameters
+      const generateCurve = (eps: number, sig: number, pC: number, label: string, pD?: number) => {
+          const data: number[][] = []
+          for (let r = rStart; r <= xAxisMax + 1e-9; r += rStep) {
+              const rRounded = Math.round(r * 10) / 10
+              let v = 0
+              
+              // Math must match calculateForces exactly
+              switch (potentialType) {
+                  case 'LJ': {
+                      const sr = sig / rRounded
+                      const sr6 = Math.pow(sr, 6)
+                      v = 4 * eps * (Math.pow(sr6, 2) - sr6)
+                      break
+                  }
+                  case 'WCA': {
+                      const cutoff = Math.pow(2, 1/6) * sig
+                      if (rRounded < cutoff) {
+                          const sr = sig / rRounded
+                          const sr6 = Math.pow(sr, 6)
+                          v = 4 * eps * (Math.pow(sr6, 2) - sr6) + eps
+                      } else {
+                          v = 0
+                      }
+                      break
+                  }
+                  case 'MORSE': {
+                      // V(r) = D * [1 - exp(-a(r-re))]^2
+                      // Map: eps -> D, sig -> re, paramC -> a
+                      const term = 1 - Math.exp(-pC * (rRounded - sig))
+                      v = eps * term * term
+                      break
+                  }
+                  case 'SOFT': {
+                      // V(r) = eps * (sig/r)^n
+                      const n = Math.max(1, pC)
+                      v = eps * Math.pow(sig / rRounded, n)
+                      break
+                  }
+                  case 'YUKAWA': {
+                      // V(r) = eps * exp(-r/lambda) / r
+                      // Map: sig -> lambda
+                      v = eps * Math.exp(-rRounded / sig) / rRounded
+                      break
+                  }
+                  case 'GAUSS': {
+                      // V(r) = eps * exp(-r^2 / 2sig^2)
+                      const r2 = rRounded * rRounded
+                      v = eps * Math.exp(-0.5 * r2 / (sig * sig))
+                      break
+                  }
+                  case 'BUCK': {
+                      // V(r) = A * exp(-r/rho) - C/r^6
+                      // Map: eps -> A, sig -> rho, paramC -> C
+                      v = eps * Math.exp(-rRounded / sig) - (pC / Math.pow(rRounded, 6))
+                      break
+                  }
+                  case 'MIE': {
+                      const n = pC // Repulsive exponent
+                      const m = typeof pD === 'number' ? pD : paramD
+                      if (Math.abs(n - m) < 1e-6) { v = 0; break; }
+                      
+                      const C = (n / (n - m)) * Math.pow(n / m, m / (n - m))
+                      const ratio = sig / rRounded
+                      const termN = Math.pow(ratio, n)
+                      const termM = Math.pow(ratio, m)
+                      
+                      v = C * eps * (termN - termM)
+                      break
+                  }
+              }
+
+              data.push([rRounded, v])
+          }
+          return { name: label, data }
+      }
+
+      // Generate Series
+      const seriesList = []
+
+      const getSigMarkerLabel = () => {
+          switch (potentialType) {
+              case 'MORSE':
+                  return 'rₑ'
+              case 'YUKAWA':
+                  return 'λ'
+              case 'BUCK':
+                  return 'ρ'
+              default:
+                  return 'σ'
+          }
+      }
+
+      const getEpsMarkerLabel = () => {
+          switch (potentialType) {
+              case 'MORSE':
+                  return 'D'
+              case 'BUCK':
+                  return 'A'
+              default:
+                  return 'ε'
+          }
+      }
+
+      const getSigmaRefLines = (eps: number, sig: number, color: string, mieN?: number, mieM?: number) => {
+          // Simple, predictable: apply a per-species y-offset in binary mode.
+          // (No x-position detection; avoids brittle heuristics.)
+          const seriesYOffset = isBinary ? (color === '#ef4444' ? 24 : 10) : 0
+
+          const lines: any[] = [
+              {
+                  // Visualize the epsilon-like parameter on the y-axis.
+                  // For LJ, epsilon corresponds to the well depth (V_min = -ε).
+                  yAxis: (potentialType === 'LJ' || potentialType === 'MIE') ? -eps : eps,
+                  name: (potentialType === 'LJ' || potentialType === 'MIE') ? '−ε' : getEpsMarkerLabel(),
+                  lineStyle: { type: 'dashed', color, width: 1, opacity: 1 },
+                  label: {
+                      show: true,
+                      // Put −ε below the dashed line; keep others above.
+                      position: (potentialType === 'LJ' || potentialType === 'MIE') ? 'insideEndBottom' : 'insideEndTop',
+                      rotate: 0,
+                      // In binary mode, nudge the red ε/D label left so A/B don't visually collide.
+                      offset: [isBinary && color === '#ef4444' ? -16 : 0, 0],
+                      formatter: (params: any) => {
+                          const name = params.name || ((potentialType === 'LJ' || potentialType === 'MIE') ? '−ε' : getEpsMarkerLabel())
+                          return `${name}`
+                      },
+                      color,
+                      fontFamily: 'Merriweather Sans',
+                      fontSize: 11,
+                      fontWeight: 'normal'
+                  }
+              }
+          ]
+
+          // Remove epsilon line for Yukawa and Buckingham
+          if (potentialType === 'YUKAWA' || potentialType === 'BUCK') {
+              lines.shift()
+          }
+
+          // Add sigma/rₑ marker for all potentials except Morse, Yukawa, and Buckingham
+          if (potentialType !== 'MORSE' && potentialType !== 'YUKAWA' && potentialType !== 'BUCK') {
+              lines.push({
+                  xAxis: sig,
+                  lineStyle: { type: 'dashed', color, width: 1, opacity: 1 },
+                  label: {
+                      formatter: (params: any) => {
+                          const label = getSigMarkerLabel()
+                          if (potentialType === 'GAUSS') {
+                              return `${label} (1 std)`
+                          }
+                          return label
+                      },
+                      position: 'insideEndTop',
+                      rotate: 0,
+                      align: 'center',
+                      offset: [potentialType === 'GAUSS' ? 21 : 6, seriesYOffset],
+                      color,
+                      fontFamily: 'Merriweather Sans',
+                      fontSize: 10
+                  }
+              })
+          }
+
+          // Add rMin marker for LJ and Mie potentials
+          if (potentialType === 'LJ' || potentialType === 'MIE') {
+              let rMin = 0
+              if (potentialType === 'LJ') {
+                  rMin = Math.pow(2, 1 / 6) * sig
+              } else {
+                  const n = typeof mieN === 'number' ? mieN : paramC
+                  const m = typeof mieM === 'number' ? mieM : paramD
+                  if (Math.abs(n - m) < 1e-6 || m <= 0) {
+                      return lines
+                  }
+                  rMin = sig * Math.pow(n / m, 1 / (n - m))
+              }
+              lines.push({
+                  xAxis: rMin,
+                  lineStyle: { type: 'dashed', color, width: 1, opacity: 0.9 },
+                  name: 'rₘᵢₙ',
+                  label: {
+                      show: true,
+                      position: 'insideEndTop',
+                      rotate: 0,
+                      formatter: (params: any) => {
+                          const val = Number(params.value)
+                          // Use rich text instead of Unicode subscripts (the subscript "i" looks odd in many fonts).
+                          return `r{min|min}: ${val.toFixed(2)} Å`
+                      },
+                      // Shift right so it doesn't cover the σ label.
+                      offset: [4, seriesYOffset],
+                      align: 'left',
+                      rich: {
+                          min: {
+                              fontSize: 9,
+                              padding: [4, 0, 0, 0],
+                              fontFamily: 'Merriweather Sans',
+                              color
+                          }
+                      },
+                      color,
+                      fontFamily: 'Merriweather Sans',
+                      fontSize: 11
+                  }
+              })
+          }
+
+          // Add rₑ marker for Morse potentials only (rₑ = sig)
+          if (potentialType === 'MORSE') {
+              lines.push({
+                  xAxis: sig,
+                  lineStyle: { type: 'dashed', color, width: 1, opacity: 1 },
+                  name: 'rₑ',
+                  label: {
+                      show: true,
+                      position: 'insideEndTop',
+                      rotate: 0,
+                      formatter: (params: any) => {
+                          return `r{e|e}`
+                      },
+                      // Shift right for proper spacing
+                      offset: [4, seriesYOffset],
+                      align: 'left',
+                      rich: {
+                          e: {
+                              fontSize: 9,
+                              padding: [4, 0, 0, 0],
+                              fontFamily: 'Merriweather Sans',
+                              color
+                          }
+                      },
+                      color,
+                      fontFamily: 'Merriweather Sans',
+                      fontSize: 11
+                  }
+              })
+          }
+
+          return lines
+      }
+      
+      // Always add Species A
+      const seriesA = generateCurve(
+          epsilonA,
+          sigmaA,
+          paramC,
+          isBinary ? 'Species A' : 'Potential',
+          potentialType === 'MIE' ? paramD : undefined
+      )
+      seriesList.push({
+          name: seriesA.name,
+          type: 'line',
+          showSymbol: false,
+          data: seriesA.data,
+          lineStyle: { width: 3, color: isBinary ? '#3b82f6' : '#f59e0b' }, // Blue if binary, Orange if single
+          markLine: {
+              symbol: 'none',
+              silent: true,
+              emphasis: { disabled: true },
+              data: getSigmaRefLines(
+                  epsilonA,
+                  sigmaA,
+                  isBinary ? '#3b82f6' : '#f59e0b',
+                  potentialType === 'MIE' ? paramC : undefined,
+                  potentialType === 'MIE' ? paramD : undefined
+              )
+          }
+      })
+
+      // If Binary, add Species B
+      if (isBinary) {
+          const seriesB = generateCurve(
+              epsilonB,
+              sigmaB,
+              potentialType === 'MIE' ? mieParamC_B : (potentialType === 'MORSE' || potentialType === 'SOFT' || potentialType === 'BUCK') ? paramC_B : paramC,
+              'Species B',
+              potentialType === 'MIE' ? mieParamD_B : undefined
+          )
+          seriesList.push({
+              name: seriesB.name,
+              type: 'line',
+              showSymbol: false,
+              data: seriesB.data,
+              lineStyle: { width: 3, color: '#ef4444' }, // Red
+              markLine: {
+                  symbol: 'none',
+                  silent: true,
+                  emphasis: { disabled: true },
+                  data: getSigmaRefLines(
+                      epsilonB,
+                      sigmaB,
+                      '#ef4444',
+                      potentialType === 'MIE' ? mieParamC_B : undefined,
+                      potentialType === 'MIE' ? mieParamD_B : undefined
+                  )
+              }
+          })
+      }
+
+      return {
+          title: { 
+              text: 'Interatomic Potential V(r)', 
+              left: 'center', 
+              textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' } 
+          },
+          tooltip: {
+              trigger: 'axis',
+              backgroundColor: isDark ? 'rgba(31, 41, 55, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+              borderColor: isDark ? '#374151' : '#e5e7eb',
+              textStyle: { fontFamily: 'Merriweather Sans', color: textColor },
+              formatter: (params: any) => {
+                  if (!params[0]) return ''
+                  const r = params[0].value[0].toFixed(1)
+                  const v = params[0].value[1].toFixed(1)
+                  return `r: ${r} Å<br/>V(r): ${v} K`
+              }
+          },
+          grid: { left: 50, right: 20, top: 40, bottom: 40 },
+          xAxis: {
+              type: 'value',
+              name: 'r (Distance) [Å]',
+              nameLocation: 'middle',
+              nameGap: 30,
+              min: 0,
+              max: xAxisMax,
+              nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              axisTick: { show: true, length: 6, inside: false },
+              axisLabel: {
+                  color: textColor,
+                  fontSize: 10,
+                  fontFamily: 'Merriweather Sans',
+                  // Place numbers under the tick marks (below tick tips, not hugging the axis line).
+                  margin: 8,
+                  padding: [0, 0, 0, 0],
+                  formatter: (v: number) => {
+                      // Hide the max tick label so it matches the y-axis min/max hiding behavior.
+                      if (Math.abs(v - xAxisMax) < 1e-9) return ''
+                      // Keep integers clean while preserving 0.1 increments.
+                      return v.toFixed(1).replace(/\.0$/, '')
+                  }
+              },
+              axisLine: { show: true, lineStyle: { color: textColor } },
+              splitLine: { show: false }
+          },
+          yAxis: {
+              type: 'value',
+              name: 'Energy (K)',
+              nameLocation: 'middle',
+              nameGap: 35,
+              nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
+              // Keep the well readable while allowing the repulsive wall to shoot off-chart.
+              min: yMin,
+              max: yMax,
+              axisLabel: {
+                  color: textColor,
+                  fontFamily: 'Merriweather Sans',
+                  fontSize: 10,
+                  formatter: (v: number) => {
+                      // Hide the min/max tick labels.
+                      if (Math.abs(v - yMin) < 1e-9) return ''
+                      if (Math.abs(v - yMax) < 1e-9) return ''
+                      return `${Math.round(v)}`
+                  }
+              },
+              axisTick: { show: false },
+              axisLine: { show: true, lineStyle: { color: textColor } },
+              splitLine: { show: false }
+          },
+          series: seriesList,
+          animation: false
+      } as EChartsOption
+  }
 
   // --- RDF Visualization ---
   const getRdfOption = (): EChartsOption => {
@@ -1867,6 +2551,10 @@ export default function MolecularDynamicsPage() {
               eps: 'Energy Barrier (ε)',
               sig: 'Gaussian Width (σ)'
           }
+          case 'MIE': return {
+              eps: 'Well Depth (ε)',
+              sig: 'Collision Diameter (σ)'
+          }
           default: return {
               eps: <span>L-J Epsilon (ε/k<sub>B</sub>)</span>,
               sig: 'L-J Sigma (σ)'
@@ -1946,6 +2634,16 @@ export default function MolecularDynamicsPage() {
                             <BlockMath math={'V(r) = \\epsilon \\left( \\frac{\\sigma}{r} \\right)^n'} />
                         </div>
                         <p className="text-[10px] mt-2 text-muted-foreground text-center">Generic inverse-power repulsion.</p>
+                    </>
+                )
+            case 'MIE':
+                return (
+                    <>
+                        <p className="font-bold mb-1 text-center">Mie Potential</p>
+                        <div className="text-xs">
+                            <BlockMath math={'V(r) = C \\epsilon \\left[ \\left(\\frac{\\sigma}{r}\\right)^n - \\left(\\frac{\\sigma}{r}\\right)^m \\right] \\\\ C = \\frac{n}{n-m} \\left( \\frac{n}{m} \\right)^{\\frac{m}{n-m}}'} />
+                        </div>
+                        <p className="text-[10px] mt-2 text-muted-foreground text-center">Generalized LJ. C normalizes min to -ε.</p>
                     </>
                 )
             default:
@@ -2096,12 +2794,13 @@ export default function MolecularDynamicsPage() {
                             disabled={running}
                         >
                             <option value="LJ">Lennard-Jones (Standard)</option>
-                            <option value="WCA">WCA (Pure Repulsion)</option>
                             <option value="MORSE">Morse (Bonding)</option>
-                            <option value="SOFT">Soft Sphere (Power Law)</option>
+                            <option value="BUCK">Buckingham (Ionic Solids)</option>
+                            <option value="WCA">WCA (Pure Repulsion)</option>
+                            <option value="MIE">Mie (Generalized LJ)</option>
                             <option value="YUKAWA">Yukawa (Screened Coulomb)</option>
+                            <option value="SOFT">Soft Sphere (Power Law)</option>
                             <option value="GAUSS">Gaussian Core (Polymers)</option>
-                            <option value="BUCK">Buckingham (Ionic)</option>
                         </select>
 
                         {/* Info icon placed to the right of the select */}
@@ -2119,7 +2818,7 @@ export default function MolecularDynamicsPage() {
                      {!isBinary ? (
                          /* OLD SINGLE SLIDERS */
                          <>
-                             <Label className="text-white"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
+                             <Label className="text-foreground"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
                              <Slider
                                  disabled={running}
                                  value={[epsilonA]} min={5} max={1000} step={5}
@@ -2135,7 +2834,7 @@ export default function MolecularDynamicsPage() {
                                  </div>
                              )}
                              
-                             <Label className="text-white"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
+                             <Label className="text-foreground"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
                              <Slider
                                  disabled={running}
                                  value={[sigmaA]} min={2.0} max={6.5} step={0.01}
@@ -2162,7 +2861,7 @@ export default function MolecularDynamicsPage() {
                                          : 'Species A (Blue)'}
                                  </Label>
                                  
-                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
+                                 <Label className="text-[10px] text-blue-500"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonA]} min={5} max={1000} step={5}
@@ -2178,7 +2877,7 @@ export default function MolecularDynamicsPage() {
                                      </div>
                                  )}
                                  
-                                 <Label className="text-[10px]"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
+                                 <Label className="text-[10px] text-blue-500"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[sigmaA]} min={2} max={6} step={0.01}
@@ -2203,7 +2902,7 @@ export default function MolecularDynamicsPage() {
                                          : 'Species B (Red)'}
                                  </Label>
                                  
-                                 <Label className="text-[10px]"><span>{labels.eps}: {epsilonB.toFixed(0)} K</span></Label>
+                                 <Label className="text-[10px] text-red-500"><span>{labels.eps}: {epsilonB.toFixed(0)} K</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonB]} min={5} max={1000} step={5}
@@ -2219,7 +2918,7 @@ export default function MolecularDynamicsPage() {
                                      </div>
                                  )}
                                  
-                                 <Label className="text-[10px]"><span>{labels.sig}: {sigmaB.toFixed(2)} Å</span></Label>
+                                 <Label className="text-[10px] text-red-500"><span>{labels.sig}: {sigmaB.toFixed(2)} Å</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[sigmaB]} min={2} max={6} step={0.01}
@@ -2241,22 +2940,139 @@ export default function MolecularDynamicsPage() {
 
 
 
-                {/* DYNAMIC "PARAMETER C" SLIDER */}
-                {(potentialType === 'MORSE' || potentialType === 'SOFT' || potentialType === 'BUCK') && (
+                {/* DYNAMIC PARAMETER SLIDERS */}
+                {(potentialType === 'MORSE' || potentialType === 'SOFT' || potentialType === 'BUCK' || potentialType === 'MIE') && (
                     <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
-                        <Label className="text-white">
-                            {potentialType === 'MORSE' ? `Width (a): ${paramC.toFixed(2)}` : 
-                             potentialType === 'BUCK' ? `Attraction (C): ${paramC.toFixed(1)}` :
-                             `Exponent (n): ${paramC.toFixed(1)}`}
-                        </Label>
-                        <Slider
-                            disabled={running}
-                            value={[paramC]} 
-                            min={potentialType === 'MORSE' ? 0.5 : (potentialType === 'BUCK' ? 0.0 : 1.0)} 
-                            max={potentialType === 'MORSE' ? 3.0 : (potentialType === 'BUCK' ? 500.0 : 18.0)} 
-                            step={potentialType === 'BUCK' ? 10.0 : 0.1}
-                            onValueChange={(v) => setParamC(v[0])}
-                        />
+                        {potentialType !== 'MIE' && !isBinary && (
+                            <>
+                                <Label className="text-foreground">
+                                    {potentialType === 'MORSE' ? `Width (a): ${paramC.toFixed(2)}` :
+                                     potentialType === 'BUCK' ? `Attraction (C): ${paramC.toFixed(1)}` :
+                                     `Exponent (n): ${paramC.toFixed(1)}`}
+                                </Label>
+                                <Slider
+                                    disabled={running}
+                                    value={[paramC]}
+                                    min={potentialType === 'MORSE' ? 0.5 : (potentialType === 'BUCK' ? 0.0 : 1.0)}
+                                    max={potentialType === 'MORSE' ? 3.0 : (potentialType === 'BUCK' ? 500.0 : 18.0)}
+                                    step={potentialType === 'BUCK' ? 10.0 : 0.1}
+                                    onValueChange={(v) => setParamC(v[0])}
+                                />
+                            </>
+                        )}
+
+                        {potentialType !== 'MIE' && isBinary && (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2 border-r pr-2">
+                                    <Label className={`text-[10px] ${potentialType === 'BUCK' ? 'text-blue-500' : 'text-blue-500'}`}>
+                                        {potentialType === 'MORSE'
+                                            ? `Width (a): ${paramC.toFixed(2)}`
+                                            : potentialType === 'BUCK'
+                                                ? `Attraction (C): ${paramC.toFixed(1)}`
+                                                : `Exponent (n): ${paramC.toFixed(1)}`}
+                                    </Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[paramC]}
+                                        min={potentialType === 'MORSE' ? 0.5 : (potentialType === 'BUCK' ? 0.0 : 1.0)}
+                                        max={potentialType === 'MORSE' ? 3.0 : (potentialType === 'BUCK' ? 500.0 : 18.0)}
+                                        step={potentialType === 'BUCK' ? 10.0 : 0.1}
+                                        onValueChange={(v) => setParamC(v[0])}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label className={`text-[10px] text-red-500`}>
+                                        {potentialType === 'MORSE'
+                                            ? `Width (a): ${paramC_B.toFixed(2)}`
+                                            : potentialType === 'BUCK'
+                                                ? `Attraction (C): ${paramC_B.toFixed(1)}`
+                                                : `Exponent (n): ${paramC_B.toFixed(1)}`}
+                                    </Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[paramC_B]}
+                                        min={potentialType === 'MORSE' ? 0.5 : (potentialType === 'BUCK' ? 0.0 : 1.0)}
+                                        max={potentialType === 'MORSE' ? 3.0 : (potentialType === 'BUCK' ? 500.0 : 18.0)}
+                                        step={potentialType === 'BUCK' ? 10.0 : 0.1}
+                                        onValueChange={(v) => setParamC_B(v[0])}
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        {potentialType === 'MIE' && !isBinary && (
+                            <>
+                                <Label className="text-foreground">Repulsive Exp (n): {paramC.toFixed(1)}</Label>
+                                <Slider
+                                    disabled={running}
+                                    value={[paramC]}
+                                    min={8.0}
+                                    max={24.0}
+                                    step={1.0}
+                                    onValueChange={(v) => setParamC(v[0])}
+                                />
+
+                                <div className="space-y-2">
+                                    <Label className="text-foreground">Attractive Exp (m): {paramD.toFixed(1)}</Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[paramD]}
+                                        min={3.0}
+                                        max={Math.min(12.0, paramC - 1.0)}
+                                        step={1.0}
+                                        onValueChange={(v) => setParamD(v[0])}
+                                    />
+                                </div>
+                            </>
+                        )}
+
+                        {potentialType === 'MIE' && isBinary && (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2 border-r pr-2">
+                                    <Label className="text-[10px] text-blue-500">Repulsive Exp (n): {paramC.toFixed(1)}</Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[paramC]}
+                                        min={8.0}
+                                        max={24.0}
+                                        step={1.0}
+                                        onValueChange={(v) => setParamC(v[0])}
+                                    />
+
+                                    <Label className="text-[10px] text-blue-500">Attractive Exp (m): {paramD.toFixed(1)}</Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[paramD]}
+                                        min={3.0}
+                                        max={Math.min(12.0, paramC - 1.0)}
+                                        step={1.0}
+                                        onValueChange={(v) => setParamD(v[0])}
+                                    />
+                                </div>
+
+                                <div className="space-y-2">
+                                    <Label className="text-[10px] text-red-500">Repulsive Exp (n): {mieParamC_B.toFixed(1)}</Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[mieParamC_B]}
+                                        min={8.0}
+                                        max={24.0}
+                                        step={1.0}
+                                        onValueChange={(v) => setMieParamC_B(v[0])}
+                                    />
+
+                                    <Label className="text-[10px] text-red-500">Attractive Exp (m): {mieParamD_B.toFixed(1)}</Label>
+                                    <Slider
+                                        disabled={running}
+                                        value={[mieParamD_B]}
+                                        min={3.0}
+                                        max={Math.min(12.0, mieParamC_B - 1.0)}
+                                        step={1.0}
+                                        onValueChange={(v) => setMieParamD_B(v[0])}
+                                    />
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
               </div>
@@ -2634,6 +3450,19 @@ export default function MolecularDynamicsPage() {
                   <div className="absolute top-2 right-2 z-10 flex gap-2 items-center">
                       <Button
                           size="sm"
+                          variant={analysisView === 'potential' ? 'default' : 'outline'}
+                          onClick={() => setAnalysisView('potential')}
+                          className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
+                              mounted ? (isDarkTheme
+                                  ? 'bg-background/80 text-white border border-white/20'
+                                  : 'bg-background/80 text-black border border-black/20')
+                              : ''
+                          }`}
+                      >
+                          Potential
+                      </Button>
+                      <Button
+                          size="sm"
                           variant={analysisView === 'rdf' ? 'default' : 'outline'}
                           onClick={() => setAnalysisView('rdf')}
                           className={`h-8 text-xs shadow-none hover:bg-background/80 active:bg-background/80 focus-visible:ring-0 focus-visible:outline-none font-[Merriweather_Sans] ${
@@ -2695,15 +3524,16 @@ export default function MolecularDynamicsPage() {
                       }}
                   >
                       <ReactECharts
-                          key={analysisView}
+                          key={analysisView === 'potential' ? `potential-${isBinary ? 'bin' : 'pure'}-${potentialType}` : analysisView}
                           ref={analysisChartRef}
                           option={
+                              analysisView === 'potential' ? getPotentialOption() :
                               analysisView === 'rdf' ? getRdfOption() : 
                               analysisView === 'energy' ? getEnergyOption() : 
                               getMsdOption()
                           }
                           style={{ height: '100%', width: '100%' }}
-                          notMerge={false}
+                          notMerge={analysisView === 'potential'}
                           lazyUpdate={true}
                       />
                   </div>
