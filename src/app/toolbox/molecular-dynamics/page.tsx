@@ -87,6 +87,25 @@ const KB_OVER_MU = 0.831446
 // 1 K/Å³ = 138.06 bar
 const PRESSURE_CONV_BAR = 138.06
 
+// --- REAL WORLD CONVERSIONS ---
+// Speed: 1 Å/ps = 100 m/s
+const CONV_SPEED_M_S = 100.0
+
+// --- ENERGY & FORCE CONVERSIONS ---
+// 1 K = 1.380649e-23 J
+// 1 zJ (zeptoJoule) = 1e-21 J
+// Therefore: 1 K = 0.01380649 zJ
+const CONV_K_TO_ZJ = 0.01380649
+
+// Force: 1 K/Å = (1.380649e-23 J) / (1e-10 m) = 1.380649e-13 N
+// 1 pN = 1e-12 N
+// Therefore: 1 K/Å = 0.1380649 pN
+const CONV_K_PER_A_TO_PN = 0.1380649
+
+// Energy: 1 K ≈ 1.380649e-23 J (Joules)
+// We will format this in scientific notation (e.g. 1.6e-21 J)
+const CONV_ENERGY_JOULES = 1.380649e-23
+
 const MASS_ARGON = 39.948 // Daltons
 
 // Simulation Constants
@@ -542,7 +561,7 @@ export default function MolecularDynamicsPage() {
   const [kineticEnergy, setKineticEnergy] = useState<number>(0)
   const [thermostatZeta, setThermostatZeta] = useState<number>(0) // Visualizing the friction
   const [pressure, setPressure] = useState<number>(0)
-  const [rdfData, setRdfData] = useState<{r: number, g: number}[]>([])
+  const [rdfData, setRdfData] = useState<{r: number, gTotal: number, gAA: number, gBB: number, gAB: number}[]>([])
   const [energyHistory, setEnergyHistory] = useState<{time: number, ke: number, pe: number, tot: number}[]>([])
     const energyHistoryRef = useRef<{time: number, ke: number, pe: number, tot: number}[]>([])
   const [analysisView, setAnalysisView] = useState<'potential' | 'rdf' | 'energy' | 'msd'>('potential')
@@ -566,6 +585,8 @@ export default function MolecularDynamicsPage() {
     const analysisHoverRef = useRef(false)
     const analysisPointerRef = useRef<{ x: number; y: number } | null>(null)
     const analysisTooltipTimerRef = useRef<number | null>(null)
+    const analysisTooltipRafPendingRef = useRef(false)
+    const analysisTooltipLastRef = useRef<{ x: number; y: number; view: string; t: number } | null>(null)
   
   // --- Selected Particle View State ---
   const particleHistoryRef = useRef<{time: number, vx: number, vy: number, f: number}[]>([])
@@ -606,7 +627,17 @@ export default function MolecularDynamicsPage() {
   const timeRef = useRef(0)
   
   // RDF Accumulation State
-  const rdfHistogramRef = useRef<number[]>(new Array(RDF_BINS).fill(0))
+  const rdfHistogramRef = useRef<{
+      aa: number[], 
+      bb: number[], 
+      ab: number[], 
+      total: number[] 
+  }>({
+      aa: new Array(RDF_BINS).fill(0),
+      bb: new Array(RDF_BINS).fill(0),
+      ab: new Array(RDF_BINS).fill(0),
+      total: new Array(RDF_BINS).fill(0)
+  })
   const rdfFramesRef = useRef<number>(0)
 
   // Update refs when state changes
@@ -923,30 +954,41 @@ export default function MolecularDynamicsPage() {
       const hist = rdfHistogramRef.current
       const N = currentParticles.length
 
-      // O(N^2) Loop required for long-range RDF (up to L/2)
-      // Cell lists are too short-range for full structure analysis
       for (let i = 0; i < N; i++) {
+          const p1 = currentParticles[i]
           for (let j = i + 1; j < N; j++) {
-              let dx = currentParticles[j].x - currentParticles[i].x
-              let dy = currentParticles[j].y - currentParticles[i].y
-              let dz = currentParticles[j].z - currentParticles[i].z
+              const p2 = currentParticles[j]
+              
+              let dx = p2.x - p1.x
+              let dy = p2.y - p1.y
+              let dz = p2.z - p1.z
 
-              // MIC (Minimum Image Convention)
+              // MIC
               dx -= box * Math.round(dx / box)
               dy -= box * Math.round(dy / box)
+              if (isThreeDRef.current) dz -= box * Math.round(dz / box)
+              else dz = 0
 
-              if (isThreeDRef.current) {
-                  dz -= box * Math.round(dz / box)
-              } else {
-                  dz = 0
-              }
-
-              const r = Math.sqrt(dx*dx + dy*dy + dz*dz)
-
-              if (r < RDF_CUTOFF) {
+              const distSq = dx*dx + dy*dy + dz*dz
+              
+              // Optimization: Pre-check squared distance before sqrt
+              if (distSq < RDF_CUTOFF * RDF_CUTOFF) {
+                  const r = Math.sqrt(distSq)
                   const bin = Math.floor(r / RDF_BIN_WIDTH)
+                  
                   if (bin >= 0 && bin < RDF_BINS) {
-                      hist[bin] += 2 // Add 2 because we found pair (i,j) AND (j,i)
+                      // 1. Accumulate Global
+                      hist.total[bin] += 2
+                      
+                      // 2. Accumulate Partials
+                      if (p1.type === 0 && p2.type === 0) {
+                          hist.aa[bin] += 2
+                      } else if (p1.type === 1 && p2.type === 1) {
+                          hist.bb[bin] += 2
+                      } else {
+                          // Cross interaction (0-1 or 1-0)
+                          hist.ab[bin] += 2
+                      }
                   }
               }
           }
@@ -958,36 +1000,64 @@ export default function MolecularDynamicsPage() {
   const computeRDFGraph = () => {
       const hist = rdfHistogramRef.current
       const frames = rdfFramesRef.current
-      const N = particlesRef.current.length
+      const currentParticles = particlesRef.current
+      const N = currentParticles.length
       const { box } = paramsRef.current
+      
       if (frames === 0 || N === 0) return []
 
-      // Global Density (rho)
-      const volume = isThreeDRef.current ? Math.pow(box, 3) : Math.pow(box, 2)
-      const density = N / volume
+      // Count distinct species for normalization
+      const Na = currentParticles.filter(p => p.type === 0).length
+      const Nb = currentParticles.filter(p => p.type === 1).length
       
-      return hist.map((count, i) => {
-          const r = (i + 1) * RDF_BIN_WIDTH
-          // Shell measure depends on dimensionality
-          // 2D: dA = 2π r dr
-          // 3D: dV = 4π r^2 dr
+      const volume = isThreeDRef.current ? Math.pow(box, 3) : Math.pow(box, 2)
+      
+      return hist.total.map((countTotal, i) => {
+          // Use bin center for r
+          const r = (i + 0.5) * RDF_BIN_WIDTH
+          
+          // Geometry Factor (Shell Volume)
           const shell = isThreeDRef.current
               ? 4 * Math.PI * r * r * RDF_BIN_WIDTH
               : 2 * Math.PI * r * RDF_BIN_WIDTH
-          
-          // Expected count for ideal gas = rho * shell
-          const idealCount = density * shell
-          
-          // g(r) = Observed / (Ideal * N * Frames)
-          // We divide by N because the histogram sums over ALL particles as centers
-          const g = count / (idealCount * N * frames)
-          
-          return { r, g }
+
+          // --- 1. Total g(r) ---
+          const rhoTotal = N / volume
+          const idealTotal = rhoTotal * shell * N * frames
+          const gTotal = idealTotal > 1e-9 ? countTotal / idealTotal : 0
+
+          // --- 2. AA g(r) ---
+          let gAA = 0
+          if (Na > 0) {
+              const rhoA = Na / volume
+              // Ideal count of A around A = rhoA * shell * Na
+              const idealAA = rhoA * shell * Na * frames
+              gAA = idealAA > 1e-9 ? hist.aa[i] / idealAA : 0
+          }
+
+          // --- 3. BB g(r) ---
+          let gBB = 0
+          if (Nb > 0) {
+              const rhoB = Nb / volume
+              const idealBB = rhoB * shell * Nb * frames
+              gBB = idealBB > 1e-9 ? hist.bb[i] / idealBB : 0
+          }
+
+          // --- 4. AB g(r) ---
+          let gAB = 0
+          if (Na > 0 && Nb > 0) {
+              // Ideal count of B around A (and A around B)
+              // Total Ideal Cross Pairs = 2 * (Na * Nb / V) * shell
+              const idealAB = 2 * (Na * Nb / volume) * shell * frames
+              gAB = idealAB > 1e-9 ? hist.ab[i] / idealAB : 0
+          }
+
+          return { r, gTotal, gAA, gBB, gAB }
       })
   }
 
   // Analyze RDF to find Peak and Coordination Number
-  const analyzeStructure = (data: {r: number, g: number}[]) => {
+  const analyzeStructure = (data: {r: number, gTotal: number, gAA: number, gBB: number, gAB: number}[]) => {
       if (data.length < 5) return
 
       // 1. Find First Peak (Location and Height)
@@ -997,8 +1067,8 @@ export default function MolecularDynamicsPage() {
       const searchLimit = data.length / 2 
       
       for (let i = 0; i < searchLimit; i++) {
-          if (data[i].g > maxVal) {
-              maxVal = data[i].g
+          if (data[i].gTotal > maxVal) {
+              maxVal = data[i].gTotal
               maxIdx = i
           }
       }
@@ -1010,7 +1080,7 @@ export default function MolecularDynamicsPage() {
       let minIdx = maxIdx
       for (let i = maxIdx + 1; i < data.length - 1; i++) {
           // Simple local minimum detection
-          if (data[i].g < data[i+1].g && data[i].g < 1.5) { 
+          if (data[i].gTotal < data[i+1].gTotal && data[i].gTotal < 1.5) { 
               minIdx = i
               break
           }
@@ -1029,7 +1099,7 @@ export default function MolecularDynamicsPage() {
       let integral = 0
       for (let i = 0; i < minIdx; i++) {
           const r = data[i].r
-          const g = data[i].g
+          const g = data[i].gTotal
           const dr = RDF_BIN_WIDTH
           
           // Geometry factor depends on 2D vs 3D
@@ -1227,7 +1297,12 @@ export default function MolecularDynamicsPage() {
     particlesRef.current = newParticles
     setSelectedId(null)
     particleHistoryRef.current = []
-    rdfHistogramRef.current = new Array(RDF_BINS).fill(0) // Clear RDF bins
+    rdfHistogramRef.current = {
+        aa: new Array(RDF_BINS).fill(0),
+        bb: new Array(RDF_BINS).fill(0),
+        ab: new Array(RDF_BINS).fill(0),
+        total: new Array(RDF_BINS).fill(0)
+    }
     rdfFramesRef.current = 0 // Reset RDF frame counter
     setRdfData([]) // Clear RDF display
     
@@ -1512,15 +1587,15 @@ export default function MolecularDynamicsPage() {
 
       if (analysisView === 'rdf') {
           // Export RDF Data
-          csvContent += "Distance(A),RDF(g)\n"
+          csvContent += "Distance(A),g_Total,g_AA,g_BB,g_AB\n"
           rdfData.forEach((row) => {
-              const rowString = `${row.r.toFixed(4)},${row.g.toFixed(6)}`
+              const rowString = `${row.r.toFixed(4)},${row.gTotal.toFixed(6)},${row.gAA.toFixed(6)},${row.gBB.toFixed(6)},${row.gAB.toFixed(6)}`
               csvContent += rowString + "\n"
           })
           filename = "rdf_data.csv"
       } else if (analysisView === 'potential') {
           // Export Potential Data
-          csvContent += "Distance(A),Potential(K)\n"
+          csvContent += "Distance(A),Potential(zJ)\n"
           
           // Helper to generate curve data with rounder x-axis values
           const generateCurveForExport = (eps: number, sig: number, pC: number, pD?: number) => {
@@ -1590,7 +1665,7 @@ export default function MolecularDynamicsPage() {
                       }
                   }
 
-                  data.push([Math.round(r * 10) / 10, v])
+                  data.push([Math.round(r * 10) / 10, v * CONV_K_TO_ZJ])
               }
               return data
           }
@@ -1598,15 +1673,15 @@ export default function MolecularDynamicsPage() {
           // Export Species A
           const dataA = generateCurveForExport(epsilonA, sigmaA, paramC, potentialType === 'MIE' ? paramD : undefined)
           dataA.forEach((point) => {
-              csvContent += `${point[0].toFixed(1)},${point[1].toFixed(4)}\n`
+              csvContent += `${point[0].toFixed(1)},${point[1].toFixed(6)}\n`
           })
           
           filename = "potential_data.csv"
       } else if (analysisView === 'energy') {
           // Export Energy Data
-          csvContent += "Time(ps),TotalEnergy(K),Potential(K),Kinetic(K)\n"
+          csvContent += "Time(ps),TotalEnergy(zJ),Potential(zJ),Kinetic(zJ)\n"
           energyHistoryRef.current.forEach((row) => {
-              const rowString = `${row.time.toFixed(4)},${row.tot.toFixed(2)},${row.pe.toFixed(2)},${row.ke.toFixed(2)}`
+              const rowString = `${row.time.toFixed(4)},${(row.tot * CONV_K_TO_ZJ).toFixed(4)},${(row.pe * CONV_K_TO_ZJ).toFixed(4)},${(row.ke * CONV_K_TO_ZJ).toFixed(4)}`
               csvContent += rowString + "\n"
           })
           filename = "energy_data.csv"
@@ -1653,8 +1728,17 @@ export default function MolecularDynamicsPage() {
       if (!pt) return
       const inst = analysisChartRef.current?.getEchartsInstance?.()
       if (!inst) return
+
+      // Avoid spamming showTip with identical coordinates; this helps prevent flicker
+      // when setOption is applied frequently while the cursor is stationary.
+      const now = performance.now()
+      const viewKey = `${analysisView}-${isBinary ? 'bin' : 'pure'}-${potentialType}`
+      const last = analysisTooltipLastRef.current
+      if (last && last.view === viewKey && last.x === pt.x && last.y === pt.y && now - last.t < 120) return
+      analysisTooltipLastRef.current = { x: pt.x, y: pt.y, view: viewKey, t: now }
+
       inst.dispatchAction({ type: 'showTip', x: pt.x, y: pt.y })
-  }, [])
+  }, [analysisView, isBinary, potentialType])
 
   const stopAnalysisTooltipLoop = useCallback(() => {
       if (analysisTooltipTimerRef.current !== null) {
@@ -1664,16 +1748,23 @@ export default function MolecularDynamicsPage() {
   }, [])
 
   const startAnalysisTooltipLoop = useCallback(() => {
-      if (analysisTooltipTimerRef.current !== null) return
-      analysisTooltipTimerRef.current = window.setInterval(() => {
-          refreshAnalysisTooltip()
-      }, 50)
-  }, [refreshAnalysisTooltip])
+      // Intentionally a no-op: ECharts handles hover; we only re-show tooltip after setOption.
+      // Keeping this function avoids changing event handler wiring.
+      return
+  }, [])
 
   // After each data refresh, re-show the tooltip at the last cursor position.
   useEffect(() => {
+      // Potential chart doesn't change with per-frame simulation data;
+      // refreshing the tooltip during energy/RDF updates can cause flicker.
+      if (analysisView === 'potential') return
       // Defer to the next frame so it runs after ECharts applies setOption.
-      requestAnimationFrame(() => refreshAnalysisTooltip())
+      if (analysisTooltipRafPendingRef.current) return
+      analysisTooltipRafPendingRef.current = true
+      requestAnimationFrame(() => {
+          analysisTooltipRafPendingRef.current = false
+          refreshAnalysisTooltip()
+      })
   }, [rdfData, energyHistory, analysisView, refreshAnalysisTooltip])
 
   useEffect(() => {
@@ -1858,8 +1949,8 @@ export default function MolecularDynamicsPage() {
       const rEnd = maxSigma * 3.5
       const xAxisMax = Math.ceil(rEnd * 10) / 10
       const scaleEps = isBinary ? Math.max(epsilonA, epsilonB) : epsilonA
-    const yMin = -scaleEps * 1.5
-    const yMax = scaleEps * 2.5
+        const yMin = (-scaleEps * 1.5) * CONV_K_TO_ZJ
+        const yMax = (scaleEps * 2.5) * CONV_K_TO_ZJ
 
       // Helper to generate curve data for a specific set of parameters
       const generateCurve = (eps: number, sig: number, pC: number, label: string, pD?: number) => {
@@ -1933,7 +2024,7 @@ export default function MolecularDynamicsPage() {
                   }
               }
 
-              data.push([rRounded, v])
+              data.push([rRounded, v * CONV_K_TO_ZJ])
           }
           return { name: label, data }
       }
@@ -1974,7 +2065,7 @@ export default function MolecularDynamicsPage() {
               {
                   // Visualize the epsilon-like parameter on the y-axis.
                   // For LJ, epsilon corresponds to the well depth (V_min = -ε).
-                  yAxis: (potentialType === 'LJ' || potentialType === 'MIE') ? -eps : eps,
+                  yAxis: ((potentialType === 'LJ' || potentialType === 'MIE') ? -eps : eps) * CONV_K_TO_ZJ,
                   name: (potentialType === 'LJ' || potentialType === 'MIE') ? '−ε' : getEpsMarkerLabel(),
                   lineStyle: { type: 'dashed', color, width: 1, opacity: 1 },
                   label: {
@@ -2175,14 +2266,14 @@ export default function MolecularDynamicsPage() {
               formatter: (params: any) => {
                   if (!params[0]) return ''
                   const r = params[0].value[0].toFixed(1)
-                  const v = params[0].value[1].toFixed(1)
-                  return `r: ${r} Å<br/>V(r): ${v} K`
+                  const v = params[0].value[1].toFixed(2)
+                  return `r: ${r} Å<br/>V(r): ${v} zJ`
               }
           },
           grid: { left: 50, right: 20, top: 40, bottom: 40 },
           xAxis: {
               type: 'value',
-              name: 'r (Distance) [Å]',
+              name: 'Distance, r (Å)',
               nameLocation: 'middle',
               nameGap: 30,
               min: 0,
@@ -2208,7 +2299,7 @@ export default function MolecularDynamicsPage() {
           },
           yAxis: {
               type: 'value',
-              name: 'Energy (K)',
+              name: 'Potential Energy, V (zJ)',
               nameLocation: 'middle',
               nameGap: 35,
               nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -2219,6 +2310,8 @@ export default function MolecularDynamicsPage() {
                   color: textColor,
                   fontFamily: 'Merriweather Sans',
                   fontSize: 10,
+                  showMinLabel: false,
+                  showMaxLabel: false,
                   formatter: (v: number) => {
                       // Hide the min/max tick labels.
                       if (Math.abs(v - yMin) < 1e-9) return ''
@@ -2226,7 +2319,7 @@ export default function MolecularDynamicsPage() {
                       return `${Math.round(v)}`
                   }
               },
-              axisTick: { show: false },
+              axisTick: { show: true },
               axisLine: { show: true, lineStyle: { color: textColor } },
               splitLine: { show: false }
           },
@@ -2235,18 +2328,76 @@ export default function MolecularDynamicsPage() {
       } as EChartsOption
   }
 
+  const potentialOptionMemo = useMemo(() => {
+      return getPotentialOption()
+  }, [
+      resolvedTheme,
+      isBinary,
+      potentialType,
+      epsilonA,
+      sigmaA,
+      epsilonB,
+      sigmaB,
+      paramC,
+      paramD,
+      paramC_B,
+      mieParamC_B,
+      mieParamD_B
+  ])
+
   // --- RDF Visualization ---
   const getRdfOption = (): EChartsOption => {
       const isDark = resolvedTheme === 'dark'
       const textColor = isDark ? '#ffffff' : '#000000'
+
+      const snapTooltipR = (rawR: number) => {
+          // RDF bins are centered at 0.05, 0.15, ...; snap display to nicer 0.1 Å ticks.
+          const snapped = Math.round(rawR * 10) / 10
+          return snapped
+      }
+
+      const findFirstPeakX = (getY: (d: { r: number; gTotal: number; gAA: number; gBB: number; gAB: number }) => number) => {
+          if (rdfData.length < 5) return undefined
+          // Avoid the very first bin where finite-size / overlap artifacts can dominate
+          const startIdx = 1
+          const searchLimit = Math.floor(rdfData.length / 2)
+          let maxVal = -Infinity
+          let maxIdx = -1
+          for (let i = startIdx; i < searchLimit; i++) {
+              const y = getY(rdfData[i])
+              if (!Number.isFinite(y)) continue
+              if (y > maxVal) {
+                  maxVal = y
+                  maxIdx = i
+              }
+          }
+          return maxIdx >= 0 ? rdfData[maxIdx].r : undefined
+      }
+
+      const peakTotal = findFirstPeakX(d => d.gTotal)
+      const peakAA = isBinary ? findFirstPeakX(d => d.gAA) : undefined
+      const peakBB = isBinary ? findFirstPeakX(d => d.gBB) : undefined
+      const peakAB = isBinary ? findFirstPeakX(d => d.gAB) : undefined
       
       return {
+          // Explicit palette so legend markers match series colors
+          color: isBinary
+              ? ['#3b82f6', '#ef4444', '#8b5cf6', isDark ? '#9ca3af' : '#6b7280']
+              : ['#f59e0b', isDark ? '#9ca3af' : '#6b7280'],
           backgroundColor: 'transparent',
           title: {
               text: 'Radial Distribution Function g(r)',
               left: 'center',
               textStyle: { fontSize: 12, color: textColor, fontFamily: 'Merriweather Sans' }
           },
+          legend: isBinary ? { 
+              bottom: 5, 
+              data: ['A-A (Blue)', 'B-B (Red)', 'A-B (Cross)'],
+              symbolKeepAspect: true, 
+              itemWidth: 8, 
+              itemHeight: 8, 
+              textStyle: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 10 } 
+          } : { show: false },
           tooltip: { 
               trigger: 'axis',
               triggerOn: 'mousemove|click',
@@ -2259,19 +2410,39 @@ export default function MolecularDynamicsPage() {
               textStyle: { fontFamily: 'Merriweather Sans', color: textColor },
               axisPointer: { type: 'line' },
               formatter: (params: any) => {
-                  if (!Array.isArray(params)) return ''
-                  const p = params[0]
-                  if (!p || p.seriesName === 'Ideal Gas') return ''
-                  // Remove trailing zeros from distance
-                  const r = parseFloat(p.value[0]).toFixed(3).replace(/\.?0+$/, '')
-                  const g = parseFloat(p.value[1]).toPrecision(3)
-                  return `r: ${r} Å<br/>g(r): ${g}`
+                  if (!Array.isArray(params) || params.length === 0) return ''
+
+                  const first = params[0]
+                  const rawR = Array.isArray(first?.value) ? Number(first.value[0]) : Number(first?.axisValue)
+                  const snappedR = snapTooltipR(rawR)
+                  const rStr = Number.isFinite(snappedR) ? snappedR.toFixed(1).replace(/\.0$/, '') : '—'
+
+                  const seen = new Set<string>()
+                  const lines: string[] = [`r: ${rStr} Å`] 
+
+                  for (const p of params) {
+                      const name = String(p?.seriesName ?? '')
+                      if (!name) continue
+                      if (seen.has(name)) continue
+                      seen.add(name)
+
+                      const val = Array.isArray(p.value) ? Number(p.value[1]) : Number(p.value)
+
+                      if (name === 'Ideal Gas') {
+                          lines.push(`${name}: 1.00`)
+                          continue
+                      }
+                      if (!Number.isFinite(val)) continue
+                      lines.push(`${name}: ${val.toPrecision(3)}`)
+                  }
+
+                  return lines.join('<br/>')
               }
           },
-          grid: { left: 40, right: 10, top: 30, bottom: 40 },
+          grid: { left: 40, right: 10, top: 30, bottom: 65 },
           xAxis: {
               type: 'value',
-              name: 'r (Distance) [Å]',
+              name: 'Distance, r (Å)',
               nameLocation: 'middle',
               nameGap: 30,
               nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -2289,32 +2460,124 @@ export default function MolecularDynamicsPage() {
               splitLine: { show: false }
           },
           series: [
-              {
-                  type: 'line',
-                  showSymbol: false,
-                  data: rdfData.map(d => [d.r, d.g]),
-                  smooth: true,
-                  lineStyle: { color: '#8b5cf6', width: 2 },
-                  areaStyle: { opacity: 0.1, color: '#8b5cf6' },
-                  markLine: rdfData.length > 0 ? {
-                      symbol: 'none',
-                      data: [
-                          { 
-                              xAxis: structureMetrics.peakDist, 
-                              lineStyle: { type: 'dashed', color: '#f59e0b' },
-                              label: { formatter: 'Peak', position: 'end', color: textColor, fontFamily: 'Merriweather Sans', fontSize: 10 }
-                          }
-                      ]
-                  } : undefined
-              },
-              {
-                  type: 'line',
-                  name: 'Ideal Gas',
-                  data: [[0,1], [RDF_CUTOFF, 1]],
-                  symbol: 'none',
-                  lineStyle: { type: 'dashed', color: isDark ? '#555' : '#999', width: 1 }
-              }
-          ],
+              // Show Partials if Binary, otherwise just show Total as "g(r)"
+              ...(isBinary ? [
+                  {
+                      name: 'A-A (Blue)',
+                      type: 'line',
+                      showSymbol: false,
+                      data: rdfData.map(d => [d.r, d.gAA]),
+                      smooth: true,
+                      itemStyle: { color: '#3b82f6' },
+                      lineStyle: { color: '#3b82f6', width: 2 },
+                      markLine: peakAA !== undefined ? {
+                          symbol: 'none',
+                          silent: true,
+                          data: [
+                              {
+                                  xAxis: peakAA,
+                                  lineStyle: { type: 'dotted', color: '#3b82f6' },
+                                  label: {
+                                      show: true,
+                                      formatter: `Peak: ${peakAA.toFixed(2)} Å`,
+                                      position: 'insideEndTop',
+                                      offset: [0, 0],
+                                      color: '#3b82f6',
+                                      fontFamily: 'Merriweather Sans',
+                                      fontSize: 10
+                                  }
+                              }
+                          ]
+                      } : undefined
+                  },
+                  {
+                      name: 'B-B (Red)',
+                      type: 'line',
+                      showSymbol: false,
+                      data: rdfData.map(d => [d.r, d.gBB]),
+                      smooth: true,
+                      itemStyle: { color: '#ef4444' },
+                      lineStyle: { color: '#ef4444', width: 2 },
+                      markLine: peakBB !== undefined ? {
+                          symbol: 'none',
+                          silent: true,
+                          data: [
+                              {
+                                  xAxis: peakBB,
+                                  lineStyle: { type: 'dotted', color: '#ef4444' },
+                                  label: {
+                                      show: true,
+                                      formatter: `Peak: ${peakBB.toFixed(2)} Å`,
+                                      position: 'insideEndTop',
+                                      color: '#ef4444',
+                                      fontFamily: 'Merriweather Sans',
+                                      fontSize: 10
+                                  }
+                              }
+                          ]
+                      } : undefined
+                  },
+                  {
+                      name: 'A-B (Cross)',
+                      type: 'line',
+                      showSymbol: false,
+                      data: rdfData.map(d => [d.r, d.gAB]),
+                      smooth: true,
+                      itemStyle: { color: '#8b5cf6' },
+                      lineStyle: { color: '#8b5cf6', width: 2 },
+                      markLine: peakAB !== undefined ? {
+                          symbol: 'none',
+                          silent: true,
+                          data: [
+                              {
+                                  xAxis: peakAB,
+                                  lineStyle: { type: 'dotted', color: '#8b5cf6' },
+                                  label: {
+                                      show: true,
+                                      formatter: `Peak: ${peakAB.toFixed(2)} Å`,
+                                      position: 'insideEndTop',
+                                      color: '#8b5cf6',
+                                      fontFamily: 'Merriweather Sans',
+                                      fontSize: 10
+                                  }
+                              }
+                          ]
+                      } : undefined
+                  }
+              ] : [
+                  {
+                      name: 'g(r)',
+                      type: 'line',
+                      showSymbol: false,
+                      data: rdfData.map(d => [d.r, d.gTotal]),
+                      smooth: true,
+                      itemStyle: { color: '#f59e0b' },
+                      lineStyle: { color: '#f59e0b', width: 2 },
+                      areaStyle: { opacity: 0.1, color: '#f59e0b' },
+                      markLine: peakTotal !== undefined ? {
+                          symbol: 'none',
+                          silent: true,
+                          data: [
+                              {
+                                  xAxis: peakTotal,
+                                  lineStyle: { type: 'dotted', color: '#f59e0b' },
+                                  label: {
+                                      show: true,
+                                      formatter: `Peak: ${peakTotal.toFixed(2)} Å`,
+                                      position: 'insideEndTop',
+                                      offset: [0, 0],
+                                      color: '#f59e0b',
+                                      fontFamily: 'Merriweather Sans',
+                                      fontSize: 10
+                                  }
+                              }
+                          ]
+                      } : undefined
+                  }
+              ]),
+
+              // Ideal Gas Baseline removed
+          ] as any,
           animation: false
       }
   }
@@ -2337,9 +2600,9 @@ export default function MolecularDynamicsPage() {
 
         // No filtering/padding here: we always plot real samples only.
         // ECharts will clip to [minTime, maxTime] via the xAxis min/max.
-        const totalData = energyHistory.map((h): [number, number] => [h.time, h.tot])
-        const peData = energyHistory.map((h): [number, number] => [h.time, h.pe])
-        const keData = energyHistory.map((h): [number, number] => [h.time, h.ke])
+        const totalData = energyHistory.map((h): [number, number] => [h.time, h.tot * CONV_K_TO_ZJ])
+        const peData = energyHistory.map((h): [number, number] => [h.time, h.pe * CONV_K_TO_ZJ])
+        const keData = energyHistory.map((h): [number, number] => [h.time, h.ke * CONV_K_TO_ZJ])
 
                         return {
                     // Explicit palette ensures legend markers match series line colors
@@ -2368,7 +2631,7 @@ export default function MolecularDynamicsPage() {
                       if (seen.has(name)) continue
                       seen.add(name)
                       const val = Array.isArray(p.value) ? p.value[1] : p.value
-                      lines.push(`${name}: ${Number(val).toPrecision(4)} K`)
+                      lines.push(`${name}: ${Number(val).toPrecision(4)} zJ`)
                   }
                   return [timeLine, ...lines].join('<br/>')
               }
@@ -2382,7 +2645,7 @@ export default function MolecularDynamicsPage() {
               boundaryGap: [0, 0],
               show: true,
               position: 'bottom',
-              name: 'Time (ps)',
+              name: 'Time, t (ps)',
               nameLocation: 'middle',
               nameGap: 25,
               nameTextStyle: { color: isDark ? '#ffffff' : '#000', fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -2391,11 +2654,11 @@ export default function MolecularDynamicsPage() {
               splitLine: { show: false },
               axisLabel: { showMinLabel: false, showMaxLabel: false, color: isDark ? '#ffffff' : '#000', fontFamily: 'Merriweather Sans', margin: 5, formatter: (v: number) => v.toFixed(1) }
           },
-          yAxis: { type: 'value', name: 'Energy (K)', nameLocation: 'middle', nameGap: 55, nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: textColor }, onZero: false }, axisTick: { show: true }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 } },
+          yAxis: { type: 'value', name: 'Energy, E (zJ)', nameLocation: 'middle', nameGap: 60, nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' }, splitLine: { show: false }, axisLine: { show: true, lineStyle: { color: textColor }, onZero: false }, axisTick: { show: true }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', margin: 5 } },
           series: [
-              { name: 'Total E', type: 'line', data: totalData, showSymbol: false, lineStyle: { width: 2, color: '#10b981' } },
-              { name: 'Potential (PE)', type: 'line', data: peData, showSymbol: false, lineStyle: { width: 1.5, color: '#3b82f6' } },
-              { name: 'Kinetic (KE)', type: 'line', data: keData, showSymbol: false, lineStyle: { width: 1.5, color: '#ef4444' } }
+              { name: 'Total Energy', type: 'line', data: totalData, showSymbol: false, lineStyle: { width: 2, color: '#10b981' } },
+              { name: 'Potential Energy', type: 'line', data: peData, showSymbol: false, lineStyle: { width: 1.5, color: '#3b82f6' } },
+              { name: 'Kinetic Energy', type: 'line', data: keData, showSymbol: false, lineStyle: { width: 1.5, color: '#ef4444' } }
           ],
           animation: false
       }
@@ -2492,7 +2755,7 @@ export default function MolecularDynamicsPage() {
               boundaryGap: [0, 0],
               show: true,
               position: 'bottom',
-              name: 'Time (ps)',
+              name: 'Time, t (ps)',
               nameLocation: 'middle',
               nameGap: 25,
               nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -2503,7 +2766,7 @@ export default function MolecularDynamicsPage() {
           },
           yAxis: {
               type: 'value',
-              name: 'MSD (Å²)',
+              name: 'Mean Squared Displacement, MSD (Å²)',
               nameLocation: 'middle',
               nameGap: 35,
               nameTextStyle: { color: textColor, fontSize: 10, fontFamily: 'Merriweather Sans' },
@@ -2526,9 +2789,10 @@ export default function MolecularDynamicsPage() {
 
   // Helper to get labels based on current potential type
   const getLabels = () => {
+      const epsLabel = 'Well Depth (ε)'
       switch (potentialType) {
           case 'MORSE': return {
-              eps: 'Well Depth (D)',
+              eps: epsLabel,
               sig: <span className="font-mono">Equilibrium (r<sub className="font-mono">e</sub>)</span>
           }
           case 'SOFT': return {
@@ -2552,12 +2816,12 @@ export default function MolecularDynamicsPage() {
               sig: 'Gaussian Width (σ)'
           }
           case 'MIE': return {
-              eps: 'Well Depth (ε)',
+              eps: epsLabel,
               sig: 'Collision Diameter (σ)'
           }
           default: return {
-              eps: <span>L-J Epsilon (ε/k<sub>B</sub>)</span>,
-              sig: 'L-J Sigma (σ)'
+              eps: epsLabel,
+              sig: 'Diameter (σ)'
           }
       }
   }
@@ -2703,7 +2967,7 @@ export default function MolecularDynamicsPage() {
                     ) : (
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-2">
-                                <Label className="text-blue-500">Count A: {numParticlesA}</Label>
+                                <Label className="text-blue-500"># of Particle A: {numParticlesA}</Label>
                                 <Slider 
                                     disabled={running}
                                     value={[numParticlesA]} min={5} max={100} step={5}
@@ -2711,7 +2975,7 @@ export default function MolecularDynamicsPage() {
                                 />
                             </div>
                             <div className="space-y-2">
-                                <Label className="text-red-500">Count B: {numParticlesB}</Label>
+                                <Label className="text-red-500"># of Particle B: {numParticlesB}</Label>
                                 <Slider 
                                     disabled={running}
                                     value={[numParticlesB]} min={5} max={100} step={5}
@@ -2725,7 +2989,16 @@ export default function MolecularDynamicsPage() {
                 {/* TEMPERATURE: SAFE to change during run */}
                 <div className="space-y-2">
                     <div className="flex justify-between items-center">
-                        <Label><span>Reduced Temp (T/ε): {reducedTemp.toFixed(2)}</span></Label>
+                        <div className="flex items-center gap-2">
+                            <Label><span>Reduced Temp (T*): {reducedTemp.toFixed(2)}</span></Label>
+                            {/* Add a tooltip explaining the unit mismatch */}
+                            <div className="relative group flex items-center justify-center">
+                                <Info className="h-3 w-3 text-muted-foreground cursor-help" />
+                                <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50 hidden w-36 p-2 text-xs bg-popover text-popover-foreground border rounded-md shadow-md group-hover:block animate-in fade-in zoom-in-95">
+                                    <BlockMath math={'T^* = \\frac{k_B T}{\\epsilon}'} />
+                                </div>
+                            </div>
+                        </div>
                         <Label 
                             className="text-muted-foreground text-xs cursor-pointer hover:text-foreground transition-colors"
                             onClick={handleTemperatureUnitClick}
@@ -2754,7 +3027,7 @@ export default function MolecularDynamicsPage() {
                 {useGravity && (
                     <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''} animate-in fade-in`}>
                         <Label>
-                            Gravity Strength (G-Force): {gravityStrength.toFixed(1)} K/Å
+                            Gravity Force: {(gravityStrength * CONV_K_PER_A_TO_PN).toFixed(2)} pN
                         </Label>
                         <Slider
                             disabled={running}
@@ -2818,7 +3091,7 @@ export default function MolecularDynamicsPage() {
                      {!isBinary ? (
                          /* OLD SINGLE SLIDERS */
                          <>
-                             <Label className="text-foreground"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
+                             <Label className="text-foreground"><span>{labels.eps}: {(epsilonA * CONV_K_TO_ZJ).toFixed(2)} zJ</span></Label>
                              <Slider
                                  disabled={running}
                                  value={[epsilonA]} min={5} max={1000} step={5}
@@ -2828,7 +3101,7 @@ export default function MolecularDynamicsPage() {
                                  <div className="text-[10px] leading-tight text-muted-foreground">
                                      {ljEpsilonMatchesA.map((m) => (
                                          <div key={`epsA-${m.formula}`}>
-                                             {m.substance} ({m.formula}) — {m.epsilonOverKbK.toFixed(1)} K
+                                             {m.substance} ({m.formula}) — {(m.epsilonOverKbK * CONV_K_TO_ZJ).toFixed(2)} zJ
                                          </div>
                                      ))}
                                  </div>
@@ -2861,7 +3134,7 @@ export default function MolecularDynamicsPage() {
                                          : 'Species A (Blue)'}
                                  </Label>
                                  
-                                 <Label className="text-[10px] text-blue-500"><span>{labels.eps}: {epsilonA.toFixed(0)} K</span></Label>
+                                 <Label className="text-[10px] text-blue-500"><span>{labels.eps}: {(epsilonA * CONV_K_TO_ZJ).toFixed(2)} zJ</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonA]} min={5} max={1000} step={5}
@@ -2871,7 +3144,7 @@ export default function MolecularDynamicsPage() {
                                      <div className="text-[10px] leading-tight text-muted-foreground">
                                          {ljEpsilonMatchesA.map((m) => (
                                              <div key={`epsA2-${m.formula}`}>
-                                                 {m.substance} ({m.formula})
+                                                 {m.substance} ({m.formula}) — {(m.epsilonOverKbK * CONV_K_TO_ZJ).toFixed(2)} zJ
                                              </div>
                                          ))}
                                      </div>
@@ -2880,7 +3153,7 @@ export default function MolecularDynamicsPage() {
                                  <Label className="text-[10px] text-blue-500"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
                                  <Slider 
                                      disabled={running}
-                                     value={[sigmaA]} min={2} max={6} step={0.01}
+                                     value={[sigmaA]} min={2.0} max={6.5} step={0.01}
                                      onValueChange={(v) => setSigmaA(v[0])} 
                                  />
                                  {showLJReferenceHints && ljPairMatchesA.length !== 1 && (
@@ -2902,7 +3175,7 @@ export default function MolecularDynamicsPage() {
                                          : 'Species B (Red)'}
                                  </Label>
                                  
-                                 <Label className="text-[10px] text-red-500"><span>{labels.eps}: {epsilonB.toFixed(0)} K</span></Label>
+                                 <Label className="text-[10px] text-red-500"><span>{labels.eps}: {(epsilonB * CONV_K_TO_ZJ).toFixed(2)} zJ</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonB]} min={5} max={1000} step={5}
@@ -2912,7 +3185,7 @@ export default function MolecularDynamicsPage() {
                                      <div className="text-[10px] leading-tight text-muted-foreground">
                                          {ljEpsilonMatchesB.map((m) => (
                                              <div key={`epsB-${m.formula}`}>
-                                                 {m.substance} ({m.formula})
+                                                 {m.substance} ({m.formula}) — {(m.epsilonOverKbK * CONV_K_TO_ZJ).toFixed(2)} zJ
                                              </div>
                                          ))}
                                      </div>
@@ -2921,7 +3194,7 @@ export default function MolecularDynamicsPage() {
                                  <Label className="text-[10px] text-red-500"><span>{labels.sig}: {sigmaB.toFixed(2)} Å</span></Label>
                                  <Slider 
                                      disabled={running}
-                                     value={[sigmaB]} min={2} max={6} step={0.01}
+                                     value={[sigmaB]} min={2.0} max={6.5} step={0.01}
                                      onValueChange={(v) => setSigmaB(v[0])} 
                                  />
                                  {showLJReferenceHints && ljPairMatchesB.length !== 1 && (
@@ -3117,71 +3390,107 @@ export default function MolecularDynamicsPage() {
             </CardContent>
           </Card>
 
-          {/* Selected Particle Info */}
+          {/* Selected Particle Info - Updated with Real Units */}
           <Card>
               <CardHeader className="py-3">
                   <CardTitle className="text-sm">Selected Particle</CardTitle>
               </CardHeader>
               
               <CardContent className="pt-0 -mt-5">
-                {selectedParticleData ? (
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                        {/* Magnitudes */}
-                        <div className="p-2 bg-muted rounded col-span-1">
-                            <p className="text-muted-foreground text-xs mb-1">Speed</p>
-                            <p className="font-mono font-bold">
-                                {Math.sqrt(selectedParticleData.vx**2 + selectedParticleData.vy**2 + selectedParticleData.vz**2).toFixed(2)} σ/ps
-                            </p>
-                        </div>
-                        <div className="p-2 bg-muted rounded col-span-1">
-                            <p className="text-muted-foreground text-xs mb-1">Force</p>
-                            <p className="font-mono font-bold">
-                                {Math.sqrt(selectedParticleData.fx**2 + selectedParticleData.fy**2 + selectedParticleData.fz**2).toFixed(2)} ε/σ
-                            </p>
-                        </div>
+                {selectedParticleData ? (() => {
+                    const formatSIPrefix = (value: number) => {
+                        if (!Number.isFinite(value)) return { valueStr: '—', prefix: '' }
+                        const abs = Math.abs(value)
+                        if (abs === 0) return { valueStr: '0', prefix: '' }
 
-                        {/* Velocity Components */}
-                        <div className={`col-span-2 grid ${isThreeD ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
-                             <div className="p-2 bg-muted rounded text-center">
-                                <p className="text-muted-foreground text-[10px] mb-1">Vx</p>
-                                <p className="font-mono font-bold text-xs">{selectedParticleData.vx.toFixed(2)}</p>
-                             </div>
-                             <div className="p-2 bg-muted rounded text-center">
-                                <p className="text-muted-foreground text-[10px] mb-1">Vy</p>
-                                <p className="font-mono font-bold text-xs">{selectedParticleData.vy.toFixed(2)}</p>
-                             </div>
-                             {isThreeD && (
-                                 <div className="p-2 bg-muted rounded text-center">
-                                    <p className="text-muted-foreground text-[10px] mb-1">Vz</p>
-                                    <p className="font-mono font-bold text-xs">{selectedParticleData.vz.toFixed(2)}</p>
-                                 </div>
-                             )}
-                        </div>
+                        // Engineering-ish prefixes for readability
+                        const table: Array<{ p: string; f: number }> = [
+                            { p: 'f', f: 1e-15 },
+                            { p: 'p', f: 1e-12 },
+                            { p: 'n', f: 1e-9 },
+                            { p: 'μ', f: 1e-6 },
+                            { p: 'm', f: 1e-3 },
+                            { p: '', f: 1 },
+                            { p: 'k', f: 1e3 },
+                            { p: 'M', f: 1e6 },
+                            { p: 'G', f: 1e9 }
+                        ]
 
-                        {/* Force Components */}
-                        <div className={`col-span-2 grid ${isThreeD ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
-                             <div className="p-2 bg-muted rounded text-center">
-                                <p className="text-muted-foreground text-[10px] mb-1">Fx</p>
-                                <p className="font-mono font-bold text-xs">{selectedParticleData.fx.toFixed(2)}</p>
-                             </div>
-                             <div className="p-2 bg-muted rounded text-center">
-                                <p className="text-muted-foreground text-[10px] mb-1">Fy</p>
-                                <p className="font-mono font-bold text-xs">{selectedParticleData.fy.toFixed(2)}</p>
-                             </div>
-                             {isThreeD && (
-                                 <div className="p-2 bg-muted rounded text-center">
-                                    <p className="text-muted-foreground text-[10px] mb-1">Fz</p>
-                                    <p className="font-mono font-bold text-xs">{selectedParticleData.fz.toFixed(2)}</p>
-                                 </div>
-                             )}
+                        // Pick the largest factor that keeps the scaled value >= 1
+                        let choice = table[0]
+                        for (const t of table) {
+                            if (abs >= t.f) choice = t
+                        }
+                        const scaled = value / choice.f
+                        // Keep compact but stable
+                        const valueStr = Math.abs(scaled) >= 100 ? scaled.toFixed(0)
+                            : Math.abs(scaled) >= 10 ? scaled.toFixed(1)
+                            : scaled.toFixed(2)
+                        return { valueStr, prefix: choice.p }
+                    }
+
+                    // 1. Calculate Raw Magnitudes (Simulation Units)
+                    const vMagSim = Math.sqrt(selectedParticleData.vx**2 + selectedParticleData.vy**2 + selectedParticleData.vz**2)
+                    const fMagSim = Math.sqrt(selectedParticleData.fx**2 + selectedParticleData.fy**2 + selectedParticleData.fz**2)
+                    
+                    // Calculate Single Particle Kinetic Energy (in Kelvin)
+                    // KE = 0.5 * m * v^2 / conversion_factor
+                    const keKelvin = 0.5 * MASS_ARGON * (vMagSim * vMagSim) / KB_OVER_MU
+
+                    // 2. Convert to Real World Units
+                    const speedReal = vMagSim * CONV_SPEED_M_S          // m/s
+                    const forceReal = fMagSim * CONV_K_PER_A_TO_PN      // pN
+                    const energyReal = keKelvin * CONV_ENERGY_JOULES    // Joules
+                    const energySI = formatSIPrefix(energyReal)
+
+                    return (
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                            {/* Top Row: Speed & Kinetic Energy */}
+                            <div className="p-2 bg-muted rounded col-span-1 flex flex-col items-center justify-center text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1 uppercase tracking-wider">Speed</p>
+                                <p className="font-mono font-bold text-green-600">
+                                    {speedReal.toFixed(0)} m/s
+                                </p>
+                            </div>
+                            
+                            <div className="p-2 bg-muted rounded col-span-1 flex flex-col items-center justify-center text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1 uppercase tracking-wider">Kinetic Energy</p>
+                                <p className="font-mono font-bold text-red-500">
+                                    {energySI.valueStr} {energySI.prefix}J
+                                </p>
+                            </div>
+
+                                     {/* Middle Row: Velocity Components (converted to m/s) */}
+                                     <div className={`col-span-2 grid ${isThreeD ? 'grid-cols-3' : 'grid-cols-2'} gap-2`}>
+                                            <div className="p-2 bg-muted rounded text-center">
+                                                <p className="text-muted-foreground text-[10px] mb-1 uppercase tracking-wider"><span>V<sub>x</sub></span></p>
+                                                <p className="font-mono font-bold text-xs">{(selectedParticleData.vx * CONV_SPEED_M_S).toFixed(0)} m/s</p>
+                                            </div>
+                                            <div className="p-2 bg-muted rounded text-center">
+                                                <p className="text-muted-foreground text-[10px] mb-1 uppercase tracking-wider"><span>V<sub>y</sub></span></p>
+                                                <p className="font-mono font-bold text-xs">{(selectedParticleData.vy * CONV_SPEED_M_S).toFixed(0)} m/s</p>
+                                            </div>
+                                            {isThreeD && (
+                                                 <div className="p-2 bg-muted rounded text-center">
+                                                     <p className="text-muted-foreground text-[10px] mb-1 uppercase tracking-wider"><span>V<sub>z</sub></span></p>
+                                                     <p className="font-mono font-bold text-xs">{(selectedParticleData.vz * CONV_SPEED_M_S).toFixed(0)} m/s</p>
+                                                 </div>
+                                            )}
+                                     </div>
+
+                            {/* Bottom Row: Net Force */}
+                            <div className="p-2 bg-muted rounded col-span-2 text-center">
+                                <p className="text-muted-foreground text-[10px] mb-1 uppercase tracking-wider">Net Force</p>
+                                <p className="font-mono font-bold text-amber-600">
+                                    {forceReal.toFixed(1)} pN
+                                </p>
+                            </div>
                         </div>
+                    )
+                })() : (
+                    <div className="flex flex-col items-center justify-center h-40 text-muted-foreground">
+                        <p className="text-xs">Click a particle to view real-time physics</p>
                     </div>
-                ) : (
-                    <p className="text-xs text-muted-foreground">
-                        {running 
-                            ? "Pause simulation to select a particle." 
-                            : "Click on a particle to view its properties."}
-                    </p>
                 )}
               </CardContent>
           </Card>
@@ -3524,10 +3833,16 @@ export default function MolecularDynamicsPage() {
                       }}
                   >
                       <ReactECharts
-                          key={analysisView === 'potential' ? `potential-${isBinary ? 'bin' : 'pure'}-${potentialType}` : analysisView}
+                          key={
+                              analysisView === 'potential'
+                                  ? `potential-${isBinary ? 'bin' : 'pure'}-${potentialType}`
+                                  : analysisView === 'rdf'
+                                      ? `rdf-${isBinary ? 'bin' : 'pure'}`
+                                      : analysisView
+                          }
                           ref={analysisChartRef}
                           option={
-                              analysisView === 'potential' ? getPotentialOption() :
+                              analysisView === 'potential' ? potentialOptionMemo :
                               analysisView === 'rdf' ? getRdfOption() : 
                               analysisView === 'energy' ? getEnergyOption() : 
                               getMsdOption()
