@@ -2792,7 +2792,7 @@ export default function MolecularDynamicsPage() {
       const epsLabel = 'Well Depth (ε)'
       switch (potentialType) {
           case 'MORSE': return {
-              eps: epsLabel,
+              eps: 'Dissociation Energy (D)',
               sig: <span className="font-mono">Equilibrium (r<sub className="font-mono">e</sub>)</span>
           }
           case 'SOFT': return {
@@ -2817,7 +2817,7 @@ export default function MolecularDynamicsPage() {
           }
           case 'MIE': return {
               eps: epsLabel,
-              sig: 'Collision Diameter (σ)'
+              sig: 'Diameter (σ)'
           }
           default: return {
               eps: epsLabel,
@@ -2957,7 +2957,7 @@ export default function MolecularDynamicsPage() {
                 <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''}`}>
                     {!isBinary ? (
                         <>
-                            <Label>Count: {numParticles}</Label>
+                            <Label># of Particles: {numParticles}</Label>
                             <Slider 
                                 disabled={running}
                                 value={[numParticles]} min={10} max={200} step={10}
@@ -3219,8 +3219,10 @@ export default function MolecularDynamicsPage() {
                         {potentialType !== 'MIE' && !isBinary && (
                             <>
                                 <Label className="text-foreground">
-                                    {potentialType === 'MORSE' ? `Width (a): ${paramC.toFixed(2)}` :
-                                     potentialType === 'BUCK' ? `Attraction (C): ${paramC.toFixed(1)}` :
+                                    {potentialType === 'MORSE' ? `Width (a): ${paramC.toFixed(2)} Å⁻¹` :
+                                     potentialType === 'BUCK' ? (
+                                        <span>Attraction (C): {(paramC * CONV_K_TO_ZJ).toFixed(1)} zJ·Å<sup style={{ fontFamily: 'Merriweather Sans' }}>6</sup></span>
+                                     ) :
                                      `Exponent (n): ${paramC.toFixed(1)}`}
                                 </Label>
                                 <Slider
@@ -3239,9 +3241,11 @@ export default function MolecularDynamicsPage() {
                                 <div className="space-y-2 border-r pr-2">
                                     <Label className={`text-[10px] ${potentialType === 'BUCK' ? 'text-blue-500' : 'text-blue-500'}`}>
                                         {potentialType === 'MORSE'
-                                            ? `Width (a): ${paramC.toFixed(2)}`
+                                            ? `Width (a): ${paramC.toFixed(2)} Å⁻¹`
                                             : potentialType === 'BUCK'
-                                                ? `Attraction (C): ${paramC.toFixed(1)}`
+                                                ? (
+                                                    <span>Attraction (C): {(paramC * CONV_K_TO_ZJ).toFixed(1)} zJ·Å<sup style={{ fontFamily: 'Merriweather Sans' }}>6</sup></span>
+                                                )
                                                 : `Exponent (n): ${paramC.toFixed(1)}`}
                                     </Label>
                                     <Slider
@@ -3256,9 +3260,11 @@ export default function MolecularDynamicsPage() {
                                 <div className="space-y-2">
                                     <Label className={`text-[10px] text-red-500`}>
                                         {potentialType === 'MORSE'
-                                            ? `Width (a): ${paramC_B.toFixed(2)}`
+                                            ? `Width (a): ${paramC_B.toFixed(2)} Å⁻¹`
                                             : potentialType === 'BUCK'
-                                                ? `Attraction (C): ${paramC_B.toFixed(1)}`
+                                                ? (
+                                                    <span>Attraction (C): {(paramC_B * CONV_K_TO_ZJ).toFixed(1)} zJ·Å<sup style={{ fontFamily: 'Merriweather Sans' }}>6</sup></span>
+                                                )
                                                 : `Exponent (n): ${paramC_B.toFixed(1)}`}
                                     </Label>
                                     <Slider
@@ -3275,7 +3281,7 @@ export default function MolecularDynamicsPage() {
 
                         {potentialType === 'MIE' && !isBinary && (
                             <>
-                                <Label className="text-foreground">Repulsive Exp (n): {paramC.toFixed(1)}</Label>
+                                <Label className="text-foreground">Repulsive Exp (n): {paramC.toFixed(0)}</Label>
                                 <Slider
                                     disabled={running}
                                     value={[paramC]}
@@ -3286,7 +3292,7 @@ export default function MolecularDynamicsPage() {
                                 />
 
                                 <div className="space-y-2">
-                                    <Label className="text-foreground">Attractive Exp (m): {paramD.toFixed(1)}</Label>
+                                    <Label className="text-foreground">Attractive Exp (m): {paramD.toFixed(0)}</Label>
                                     <Slider
                                         disabled={running}
                                         value={[paramD]}
@@ -3302,7 +3308,7 @@ export default function MolecularDynamicsPage() {
                         {potentialType === 'MIE' && isBinary && (
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2 border-r pr-2">
-                                    <Label className="text-[10px] text-blue-500">Repulsive Exp (n): {paramC.toFixed(1)}</Label>
+                                    <Label className="text-[10px] text-blue-500">Repulsive Exp (n): {paramC.toFixed(0)}</Label>
                                     <Slider
                                         disabled={running}
                                         value={[paramC]}
@@ -3312,7 +3318,7 @@ export default function MolecularDynamicsPage() {
                                         onValueChange={(v) => setParamC(v[0])}
                                     />
 
-                                    <Label className="text-[10px] text-blue-500">Attractive Exp (m): {paramD.toFixed(1)}</Label>
+                                    <Label className="text-[10px] text-blue-500">Attractive Exp (m): {paramD.toFixed(0)}</Label>
                                     <Slider
                                         disabled={running}
                                         value={[paramD]}
@@ -3324,7 +3330,7 @@ export default function MolecularDynamicsPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <Label className="text-[10px] text-red-500">Repulsive Exp (n): {mieParamC_B.toFixed(1)}</Label>
+                                    <Label className="text-[10px] text-red-500">Repulsive Exp (n): {mieParamC_B.toFixed(0)}</Label>
                                     <Slider
                                         disabled={running}
                                         value={[mieParamC_B]}
@@ -3334,7 +3340,7 @@ export default function MolecularDynamicsPage() {
                                         onValueChange={(v) => setMieParamC_B(v[0])}
                                     />
 
-                                    <Label className="text-[10px] text-red-500">Attractive Exp (m): {mieParamD_B.toFixed(1)}</Label>
+                                    <Label className="text-[10px] text-red-500">Attractive Exp (m): {mieParamD_B.toFixed(0)}</Label>
                                     <Slider
                                         disabled={running}
                                         value={[mieParamD_B]}
