@@ -246,6 +246,12 @@ const isPolarLJReference = (ref: LJReference): boolean => {
     return substance.includes('alcohol') || substance === 'methanol' || substance === 'ethanol'
 }
 
+// Helper to remove trailing zeros from decimal representations
+const trimTrailingZeros = (value: number, decimals: number): string => {
+    const formatted = value.toFixed(decimals)
+    return formatted.replace(/\.?0+$/, '')
+}
+
 export default function MolecularDynamicsPage() {
   const { resolvedTheme } = useTheme()
     const isDarkTheme = resolvedTheme === 'dark'
@@ -2990,7 +2996,7 @@ export default function MolecularDynamicsPage() {
                 <div className="space-y-2">
                     <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2">
-                            <Label><span>Reduced Temp (T*): {reducedTemp.toFixed(2)}</span></Label>
+                            <Label><span>Reduced Temp (T*): {trimTrailingZeros(reducedTemp, 2)}</span></Label>
                             {/* Add a tooltip explaining the unit mismatch */}
                             <div className="relative group flex items-center justify-center">
                                 <Info className="h-3 w-3 text-muted-foreground cursor-help" />
@@ -3027,7 +3033,7 @@ export default function MolecularDynamicsPage() {
                 {useGravity && (
                     <div className={`space-y-2 ${running ? 'opacity-50 pointer-events-none' : ''} animate-in fade-in`}>
                         <Label>
-                            Gravity Force: {(gravityStrength * CONV_K_PER_A_TO_PN).toFixed(2)} pN
+                            Gravity Force: {trimTrailingZeros(gravityStrength * CONV_K_PER_A_TO_PN, 2)} pN
                         </Label>
                         <Slider
                             disabled={running}
@@ -3091,7 +3097,7 @@ export default function MolecularDynamicsPage() {
                      {!isBinary ? (
                          /* OLD SINGLE SLIDERS */
                          <>
-                             <Label className="text-foreground"><span>{labels.eps}: {(epsilonA * CONV_K_TO_ZJ).toFixed(2)} zJ</span></Label>
+                             <Label className="text-foreground"><span>{labels.eps}: {trimTrailingZeros(epsilonA * CONV_K_TO_ZJ, 2)} zJ</span></Label>
                              <Slider
                                  disabled={running}
                                  value={[epsilonA]} min={5} max={1000} step={5}
@@ -3107,7 +3113,7 @@ export default function MolecularDynamicsPage() {
                                  </div>
                              )}
                              
-                             <Label className="text-foreground"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
+                             <Label className="text-foreground"><span>{labels.sig}: {trimTrailingZeros(sigmaA, 2)} Å</span></Label>
                              <Slider
                                  disabled={running}
                                  value={[sigmaA]} min={2.0} max={6.5} step={0.01}
@@ -3134,7 +3140,7 @@ export default function MolecularDynamicsPage() {
                                          : 'Species A (Blue)'}
                                  </Label>
                                  
-                                 <Label className="text-[10px] text-blue-500"><span>{labels.eps}: {(epsilonA * CONV_K_TO_ZJ).toFixed(2)} zJ</span></Label>
+                                 <Label className="text-[10px] text-blue-500"><span>{labels.eps}: {trimTrailingZeros(epsilonA * CONV_K_TO_ZJ, 2)} zJ</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonA]} min={5} max={1000} step={5}
@@ -3150,7 +3156,7 @@ export default function MolecularDynamicsPage() {
                                      </div>
                                  )}
                                  
-                                 <Label className="text-[10px] text-blue-500"><span>{labels.sig}: {sigmaA.toFixed(2)} Å</span></Label>
+                                 <Label className="text-[10px] text-blue-500"><span>{labels.sig}: {trimTrailingZeros(sigmaA, 2)} Å</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[sigmaA]} min={2.0} max={6.5} step={0.01}
@@ -3175,7 +3181,7 @@ export default function MolecularDynamicsPage() {
                                          : 'Species B (Red)'}
                                  </Label>
                                  
-                                 <Label className="text-[10px] text-red-500"><span>{labels.eps}: {(epsilonB * CONV_K_TO_ZJ).toFixed(2)} zJ</span></Label>
+                                 <Label className="text-[10px] text-red-500"><span>{labels.eps}: {trimTrailingZeros(epsilonB * CONV_K_TO_ZJ, 2)} zJ</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[epsilonB]} min={5} max={1000} step={5}
@@ -3191,7 +3197,7 @@ export default function MolecularDynamicsPage() {
                                      </div>
                                  )}
                                  
-                                 <Label className="text-[10px] text-red-500"><span>{labels.sig}: {sigmaB.toFixed(2)} Å</span></Label>
+                                 <Label className="text-[10px] text-red-500"><span>{labels.sig}: {trimTrailingZeros(sigmaB, 2)} Å</span></Label>
                                  <Slider 
                                      disabled={running}
                                      value={[sigmaB]} min={2.0} max={6.5} step={0.01}
@@ -3219,7 +3225,7 @@ export default function MolecularDynamicsPage() {
                         {potentialType !== 'MIE' && !isBinary && (
                             <>
                                 <Label className="text-foreground">
-                                    {potentialType === 'MORSE' ? `Width (a): ${paramC.toFixed(2)} Å⁻¹` :
+                                    {potentialType === 'MORSE' ? `Width (a): ${trimTrailingZeros(paramC, 2)} Å⁻¹` :
                                      potentialType === 'BUCK' ? (
                                         <span>Attraction (C): {(paramC * CONV_K_TO_ZJ).toFixed(1)} zJ·Å<sup style={{ fontFamily: 'Merriweather Sans' }}>6</sup></span>
                                      ) :
@@ -3241,7 +3247,7 @@ export default function MolecularDynamicsPage() {
                                 <div className="space-y-2 border-r pr-2">
                                     <Label className={`text-[10px] ${potentialType === 'BUCK' ? 'text-blue-500' : 'text-blue-500'}`}>
                                         {potentialType === 'MORSE'
-                                            ? `Width (a): ${paramC.toFixed(2)} Å⁻¹`
+                                            ? `Width (a): ${trimTrailingZeros(paramC, 2)} Å⁻¹`
                                             : potentialType === 'BUCK'
                                                 ? (
                                                     <span>Attraction (C): {(paramC * CONV_K_TO_ZJ).toFixed(1)} zJ·Å<sup style={{ fontFamily: 'Merriweather Sans' }}>6</sup></span>
@@ -3260,7 +3266,7 @@ export default function MolecularDynamicsPage() {
                                 <div className="space-y-2">
                                     <Label className={`text-[10px] text-red-500`}>
                                         {potentialType === 'MORSE'
-                                            ? `Width (a): ${paramC_B.toFixed(2)} Å⁻¹`
+                                            ? `Width (a): ${trimTrailingZeros(paramC_B, 2)} Å⁻¹`
                                             : potentialType === 'BUCK'
                                                 ? (
                                                     <span>Attraction (C): {(paramC_B * CONV_K_TO_ZJ).toFixed(1)} zJ·Å<sup style={{ fontFamily: 'Merriweather Sans' }}>6</sup></span>
