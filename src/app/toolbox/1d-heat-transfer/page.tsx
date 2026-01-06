@@ -8,6 +8,13 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ArrowUp, ArrowDown, Trash2 } from "lucide-react";
 
 // Define the structure for a single layer
@@ -22,20 +29,94 @@ interface Layer {
 // Function to generate a unique ID for new layers
 const generateId = () => `layer_${Date.now()}_${Math.random()}`;
 
-// A custom vertical switch for Solid/Fluid selection
-const VerticalSwitch = ({
+// Helper function to snap values to "nice" numbers for logarithmic sliders
+const snapToNiceNumber = (value: number): number => {
+  if (value <= 0) return 0.01;
+
+  const niceNumbers: number[] = [];
+
+  // From 0.01 to 1.00: increments of 0.01
+  for (let i = 1; i <= 100; i++) {
+    niceNumbers.push(Number((i * 0.01).toFixed(2)));
+  }
+
+  // From 1.0 to 10.0: increments of 0.1
+  for (let i = 10; i <= 100; i++) {
+    niceNumbers.push(Number((i / 10).toFixed(1)));
+  }
+
+  // From 10 to 100: increments of 1
+  for (let i = 10; i <= 100; i++) {
+    niceNumbers.push(i);
+  }
+
+  // From 100 to 1000: increments of 10 (100,110,120,...,1000)
+  for (let i = 100; i <= 1000; i += 10) {
+    niceNumbers.push(i);
+  }
+
+  // Above 1000: hundreds and thousands steps (coarser)
+  for (let pow = 1000; pow <= 10000; pow *= 10) {
+    for (let mult = 1; mult <= 9; mult++) {
+      const n = pow * mult;
+      if (n >= 1000 && n <= 10000) niceNumbers.push(n);
+    }
+  }
+
+  // Deduplicate and sort just in case
+  const unique = Array.from(new Set(niceNumbers)).sort((a, b) => a - b);
+
+  let closest = unique[0];
+  let minDistance = Math.abs(value - closest);
+
+  for (const num of unique) {
+    const distance = Math.abs(value - num);
+    if (distance < minDistance) {
+      minDistance = distance;
+      closest = num;
+    }
+  }
+
+  return closest;
+};
+
+// Standard thermal properties for common engineering materials
+const MATERIAL_PRESETS = {
+  solid: [
+    { name: "Common Brick", k: 0.72 },
+    { name: "Concrete", k: 1.4 },
+    { name: "Glass (Window)", k: 0.96 },
+    { name: "Steel (Carbon)", k: 60 },
+    { name: "Aluminum", k: 240 },
+    { name: "Wood (Oak)", k: 0.17 },
+    { name: "Fiberglass Insulation", k: 0.04 },
+    { name: "Drywall (Gypsum)", k: 0.17 },
+    { name: "Custom", k: 50 },
+  ],
+  fluid: [
+    { name: "Still Air", h: 5 },
+    { name: "Moving Air (Moderate)", h: 25 },
+    { name: "Water (Natural Convection)", h: 300 },
+    { name: "Boiling Water (Nucleate)", h: 10000 },
+    { name: "Custom", h: 10 },
+  ]
+};
+
+
+// A custom horizontal switch for Solid/Fluid selection
+const HorizontalSwitch = ({
   isSolid,
   onTypeChange,
 }: {
   isSolid: boolean;
   onTypeChange: (type: "solid" | "fluid") => void;
 }) => (
-  <div className="flex flex-col items-center justify-between self-stretch bg-muted rounded-lg p-1">
+  <div className="flex items-center justify-center gap-1 bg-muted rounded-lg p-1 w-32">
     <Button
       variant={!isSolid ? 'default' : 'ghost'}
       size="sm"
       onClick={() => onTypeChange('fluid')}
-      className="flex-1 w-full"
+      className="flex-1"
     >
       Fluid
     </Button>
@@ -43,7 +124,7 @@ const VerticalSwitch = ({
       variant={isSolid ? 'default' : 'ghost'}
       size="sm"
       onClick={() => onTypeChange('solid')}
-      className="flex-1 w-full"
+      className="flex-1"
     >
       Solid
     </Button>
@@ -165,7 +246,11 @@ export default function HeatTransferPage() {
 
   useEffect(() => {
       setIsClient(true);
-      setLayers([{ id: generateId(), type: "solid", thickness: 0.1, kValue: 50, hValue: 10 }]);
+      setLayers([
+        { id: generateId(), type: "solid", thickness: 0.1, kValue: 0.72, hValue: 5 },
+        { id: generateId(), type: "solid", thickness: 0.05, kValue: 1.4, hValue: 5 },
+        { id: generateId(), type: "solid", thickness: 0.2, kValue: 60.5, hValue: 5 },
+      ]);
   }, []);
 
   const [area, setArea] = useState<number | string>(1);
@@ -185,7 +270,7 @@ export default function HeatTransferPage() {
 
   const addLayer = () => {
     if (layers.length < 9) {
-      setLayers([...layers, { id: generateId(), type: "solid", thickness: 0.1, kValue: 50, hValue: 10 }]);
+      setLayers([...layers, { id: generateId(), type: "solid", thickness: 0.1, kValue: 0.72, hValue: 5 }]);
     }
   };
 
@@ -226,7 +311,7 @@ export default function HeatTransferPage() {
   const [visualWidth, setVisualWidth] = useState(0);
 
   const simulationResults = useMemo(() => {
-    const numArea = Number(area) || 0;
+    const numArea = Math.max(Number(area) || 0.1, 0.1);
     const numHotTempInput = Number(hotTemp) || 0;
     const numColdTempInput = Number(coldTemp) || 0;
     const numHeatFlowInput = Number(heatFlow) || 0;
@@ -566,7 +651,7 @@ export default function HeatTransferPage() {
                     <Input type="text" value={areaMax} onChange={(e) => setAreaMax(e.target.value)} className="w-16 h-8 text-xs" />
                   </div>
                 </div>
-                <Slider id="areaSlider" min={0} max={parseFloat(areaMax)} step={computeStep(parseFloat(areaMax))} value={[Number(area)]} onValueChange={([v]) => setArea(v)} className="w-full" />
+                <Slider id="areaSlider" min={0.1} max={parseFloat(areaMax)} step={computeStep(parseFloat(areaMax))} value={[Number(area)]} onValueChange={([v]) => setArea(Math.max(v, 0.1))} className="w-full" />
               </div>
             </div>
           </div>
@@ -650,6 +735,16 @@ const LayerItem: FC<{
   deleteLayer: (id: string) => void;
   moveLayer: (index: number, direction: 'up' | 'down') => void;
 }> = ({ layer, index, isFirst, isLast, updateLayer, deleteLayer, moveLayer }) => {
+  const nearlyEqual = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) <= eps
+  const solidPreset = layer.type === 'solid'
+    ? MATERIAL_PRESETS.solid.find((p) => nearlyEqual(p.k, layer.kValue))
+    : undefined
+  const fluidPreset = layer.type === 'fluid'
+    ? MATERIAL_PRESETS.fluid.find((p) => nearlyEqual(p.h, layer.hValue))
+    : undefined
+  const presetName = (solidPreset || fluidPreset)?.name ?? null
+  const showPreset = presetName !== null && presetName !== 'Custom'
+
   return (
      <motion.div layout>
         <div className="flex items-center space-x-4 p-4 border rounded-lg bg-background">
@@ -674,41 +769,80 @@ const LayerItem: FC<{
               <ArrowDown className={`h-4 w-4 ${isLast ? 'text-muted-foreground' : ''}`} />
             </Button>
           </div>
-          <div className="flex-grow flex items-stretch space-x-4">
-             <VerticalSwitch 
-                isSolid={layer.type === 'solid'}
-                onTypeChange={(type) => updateLayer(layer.id, { type })}
-             />
-             <div className="w-full space-y-3 flex flex-col justify-center">
-               <div className="w-full space-y-2">
-                 <Label>Thickness (m): {layer.thickness.toFixed(3)}</Label>
-                 <Slider
-                   min={0.001} max={0.5} step={0.001}
-                   value={[layer.thickness]}
-                   onValueChange={([val]) => updateLayer(layer.id, { thickness: val })}
-                 />
-               </div>
-                {layer.type === 'solid' ? (
-                   <div className="w-full space-y-2">
-                     <Label>Thermal Conductivity (k): {layer.kValue} W/m·K</Label>
-                     <Slider
-                       min={1} max={500} step={1}
-                       value={[layer.kValue]}
-                       onValueChange={([val]) => updateLayer(layer.id, { kValue: val })}
-                     />
-                   </div>
-                 ) : (
-                   <div className="w-full space-y-2">
-                     <Label>Convection Coefficient (h): {layer.hValue} W/m²·K</Label>
-                     <Slider
-                       min={1} max={1000} step={1}
-                       value={[layer.hValue]}
-                       onValueChange={([val]) => updateLayer(layer.id, { hValue: val })}
-                     />
-                   </div>
-                 )}
-             </div>
+          
+          {/* Left side: Phase switch and preset dropdown */}
+          <div className="flex flex-col gap-2">
+            <HorizontalSwitch 
+               isSolid={layer.type === 'solid'}
+               onTypeChange={(type) => {
+                 if (type === 'solid') {
+                   updateLayer(layer.id, { type, kValue: 0.72 });
+                 } else {
+                   updateLayer(layer.id, { type, hValue: 5 });
+                 }
+               }}
+            />
+            <Select value={presetName || 'Custom'} onValueChange={(selectedName) => {
+              const solidPreset = MATERIAL_PRESETS.solid.find(p => p.name === selectedName);
+              const fluidPreset = MATERIAL_PRESETS.fluid.find(p => p.name === selectedName);
+              if (solidPreset) {
+                updateLayer(layer.id, { kValue: solidPreset.k });
+              } else if (fluidPreset) {
+                updateLayer(layer.id, { hValue: fluidPreset.h });
+              }
+            }}>
+              <SelectTrigger className="w-32">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(layer.type === 'solid' ? MATERIAL_PRESETS.solid : MATERIAL_PRESETS.fluid).map((preset) => (
+                  <SelectItem key={preset.name} value={preset.name}>
+                    {preset.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
+
+          {/* Right side: Sliders */}
+          <div className="flex-grow space-y-3">
+             <div className="space-y-2">
+               <Label className="text-sm">{showPreset ? `${presetName} Thickness (t): ${layer.thickness.toFixed(3)} m` : `Thickness (t): ${layer.thickness.toFixed(3)} m`}</Label>
+               <Slider
+                 min={0.001} max={0.5} step={0.001}
+                 value={[layer.thickness]}
+                 onValueChange={([val]) => updateLayer(layer.id, { thickness: val })}
+               />
+             </div>
+              {layer.type === 'solid' ? (
+                 <div className="space-y-2">
+                   <Label className="text-sm">{showPreset ? `${presetName} Thermal Conductivity (k): ${layer.kValue.toFixed(2)} W/m·K` : `Thermal Conductivity (k): ${layer.kValue.toFixed(2)} W/m·K`}</Label>
+                   <Slider
+                     min={Math.log(0.01)} max={Math.log(500)} step={0.01}
+                     value={[Math.log(Math.max(layer.kValue, 0.01))]}
+                     onValueChange={([val]) => {
+                       const rawValue = Math.exp(val);
+                       const snappedValue = snapToNiceNumber(rawValue);
+                       updateLayer(layer.id, { kValue: snappedValue });
+                     }}
+                   />
+                 </div>
+               ) : (
+                 <div className="space-y-2">
+                   <Label className="text-sm">{showPreset ? `${presetName} Convection Coefficient (h): ${layer.hValue.toFixed(2)} W/m²·K` : `Convection Coefficient (h): ${layer.hValue.toFixed(2)} W/m²·K`}</Label>
+                   <Slider
+                     min={Math.log(0.1)} max={Math.log(10000)} step={0.01}
+                     value={[Math.log(Math.max(layer.hValue, 0.1))]}
+                     onValueChange={([val]) => {
+                       const rawValue = Math.exp(val);
+                       const snappedValue = snapToNiceNumber(rawValue);
+                       updateLayer(layer.id, { hValue: snappedValue });
+                     }}
+                   />
+                 </div>
+               )}
+          </div>
+
           <div className="ml-auto">
             <Button
               variant="ghost"
@@ -722,5 +856,5 @@ const LayerItem: FC<{
           </div>
         </div>
       </motion.div>
-  )
+  );
 }
