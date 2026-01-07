@@ -29,6 +29,11 @@ interface Layer {
 // Function to generate a unique ID for new layers
 const generateId = () => `layer_${Date.now()}_${Math.random()}`;
 
+// Helper function to clean name for display (remove parentheses and content)
+const cleanPresetName = (name: string): string => {
+  return name.replace(/\s*\([^)]*\)/g, '');
+};
+
 // Helper function to snap values to "nice" numbers for logarithmic sliders
 const snapToNiceNumber = (value: number): number => {
   if (value <= 0) return 0.01;
@@ -83,14 +88,13 @@ const snapToNiceNumber = (value: number): number => {
 // Standard thermal properties for common engineering materials
 const MATERIAL_PRESETS = {
   solid: [
-    { name: "Common Brick", k: 0.72 },
+    { name: "Brick", k: 0.72 },
     { name: "Concrete", k: 1.4 },
     { name: "Glass (Window)", k: 0.96 },
     { name: "Steel (Carbon)", k: 60 },
     { name: "Aluminum", k: 240 },
     { name: "Wood (Oak)", k: 0.17 },
-    { name: "Fiberglass Insulation", k: 0.04 },
-    { name: "Drywall (Gypsum)", k: 0.17 },
+    { name: "Fiberglass", k: 0.04 },
     { name: "Custom", k: 50 },
   ],
   fluid: [
@@ -645,7 +649,7 @@ export default function HeatTransferPage() {
               {/* Area Slider */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="areaSlider">Area (m²): {Number(area).toFixed(getDecimalPlaces(area))}</Label>
+                  <Label htmlFor="areaSlider">Insulator Area (m²): {Number(area).toFixed(getDecimalPlaces(area))}</Label>
                   <div className="flex items-center gap-1">
                     <Label className="text-xs text-muted-foreground">Max:</Label>
                     <Input type="text" value={areaMax} onChange={(e) => setAreaMax(e.target.value)} className="w-16 h-8 text-xs" />
@@ -792,7 +796,7 @@ const LayerItem: FC<{
               }
             }}>
               <SelectTrigger className="w-32">
-                <SelectValue />
+                <SelectValue placeholder="Select preset">{presetName ? cleanPresetName(presetName) : 'Custom'}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {(layer.type === 'solid' ? MATERIAL_PRESETS.solid : MATERIAL_PRESETS.fluid).map((preset) => (
@@ -807,7 +811,7 @@ const LayerItem: FC<{
           {/* Right side: Sliders */}
           <div className="flex-grow space-y-3">
              <div className="space-y-2">
-               <Label className="text-sm">{showPreset ? `${presetName} Thickness (t): ${layer.thickness.toFixed(3)} m` : `Thickness (t): ${layer.thickness.toFixed(3)} m`}</Label>
+               <Label className="text-sm">{showPreset ? `${presetName} Thickness (t): ${layer.thickness.toFixed(3)} m` : `Insulator Thickness (t): ${layer.thickness.toFixed(3)} m`}</Label>
                <Slider
                  min={0.001} max={0.5} step={0.001}
                  value={[layer.thickness]}
@@ -816,7 +820,7 @@ const LayerItem: FC<{
              </div>
               {layer.type === 'solid' ? (
                  <div className="space-y-2">
-                   <Label className="text-sm">{showPreset ? `${presetName} Thermal Conductivity (k): ${layer.kValue.toFixed(2)} W/m·K` : `Thermal Conductivity (k): ${layer.kValue.toFixed(2)} W/m·K`}</Label>
+                   <Label className="text-sm">{showPreset ? `${presetName} Thermal Conductivity (k): ${layer.kValue.toFixed(2)} W/m·K` : `Insulator Thermal Conductivity (k): ${layer.kValue.toFixed(2)} W/m·K`}</Label>
                    <Slider
                      min={Math.log(0.01)} max={Math.log(500)} step={0.01}
                      value={[Math.log(Math.max(layer.kValue, 0.01))]}
