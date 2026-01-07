@@ -424,15 +424,19 @@ export default function HeatTransferPage() {
   };
 
   // Constrain hot temperature to never drop below cold, and vice-versa
+  // Constrain hot temperature to never drop below cold, and vice-versa
+  // Only apply constraints when both sides are active; otherwise allow free editing
   const updateTemperature = (
     type: 'hot' | 'cold',
     value: number,
   ) => {
+    const isBothActive = hotActive && coldActive;
+
     if (type === 'hot') {
-      const clamped = Math.max(value, Number(coldTemp));
+      const clamped = isBothActive ? Math.max(value, Number(coldTemp)) : value;
       setHotTemp(clamped);
     } else {
-      const clamped = Math.min(value, Number(hotTemp));
+      const clamped = isBothActive ? Math.min(value, Number(hotTemp)) : value;
       setColdTemp(clamped);
     }
   };
@@ -474,12 +478,22 @@ export default function HeatTransferPage() {
   };
 
   const toggleHot = () => {
-    if (hotActive && !coldActive) return; // ensure at least one remains active
+    if (hotActive && !coldActive) {
+      // If only hot is active and user clicks hot => swap to only cold
+      setHotActive(false);
+      setColdActive(true);
+      return;
+    }
     setHotActive(!hotActive);
   };
 
   const toggleCold = () => {
-    if (coldActive && !hotActive) return; // ensure at least one remains active
+    if (coldActive && !hotActive) {
+      // If only cold is active and user clicks cold => swap to only hot
+      setColdActive(false);
+      setHotActive(true);
+      return;
+    }
     setColdActive(!coldActive);
   };
 
@@ -498,8 +512,10 @@ export default function HeatTransferPage() {
           <div className="relative flex items-center h-48 rounded-lg p-4">
             <HeatWaveAnimation totalWidth={visualWidth} />
             <div className="flex-1 z-10 text-center flex flex-col items-center justify-center">
-              <div className="font-bold text-lg text-red-500">Hot Side</div>
-              <div className="text-foreground">{simulationResults.hotTemp.toFixed(1)}°C</div>
+              <div className={`${coldActive && !hotActive ? 'bg-red-100 text-red-800 px-2 py-1 rounded inline-block' : ''}`}>
+                <div className={`font-bold text-lg ${coldActive && !hotActive ? '' : 'text-red-500'}`}>Hot Side</div>
+                <div className={coldActive && !hotActive ? '' : 'text-foreground'}>{simulationResults.hotTemp.toFixed(1)}°C</div>
+              </div>
             </div>
             <div ref={layersContainerRef} className="z-10 flex h-full items-center">
               {layers.map((layer, index) => (
@@ -522,13 +538,15 @@ export default function HeatTransferPage() {
               ))}
             </div>
             <div className="flex-1 z-10 text-center flex flex-col items-center justify-center">
-              <div className="font-bold text-lg text-blue-500">Cold Side</div>
-              <div className="text-foreground">{simulationResults.coldTemp.toFixed(1)}°C</div>
+              <div className={`${hotActive && !coldActive ? 'bg-blue-100 text-blue-800 px-2 py-1 rounded inline-block' : ''}`}>
+                <div className={`font-bold text-lg ${hotActive && !coldActive ? '' : 'text-blue-500'}`}>Cold Side</div>
+                <div className={hotActive && !coldActive ? '' : 'text-foreground'}>{simulationResults.coldTemp.toFixed(1)}°C</div>
+              </div>
             </div>
           </div>
 
-          <div className="text-center mt-4">
-            <p className="text-foreground">Heat Flow: <span className="font-bold">{formatHeatFlow(simulationResults.heatFlow)}</span></p>
+          <div className="text-center mt-4 h-8 flex items-center justify-center">
+            <p className="text-foreground"><span className={`${bothActive ? 'bg-yellow-100 text-yellow-800 px-2 py-1 rounded inline-block' : ''}`}>Heat Flow: <span className="font-bold">{formatHeatFlow(simulationResults.heatFlow)}</span></span></p>
           </div>
         </CardContent>
       </Card>
@@ -548,7 +566,7 @@ export default function HeatTransferPage() {
               {/* Temperature Slider(s) */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label htmlFor="leftTempSlider">{isHotLeft ? 'Hot Temp (°C):' : 'Cold Temp (°C):'} {Number(isHotLeft ? hotTemp : coldTemp).toFixed(2)}</Label>
+                  <Label htmlFor="leftTempSlider" className={`${bothActive || isHotLeft ? 'text-red-500' : 'text-blue-500'}`}>{bothActive || isHotLeft ? 'Hot Temp (°C):' : 'Cold Temp (°C):'} {Number(bothActive || isHotLeft ? hotTemp : coldTemp).toFixed(2)}</Label>
                   <div className="flex items-center gap-1">
                     <Label className="text-xs text-muted-foreground">Min:</Label>
                     <Input type="text" value={tempMin} onChange={(e)=>setTempMin(e.target.value)} className="w-16 h-8 text-xs" />
@@ -575,8 +593,8 @@ export default function HeatTransferPage() {
                   min={parseFloat(tempMin)}
                   max={parseFloat(tempMax)}
                   step={computeStep(parseFloat(tempMax))}
-                  value={[Number(isHotLeft ? hotTemp : coldTemp)]}
-                  onValueChange={([v]) => (isHotLeft ? updateTemperature('hot', v) : updateTemperature('cold', v))}
+                  value={[Number(bothActive ? hotTemp : (isHotLeft ? hotTemp : coldTemp))]}
+                  onValueChange={([v]) => (bothActive ? updateTemperature('hot', v) : (isHotLeft ? updateTemperature('hot', v) : updateTemperature('cold', v)))}
                   className="w-full"
                 />
               </div>
@@ -587,7 +605,7 @@ export default function HeatTransferPage() {
               {bothActive ? (
                 <div className="space-y-2">
                    <div className="flex items-center justify-between">
-                     <Label htmlFor="rightTempSlider">Cold Temp (°C): {Number(coldTemp).toFixed(2)}</Label>
+                     <Label htmlFor="rightTempSlider" className="text-blue-500">Cold Temp (°C): {Number(coldTemp).toFixed(2)}</Label>
                      <div className="flex items-center gap-1">
                        <Label className="text-xs text-muted-foreground">Min:</Label>
                        <Input
