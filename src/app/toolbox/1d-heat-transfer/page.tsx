@@ -332,8 +332,8 @@ export default function HeatTransferPage() {
     // Calculate thermal resistance of each layer
     const resistances = layers.map((layer) =>
       layer.type === "solid"
-        ? layer.thickness / (layer.kValue * numArea)
-        : 1 / (layer.hValue * numArea)
+        ? layer.thickness / (Math.max(layer.kValue, 0.001) * numArea)
+        : 1 / (Math.max(layer.hValue, 0.001) * numArea)
     );
     const totalResistance = resistances.reduce((acc, r) => acc + r, 0);
 
