@@ -378,9 +378,11 @@ export default function PidTuningPage() {
       integral_error += (Kc / tauI) * error * dt;
     }
 
-    const raw_derivative = (prev_pv - pv) / dt;
+    // Calculate derivative on measurement (negative derivative of PV)
+    // When PV rises (positive dPV/dt), we want negative derivative action to reduce output
+    const raw_derivative = (pv - prev_pv) / dt;
     filtered_derivative += (dt / T_filter) * (raw_derivative - filtered_derivative);
-    const derivative_term = (tauD && tauD > 0) ? Kc * tauD * filtered_derivative : 0;
+    const derivative_term = (tauD && tauD > 0) ? -Kc * tauD * filtered_derivative : 0;
     
     const controller_output = p_term + integral_error + derivative_term;
     
@@ -468,12 +470,13 @@ export default function PidTuningPage() {
         integral_error += (Kc / tauI) * error * dt;
       }
 
-      // 1. Calculate the raw derivative on PV
-      const raw_derivative = (prev_pv - pv) / dt;
+      // Calculate derivative on measurement (negative derivative of PV)
+      // When PV rises (positive dPV/dt), we want negative derivative action to reduce output
+      const raw_derivative = (pv - prev_pv) / dt;
       // 2. Pass it through the low-pass filter
       filtered_derivative += (dt / T_filter) * (raw_derivative - filtered_derivative);
-      // 3. The final D-term uses the filtered value
-      const derivative_term = (tauD && tauD > 0) ? Kc * tauD * filtered_derivative : 0;
+      // 3. The final D-term uses the filtered value with negative sign
+      const derivative_term = (tauD && tauD > 0) ? -Kc * tauD * filtered_derivative : 0;
       
       const controller_output = p_term + integral_error + derivative_term;
       
@@ -731,7 +734,9 @@ export default function PidTuningPage() {
           throw new Error("ITAE rules are not provided for P-only controllers in this set.");
       }
       
-      const ratio = theta_val / tau_val;
+      // Prevent division by zero or infinity when theta is 0
+      const safe_theta = Math.max(theta_val, 1e-6);
+      const ratio = safe_theta / tau_val;
       let kc: number | null = null, tauI: number | null = null, tauD: number | null = null;
       
       const rules = itaeParams[it][ct];
