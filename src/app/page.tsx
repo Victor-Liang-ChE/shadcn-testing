@@ -535,7 +535,7 @@ export default function Home() {
               <DialogHeader>
                 <DialogTitle>Feedback and Bug Reports</DialogTitle>
                 <DialogDescription>
-                  Help me improve by submitting feedback or reporting bugs.
+                  I know I have bugs to fix and features to add and change!
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
