@@ -22,14 +22,14 @@ import {
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import CSTRVisualization from "@/components/CSTRVisualization";
 import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
 
 // Replace external URLs with local paths from public folder
+// now add one for pytorch logo
+const pytorchLogoPath = "/logos/pytorch.svg";
 const githubLogoPath = "/logos/github.svg";
 const linkedinLogoPath = "/logos/linkedin.svg";
 const ucsbLogoPath = "/logos/ucsb.svg";
@@ -283,6 +283,20 @@ export default function Home() {
                     </TooltipTrigger>
                     <TooltipContent>
                       <p>Python</p>
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Image
+                        src={pytorchLogoPath}
+                        alt="PyTorch Logo"
+                        width={25}
+                        height={25}
+                        title="PyTorch"
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>PyTorch</p>
                     </TooltipContent>
                   </Tooltip>
                   <Tooltip>
