@@ -159,3 +159,12 @@ input[type=number] {
      Prefer a font size in the range: min 0.75rem, preferred 12% of container width, max 1.5rem */
   font-size: clamp(0.75rem, 12cqw, 1.5rem);
 }
+
+@keyframes spinVertical {
+  from {
+    transform: rotateY(0deg);
+  }
+  to {
+    transform: rotateY(360deg);
+  }
+}

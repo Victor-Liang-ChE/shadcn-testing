@@ -262,8 +262,7 @@ export default function Home() {
               <div className="bio-paragraph flex items-center flex-wrap gap-2">
                 <span>Python Packages:</span>
                 <span className="">
-                  NumPy, SciPy, Pandas, Matplotlib, Scikit-learn, Plotly, RegEx,
-                  Control, BeautifulSoup4, OpenCV
+                  NumPy, SciPy, Pandas, Matplotlib, Scikit-learn, Plotly, OpenCV
                 </span>
                 <span className="ml-1">📦</span>
               </div>
@@ -442,18 +441,18 @@ export default function Home() {
                 </span>
               </div>
 
-              <div className="bio-paragraph flex items-center gap-2">
+              <div className="bio-paragraph">
                 <p>
-                  Based in San Francisco, currently pursuing a MS in Materials Science at the University of California, Santa
-                  Barbara.
+                  Based in SF, currently pursuing a MS in Materials Science at the University of California, Santa Barbara.{'\u00A0'}<span className="inline-block align-middle">
+                    <Image
+                      src={ucsbLogoPath}
+                      alt="UCSB Logo"
+                      width={25}
+                      height={25}
+                      className="ucsb-logo dark:invert-[0.8]"
+                    />
+                  </span>
                 </p>
-                <Image
-                  src={ucsbLogoPath}
-                  alt="UCSB Logo"
-                  width={25}
-                  height={25}
-                  className="ucsb-logo dark:invert-[0.8]"
-                />
               </div>
 
               <p className="bio-paragraph">
