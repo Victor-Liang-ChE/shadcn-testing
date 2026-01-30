@@ -87,7 +87,8 @@ export default function MolecularDynamicsThumbnail({
 
       particlesRef.current = new Array(count).fill(0).map((_, i) => {
         const baseR = rand(2.4, 4.6)
-        const speed = rand(0.18, 0.52) * (Math.min(w, h) / 260)
+        // Reduced initial speed so MD forces (LJ-style) have stronger influence
+        const speed = rand(0.06, 0.22) * (Math.min(w, h) / 260)
         const angle = rand(0, Math.PI * 2)
         const type: 0 | 1 = i % 5 === 0 ? 1 : 0
         return {
@@ -125,7 +126,7 @@ export default function MolecularDynamicsThumbnail({
       const boxL = w - pad * 2
       const boxH = h - pad * 2
 
-      // Pairwise soft repulsion (small N => OK)
+      // Pairwise soft potential (Lennard-Jones style: repulsion + attraction)
       for (let i = 0; i < ps.length; i++) {
         for (let j = i + 1; j < ps.length; j++) {
           const a = ps[i]
@@ -133,19 +134,38 @@ export default function MolecularDynamicsThumbnail({
           let dx = b.x - a.x
           let dy = b.y - a.y
 
-          // Minimum image in the thumbnail box
+          // Minimum image convention (wrapping)
           if (dx > boxL / 2) dx -= boxL
           if (dx < -boxL / 2) dx += boxL
           if (dy > boxH / 2) dy -= boxH
           if (dy < -boxH / 2) dy += boxH
 
-          const r0 = a.r + b.r + 6
           const r2 = dx * dx + dy * dy
-          if (r2 < r0 * r0 && r2 > 1e-6) {
-            const inv = 1 / Math.sqrt(r2)
-            const push = (r0 - Math.sqrt(r2)) * 0.0024
-            const fx = dx * inv * push
-            const fy = dy * inv * push
+          const sigma = a.r + b.r // Equilibrium distance approx
+          
+          // Interaction cutoff (3x sigma is standard for LJ)
+          if (r2 < (sigma * 3) ** 2 && r2 > 1e-6) {
+            const dist = Math.sqrt(r2)
+            const rInv = sigma / dist
+            
+            // Use softer powers (8-4) instead of standard (12-6) for stability 
+            // with simple Euler integration at 60fps
+            const rInv2 = rInv * rInv
+            const rInv4 = rInv2 * rInv2
+            const rInv8 = rInv4 * rInv4
+            
+            // Force magnitude: Repulsion (rInv8) - Attraction (rInv4)
+            // Increased epsilon so MD interactions are stronger and more visible
+            let forceVal = 0.035 * (rInv8 - rInv4)
+            
+            // Clamp extreme forces to prevent particles from ejecting at high speed
+            // if they spawn too close or overlap deeply. Widened bounds to allow
+            // stronger MD-driven accelerations while keeping safety caps.
+            forceVal = Math.max(-0.06, Math.min(forceVal, 0.25))
+
+            const fx = (dx / dist) * forceVal
+            const fy = (dy / dist) * forceVal
+
             a.vx -= fx
             a.vy -= fy
             b.vx += fx
@@ -155,9 +175,10 @@ export default function MolecularDynamicsThumbnail({
       }
 
       // Keep motion lively: gentle stochastic "thermostat" kicks + speed clamp.
-      const kick = 0.008 * (Math.min(w, h) / 320)
-      const vMin = 0.06 * (Math.min(w, h) / 260)
-      const vMax = 0.9 * (Math.min(w, h) / 260)
+      // Gentle stochastic "thermostat" pushes — reduced to let interactions dominate
+      const kick = 0.0025 * (Math.min(w, h) / 320)
+      const vMin = 0.02 * (Math.min(w, h) / 260)
+      const vMax = 0.28 * (Math.min(w, h) / 260)
 
       for (const p of ps) {
         p.vx += (Math.random() - 0.5) * kick
