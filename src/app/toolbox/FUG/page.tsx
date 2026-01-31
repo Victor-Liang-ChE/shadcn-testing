@@ -213,6 +213,8 @@ export default function FUGSimulation() {
   const defaultsLoadedRef = useRef(false);
   // Track previous compound count to detect transitions (e.g., 2 -> 3)
   const prevCompCountRef = useRef<number>(compounds.length);
+  // Suppress compound-change effect when we trigger immediate calculations (avoid duplicate runs)
+  const suppressCompoundEffectRef = useRef(false);
 
   // Results State
   const [results, setResults] = useState<{
@@ -625,7 +627,14 @@ export default function FUGSimulation() {
     // Set target value
     newArr[index].z = targetNew;
 
+    // Immediately reflect composition change and trigger calculations for instant feedback
+    suppressCompoundEffectRef.current = true;
     setCompounds(newArr);
+
+    // Run calculations using the new array so the graphs update without waiting for React state
+    calculateFUG(newArr);
+    if (feedSpecMode === 'temp') runFlashCalc(newArr);
+    else computeFlashFromQ(parseFloat(qInput), newArr);
   };
 
   // --- Core Calc: Antoine Pressure ---
@@ -670,31 +679,33 @@ export default function FUGSimulation() {
     return T;
   };
 
-  const runFlashCalc = () => {
-    if (compounds.length === 0) return;
+  const runFlashCalc = (compsOverride?: Compound[], tempOverride?: number) => {
+    const comps = compsOverride ?? compounds;
+    const T_use = (typeof tempOverride === 'number') ? tempOverride : inputTemp;
+    if (comps.length === 0) return;
 
     const P_Pa = pressure * 100000;
     
     // 1. Check Boundaries
-    const T_bub = solveBubblePoint(compounds, P_Pa);
-    const T_dew = solveDewPoint(compounds, P_Pa);
+    const T_bub = solveBubblePoint(comps, P_Pa);
+    const T_dew = solveDewPoint(comps, P_Pa);
 
     let calculatedQ = 0;
     let psi = 0;
     let stateMsg = "";
-    let currentComps = compounds.map(c => ({...c, K: getPsat(c, inputTemp)/P_Pa}));
+    let currentComps = comps.map(c => ({...c, K: getPsat(c, T_use)/P_Pa}));
 
-    if (inputTemp < T_bub) {
+    if (T_use < T_bub) {
       stateMsg = "Subcooled Liquid";
       psi = 0;
       calculatedQ = 1.05; // Just an indicator for "Liquid"
-    } else if (inputTemp > T_dew) {
+    } else if (T_use > T_dew) {
       stateMsg = "Superheated Vapor";
       psi = 1;
       calculatedQ = -0.05; // Indicator for "Vapor"
     } else {
       stateMsg = "Two-Phase Mixture";
-      const rr = solveRachfordRice(compounds, P_Pa, inputTemp);
+      const rr = solveRachfordRice(comps, P_Pa, T_use);
       psi = rr.psi;
       currentComps = rr.compsWithK;
       calculatedQ = 1 - psi;
@@ -716,11 +727,12 @@ export default function FUGSimulation() {
   };
 
   // Helper: find feed temperature that yields desired quality Q via bisection between bubble and dew
-  const findTemperatureForQuality = (desiredQ: number, P_Pa: number) => {
+  const findTemperatureForQuality = (desiredQ: number, P_Pa: number, compsOverride?: Compound[]) => {
     // desiredQ: 1 = liquid, 0 = vapor
+    const comps = compsOverride ?? compounds;
     const desiredPsi = 1 - desiredQ;
-    const T_bub = solveBubblePoint(compounds, P_Pa);
-    const T_dew = solveDewPoint(compounds, P_Pa);
+    const T_bub = solveBubblePoint(comps, P_Pa);
+    const T_dew = solveDewPoint(comps, P_Pa);
     if (T_bub === null || T_dew === null) return { success: false, msg: 'Unable to compute bubble/dew bounds at this pressure.' };
 
     // Handle boundary qualities quickly
@@ -733,7 +745,7 @@ export default function FUGSimulation() {
     for (let i = 0; i < 60; i++) {
       const mid = 0.5 * (low + high);
       try {
-        const rr = solveRachfordRice(compounds, P_Pa, mid);
+        const rr = solveRachfordRice(comps, P_Pa, mid);
         const psiMid = rr.psi;
         if (!Number.isFinite(psiMid)) break;
         if (Math.abs(psiMid - desiredPsi) < 1e-6) return { success: true, T: mid, psi: psiMid, compsWithK: rr.compsWithK };
@@ -745,16 +757,17 @@ export default function FUGSimulation() {
     return { success: false, msg: `Unable to converge to the requested quality at this pressure.` };
   };
 
-  const computeFlashFromQ = (desiredQ: number) => {
+  const computeFlashFromQ = (desiredQ: number, compsOverride?: Compound[]) => {
     setFlashState(null);
-    if (compounds.length === 0) return;
+    const comps = compsOverride ?? compounds;
+    if (comps.length === 0) return;
     if (!Number.isFinite(desiredQ)) {
       setFlashState({ msg: 'Quality must be a number.' });
       setTimeout(() => setFlashState(null), 4000);
       return;
     }
     const P_Pa = pressure * 100000;
-    const res = findTemperatureForQuality(desiredQ, P_Pa);
+    const res = findTemperatureForQuality(desiredQ, P_Pa, comps);
     if (!res.success) {
       setFlashState({ msg: res.msg ?? 'Quality computation failed.' });
       setTimeout(() => setFlashState(null), 5000);
@@ -764,7 +777,7 @@ export default function FUGSimulation() {
     const T_found = res.T as number;
     const psi = typeof res.psi === 'number' ? res.psi : (1 - desiredQ);
     // Compute K-values and phases similar to runFlashCalc
-    let currentComps = compounds.map(c => ({ ...c, K: getPsat(c, T_found) / P_Pa }));
+    let currentComps = comps.map(c => ({ ...c, K: getPsat(c, T_found) / P_Pa }));
     if (psi === 0) {
       const phases = currentComps.map(c => ({ name: c.name, z: c.z, x: c.z, y: c.K! * c.z }));
       setInputTemp(T_found);
@@ -797,16 +810,17 @@ export default function FUGSimulation() {
   };
 
   // --- FUG Solver ---
-  const calculateFUG = () => {
+  const calculateFUG = (compsOverride?: Compound[]) => {
+    const comps = compsOverride ?? compounds;
     // Require at least 3 compounds to match UI and ensure meaningful calculation
-    if (compounds.length < 3 || !lightKeyIdx || !heavyKeyIdx) return;
+    if (comps.length < 3 || !lightKeyIdx || !heavyKeyIdx) return;
 
     // CONVERT BAR TO PASCALS FOR MATH
     const P_Pa = pressure * 100000;
 
     // 1. Normalize Composition
-    const totalZ = compounds.reduce((sum, c) => sum + c.z, 0);
-    const normalizedComps = compounds.map(c => ({ ...c, z: c.z / totalZ }));
+    const totalZ = comps.reduce((sum, c) => sum + c.z, 0);
+    const normalizedComps = comps.map(c => ({ ...c, z: c.z / totalZ }));
 
     // 2. Determine Bubble Point of Feed to get average Alpha
     const T_feed = solveBubblePoint(normalizedComps, P_Pa);
@@ -1025,6 +1039,9 @@ export default function FUGSimulation() {
 
   // Auto-run full FUG calculation when core inputs change (run immediately to keep red dot responsive)
   useEffect(() => {
+    // If a previous immediate calc suppressed this effect, clear the flag and skip
+    if (suppressCompoundEffectRef.current) { suppressCompoundEffectRef.current = false; return; }
+
     // Require keys and at least 3 components
     if (compounds.length < 3 || !lightKeyIdx || !heavyKeyIdx) return;
 
@@ -1036,6 +1053,9 @@ export default function FUGSimulation() {
 
   // Re-run flash calc when inputs affecting it change (By Temp or By Q)
   useEffect(() => {
+    // If a previous immediate calc suppressed this effect, clear it and skip
+    if (suppressCompoundEffectRef.current) { suppressCompoundEffectRef.current = false; return; }
+
     if (feedSpecMode === 'temp') {
       runFlashCalc();
       return;
@@ -1190,7 +1210,23 @@ export default function FUGSimulation() {
 
   return (
     <TooltipProvider>
-      <div className="p-8 space-y-8 max-w-7xl mx-auto">
+      <div className="p-8 space-y-8 max-w-7xl mx-auto fug-range">
+        <style>{`
+          /* Page-scoped slider styling for native range inputs (improves contrast in light mode) */
+          .fug-range input[type="range"] { -webkit-appearance: none; appearance: none; background: transparent; }
+          .fug-range input[type="range"]::-webkit-slider-runnable-track {
+            height: 8px; background: #cbd5e1; border-radius: 9999px; border: 1px solid #cbd5e1;
+          }
+          .fug-range input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 18px; height: 18px; margin-top: -5px; border-radius: 9999px; background: #0f172a; border: none;
+            box-shadow: 0 0 0 4px rgba(15,23,42,0.05);
+          }
+          .fug-range input[type="range"]::-moz-range-track { height: 8px; background: #cbd5e1; border-radius: 9999px; border: 1px solid #cbd5e1; }
+          .fug-range input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; background: #0f172a; border-radius: 9999px; border: none; }
+          /* Dark mode overrides (keep existing dark appearance) */
+          .dark .fug-range input[type="range"]::-webkit-slider-runnable-track { background: #2b3a49; border-color: transparent; }
+          .dark .fug-range input[type="range"]::-moz-range-track { background: #2b3a49; border-color: transparent; }
+        `}</style>
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             
           {/* LEFT PANEL: INPUTS */}
@@ -1292,7 +1328,7 @@ export default function FUGSimulation() {
                                     min="0" max="1" step="0.01"
                                     value={c.z} 
                                     onChange={(e) => updateZ(i, parseFloat(e.target.value))}
-                                    className={`w-full h-2 bg-secondary rounded-lg appearance-none ${c.locked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} accent-primary`}
+                                    className={`w-full h-2 bg-slate-300 border border-slate-300 dark:bg-secondary dark:border-transparent rounded-lg appearance-none ${c.locked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'} accent-primary`}
                                     disabled={c.locked}
                                 />
                               </div>
@@ -1373,7 +1409,7 @@ export default function FUGSimulation() {
         type="range" min="0.50" max="1.00" step="0.001"
         value={recLK} 
         onChange={e => setRecLK(parseFloat(e.target.value))}
-        className="w-full h-2 bg-secondary rounded-lg appearance-none cursor-pointer accent-blue-500"
+        className="w-full h-2 bg-slate-300 border border-slate-300 dark:bg-secondary dark:border-transparent rounded-lg appearance-none cursor-pointer accent-blue-500"
       />
     </div>
     <div className="space-y-2">
@@ -1385,7 +1421,7 @@ export default function FUGSimulation() {
         type="range" min="0.50" max="1.00" step="0.001"
         value={recHK} 
         onChange={e => setRecHK(parseFloat(e.target.value))}
-        className="w-full h-2 bg-secondary rounded-lg appearance-none cursor-pointer accent-blue-500"
+        className="w-full h-2 bg-slate-300 border border-slate-300 dark:bg-secondary dark:border-transparent rounded-lg appearance-none cursor-pointer accent-blue-500"
       />
     </div>
   </div>
@@ -1401,7 +1437,7 @@ export default function FUGSimulation() {
       min="1.05" max="3.0" step="0.05" 
       value={R_factor} 
       onChange={(e) => setRFactor(parseFloat(e.target.value))}
-      className="w-full h-2 bg-secondary rounded-lg appearance-none cursor-pointer accent-green-500"
+      className="w-full h-2 bg-slate-300 border border-slate-300 dark:bg-secondary dark:border-transparent rounded-lg appearance-none cursor-pointer accent-green-500"
     />
   </div>
 

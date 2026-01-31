@@ -70,6 +70,9 @@ function Navbar() {
       case "/toolbox/molecular-dynamics":
         return "Molecular Dynamics Simulator";
 
+      case "/toolbox/FUG":
+        return "FUG";
+
       case "/misc":
           return "Miscellaneous Projects";
   

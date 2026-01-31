@@ -35,6 +35,8 @@ const unaryPhaseThumbnailPath = "/thumbnails/unary-phase-diagrams-thumbnail.png"
 const unaryPhaseThumbnailLightPath = "/thumbnails/unary-phase-diagrams-thumbnail-light.png";
 const molecularDynamicsThumbnailPath = "/thumbnails/molecular-dynamics-thumbnail.png";
 const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thumbnail-light.png";
+const fugThumbnailPath = "/thumbnails/FUG-thumbnail.png";
+const fugThumbnailLightPath = "/thumbnails/FUG-thumbnail-light.png";
 
 export default function Page() {
   const { resolvedTheme } = useTheme();
@@ -135,6 +137,13 @@ export default function Page() {
       description: "Interactive heat transfer visualization through multiple layers with temperature controls.",
       thumbnailPath: heatTransferThumbnailPath,
       thumbnailLightPath: heatTransferThumbnailLightPath
+    },
+    {
+      name: "FUG",
+      path: "/toolbox/FUG",
+      description: "Multicomponent flash and distillation design using Fenske, Underwood, and Gilliland relations.",
+      thumbnailPath: fugThumbnailPath,
+      thumbnailLightPath: fugThumbnailLightPath
     }
   ];
 
