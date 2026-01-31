@@ -3,7 +3,9 @@
 import Image from "next/legacy/image";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+import SearchBar from "@/components/SearchBar";
+import FeedbackDialog from "@/components/FeedbackDialog";
 import {
   Card,
   CardContent,
@@ -22,8 +24,8 @@ import {
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { cn } from "@/lib/utils";
+
+
 import CSTRVisualization from "@/components/CSTRVisualization";
 import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
 
@@ -74,45 +76,7 @@ const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thum
 const fugThumbnailPath = "/thumbnails/FUG-thumbnail.png";
 const fugThumbnailLightPath = "/thumbnails/FUG-thumbnail-light.png";
 
-const Dialog = DialogPrimitive.Root;
-const DialogTrigger = DialogPrimitive.Trigger;
-const DialogPortal = DialogPrimitive.Portal;
-const DialogClose = DialogPrimitive.Close;
-const DialogOverlay = (({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>) => (
-  <DialogPrimitive.Overlay
-    className={cn(
-      "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/80 backdrop-blur-sm",
-      className
-    )}
-    {...props}
-  />
-));
-const DialogContent = (({ className, children, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) => (
-  <DialogPortal>
-    <DialogOverlay />
-    <DialogPrimitive.Content
-      className={cn(
-        "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 rounded-2xl border p-6 shadow-lg duration-200",
-        className
-      )}
-      {...props}
-    >
-      {children}
-    </DialogPrimitive.Content>
-  </DialogPortal>
-));
-const DialogHeader = (({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col space-y-1.5 text-center sm:text-left", className)} {...props} />
-));
-const DialogFooter = (({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2", className)} {...props} />
-));
-const DialogTitle = (({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) => (
-  <DialogPrimitive.Title className={cn("text-lg font-semibold leading-none tracking-tight", className)} {...props} />
-));
-const DialogDescription = (({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Description>) => (
-  <DialogPrimitive.Description className={cn("text-muted-foreground text-sm", className)} {...props} />
-));
+
 
 export default function Home() {
   const { resolvedTheme } = useTheme();
@@ -124,6 +88,8 @@ export default function Home() {
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Search state for featured simulations
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     setMounted(true);
@@ -242,6 +208,39 @@ export default function Home() {
       thumbnailLightPath: fugThumbnailLightPath
     }
   ];
+
+  const filteredHomeSimulations = useMemo(() => {
+    if (!searchQuery) return homeFeaturedSimulations;
+    const lowerQuery = searchQuery.toLowerCase();
+
+    return homeFeaturedSimulations
+      .filter((sim) => 
+        sim.name.toLowerCase().includes(lowerQuery) || 
+        sim.description.toLowerCase().includes(lowerQuery)
+      )
+      .sort((a, b) => {
+        const nameA = a.name.toLowerCase();
+        const nameB = b.name.toLowerCase();
+        const descA = a.description.toLowerCase();
+        const descB = b.description.toLowerCase();
+
+        // Scoring function for relevance
+        const getScore = (name: string, desc: string) => {
+          if (name === lowerQuery) return 100;           // Exact name match
+          if (name.startsWith(lowerQuery)) return 80;    // Name starts with query
+          if (name.includes(lowerQuery)) return 60;      // Name contains query
+          if (desc.startsWith(lowerQuery)) return 40;    // Description starts with query
+          if (desc.includes(lowerQuery)) return 20;      // Description contains query
+          return 0;
+        };
+
+        const scoreA = getScore(nameA, descA);
+        const scoreB = getScore(nameB, descB);
+
+        // Sort by score (descending)
+        return scoreB - scoreA;
+      });
+  }, [searchQuery, homeFeaturedSimulations]);
 
   return (
     <TooltipProvider>
@@ -544,119 +543,21 @@ export default function Home() {
         </Card>
       </div>
       {/* Featured Simulations Section */}
-      <div className="simulations-showcase mt-8 relative">
-        <h2 className="text-2xl font-bold mb-4 text-center">
+      <div className="simulations-showcase mt-5 relative">
+        <h2 className="text-2xl font-bold mb-5 text-center">
           Featured Simulations and Tools
         </h2>
+
+        {/* Search bar positioned on the left */}
+        <div className="absolute left-0 top-0">
+          <SearchBar value={searchQuery} onChange={setSearchQuery} />
+        </div>
+
         <div className="absolute right-0 top-0">
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline">Submit Feedback</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Feedback and Bug Reports</DialogTitle>
-                <DialogDescription>
-                  I know I have bugs to fix and features to add and change!
-                </DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="feedback-type">Type</Label>
-                  <div className="flex items-center gap-1 rounded-lg p-1 bg-muted w-full">
-                    <Button
-                      type="button"
-                      onClick={() => setFeedbackType("feedback")}
-                      variant={feedbackType === "feedback" ? "default" : "ghost"}
-                      size="sm"
-                      className="flex-1 text-xs px-3 py-1 h-auto"
-                    >
-                      Feedback
-                    </Button>
-                    <Button
-                      type="button"
-                      onClick={() => setFeedbackType("bug")}
-                      variant={feedbackType === "bug" ? "default" : "ghost"}
-                      size="sm"
-                      className="flex-1 text-xs px-3 py-1 h-auto"
-                    >
-                      Bug Report
-                    </Button>
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="feedback-name">Name (Optional)</Label>
-                  <Input
-                    id="feedback-name"
-                    value={feedbackName}
-                    onChange={(e) => setFeedbackName(e.target.value)}
-                    placeholder="Your name"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="feedback-email">Email (Optional)</Label>
-                  <Input
-                    id="feedback-email"
-                    type="email"
-                    value={feedbackEmail}
-                    onChange={(e) => setFeedbackEmail(e.target.value)}
-                    placeholder="your@email.com"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="feedback-message">Message</Label>
-                  <Textarea
-                    id="feedback-message"
-                    value={feedbackMessage}
-                    onChange={(e) => setFeedbackMessage(e.target.value)}
-                    placeholder="Describe your feedback or bug..."
-                    className="min-h-[120px] resize-none"
-                  />
-                </div>
-                {feedbackError && (
-                  <div className="text-sm text-red-500">{feedbackError}</div>
-                )}
-              </div>
-              <DialogFooter>
-                <Button
-                  type="submit"
-                  disabled={isSubmitting}
-                  onClick={async () => {
-                    setFeedbackError(null);
-                    setIsSubmitting(true);
-                    try {
-                      const response = await fetch('/api/feedback', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ feedbackType, feedbackName, feedbackEmail, feedbackMessage }),
-                      });
-                      if (response.ok) {
-                        alert(`${feedbackType === 'feedback' ? 'Feedback' : 'Bug report'} submitted! Thank you.`);
-                        setDialogOpen(false);
-                        setFeedbackType("feedback");
-                        setFeedbackName("");
-                        setFeedbackEmail("");
-                        setFeedbackMessage("");
-                      } else {
-                        const errorData = await response.json();
-                        setFeedbackError(errorData.error || 'Failed to submit. Please try again.');
-                      }
-                    } catch (error) {
-                      console.error('Error submitting feedback:', error);
-                      setFeedbackError('Failed to submit. Please try again.');
-                    } finally {
-                      setIsSubmitting(false);
-                    }
-                  }}
-                >
-                  Submit
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <FeedbackDialog />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 w-full">
-          {homeFeaturedSimulations.map((simulation) => (
+          {filteredHomeSimulations.map((simulation) => (
             <Link href={simulation.path} key={simulation.name}>
               <Card className="bg-card text-card-foreground hover:shadow-lg transition-shadow cursor-pointer h-full flex flex-col relative overflow-hidden">
 
