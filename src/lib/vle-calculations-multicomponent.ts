@@ -13,26 +13,23 @@
 //  • UNIQUAC - Activity coefficient model (inherently multicomponent)
 // =======================================================================================
 
-import type { CompoundData, AntoineParams } from './vle-types'; // Assuming types are in a shared file
+import type { CompoundData, AntoineParams } from './vle-types';
 export const R_gas_const_J_molK = 8.31446261815324; // J·mol⁻¹·K⁻¹
 
 /**
- * Calculates saturation pressure (Pa) from Antoine coefficients.
- * This function remains unchanged as it operates on pure components.
+ * Calculates saturation pressure (Pa) from HYSYS extended Antoine.
+ * ln(P[kPa]) = A + B/(T+C) + D·ln(T) + E·T^F
+ * T in Kelvin. Returns pressure in Pa (kPa × 1000).
  */
 export function calculatePsat_Pa(
   params: AntoineParams | null,
   T_K: number
 ): number {
   if (!params || T_K <= 0) return NaN;
-  const conv = params.Units?.toLowerCase() === 'kpa' ? 1000 : 1; // kPa → Pa
-  let P: number;
-  if (params.EquationNo === 1 || params.EquationNo === '1') {
-    P = 10 ** (params.A - params.B / (T_K + params.C));
-  } else {
-    P = Math.exp(params.A - params.B / (T_K + params.C));
-  }
-  return isNaN(P) || P <= 0 ? NaN : P * conv;
+  const { A, B, C, D, E, F } = params;
+  const lnP_kPa = A + B / (T_K + C) + D * Math.log(T_K) + E * Math.pow(T_K, F);
+  const P_Pa = Math.exp(lnP_kPa) * 1000; // kPa → Pa
+  return isNaN(P_Pa) || P_Pa <= 0 ? NaN : P_Pa;
 }
 /**
  * Solves a cubic equation of state: aZ³ + bZ² + cZ + d = 0.
@@ -67,9 +64,11 @@ export function solveCubicEOS(a: number, b: number, c: number, d: number): numbe
 //  2. N R T L (Multicomponent Activity-Coefficient Model)
 // ==================================================================
 export interface NrtlInteractionParams {
-  A_ij: number; // J·mol⁻¹
-  A_ji: number; // J·mol⁻¹
-  alpha_ij: number; // dimensionless non-randomness parameter
+  Aij: number;  // K (temperature-dependent part: tau = Aij/T + Bij)
+  Aji: number;  // K
+  Bij: number;  // dimensionless
+  Bji: number;  // dimensionless
+  alpha: number; // non-randomness parameter
 }
 export type NrtlParameterMatrix = Map<string, NrtlInteractionParams>; // Key: "i-j"
 
@@ -103,6 +102,7 @@ export function calculateNrtlGammaMulticomponent(
 
   const tau = Array(n).fill(0).map(() => Array(n).fill(0));
   const G = Array(n).fill(0).map(() => Array(n).fill(0));
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert Aij (cal/mol) to per-K term
 
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
@@ -122,12 +122,12 @@ export function calculateNrtlGammaMulticomponent(
 
       const p = (params.has(`${i}-${j}`)) 
           ? pairParams 
-          : { A_ij: pairParams.A_ji, A_ji: pairParams.A_ij, alpha_ij: pairParams.alpha_ij };
+          : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij, alpha: pairParams.alpha };
       
-      tau[i][j] = p.A_ij / (R_gas_const_J_molK * T_K);
-      tau[j][i] = p.A_ji / (R_gas_const_J_molK * T_K);
-      G[i][j] = Math.exp(-p.alpha_ij * tau[i][j]);
-      G[j][i] = Math.exp(-p.alpha_ij * tau[j][i]);
+      tau[i][j] = p.Aij / (R_cal * T_K) + p.Bij;
+      tau[j][i] = p.Aji / (R_cal * T_K) + p.Bji;
+      G[i][j] = Math.exp(-p.alpha * tau[i][j]);
+      G[j][i] = Math.exp(-p.alpha * tau[j][i]);
     }
   }
 
@@ -181,8 +181,10 @@ export function calculateNrtlGammaMulticomponent(
 //  3. W I L S O N (Multicomponent Activity Model)
 // ==================================================================
 export interface WilsonInteractionParams {
-  a_ij_J_mol: number;
-  a_ji_J_mol: number;
+  Aij: number;  // K (Lambda = (Vj/Vi)·exp(-(Aij/T + Bij)))
+  Aji: number;  // K
+  Bij: number;  // dimensionless
+  Bji: number;  // dimensionless
 }
 export type WilsonParameterMatrix = Map<string, WilsonInteractionParams>; // Key: "i-j"
 
@@ -200,6 +202,7 @@ export function calculateWilsonGammaMulticomponent(
 
   const V_L = comps.map(c => c.wilsonParams?.V_L_m3mol);
   if (V_L.some(v => v === undefined)) return null;
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - used in Lambda calculation
 
   const Lambda = Array(n).fill(0).map(() => Array(n).fill(0));
   for (let i = 0; i < n; i++) {
@@ -221,8 +224,10 @@ export function calculateWilsonGammaMulticomponent(
         return null;
       }
 
-      const a_ij = params.has(`${i}-${j}`) ? pairParams.a_ij_J_mol : pairParams.a_ji_J_mol;
-      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(-a_ij / (R_gas_const_J_molK * T_K));
+      const p = params.has(`${i}-${j}`)
+        ? pairParams
+        : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij };
+      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
     }
   }
 
@@ -399,9 +404,12 @@ export function calculateSrkFugacityCoefficientsMulticomponent(
 // ===============================================================
 //  6. U N I Q U A C (Multicomponent - from original file)
 // ===============================================================
-export interface UniquacInteractionParams { A12: number; A21: number; }
-// NOTE: For multicomponent, this should be a matrix/map similar to NRTL/Wilson.
-// This implementation assumes binary parameters can be retrieved for each pair.
+export interface UniquacInteractionParams {
+  Aij: number;  // K (tau = exp(-(Aij/T + Bij)))
+  Aji: number;  // K
+  Bij: number;  // dimensionless
+  Bji: number;  // dimensionless
+}
 export type UniquacParameterMatrix = Map<string, UniquacInteractionParams>; // Key "i-j"
 
 /**
@@ -436,6 +444,7 @@ export function calculateUniquacGammaMulticomponent(
   );
 
   // Residual part
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - used in UNIQUAC tau calculation
   const tau = Array(n).fill(0).map(() => Array(n).fill(0));
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
@@ -455,8 +464,10 @@ export function calculateUniquacGammaMulticomponent(
       console.error(`❌ [UNIQUAC CALC FAILED] Missing interaction parameters for pair: ${comp1Name} - ${comp2Name}.`);
       return null;
     }
-    const A_ij = params.has(`${i}-${j}`) ? pairParams.A12 : pairParams.A21;
-        tau[i][j] = Math.exp(-A_ij / T_K);
+    const p = params.has(`${i}-${j}`)
+      ? pairParams
+      : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij };
+        tau[i][j] = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
     }
   }
 
@@ -613,13 +624,14 @@ export async function fetchUnifacInteractionParams(
   supabase: SupabaseClient,
   subgroupIds: number[]
 ): Promise<UnifacParameters | null> {
-  // ... implementation from vle-calculations.ts ...
-  return null; // Placeholder - needs full implementation
+  return _getUnifacParams(supabase);
 }
 
 // --- DATABASE FETCHING & ESTIMATION ---
 
-// This helper function correctly fetches UNIFAC parameters from YOUR database tables.
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchCompoundDataFromHysys } from './antoine-utils';
+
 let unifacParamsCache: UnifacParameters | null = null;
 async function _getUnifacParams(supabase: SupabaseClient): Promise<UnifacParameters | null> {
     if (unifacParamsCache) return unifacParamsCache;
@@ -649,187 +661,158 @@ async function _getUnifacParams(supabase: SupabaseClient): Promise<UnifacParamet
     return unifacParamsCache;
 }
 
-// This helper builds a component object with the necessary UNIFAC group data.
-async function _buildUnifacComponent(supabase: SupabaseClient, casn: string): Promise<CompoundData | null> {
-  const therm = await fetchAndConvertThermData(supabase, casn).catch(() => null);
+async function _buildUnifacComponent(supabase: SupabaseClient, name: string): Promise<CompoundData | null> {
+  const therm = await fetchCompoundDataFromHysys(supabase, name).catch(() => null);
   if (!therm || !therm.unifacGroups) return null;
   return {
-    name: casn,
-    cas_number: casn,
+    name: name,
     antoine: null,
     unifacGroups: therm.unifacGroups,
+    prParams: null,
+    srkParams: null,
+    uniquacParams: null,
+    wilsonParams: null,
   } as CompoundData;
 }
 
-// This is the fully implemented estimation function.
 async function estimateNrtlFromUnifac(
   supabase: SupabaseClient,
-  casn1: string,
-  casn2: string,
+  name1: string,
+  name2: string,
   T_ref_K: number = 350
 ): Promise<NrtlInteractionParams | null> {
     const unifacParams = await _getUnifacParams(supabase);
-    const comp1 = await _buildUnifacComponent(supabase, casn1);
-    const comp2 = await _buildUnifacComponent(supabase, casn2);
+    const comp1 = await _buildUnifacComponent(supabase, name1);
+    const comp2 = await _buildUnifacComponent(supabase, name2);
 
-    if (!unifacParams || !comp1 || !comp2) {
-        // This log will now correctly fire if a component's UNIFAC recipe is missing
-        if (!comp1) console.error(`[UNIFAC Estimation Failed] Could not build component from UNIFAC groups for CAS: ${casn1}.`);
-        if (!comp2) console.error(`[UNIFAC Estimation Failed] Could not build component from UNIFAC groups for CAS: ${casn2}.`);
-        return null;
-    }
+    if (!unifacParams || !comp1 || !comp2) return null;
 
-    // Estimate at infinite dilution to get the clearest signal
     const gammas_1_in_2 = calculateUnifacGamma([comp1, comp2], [1e-9, 1.0 - 1e-9], T_ref_K, unifacParams);
     const gammas_2_in_1 = calculateUnifacGamma([comp1, comp2], [1.0 - 1e-9, 1e-9], T_ref_K, unifacParams);
 
     if (!gammas_1_in_2 || !gammas_2_in_1) return null;
 
-    const lnGamma1_inf = Math.log(gammas_2_in_1[0]); // gamma of 1 at infinite dilution in 2
-    const lnGamma2_inf = Math.log(gammas_1_in_2[1]); // gamma of 2 at infinite dilution in 1
+    const lnGamma1_inf = Math.log(gammas_2_in_1[0]);
+    const lnGamma2_inf = Math.log(gammas_1_in_2[1]);
 
-    const alpha_ij = 0.3;
-    const A_ji = lnGamma1_inf * R_gas_const_J_molK * T_ref_K;
-    const A_ij = lnGamma2_inf * R_gas_const_J_molK * T_ref_K;
-
-    return { A_ij, A_ji, alpha_ij };
+    // Heuristic: store as Bij (temperature-independent), Aij = 0
+    return { Aij: 0, Aji: 0, Bij: lnGamma2_inf, Bji: lnGamma1_inf, alpha: 0.3 };
 }
 
-// This is the main function called by your page, now with the correct logic.
+// --- NRTL ---
 export async function fetchNrtlParameters(
   supabase: SupabaseClient,
-  casn1: string,
-  casn2: string,
-  logSource?: (source: 'Database' | 'UNIFAC Estimation' | 'Ideal Fallback') => void
+  name1: string,
+  name2: string,
 ): Promise<NrtlInteractionParams | null> {
-  if (!casn1 || !casn2 || casn1 === casn2) return { A_ij: 0, A_ji: 0, alpha_ij: 0.3 };
+  if (!name1 || !name2 || name1 === name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 
   const { data, error } = await supabase
-    .from('nrtl parameters')
-    .select('"A12", "A21", "alpha12", "CASN1", "CASN2"')
-    .or(`and("CASN1".eq."${casn1}","CASN2".eq."${casn2}"),and("CASN1".eq."${casn2}","CASN2".eq."${casn1}")`)
+    .from('HYSYS NRTL')
+    .select('*')
+    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
 
-  if (error) console.warn(`Supabase NRTL query error: ${error.message}`);
+  if (error) console.warn(`Supabase HYSYS NRTL query error: ${error.message}`);
 
   if (data && data.length > 0) {
-    if (logSource) logSource('Database');
     const row = data[0];
-    return row.CASN1 === casn1
-      ? { A_ij: row.A12, A_ji: row.A21, alpha_ij: row.alpha12 ?? 0.3 }
-      : { A_ij: row.A21, A_ji: row.A12, alpha_ij: row.alpha12 ?? 0.3 };
+    const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
+    return isForward
+      ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0, alpha: row.Cij_Alpha ?? 0.3 }
+      : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0, alpha: row.Cji_Alpha ?? row.Cij_Alpha ?? 0.3 };
   }
   
-  const estimatedParams = await estimateNrtlFromUnifac(supabase, casn1, casn2);
-
-  if (estimatedParams) {
-    if (logSource) logSource('UNIFAC Estimation');
-    return estimatedParams;
-  }
-
-  if (logSource) logSource('Ideal Fallback');
-  console.error(`[NRTL Fallback Failed] UNIFAC estimation failed for ${casn1}-${casn2}. Defaulting to IDEAL behavior for this pair.`);
-  return { A_ij: 0, A_ji: 0, alpha_ij: 0.3 };
-}
-
-// ==================================================================
-//  7. DATABASE FETCH HELPERS (Supabase)
-// ==================================================================
-import type { SupabaseClient } from '@supabase/supabase-js';
-import { fetchAndConvertThermData } from './antoine-utils'; // Ensure this path is correct
-
-// Note: The following helper functions are also required for the fetchers to work.
-
-async function estimateKijFromCriticalVolumes(
-  supabase: SupabaseClient,
-  casn1: string,
-  casn2: string
-): Promise<number | null> {
-    // This helper function body is assumed to be copied from vle-calculations.ts
-    // For brevity, it is not repeated here. It fetches critical volumes and calculates kij.
-    return 0.0; // Placeholder
+  const est = await estimateNrtlFromUnifac(supabase, name1, name2);
+  if (est) return est;
+  return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 }
 
 // --- Wilson ---
 export async function fetchWilsonInteractionParams(
   supabase: SupabaseClient,
-  casn1: string,
-  casn2: string
+  name1: string,
+  name2: string
 ): Promise<WilsonInteractionParams | null> {
-  if (!casn1 || !casn2) return { a_ij_J_mol: 0, a_ji_J_mol: 0 };
+  if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
+
   const { data, error } = await supabase
-    .from('wilson parameters')
-    .select('A12, A21, CASN1, CASN2')
-    // CORRECTED: Added quotes around "CASN1" and "CASN2".
-    .or(`and("CASN1".eq.${casn1},"CASN2".eq.${casn2}),and("CASN1".eq.${casn2},"CASN2".eq.${casn1})`)
+    .from('HYSYS WILSON')
+    .select('*')
+    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
-  if (error || !data || data.length === 0) return null;
+
+  if (error || !data || data.length === 0) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
   const row = data[0];
-  const JOULES_PER_CAL = 4.184;
-  const A12 = row.CASN1 === casn1 ? row.A12 : row.A21;
-  const A21 = row.CASN1 === casn1 ? row.A21 : row.A12;
-  // **MODIFIED**: Return keys matching the multicomponent interface
-  return { a_ij_J_mol: A12 * JOULES_PER_CAL, a_ji_J_mol: A21 * JOULES_PER_CAL };
+  const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
+  return isForward
+    ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
+    : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
 }
 
-// --- Peng-Robinson / SRK (Shared) ---
+// --- Peng-Robinson ---
 export async function fetchPrInteractionParams(
   supabase: SupabaseClient,
-  casn1: string,
-  casn2: string
+  name1: string,
+  name2: string
 ): Promise<PrSrkInteractionParams | null> {
-  if (!casn1 || !casn2 || casn1 === casn2) return { k_ij: 0 };
+  if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
+  
   const { data, error } = await supabase
-    .from('peng-robinson parameters')
-    .select('"CASN1", "CASN2", k12')
-  // CORRECTED: Added quotes around the interpolated CAS number variables
-  .or(`and("CASN1".eq."${casn1}","CASN2".eq."${casn2}"),and("CASN1".eq."${casn2}","CASN2".eq."${casn1}")`)
+    .from('HYSYS PR SRK')
+    .select('*')
+    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
-  if (error) console.warn(`PR fetch error: ${error.message}`);
-  let k_val: number | null = (data && data.length > 0) ? data[0].k12 : null;
-  if (k_val === null) k_val = await estimateKijFromCriticalVolumes(supabase, casn1, casn2) ?? 0;
-  // **MODIFIED**: Return the shared PrSrkInteractionParams type
-  return { k_ij: k_val };
+    
+  if (error) console.warn(`HYSYS PR SRK fetch error: ${error.message}`);
+  if (data && data.length > 0 && typeof data[0].Kij === 'number') {
+    return { k_ij: data[0].Kij };
+  }
+  return { k_ij: 0 };
 }
 
+// --- SRK ---
 export async function fetchSrkInteractionParams(
   supabase: SupabaseClient,
-  casn1: string,
-  casn2: string
+  name1: string,
+  name2: string
 ): Promise<PrSrkInteractionParams | null> {
-    if (!casn1 || !casn2 || casn1 === casn2) return { k_ij: 0 };
-    const { data, error } = await supabase
-    .from('srk parameters')
-    .select('"CASN1", "CASN2", k12')
-  // CORRECTED: Added quotes around the interpolated CAS number variables
-  .or(`and("CASN1".eq."${casn1}","CASN2".eq."${casn2}"),and("CASN1".eq."${casn2}","CASN2".eq."${casn1}")`)
+  if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
+  
+  const { data, error } = await supabase
+    .from('HYSYS PR SRK')
+    .select('*')
+    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
-    if (error) console.warn(`SRK fetch error: ${error.message}`);
-    let k_val: number | null = (data && data.length > 0) ? data[0].k12 : null;
-    if (k_val === null) k_val = await estimateKijFromCriticalVolumes(supabase, casn1, casn2) ?? 0;
-    // **MODIFIED**: Return the shared PrSrkInteractionParams type
-    return { k_ij: k_val };
+    
+  if (error) console.warn(`HYSYS PR SRK fetch error: ${error.message}`);
+  if (data && data.length > 0 && typeof data[0].Kij === 'number') {
+    return { k_ij: data[0].Kij };
+  }
+  return { k_ij: 0 };
 }
 
 // --- UNIQUAC ---
 export async function fetchUniquacInteractionParams(
   supabase: SupabaseClient,
-  casn1: string,
-  casn2: string
+  name1: string,
+  name2: string
 ): Promise<UniquacInteractionParams | null> {
-  if (!casn1 || !casn2) return { A12: 0, A21: 0 };
+  if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
+
   const { data, error } = await supabase
-    .from('uniquac parameters')
-    .select('A12, A21, CASN1, CASN2')
-    // CORRECTED: Added quotes around "CASN1" and "CASN2".
-    .or(`and("CASN1".eq.${casn1},"CASN2".eq.${casn2}),and("CASN1".eq.${casn2},"CASN2".eq.${casn1})`)
+    .from('HYSYS UNIQUAC')
+    .select('*')
+    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
-  if (error) console.warn(`UNIQUAC fetch error: ${error.message}`);
-  if (data && data.length > 0) {
+
+  if (!error && data && data.length > 0) {
     const row = data[0];
-    return row.CASN1 === casn1 ? { A12: row.A12, A21: row.A21 } : { A12: row.A21, A21: row.A12 };
+    const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
+    return isForward
+      ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
+      : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
   }
-  // --- FALLBACK LOGIC: estimate via UNIFAC if DB has no entry ---
-  console.warn(`[UNIQUAC Fallback] No DB params for ${casn1}-${casn2}. Using ideal parameters.`);
-  return { A12: 0, A21: 0 };
+  if (error) console.warn(`HYSYS UNIQUAC fetch error: ${error.message}`);
+  return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
 }

@@ -15,7 +15,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export type FluidPackageType = 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac' | 'wilson';
 export type DiagramType = 'txy' | 'pxy' | 'xy';
 
-export interface AntoineParams { A: number; B: number; C: number; Tmin_K: number; Tmax_K: number; Units: string; EquationNo?: number | string; }
+export interface AntoineParams { A: number; B: number; C: number; D: number; E: number; F: number; G: number; Tmin_K: number; Tmax_K: number; }
 export interface PrPureComponentParams { Tc_K: number; Pc_Pa: number; omega: number; }
 export interface SrkPureComponentParams { Tc_K: number; Pc_Pa: number; omega: number; }
 export interface UniquacPureComponentParams { r: number; q: number; }
@@ -23,28 +23,28 @@ export interface WilsonPureComponentParams { V_L_m3mol: number; }
 export interface UnifacGroupComposition { [subgroupId: number]: number; }
 
 export interface CompoundData {
-    name: string; cas_number?: string | null; antoine: AntoineParams | null; unifacGroups?: UnifacGroupComposition | null;
+    name: string; antoine: AntoineParams | null; unifacGroups?: UnifacGroupComposition | null;
     prParams?: PrPureComponentParams | null; srkParams?: SrkPureComponentParams | null; uniquacParams?: UniquacPureComponentParams | null;
-    wilsonParams?: WilsonPureComponentParams | null; r_i?: number; q_i?: number;
+    wilsonParams?: WilsonPureComponentParams | null; r_i?: number; q_i?: number; molecularWeight?: number;
 }
 export interface BubbleDewResult { comp1_feed: number; comp1_equilibrium: number; T_K?: number; P_Pa?: number; error?: string; }
 export interface VleChartData { x: number[]; y: number[]; t?: number[]; p?: number[]; }
 interface PrInteractionParams { k_ij: number; }
 interface SrkInteractionParams { k_ij: number; }
-interface NrtlInteractionParams { A12: number; A21: number; alpha: number; }
-interface UniquacInteractionParams { A12: number; A21: number; }
-interface WilsonInteractionParams { a12_J_mol: number; a21_J_mol: number; }
+interface NrtlInteractionParams { Aij: number; Aji: number; Bij: number; Bji: number; alpha: number; }
+interface UniquacInteractionParams { Aij: number; Aji: number; Bij: number; Bji: number; }
+interface WilsonInteractionParams { Aij: number; Aji: number; Bij: number; Bji: number; }
 interface UnifacParameters { Rk: { [id: number]: number }; Qk: { [id: number]: number }; mainGroupMap: { [id: number]: number }; a_mk: Map<string, number>; }
 
 // --- 2. UTILITY FUNCTIONS ---
-const R_gas_const_J_molK = 8.31446261815324, R_cal_molK = 1.98720425864083, JOULES_PER_CAL = 4.184;
+const R_gas_const_J_molK = 8.31446261815324;
 
-function calculatePsat_Pa(params: AntoineParams | null, T_kelvin: number): number {
-    if (!params || T_kelvin <= 0) return NaN;
-    const conv = params.Units?.toLowerCase() === 'kpa' ? 1000 : 1;
-    const logP = params.A - params.B / (T_kelvin + params.C);
-    const P = (params.EquationNo === 1 || params.EquationNo === '1') ? Math.pow(10, logP) : Math.exp(logP);
-    return isNaN(P) || P < 0 ? NaN : P * conv;
+function calculatePsat_Pa(params: AntoineParams | null, T_K: number): number {
+    if (!params || T_K <= 0) return NaN;
+    const { A, B, C, D, E, F } = params;
+    const lnP_kPa = A + B / (T_K + C) + D * Math.log(T_K) + E * Math.pow(T_K, F);
+    const P_Pa = Math.exp(lnP_kPa) * 1000;
+    return isNaN(P_Pa) || P_Pa <= 0 ? NaN : P_Pa;
 }
 
 function solveCubicEOS(a: number, b: number, c: number, d: number): number[] | null {
@@ -77,13 +77,20 @@ function solveCubicEOS(a: number, b: number, c: number, d: number): number[] | n
 
 function solveAntoineBoilingPoint(antoineParams: AntoineParams | null, P_target_Pa: number): number | null {
     if (!antoineParams) return null;
-    try {
-        const P_units = P_target_Pa / (antoineParams.Units?.toLowerCase() === 'kpa' ? 1000 : 1);
-        const logP = (antoineParams.EquationNo === 1 || antoineParams.EquationNo === '1') ? Math.log10(P_units) : Math.log(P_units);
-        if (antoineParams.A - logP === 0) return null;
-        const T_K = antoineParams.B / (antoineParams.A - logP) - antoineParams.C;
-        return (T_K > 0 && T_K < 1000) ? T_K : null;
-    } catch { return null; }
+    const { A, B, C, D, E, F } = antoineParams;
+    const lnP_target = Math.log(P_target_Pa / 1000); // target in kPa
+    // Newton-Raphson: f(T) = A + B/(T+C) + D*ln(T) + E*T^F - lnP_target
+    let T = 373.15; // initial guess
+    for (let i = 0; i < 50; i++) {
+        const f = A + B / (T + C) + D * Math.log(T) + E * Math.pow(T, F) - lnP_target;
+        const df = -B / Math.pow(T + C, 2) + D / T + E * F * Math.pow(T, F - 1);
+        if (Math.abs(df) < 1e-20) break;
+        const dT = f / df;
+        T -= dT;
+        if (T <= 0) return null;
+        if (Math.abs(dT) < 1e-6) return T;
+    }
+    return (T > 0 && T < 1500) ? T : null;
 }
 
 // --- 3. MODEL-SPECIFIC CALCULATIONS ---
@@ -175,9 +182,9 @@ function calculateSrkFugacityCoefficients(c: CompoundData[], phase_comp: number[
 
 function calculateActivityGamma(comps: CompoundData[], x: number[], T: number, pkg: FluidPackageType, p: any): [number, number]|null {
     switch(pkg){
-        case 'nrtl': { const t12=p.A12/(R_cal_molK*T),t21=p.A21/(R_cal_molK*T),G12=Math.exp(-p.alpha*t12),G21=Math.exp(-p.alpha*t21);const d1=x[0]+x[1]*G21,d2=x[1]+x[0]*G12;if(d1===0||d2===0)return null;return[Math.exp(x[1]**2*(t21*(G21/d1)**2+t12*G12/d2**2)),Math.exp(x[0]**2*(t12*(G12/d2)**2+t21*G21/d1**2))]; }
-        case 'wilson': { if(!comps[0].wilsonParams||!comps[1].wilsonParams)return null;const V1=comps[0].wilsonParams.V_L_m3mol,V2=comps[1].wilsonParams.V_L_m3mol;const L12=(V2/V1)*Math.exp(-p.a12_J_mol/(R_gas_const_J_molK*T)),L21=(V1/V2)*Math.exp(-p.a21_J_mol/(R_gas_const_J_molK*T));return[Math.exp(-Math.log(x[0]+L12*x[1])+x[1]*(L12/(x[0]+L12*x[1])-L21/(x[1]+L21*x[0]))),Math.exp(-Math.log(x[1]+L21*x[0])-x[0]*(L12/(x[0]+L12*x[1])-L21/(x[1]+L21*x[0])))];}
-        case 'uniquac': { if(!comps[0].uniquacParams||!comps[1].uniquacParams)return null;const r=[comps[0].uniquacParams.r,comps[1].uniquacParams.r],q=[comps[0].uniquacParams.q,comps[1].uniquacParams.q];const l=r.map((ri,i)=>5*(ri-q[i])-(ri-1));const sxr=x[0]*r[0]+x[1]*r[1],sxq=x[0]*q[0]+x[1]*q[1];if(sxr<1e-9||sxq<1e-9)return null;const Phi=x.map((xi,i)=>xi*r[i]/sxr),Theta=x.map((xi,i)=>xi*q[i]/sxq);const sxl=x[0]*l[0]+x[1]*l[1];const lnGC=x.map((xi,i)=>(xi<1e-9||Phi[i]<1e-9||Theta[i]<1e-9)?0:Math.log(Phi[i]/xi)+5*q[i]*Math.log(Theta[i]/Phi[i])+l[i]-(r[i]/sxr)*sxl);const t12=Math.exp(-p.A12/T),t21=Math.exp(-p.A21/T);const lnGR=[q[0]*(1-Math.log(Theta[0]+Theta[1]*t21)-Theta[0]/(Theta[0]+Theta[1]*t21)-Theta[1]*t12/(Theta[1]+Theta[0]*t12)),q[1]*(1-Math.log(Theta[1]+Theta[0]*t12)-Theta[1]/(Theta[1]+Theta[0]*t12)-Theta[0]*t21/(Theta[0]+Theta[1]*t21))];return[Math.exp(lnGC[0]+lnGR[0]),Math.exp(lnGC[1]+lnGR[1])];}
+        case 'nrtl': { const t12=p.Aij/T+p.Bij,t21=p.Aji/T+p.Bji,G12=Math.exp(-p.alpha*t12),G21=Math.exp(-p.alpha*t21);const d1=x[0]+x[1]*G21,d2=x[1]+x[0]*G12;if(d1===0||d2===0)return null;return[Math.exp(x[1]**2*(t21*(G21/d1)**2+t12*G12/d2**2)),Math.exp(x[0]**2*(t12*(G12/d2)**2+t21*G21/d1**2))]; }
+        case 'wilson': { if(!comps[0].wilsonParams||!comps[1].wilsonParams)return null;const V1=comps[0].wilsonParams.V_L_m3mol,V2=comps[1].wilsonParams.V_L_m3mol;const L12=(V2/V1)*Math.exp(-(p.Aij/T+p.Bij)),L21=(V1/V2)*Math.exp(-(p.Aji/T+p.Bji));return[Math.exp(-Math.log(x[0]+L12*x[1])+x[1]*(L12/(x[0]+L12*x[1])-L21/(x[1]+L21*x[0]))),Math.exp(-Math.log(x[1]+L21*x[0])-x[0]*(L12/(x[0]+L12*x[1])-L21/(x[1]+L21*x[0])))];}
+        case 'uniquac': { if(!comps[0].uniquacParams||!comps[1].uniquacParams)return null;const r=[comps[0].uniquacParams.r,comps[1].uniquacParams.r],q=[comps[0].uniquacParams.q,comps[1].uniquacParams.q];const l=r.map((ri,i)=>5*(ri-q[i])-(ri-1));const sxr=x[0]*r[0]+x[1]*r[1],sxq=x[0]*q[0]+x[1]*q[1];if(sxr<1e-9||sxq<1e-9)return null;const Phi=x.map((xi,i)=>xi*r[i]/sxr),Theta=x.map((xi,i)=>xi*q[i]/sxq);const sxl=x[0]*l[0]+x[1]*l[1];const lnGC=x.map((xi,i)=>(xi<1e-9||Phi[i]<1e-9||Theta[i]<1e-9)?0:Math.log(Phi[i]/xi)+5*q[i]*Math.log(Theta[i]/Phi[i])+l[i]-(r[i]/sxr)*sxl);const t12=Math.exp(-(p.Aij/T+p.Bij)),t21=Math.exp(-(p.Aji/T+p.Bji));const lnGR=[q[0]*(1-Math.log(Theta[0]+Theta[1]*t21)-Theta[0]/(Theta[0]+Theta[1]*t21)-Theta[1]*t12/(Theta[1]+Theta[0]*t12)),q[1]*(1-Math.log(Theta[1]+Theta[0]*t12)-Theta[1]/(Theta[1]+Theta[0]*t12)-Theta[0]*t21/(Theta[0]+Theta[1]*t21))];return[Math.exp(lnGC[0]+lnGR[0]),Math.exp(lnGC[1]+lnGR[1])];}
         case 'unifac': { if(x[0]>=1||x[1]>=1)return[1,1];for(const c of comps){if(!c.r_i||!c.q_i){c.r_i=0;c.q_i=0;if(!c.unifacGroups)return null;for(const[s,k]of Object.entries(c.unifacGroups)){const sgId=parseInt(s);if(!p.Rk[sgId]||!p.Qk[sgId])return null;c.r_i+=k*p.Rk[sgId];c.q_i+=k*p.Qk[sgId];}}}const r=comps.map(c=>c.r_i!),q=comps.map(c=>c.q_i!),sxr=x[0]*r[0]+x[1]*r[1],sxq=x[0]*q[0]+x[1]*q[1];if(sxr<1e-9||sxq<1e-9)return null;const Phi=x.map((xi,i)=>xi*r[i]/sxr),Theta=x.map((xi,i)=>xi*q[i]/sxq),l=r.map((ri,i)=>5*(ri-q[i])-(ri-1)),sxl=x[0]*l[0]+x[1]*l[1];const lnGC=x.map((xi,i)=>(xi<1e-9||Phi[i]<1e-9||Theta[i]<1e-9)?0:Math.log(Phi[i]/xi)+5*q[i]*Math.log(Theta[i]/Phi[i])+l[i]-(r[i]/sxr)*sxl);const sg=Array.from(new Set(comps.flatMap(c=>Object.keys(c.unifacGroups||{})).map(Number))),v=comps.map(c=>sg.map(id=>c.unifacGroups?.[id]||0));const glg=(cx:number[])=>{let svk=cx.reduce((s,xi,i)=>s+v[i].reduce((ss,vk)=>ss+xi*vk,0),0);if(svk<1e-9)return Array(sg.length).fill(0);const Xm=sg.map((_,k)=>cx.reduce((s,xi,i)=>s+xi*v[i][k],0)/svk);let sXQ=Xm.reduce((s,Xk,k)=>s+Xk*p.Qk[sg[k]],0);if(sXQ<1e-9)return Array(sg.length).fill(0);const Tm=Xm.map((Xk,k)=>Xk*p.Qk[sg[k]]/sXQ),psi=sg.map((_,m)=>sg.map((_,n)=>Math.exp(-(p.a_mk.get(`${p.mainGroupMap[sg[m]]}-${p.mainGroupMap[sg[n]]}`)??0)/T)));return sg.map((_,k)=>{const s1=Tm.reduce((s,tm,m)=>s+tm*psi[m][k],0),s2=Tm.reduce((s,tm,m)=>{const s3=Tm.reduce((ss,tn,n)=>ss+tn*psi[n][m],0);return s+(s3>1e-9?(tm*psi[k][m])/s3:0)},0);if(s1<=0)return NaN;return p.Qk[sg[k]]*(1-Math.log(s1)-s2)})};const lgm=glg(x),lgp1=glg([1,0]),lgp2=glg([0,1]);if(lgm.some(isNaN)||lgp1.some(isNaN)||lgp2.some(isNaN))return null;let lnGR1=0,lnGR2=0;sg.forEach((_,k)=>{lnGR1+=v[0][k]*(lgm[k]-lgp1[k]);lnGR2+=v[1][k]*(lgm[k]-lgp2[k])});return[Math.exp(lnGC[0]+lnGR1),Math.exp(lnGC[1]+lnGR2)];}
         default: return null;
     }
@@ -265,67 +272,103 @@ async function fetchInteractionParams(pkg: FluidPackageType, c1: CompoundData, c
         return { Rk, Qk, mainGroupMap, a_mk };
     }
 
-    const cas1 = c1.cas_number, cas2 = c2.cas_number;
-    if (!cas1 || !cas2 || cas1 === cas2) return (pkg === 'pr' || pkg === 'srk') ? { k_ij: 0 } : {};
+    const name1 = c1.name, name2 = c2.name;
+    if (!name1 || !name2 || name1 === name2) return (pkg === 'pr' || pkg === 'srk') ? { k_ij: 0 } : {};
     
     let table: string;
     switch(pkg) {
-        case 'pr': table = 'peng-robinson parameters'; break;
-        case 'srk': table = 'srk parameters'; break;
-        case 'nrtl': table = 'nrtl parameters'; break;
-        case 'uniquac': table = 'uniquac parameters'; break;
-        case 'wilson': table = 'wilson parameters'; break;
+        case 'pr': case 'srk': table = 'HYSYS PR SRK'; break;
+        case 'nrtl': table = 'HYSYS NRTL'; break;
+        case 'uniquac': table = 'HYSYS UNIQUAC'; break;
+        case 'wilson': table = 'HYSYS WILSON'; break;
         default: throw new Error(`Invalid package ${pkg}`);
     }
-    const { data, error } = await supabase.from(table).select('*').or(`and(CASN1.eq.${cas1},CASN2.eq.${cas2}),and(CASN1.eq.${cas2},CASN2.eq.${cas1})`).limit(1);
+    const { data, error } = await supabase.from(table).select('*').or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`).limit(1);
     
     if (error) throw new Error(`Supabase query error for ${pkg}: ${error.message}`);
-    if (!data || data.length === 0) return (pkg === 'pr' || pkg === 'srk') ? { k_ij: 0 } : {};
+    if (!data || data.length === 0) {
+        if (pkg === 'pr' || pkg === 'srk') return { k_ij: 0 };
+        if (pkg === 'nrtl') return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
+        if (pkg === 'uniquac') return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
+        if (pkg === 'wilson') return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
+        return {};
+    }
 
-    const dbRow = data[0] as any, isSwapped = dbRow.CASN1 !== cas1;
+    const row = data[0] as any;
+    const isForward = row.Component_i?.toLowerCase() === name1.toLowerCase();
     switch(pkg) {
-        case 'pr': case 'srk': return { k_ij: dbRow.k12 ?? 0 };
-        case 'nrtl': return { alpha: dbRow.alpha12 ?? 0.3, A12: (isSwapped ? dbRow.A21:dbRow.A12)??0, A21: (isSwapped ? dbRow.A12:dbRow.A21)??0 };
-        case 'uniquac': return { A12: (isSwapped ? dbRow.A21:dbRow.A12)??0, A21: (isSwapped ? dbRow.A12:dbRow.A21)??0 };
-        case 'wilson': return { a12_J_mol: ((isSwapped?dbRow.A21:dbRow.A12)??0)*JOULES_PER_CAL, a21_J_mol: ((isSwapped?dbRow.A12:dbRow.A21)??0)*JOULES_PER_CAL };
+        case 'pr': case 'srk': return { k_ij: row.Kij ?? 0 };
+        case 'nrtl': return isForward
+            ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0, alpha: row.Cij_Alpha ?? 0.3 }
+            : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0, alpha: row.Cji_Alpha ?? row.Cij_Alpha ?? 0.3 };
+        case 'uniquac': return isForward
+            ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
+            : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
+        case 'wilson': return isForward
+            ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
+            : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
     }
 }
 
 export async function fetchCompoundData(compoundName: string): Promise<CompoundData> {
-    const { data: compoundDbData, error: compoundError } = await supabase.from('compound_properties').select('name, properties').ilike('name', compoundName).limit(1).single();
-    if (compoundError) throw new Error(`Compound '${compoundName}' not found.`);
-    const { name: foundName, properties } = compoundDbData;
-    
-    const p = properties as any;
-    const casNumber = p.CAS?.value || null;
-    const antoine = p.AntoineVaporPressure || p.Antoine;
-    const Tc = p.CriticalTemperature?.value, Pc_val = p.CriticalPressure?.value, omega = p.AcentricityFactor?.value;
-    const Pc_units = p.CriticalPressure?.units?.toLowerCase() ?? '', Pc_Pa = Pc_val * (Pc_units.includes('kpa') ? 1000 : Pc_units.includes('bar') ? 100000 : 1);
-    const vL_obj = p.WilsonVolume || p.LiquidVolumeAtNormalBoilingPoint, vL_val = vL_obj?.value, vL_units = vL_obj?.units?.toLowerCase() ?? 'm3/kmol';
-    let vL_m3mol = null;
-    if (vL_val) { if (vL_units.includes('cm3')) vL_m3mol = vL_val * 1e-6; else if (vL_units.includes('m3/kmol')) vL_m3mol = vL_val / 1000; else if (vL_units.includes('m3')) vL_m3mol = vL_val; }
-    // Handle UNIFAC groups - they might be in object or array format
+    // Fetch from HYSYS PROPS PARAMS
+    const { data: pureRows, error: pureError } = await supabase
+        .from('HYSYS PROPS PARAMS')
+        .select('*')
+        .ilike('Component', compoundName)
+        .limit(1);
+    if (pureError || !pureRows || pureRows.length === 0) throw new Error(`Compound '${compoundName}' not found in HYSYS PURE COMP.`);
+    const pureData = pureRows[0];
+
+    // Fetch Antoine params
+    const { data: antoineRows, error: antoineError } = await supabase
+        .from('HYSYS ANTOINE')
+        .select('*')
+        .ilike('Component', compoundName)
+        .limit(1);
+    const antoineData = antoineRows?.[0] ?? null;
+
+    const p = pureData as any;
+    const Tc = p.CriticalTemperature, Pc_kPa = p.CriticalPressure, omega = p.Acentricity;
+    const Pc_Pa = Pc_kPa ? Pc_kPa * 1000 : null;
+    const vL_m3kmol = p.WilsonVolume;
+    const vL_m3mol = vL_m3kmol ? vL_m3kmol / 1000 : null;
+
+    // Handle UNIFAC groups (still from old table as fallback)
     let unifacGroups: UnifacGroupComposition | null = null;
-    const unifacData = p.UnifacVLE?.group || p.UNIFAC?.group || p.unifac?.group;
-    if (unifacData && Array.isArray(unifacData)) {
-        unifacGroups = {};
-        for (const group of unifacData) {
-            const id = parseInt(group.id);
-            const value = parseInt(group.value);
-            if (!isNaN(id) && !isNaN(value)) {
-                unifacGroups[id] = value;
+    try {
+        const { data: oldRows } = await supabase
+            .from('compound_properties')
+            .select('properties')
+            .ilike('name', compoundName)
+            .limit(1);
+        const oldData = oldRows?.[0] ?? null;
+        if (oldData) {
+            const oldProps = (oldData as any).properties;
+            const unifacData = oldProps?.UnifacVLE?.group || oldProps?.UNIFAC?.group || oldProps?.unifac?.group;
+            if (unifacData && Array.isArray(unifacData)) {
+                unifacGroups = {};
+                for (const group of unifacData) {
+                    const id = parseInt(group.id);
+                    const value = parseInt(group.value);
+                    if (!isNaN(id) && !isNaN(value)) unifacGroups[id] = value;
+                }
             }
         }
-    }
-    
+    } catch {}
+
+    const ant = antoineData as any;
+    // HYSYS stores temperatures in °C — convert to K
+    const Tc_K = Tc != null ? Tc + 273.15 : null;
     return {
-        name: foundName, cas_number: casNumber,
-        antoine: antoine ? { A: antoine.A?.value, B: antoine.B?.value, C: antoine.C?.value, Tmin_K: antoine.Tmin?.value ?? 0, Tmax_K: antoine.Tmax?.value ?? 10000, Units: antoine.units || 'Pa', EquationNo: antoine.eqno?.value } : null,
+        name: p.Component ?? compoundName,
+        antoine: (!antoineError && ant) ? { A: ant.A ?? 0, B: ant.B ?? 0, C: ant.C ?? 0, D: ant.D ?? 0, E: ant.E ?? 0, F: ant.F ?? 0, G: ant.G ?? 0, Tmin_K: (ant.Tmin ?? 0) + 273.15, Tmax_K: (ant.Tmax ?? 10000) + 273.15 } : null,
         unifacGroups,
-        prParams: (Tc&&Pc_val&&omega) ? { Tc_K: Tc, Pc_Pa, omega } : null,
-        srkParams: (Tc&&Pc_val&&omega) ? { Tc_K: Tc, Pc_Pa, omega } : null,
-        uniquacParams: (p.UniquacR?.value && p.UniquacQ?.value) ? { r: p.UniquacR.value, q: p.UniquacQ.value } : null,
+        prParams: (Tc_K && Pc_Pa && omega != null) ? { Tc_K, Pc_Pa, omega } : null,
+        srkParams: (Tc_K && Pc_Pa && omega != null) ? { Tc_K, Pc_Pa, omega } : null,
+        uniquacParams: (p.UNIQUAC_r != null && p.UNIQUAC_q != null) ? { r: p.UNIQUAC_r, q: p.UNIQUAC_q } : null,
         wilsonParams: vL_m3mol ? { V_L_m3mol: vL_m3mol } : null,
+        molecularWeight: p.MolecularWeight ?? undefined,
     };
 }
 

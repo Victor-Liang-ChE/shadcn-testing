@@ -68,7 +68,8 @@ import {
     fetchWilsonInteractionParams,
     calculateBubbleTemperatureWilson,
     calculateBubblePressureWilson,
-    type WilsonInteractionParams as LibWilsonInteractionParams
+    type WilsonInteractionParams as LibWilsonInteractionParams,
+    antoineBoilingPointSolverLocal
 } from '@/lib/vle-calculations';
 
 // Shared VLE Types
@@ -76,6 +77,7 @@ import type {
     AntoineParams, PrPureComponentParams, SrkPureComponentParams, UniquacPureComponentParams, WilsonPureComponentParams,
     CompoundData, BubbleDewResult, UnifacGroupComposition
 } from '@/lib/vle-types';
+import { fetchCompoundDataFromHysys } from '@/lib/antoine-utils';
 
 type FluidPackageTypeAzeotrope = 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac' | 'wilson';
 type AzeotropeScanType = 'vs_P_find_T' | 'vs_T_find_P'; // Scan P, find T_az OR Scan T, find P_az
@@ -117,7 +119,7 @@ export default function AzeotropeFinderPage() {
   
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
-  const [comp2Name, setComp2Name] = useState('Water');   // Default to water
+  const [comp2Name, setComp2Name] = useState('H2O');   // Default to water
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeAzeotrope>('uniquac'); // Default to uniquac
   const [azeotropeScanType, setAzeotropeScanType] = useState<AzeotropeScanType>('vs_P_find_T'); // Default to Scan Pressure
   // const scanSteps = 50; // Always use 50 scan points, no UI to change this // REMOVED
@@ -185,99 +187,12 @@ export default function AzeotropeFinderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]); // Run once when supabase client is ready
 
-  // --- Data Fetching (fetchCompoundDataLocal - adapt from mccabe-thiele/test page) ---
-  // This function needs to be robust to fetch all params for all models.
+  // --- Data Fetching (fetchCompoundDataLocal - uses HYSYS tables) ---
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
-    // Always hit the DB so that each scan starts with fresh parameters.
     console.log(`AzeotropeFinder: Fetching data for ${compoundName} from DB...`);
-
     if (!supabase) { throw new Error("Supabase client not initialized."); }
     try {
-        const { data: compoundDbData, error: compoundError } = await supabase.from('compound_properties').select('name, properties').ilike('name', compoundName).limit(1).single();
-        if (compoundError || !compoundDbData) throw new Error(compoundError?.message || `Compound '${compoundName}' not found.`);
-        
-        const foundName = compoundDbData.name;
-        const properties = compoundDbData.properties;
-        const casNumber = properties?.CAS?.value;
-
-        if (!properties || typeof properties !== 'object') {
-            throw new Error(`No properties found for ${foundName}.`);
-        }
-
-        let antoine: AntoineParams | null = null;
-        const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure;
-        if (antoineChemsep?.A && antoineChemsep.B && antoineChemsep.C) {
-            antoine = {
-                A: parseFloat(antoineChemsep.A?.value ?? antoineChemsep.A), B: parseFloat(antoineChemsep.B?.value ?? antoineChemsep.B), C: parseFloat(antoineChemsep.C?.value ?? antoineChemsep.C),
-                Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? antoineChemsep.Tmin ?? 0), Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? antoineChemsep.Tmax ?? 10000),
-                Units: antoineChemsep.units || 'Pa', EquationNo: antoineChemsep.eqno
-            };
-        }
-        if (!antoine || isNaN(antoine.A) || isNaN(antoine.B) || isNaN(antoine.C)) throw new Error(`Failed to extract valid Antoine params for ${foundName}.`);
-
-        let unifacGroups: UnifacGroupComposition | null = null;
-        if (properties.elements_composition?.UNIFAC) {
-            unifacGroups = {};
-            for (const key in properties.elements_composition.UNIFAC) {
-                const subgroupId = parseInt(key); const count = parseInt(properties.elements_composition.UNIFAC[key]);
-                if (!isNaN(subgroupId) && !isNaN(count) && count > 0) unifacGroups[subgroupId] = count;
-            }
-            if (Object.keys(unifacGroups).length === 0) unifacGroups = null;
-        }
-        // Validation for UNIFAC groups will be done in handleAzeotropeScan
-
-        let prParams: PrPureComponentParams | null = null;
-        let srkParams: SrkPureComponentParams | null = null;
-        const tcPropObj = properties["CriticalTemperature"] || properties["Critical temperature"];
-        const pcPropObj = properties["CriticalPressure"] || properties["Critical pressure"];
-        const omegaPropObj = properties["AcentricityFactor"] || properties["Acentric factor"];
-        if (tcPropObj && pcPropObj && omegaPropObj) {
-            const Tc_K_val = parseFloat(tcPropObj.value);
-            const pcValue = parseFloat(pcPropObj.value);
-            const pcUnits = String(pcPropObj.units).toLowerCase();
-            const Pc_Pa_val = pcValue * (pcUnits === 'kpa' ? 1000 : pcUnits === 'bar' ? 100000 : 1);
-            const omega_val = parseFloat(omegaPropObj.value);
-            if (!isNaN(Tc_K_val) && !isNaN(Pc_Pa_val) && !isNaN(omega_val)) {
-                prParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
-                srkParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
-            }
-        }
-        // Validation for PR/SRK params will be done in handleAzeotropeScan
-
-    let uniquacParams: UniquacPureComponentParams | null = null;
-    // Use unified schema keys (matching residue-curve-map and constant-properties):
-    // Prefer UniquacR/UniquacQ; fall back to VanDerWaalsVolume/VanDerWaalsArea
-    const rPropObjUQ = properties["UniquacR"] || properties["VanDerWaalsVolume"] || properties["UNIQUAC r"] || properties["Van der Waals volume"]; 
-    const qPropObjUQ = properties["UniquacQ"] || properties["VanDerWaalsArea"] || properties["UNIQUAC q"] || properties["Van der Waals area"]; 
-    if (rPropObjUQ && qPropObjUQ) {
-      const r_val_raw = (rPropObjUQ.value !== undefined) ? rPropObjUQ.value : rPropObjUQ;
-      const q_val_raw = (qPropObjUQ.value !== undefined) ? qPropObjUQ.value : qPropObjUQ;
-      const r_val = typeof r_val_raw === 'number' ? r_val_raw : parseFloat(String(r_val_raw));
-      const q_val = typeof q_val_raw === 'number' ? q_val_raw : parseFloat(String(q_val_raw));
-      if (!isNaN(r_val) && !isNaN(q_val)) {
-        uniquacParams = { r: r_val, q: q_val };
-      }
-    }
-        // Validation for UNIQUAC params will be done in handleAzeotropeScan
-        
-        let wilsonParams: WilsonPureComponentParams | null = null;
-        const vLPropObj = properties["WilsonVolume"] || properties["Liquid molar volume"] || properties["Molar volume"] || properties["Wilson volume"];
-        if (vLPropObj) {
-            const vL_val_any_unit = parseFloat(vLPropObj.value ?? vLPropObj);
-            const vL_units = String(vLPropObj.units).toLowerCase() || 'cm3/mol';
-            let vL_m3mol: number | undefined;
-            if (!isNaN(vL_val_any_unit)) {
-                if (vL_units === 'cm3/mol' || vL_units === 'cm^3/mol') vL_m3mol = vL_val_any_unit * 1e-6;
-                else if (vL_units === 'm3/mol' || vL_units === 'm^3/mol') vL_m3mol = vL_val_any_unit;
-                else if (vL_units === 'm3/kmol' || vL_units === 'm^3/kmol') vL_m3mol = vL_val_any_unit / 1000;
-                else if (vL_units === 'l/mol' || vL_units === 'dm3/mol' || vL_units === 'dm^3/mol') vL_m3mol = vL_val_any_unit * 1e-3;
-                else console.warn(`Wilson (AzeotropeFinder): Unknown units for V_L ('${vL_units}') for ${foundName}.`);
-            }
-            if (vL_m3mol !== undefined && !isNaN(vL_m3mol) && vL_m3mol > 0) wilsonParams = { V_L_m3mol: vL_m3mol };
-        }
-        // Validation for Wilson params will be done in handleAzeotropeScan
-
-        const result: CompoundData = { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+        const result = await fetchCompoundDataFromHysys(supabase, compoundName);
         return result;
     } catch (err: any) {
         console.error(`Error fetching data for ${compoundName} in AzeotropeFinder:`, err.message);
@@ -295,12 +210,12 @@ export default function AzeotropeFinderPage() {
     }
     try {
       const { data, error } = await supabase
-        .from('compound_properties')
-        .select('name')
-        .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
+        .from('HYSYS PROPS PARAMS')
+        .select('Component')
+        .ilike('Component', `${inputValue}%`)
         .limit(5);
       if (error) { console.error("Azeo: Supabase suggestion fetch error:", error); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); return; }
-      const suggestions = data ? data.map((item: any) => item.name) : [];
+      const suggestions = data ? data.map((item: any) => item.Component) : [];
       if (inputTarget === 'comp1') { setComp1Suggestions(suggestions); setShowComp1Suggestions(suggestions.length > 0); }
       else { setComp2Suggestions(suggestions); setShowComp2Suggestions(suggestions.length > 0); }
     } catch (err) { console.error("Azeo: Error fetching suggestions:", err); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); }
@@ -423,38 +338,7 @@ export default function AzeotropeFinderPage() {
     return null;
   }
 
-  // --- Antoine Boiling Point Solver (for initial guesses - copy from mccabe-thiele) ---
-  const antoineBoilingPointSolverLocal = (antoineParams: AntoineParams | null, P_target_Pa: number): number | null => {
-    if (!antoineParams) return null;
-    try {
-        let logP: number;
-        // Convert P_target_Pa to the pressure units expected by Antoine equation (Pa or kPa)
-        const P_converted_to_antoine_units = antoineParams.Units?.toLowerCase() === 'kpa' ? P_target_Pa / 1000 : P_target_Pa;
 
-        if (antoineParams.EquationNo === 1 || antoineParams.EquationNo === '1') { // log10 form
-            logP = Math.log10(P_converted_to_antoine_units);
-        } else { // Assume ln form (default for ChemSep if not specified as eqno 1)
-            logP = Math.log(P_converted_to_antoine_units);
-        }
-        if (antoineParams.A - logP === 0) return null; 
-        const T_K = antoineParams.B / (antoineParams.A - logP) - antoineParams.C;
-        
-        // Basic validity check against Tmin/Tmax if available and reasonable
-        const Tmin = antoineParams.Tmin_K ?? 0;
-        const Tmax = antoineParams.Tmax_K ?? 10000;
-        if (T_K >= Tmin && T_K <= Tmax) return T_K;
-        
-        // Fallback if outside range but still a number (might be due to poor Tmin/Tmax in DB)
-        if (T_K > 0 && T_K < 10000 && !isNaN(T_K)) {
-            console.warn(`Azeo: Antoine BP for ${P_target_Pa} Pa is ${T_K}K, outside DB range [${Tmin}-${Tmax}]. Using it anyway.`);
-            return T_K;
-        }
-        return null;
-    } catch (e) {
-        console.error("Azeo: Error in antoineBoilingPointSolverLocal", e);
-        return null;
-    }
-  };
 
 
   // --- Main Azeotrope Scan Logic ---
@@ -470,7 +354,7 @@ export default function AzeotropeFinderPage() {
         if (!data1 || !data2) { setLoading(false); return; } // Error set in fetchCompoundDataLocal
 
         // Check for pure component system
-        if (data1.cas_number && data2.cas_number && data1.cas_number === data2.cas_number) {
+        if (data1.name.toLowerCase() === data2.name.toLowerCase()) {
             setError("Cannot find an azeotrope for a pure component. Please select two different compounds.");
             setLoading(false);
             return;
@@ -493,15 +377,15 @@ export default function AzeotropeFinderPage() {
             components.forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
             activityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
         } else if (fluidPackage === 'nrtl') {
-            activityParameters = await fetchNrtlParameters(supabase, data1.cas_number!, data2.cas_number!);
+            activityParameters = await fetchNrtlParameters(supabase, data1.name, data2.name);
         } else if (fluidPackage === 'pr') {
-            activityParameters = await fetchPrInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
+            activityParameters = await fetchPrInteractionParams(supabase, data1.name, data2.name);
         } else if (fluidPackage === 'srk') {
-            activityParameters = await fetchSrkInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
+            activityParameters = await fetchSrkInteractionParams(supabase, data1.name, data2.name);
         } else if (fluidPackage === 'uniquac') {
-            activityParameters = await fetchUniquacInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
+            activityParameters = await fetchUniquacInteractionParams(supabase, data1.name, data2.name);
         } else if (fluidPackage === 'wilson') {
-            activityParameters = await fetchWilsonInteractionParams(supabase, data1.cas_number!, data2.cas_number!);
+            activityParameters = await fetchWilsonInteractionParams(supabase, data1.name, data2.name);
         } else {
             throw new Error(`Unsupported fluid package: ${fluidPackage}`);
         }

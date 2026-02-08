@@ -79,7 +79,8 @@ import {
   fetchWilsonInteractionParams,
   calculateBubbleTemperatureWilson,
   calculateBubblePressureWilson,
-  type WilsonInteractionParams as LibWilsonInteractionParams
+  type WilsonInteractionParams as LibWilsonInteractionParams,
+  antoineBoilingPointSolverLocal
 } from '@/lib/vle-calculations';
 
 // Import Shared VLE Types
@@ -93,6 +94,7 @@ import type {
     BubbleDewResult,
     UnifacGroupComposition
 } from '@/lib/vle-types';
+import { fetchCompoundDataFromHysys } from '@/lib/antoine-utils';
 
 
 type EChartsPoint = [number, number] | [number | null, number | null];
@@ -124,39 +126,12 @@ function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
   return debounced as (...args: Parameters<F>) => void;
 }
 
-// Function to fetch CAS number by name from the new compound_properties table
-const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string): Promise<string | null> => {
-    if (!name || !name.trim()) {
-        console.error("fetchCasNumberByName (McCabe-Thiele): Name is empty.");
-        return null;
-    }
-    const trimmedName = name.trim();
-    const { data, error } = await supabaseClient
-        .from('compound_properties')
-        .select('properties')
-        .ilike('name', trimmedName)
-        .limit(1)
-        .single();
-
-    if (error) {
-        console.error(`fetchCasNumberByName (McCabe-Thiele): Error fetching CAS for "${trimmedName}":`, error);
-        return null;
-    }
-
-    if (!data || !data.properties?.CAS?.value) {
-        console.warn(`fetchCasNumberByName (McCabe-Thiele): No CAS number found for "${trimmedName}". Data received:`, data);
-        return null;
-    }
-
-    return data.properties.CAS.value;
-};
-
 export default function McCabeThielePage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
   
   // Input States - Updated defaults for initial load
-  const [comp1Name, setComp1Name] = useState('methanol');
-  const [comp2Name, setComp2Name] = useState('water');
+  const [comp1Name, setComp1Name] = useState('Methanol');
+  const [comp2Name, setComp2Name] = useState('H2O');
   const [temperatureC, setTemperatureC] = useState<number | null>(60);
   const [pressureBar, setPressureBar] = useState<number | null>(1); // Default, but will be overridden by useTemperature=true
   
@@ -233,139 +208,12 @@ export default function McCabeThielePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]); // Add supabase as a dependency if it can be initially undefined
 
-  // --- Data Fetching (Updated for new compound_properties table structure) ---
+  // --- Data Fetching (Updated to use HYSYS tables) ---
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
     if (!supabase) { throw new Error("Supabase client not initialized."); }
     try {
-        // Fetch compound data from the new compound_properties table
-        const { data: compoundDbData, error: compoundError } = await supabase
-            .from('compound_properties')
-            .select('name, properties')
-            .ilike('name', compoundName)
-            .limit(1)
-            .single();
-
-        if (compoundError) throw new Error(`Supabase compound query error: ${compoundError.message}`);
-        if (!compoundDbData || !compoundDbData.properties) throw new Error(`Compound '${compoundName}' not found.`);
-        
-        const foundName = compoundDbData.name;
-        const properties = compoundDbData.properties;
-        
-        // Extract CAS number from properties
-        const casNumber = properties.CAS?.value || null;
-
-        if (typeof properties !== 'object' || properties === null) throw new Error(`Invalid props format for ${foundName}.`);
-
-        let antoine: AntoineParams | null = null;
-        const antoineChemsep = properties.Antoine || properties.AntoineVaporPressure || properties.VaporPressure;
-        if (antoineChemsep?.A && antoineChemsep.B && antoineChemsep.C) {
-            antoine = {
-                A: parseFloat(antoineChemsep.A?.value ?? antoineChemsep.A),
-                B: parseFloat(antoineChemsep.B?.value ?? antoineChemsep.B),
-                C: parseFloat(antoineChemsep.C?.value ?? antoineChemsep.C),
-                Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? antoineChemsep.Tmin ?? 0),
-                Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? antoineChemsep.Tmax ?? 10000),
-                Units: antoineChemsep.units || 'Pa',
-                EquationNo: antoineChemsep.eqno?.value ?? antoineChemsep.eqno
-            };
-        }
-        if (!antoine || isNaN(antoine.A) || isNaN(antoine.B) || isNaN(antoine.C)) throw new Error(`Failed to extract valid Antoine params for ${foundName}.`);
-
-    let unifacGroups: UnifacGroupComposition | null = null;
-    // UNIFAC groups may be stored either as an array of {id,value} or as an object map {"1": "2", ...}
-    const unifacRaw = properties.UnifacVLE || properties.UnifacVLE;
-    if (unifacRaw) {
-      unifacGroups = {};
-      try {
-        const groupData = unifacRaw.group ?? unifacRaw;
-        if (Array.isArray(groupData)) {
-          for (const groupItem of groupData) {
-            const subgroupId = parseInt(String(groupItem?.id ?? groupItem?.group));
-            const count = parseInt(String(groupItem?.value ?? groupItem?.count ?? 0));
-            if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
-              unifacGroups[subgroupId] = count;
-            }
-          }
-        } else if (groupData && typeof groupData === 'object') {
-          for (const [key, val] of Object.entries(groupData)) {
-            const subgroupId = parseInt(key);
-            let count = NaN;
-            if (val && typeof val === 'object') {
-              count = parseInt(String((val as any).value ?? (val as any).count ?? NaN));
-            } else {
-              count = parseInt(String(val as any));
-            }
-            if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
-              unifacGroups[subgroupId] = count;
-            }
-          }
-        } else {
-          // Unexpected format: leave unifacGroups as null
-          console.warn(`UNIFAC group data in unexpected format for ${foundName}.`, groupData);
-          unifacGroups = null;
-        }
-      } catch (err) {
-        console.warn(`Error parsing UNIFAC groups for ${foundName}:`, err);
-        unifacGroups = null;
-      }
-      if (unifacGroups && Object.keys(unifacGroups).length === 0) unifacGroups = null;
-    }
-        if (fluidPackage === 'unifac' && !unifacGroups) throw new Error(`UNIFAC groups required for ${foundName} with UNIFAC model.`);
-
-        let prParams: PrPureComponentParams | null = null;
-        let srkParams: SrkPureComponentParams | null = null;
-        const tcPropObj = properties["CriticalTemperature"] || properties["Critical temperature"];
-        const pcPropObj = properties["CriticalPressure"] || properties["Critical pressure"];
-        const omegaPropObj = properties["AcentricityFactor"] || properties["Acentric factor"];
-        if (tcPropObj && pcPropObj && omegaPropObj) {
-            const Tc_K_val = parseFloat(tcPropObj.value);
-            const pcValue = parseFloat(pcPropObj.value);
-            const pcUnits = String(pcPropObj.units).toLowerCase();
-            let Pc_Pa_val: number;
-            if (pcUnits === 'pa') Pc_Pa_val = pcValue;
-            else if (pcUnits === 'kpa') Pc_Pa_val = pcValue * 1e3;
-            else if (pcUnits === 'mpa') Pc_Pa_val = pcValue * 1e6;
-            else if (pcUnits === 'bar') Pc_Pa_val = pcValue * 1e5;
-            else {
-                Pc_Pa_val = pcValue; // Assume Pa if unknown; log once
-                console.warn(`Unknown Pc units ('${pcUnits}') for ${foundName}. Assuming Pa.`);
-            }
-            const omega_val = parseFloat(omegaPropObj.value);
-            if (!isNaN(Tc_K_val) && !isNaN(Pc_Pa_val) && !isNaN(omega_val)) {
-                prParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
-                srkParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
-            }
-        }
-        if ((fluidPackage === 'pr' && !prParams) || (fluidPackage === 'srk' && !srkParams)) throw new Error(`EOS params (Tc,Pc,omega) required for ${foundName} with ${fluidPackage.toUpperCase()} model.`);
-
-        let uniquacParams: UniquacPureComponentParams | null = null;
-        const rPropObj = properties["UniquacR"] || properties["UNIQUAC r"];
-        const qPropObj = properties["UniquacQ"] || properties["UNIQUAC q"];
-        if (rPropObj && qPropObj) {
-            const r_val = parseFloat(rPropObj.value ?? rPropObj);
-            const q_val = parseFloat(qPropObj.value ?? qPropObj);
-            if (!isNaN(r_val) && !isNaN(q_val)) uniquacParams = { r: r_val, q: q_val };
-        }
-        if (fluidPackage === 'uniquac' && !uniquacParams) throw new Error(`UNIQUAC params (r,q) required for ${foundName}.`);
-        
-        let wilsonParams: WilsonPureComponentParams | null = null;
-        const vLPropObj = properties["WilsonVolume"] || properties["Wilson volume"] || properties["LiquidVolumeAtNormalBoilingPoint"];
-        if (vLPropObj) {
-            const vL_val_any_unit = parseFloat(vLPropObj.value ?? vLPropObj);
-            const vL_units = String(vLPropObj.units || 'm3/kmol').toLowerCase();
-            let vL_m3mol: number | undefined;
-            if (!isNaN(vL_val_any_unit)) {
-                if (vL_units === 'cm3/mol' || vL_units === 'cm^3/mol') vL_m3mol = vL_val_any_unit * 1e-6;
-                else if (vL_units === 'm3/mol' || vL_units === 'm^3/mol') vL_m3mol = vL_val_any_unit;
-                else if (vL_units === 'm3/kmol' || vL_units === 'm^3/kmol') vL_m3mol = vL_val_any_unit / 1000;
-                else if (vL_units === 'l/mol' || vL_units === 'dm3/mol' || vL_units === 'dm^3/mol') vL_m3mol = vL_val_any_unit * 1e-3;
-                else console.warn(`Wilson: Unknown units for V_L ('${vL_units}') for ${foundName}.`);
-            }
-            if (vL_m3mol !== undefined && !isNaN(vL_m3mol) && vL_m3mol > 0) wilsonParams = { V_L_m3mol: vL_m3mol };
-        }
-        if (fluidPackage === 'wilson' && !wilsonParams) throw new Error(`Wilson param (V_L) required for ${foundName}.`);
-
-        return { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+        const result = await fetchCompoundDataFromHysys(supabase, compoundName);
+        return result;
     } catch (err: any) {
         console.error(`Error fetching data for ${compoundName} in McCabe:`, err.message);
         setError(`Data fetch failed for ${compoundName}: ${err.message}`);
@@ -388,9 +236,9 @@ export default function McCabeThielePage() {
 
     try {
       const { data, error } = await supabase
-        .from('compound_properties')
-        .select('name')
-        .ilike('name', `${inputValue}%`) // Changed from %${inputValue}% to prioritize prefix matches
+        .from('HYSYS PROPS PARAMS')
+        .select('Component')
+        .ilike('Component', `${inputValue}%`)
         .limit(5);
 
       if (error) {
@@ -399,7 +247,7 @@ export default function McCabeThielePage() {
         return;
       }
 
-      const suggestions = data ? data.map((item: any) => item.name) : [];
+      const suggestions = data ? data.map((item: any) => item.Component) : [];
       if (inputTarget === 'comp1') {
         setComp1Suggestions(suggestions);
         setShowComp1Suggestions(suggestions.length > 0);
@@ -522,20 +370,19 @@ export default function McCabeThielePage() {
                 fetchedComponents.forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
                 fetchedActivityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
             } else if (fluidPackage === 'nrtl') {
-                if (!fetchedData1.cas_number || !fetchedData2.cas_number) throw new Error("CAS numbers required for NRTL.");
-                fetchedActivityParameters = await fetchNrtlParameters(supabase, fetchedData1.cas_number, fetchedData2.cas_number);
+                fetchedActivityParameters = await fetchNrtlParameters(supabase, fetchedData1.name, fetchedData2.name);
             } else if (fluidPackage === 'pr') {
                 if (!fetchedData1.prParams || !fetchedData2.prParams) throw new Error("PR pure component params missing.");
-                fetchedActivityParameters = await fetchPrInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+                fetchedActivityParameters = await fetchPrInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
             } else if (fluidPackage === 'srk') {
                 if (!fetchedData1.srkParams || !fetchedData2.srkParams) throw new Error("SRK pure component params missing.");
-                fetchedActivityParameters = await fetchSrkInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+                fetchedActivityParameters = await fetchSrkInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
             } else if (fluidPackage === 'uniquac') {
                 if (!fetchedData1.uniquacParams || !fetchedData2.uniquacParams) throw new Error("UNIQUAC pure component params missing.");
-                fetchedActivityParameters = await fetchUniquacInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+                fetchedActivityParameters = await fetchUniquacInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
             } else if (fluidPackage === 'wilson') {
                 if (!fetchedData1.wilsonParams || !fetchedData2.wilsonParams) throw new Error("Wilson pure component params missing.");
-                fetchedActivityParameters = await fetchWilsonInteractionParams(supabase, fetchedData1.cas_number!, fetchedData2.cas_number!);
+                fetchedActivityParameters = await fetchWilsonInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
             } else {
                 throw new Error(`Unsupported fluid package: ${fluidPackage}`);
             }
@@ -1077,30 +924,7 @@ export default function McCabeThielePage() {
     calculateEquilibriumCurve();
   };
 
-  // Local helper for Antoine boiling point (simplified from test/page.tsx)
-  const antoineBoilingPointSolverLocal = (antoineParams: AntoineParams | null, P_target: number): number | null => {
-    if (!antoineParams) return null;
-    // Simplified: T = B / (A - logP_base_e_or_10) - C
-    // This is an approximation and might not be accurate for all Antoine forms.
-    // For a more robust solution, a root finder (Newton-Raphson) is needed.
-    // For now, using a rough estimate or assuming it's provided if critical.
-    // This is primarily for initial guesses in bubbleT calculations.
-    try {
-        let logP: number;
-        const P_converted_to_antoine_units = P_target / (antoineParams.Units?.toLowerCase() === 'kpa' ? 1000 : 1);
 
-        if (antoineParams.EquationNo === 1 || antoineParams.EquationNo === '1') { // log10 form
-            logP = Math.log10(P_converted_to_antoine_units);
-        } else { // Assume ln form
-            logP = Math.log(P_converted_to_antoine_units);
-        }
-        if (antoineParams.A - logP === 0) return null; // Avoid division by zero
-        const T_K = antoineParams.B / (antoineParams.A - logP) - antoineParams.C;
-        return (T_K > 0 && T_K < 1000) ? T_K : null; // Basic validity check
-    } catch {
-        return null;
-    }
-  };
   
   const getFeedQualityState = () => {
     if (q === 1) return "Saturated Liquid";
@@ -1201,9 +1025,16 @@ export default function McCabeThielePage() {
           hasMounted.current = true;
           return;
       }
-      // Use a lighter resolution (21 points) for real-time slider updates
-      calculateEquilibriumCurve(false, 21);
+      // Use higher resolution (101 points => 0.01 spacing) for real-time slider updates
+      calculateEquilibriumCurve(false, 101);
   }, [temperatureC, pressureBar]);
+
+  // Enforce a minimum pressure of 0.1 bar when in pressure mode
+  useEffect(() => {
+    if (!useTemperature && pressureBar !== null && pressureBar < 0.1) {
+      setPressureBar(0.1);
+    }
+  }, [useTemperature, pressureBar]);
 
   // When autoGeneratePending is set, wait for the relevant state to update (next render) then regenerate the graph
   useEffect(() => {
@@ -1366,7 +1197,7 @@ export default function McCabeThielePage() {
                   </div>
                   <Slider
                     id="fixedCondition"
-                    min={0}
+                    min={useTemperature ? 0 : 0.1}
                     max={useTemperature ? parseFloat(tempMax) : parseFloat(pressureMax)}
                     step={computeStep(useTemperature ? parseFloat(tempMax) : parseFloat(pressureMax))}
                     value={[useTemperature ? (temperatureC || 0) : (pressureBar || 0)]}

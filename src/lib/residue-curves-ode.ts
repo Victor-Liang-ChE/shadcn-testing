@@ -27,9 +27,9 @@ export type ResidueODEPoint = { d:number[]; T_K:number } | null;
 const MIN_X = 1e-9;
 
 interface TernaryWilsonParams {
-  a01_J_mol: number; a10_J_mol: number;
-  a02_J_mol: number; a20_J_mol: number;
-  a12_J_mol: number; a21_J_mol: number;
+  A01: number; B01: number; A10: number; B10: number;
+  A02: number; B02: number; A20: number; B20: number;
+  A12: number; B12: number; A21: number; B21: number;
 }
 
 function normX(x:number[]):number[]{
@@ -38,11 +38,11 @@ function normX(x:number[]):number[]{
   return x.map(v=>Math.max(MIN_X,Math.min(mx,v/s)));
 }
 function lambdasWilson(V:number[],T:number,p:TernaryWilsonParams){
-  const RT = R*T;
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert A (cal/mol) to per-K term
   return {
-    L01:(V[1]/V[0])*Math.exp(-p.a01_J_mol/RT), L10:(V[0]/V[1])*Math.exp(-p.a10_J_mol/RT),
-    L02:(V[2]/V[0])*Math.exp(-p.a02_J_mol/RT), L20:(V[0]/V[2])*Math.exp(-p.a20_J_mol/RT),
-    L12:(V[2]/V[1])*Math.exp(-p.a12_J_mol/RT), L21:(V[1]/V[2])*Math.exp(-p.a21_J_mol/RT),
+    L01:(V[1]/V[0])*Math.exp(-(p.A01/(R_cal*T)+p.B01)), L10:(V[0]/V[1])*Math.exp(-(p.A10/(R_cal*T)+p.B10)),
+    L02:(V[2]/V[0])*Math.exp(-(p.A02/(R_cal*T)+p.B02)), L20:(V[0]/V[2])*Math.exp(-(p.A20/(R_cal*T)+p.B20)),
+    L12:(V[2]/V[1])*Math.exp(-(p.A12/(R_cal*T)+p.B12)), L21:(V[1]/V[2])*Math.exp(-(p.A21/(R_cal*T)+p.B21)),
   };
 }
 function gammaWilson(x:number[],T:number,comps:CompoundData[],p:TernaryWilsonParams):number[]{
@@ -138,12 +138,18 @@ async function simulateODE_Wilson(initX:number[],P:number,comps:CompoundData[],p
 //  N R T L  (trimmed copy – essential parts only)
 // ===========================================================================
 const Rnrtl = 8.31446261815324;
-interface TernaryNrtlParams { g01_J_mol:number;g10_J_mol:number;alpha01:number; g02_J_mol:number;g20_J_mol:number;alpha02:number; g12_J_mol:number;g21_J_mol:number;alpha12:number; }
+interface TernaryNrtlParams {
+  A01:number;B01:number;A10:number;B10:number;alpha01:number;
+  A02:number;B02:number;A20:number;B20:number;alpha02:number;
+  A12:number;B12:number;A21:number;B21:number;alpha12:number;
+}
 function gammaNrtl(x:number[],T:number,params:TernaryNrtlParams){
-  const g=[[0,params.g01_J_mol,params.g02_J_mol],[params.g10_J_mol,0,params.g12_J_mol],[params.g20_J_mol,params.g21_J_mol,0]];
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert A (cal/mol) to per-K term
+  const g=[[0,params.A01,params.A02],[params.A10,0,params.A12],[params.A20,params.A21,0]];
+  const bMat=[[0,params.B01,params.B02],[params.B10,0,params.B12],[params.B20,params.B21,0]];
   const a=[[0,params.alpha01,params.alpha02],[params.alpha01,0,params.alpha12],[params.alpha02,params.alpha12,0]];
   const tau=[[0,0,0],[0,0,0],[0,0,0]],G=[[0,0,0],[0,0,0],[0,0,0]];
-  for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i===j)continue; tau[i][j]=g[i][j]/(Rnrtl*T); G[i][j]=Math.exp(-a[i][j]*tau[i][j]);}
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i===j)continue; tau[i][j]=g[i][j]/(R_cal*T)+bMat[i][j]; G[i][j]=Math.exp(-a[i][j]*tau[i][j]);}
   const ln=[0,0,0];
   for(let i=0;i<3;i++){
     let sum1=0,sum2=0;
@@ -528,10 +534,17 @@ async function simulateODE_Srk(initX:number[],P:number,comps:CompoundData[],p:Te
 // =========================================================================
 //  U N I Q U A C   (trimmed)
 // =========================================================================
-interface TernaryUniquacParams {a01_J_mol:number;a10_J_mol:number;a02_J_mol:number;a20_J_mol:number;a12_J_mol:number;a21_J_mol:number;}
+interface TernaryUniquacParams {
+  A01:number;B01:number;A10:number;B10:number;
+  A02:number;B02:number;A20:number;B20:number;
+  A12:number;B12:number;A21:number;B21:number;
+}
 const Z_UNIQ=10; const MIN_X_UNI=1e-9;
 function normX_uni(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_UNI*(x.length-1);return x.map(v=>Math.max(MIN_X_UNI,Math.min(mx,v/s)));}
-function tausUni(T:number,p:TernaryUniquacParams){const RT=R*T;return{t01:Math.exp(-p.a01_J_mol/RT),t10:Math.exp(-p.a10_J_mol/RT),t02:Math.exp(-p.a02_J_mol/RT),t20:Math.exp(-p.a20_J_mol/RT),t12:Math.exp(-p.a12_J_mol/RT),t21:Math.exp(-p.a21_J_mol/RT)};}
+function tausUni(T:number,p:TernaryUniquacParams){
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert A (cal/mol) to per-K term in exponential
+  return{t01:Math.exp(-(p.A01/(R_cal*T)+p.B01)),t10:Math.exp(-(p.A10/(R_cal*T)+p.B10)),t02:Math.exp(-(p.A02/(R_cal*T)+p.B02)),t20:Math.exp(-(p.A20/(R_cal*T)+p.B20)),t12:Math.exp(-(p.A12/(R_cal*T)+p.B12)),t21:Math.exp(-(p.A21/(R_cal*T)+p.B21))};
+}
 function gammaUni(x:number[],T:number,comps:CompoundData[],p:TernaryUniquacParams){if(comps.some(c=>!c.uniquacParams))return null;const r=comps.map(c=>c.uniquacParams!.r);const q=comps.map(c=>c.uniquacParams!.q);const tau=tausUni(T,p);const sum_r=x.reduce((s,xi,i)=>s+r[i]*xi,0);const phi=r.map((ri,i)=>ri*x[i]/sum_r);const sum_q=x.reduce((s,xi,i)=>s+q[i]*xi,0);const theta=q.map((qi,i)=>qi*x[i]/sum_q);const l=r.map((ri,i)=>(Z_UNIQ/2)*(ri-q[i])-(ri-1));const sum_xl=x.reduce((s,xi,i)=>s+xi*l[i],0);
 const lnGammaC=phi.map((phi_i,i)=>Math.log(phi_i/x[i])+ (Z_UNIQ/2)*q[i]*Math.log(theta[i]/phi_i)+l[i]-(phi_i/x[i])*sum_xl);
 // Residual part (only tau values need):

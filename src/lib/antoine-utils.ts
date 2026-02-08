@@ -1,202 +1,197 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { AntoineParams, UnifacGroupComposition, UniquacPureComponentParams } from './vle-types';
-import { parseCoefficient } from './property-equations';
+import type { AntoineParams, UnifacGroupComposition, UniquacPureComponentParams, CompoundData } from './vle-types';
 
-export interface CriticalProperties { // Generic structure for Tc, Pc, omega
+export interface CriticalProperties {
     Tc_K: number;
     Pc_Pa: number;
     omega: number;
 }
 
 export interface FetchedCompoundThermData {
-    casNumber: string;
+    compoundName: string;
     antoine: AntoineParams | null;
     nbp_K: number | null;
+    molecularWeight: number | null;
     V_L_m3mol?: number; // Liquid Molar Volume in m^3/mol for Wilson
     unifacGroups?: UnifacGroupComposition | null; // For UNIFAC
     criticalProperties?: CriticalProperties | null; // For PR and SRK
     uniquacParams?: UniquacPureComponentParams | null; // For UNIQUAC
-    // any other properties you might fetch
+    criticalVolume_m3kmol?: number | null; // For Kij estimation
 }
 
+/**
+ * Fetches compound thermodynamic data from HYSYS Supabase tables by component name.
+ * 
+ * Tables queried:
+ *   - "HYSYS PROPS PARAMS" → Tc, Pc, ω, MW, NBP, UNIQUAC r/q, Wilson V, Vc
+ *   - "HYSYS ANTOINE" → 7-parameter extended Antoine coefficients (A–G, Tmin, Tmax)
+ *   - UNIFAC tables (unchanged) → UNIFAC group composition via compound_properties fallback
+ */
 export async function fetchAndConvertThermData(
     supabase: SupabaseClient,
-    casn: string
+    compoundName: string
 ): Promise<FetchedCompoundThermData> {
-    if (!casn) {
-        throw new Error("CAS number cannot be empty for fetchAndConvertThermData.");
+    if (!compoundName) {
+        throw new Error("Compound name cannot be empty for fetchAndConvertThermData.");
     }
 
+    // 1. Fetch pure component properties from HYSYS table
+    const { data: pureRows, error: pureError } = await supabase
+        .from('HYSYS PROPS PARAMS')
+        .select('*')
+        .ilike('Component', compoundName)
+        .limit(1);
+
+    if (pureError || !pureRows || pureRows.length === 0) {
+        console.error(`Error fetching HYSYS pure comp data for "${compoundName}":`, pureError?.message);
+        throw new Error(`Compound "${compoundName}" not found in HYSYS PROPS PARAMS.`);
+    }
+    const pureData = pureRows[0];
+
+    // 2. Fetch Antoine parameters from HYSYS ANTOINE table
+    const { data: antoineRows, error: antoineError } = await supabase
+        .from('HYSYS ANTOINE')
+        .select('*')
+        .ilike('Component', compoundName)
+        .limit(1);
+
+    const antoineData = antoineRows?.[0] ?? null;
     let antoineParams: AntoineParams | null = null;
-    let nbp_K_value: number | null = null;
-    let V_L_m3mol_value: number | undefined = undefined;
-    let unifacGroups_value: UnifacGroupComposition | null = null;
-    let criticalProperties_value: CriticalProperties | null = null; // Changed from prSrkParams_value
-    let uniquacParams_value: UniquacPureComponentParams | null = null;
+    if (!antoineError && antoineData) {
+        const A = antoineData.A;
+        const B = antoineData.B;
+        const C = antoineData.C;
+        const D = antoineData.D ?? 0;
+        const E = antoineData.E ?? 0;
+        const F = antoineData.F ?? 0;
+        const G = antoineData.G ?? 0;
+        const Tmin = antoineData.Tmin ?? 0;
+        const Tmax = antoineData.Tmax ?? 10000;
 
-    // 1. Fetch compound data directly from compound_properties table using CAS number
-    const { data: compoundData, error: compoundError } = await supabase
-        .from('compound_properties')
-        .select('name, properties')
-        .eq('properties->CAS->>value', casn)
-        .single();
-
-    if (compoundError || !compoundData) {
-        console.error(`Error fetching compound data for CAS ${casn}:`, compoundError?.message);
-        throw new Error(`Compound with CAS ${casn} not found.`);
-    }
-
-    const props = compoundData.properties as any;
-
-    // Extract Antoine Parameters
-    const antoineData = props.AntoineVaporPressure || props.Antoine;
-    if (antoineData) {
-        const A = parseCoefficient(antoineData.A);
-        const B = parseCoefficient(antoineData.B);
-        const C = parseCoefficient(antoineData.C);
-        const Tmin_K = parseCoefficient(antoineData.Tmin?.value ?? antoineData.Tmin);
-        const Tmax_K = parseCoefficient(antoineData.Tmax?.value ?? antoineData.Tmax);
-        const eqno = parseCoefficient(antoineData.eqno?.value ?? antoineData.eqno);
-
-        const rawUnits = typeof antoineData.units === 'string' ? antoineData.units : undefined;
-        // Accept common pressure units; default to 'Pa' if unspecified/unknown
-        let resolvedUnits: string = 'Pa';
-        if (rawUnits) {
-            const u = rawUnits.toLowerCase();
-            if (u === 'pa') resolvedUnits = 'Pa';
-            else if (u === 'kpa') resolvedUnits = 'kPa';
-            else if (u === 'bar') resolvedUnits = 'bar';
-            else if (u === 'mmhg' || u === 'torr') resolvedUnits = 'mmHg';
-            else if (u === 'atm') resolvedUnits = 'atm';
-            else {
-                console.warn(`Unrecognized Antoine units '${rawUnits}' for CAS ${casn}. Defaulting to 'Pa'.`);
-            }
-        }
-
-        if (A !== null && B !== null && C !== null) {
-            antoineParams = {
-                A,
-                B,
-                C,
-                Tmin_K: Tmin_K ?? undefined as any,
-                Tmax_K: Tmax_K ?? undefined as any,
-                Units: resolvedUnits,
-                EquationNo: eqno ?? undefined,
-            };
+        if (A != null && B != null && C != null) {
+            // HYSYS stores Tmin/Tmax in °C; convert to K for downstream use
+            antoineParams = { A, B, C, D, E, F, G, Tmin_K: Tmin + 273.15, Tmax_K: Tmax + 273.15 };
         } else {
-            console.warn(`Antoine parameters missing or incomplete for CAS ${casn}`);
-        }
-    }
-
-    // Extract Normal Boiling Point
-    if (props.NormalBoilingPointTemperature && typeof props.NormalBoilingPointTemperature.value === 'number') {
-        nbp_K_value = props.NormalBoilingPointTemperature.value;
-    } else {
-        console.warn(`Normal Boiling Point (nbp_K) missing for CAS ${casn}`);
-    }
-
-    // Extract Liquid Molar Volume (V_L_m3mol)
-    if (props.WilsonVolume && props.WilsonVolume.units === "m3/kmol") {
-        const wilsonVol = parseCoefficient(props.WilsonVolume.value);
-        if (wilsonVol !== null) {
-            V_L_m3mol_value = wilsonVol / 1000.0; // Convert from m3/kmol to m3/mol
-        }
-    } else if (props.LiquidVolumeAtNormalBoilingPoint && props.LiquidVolumeAtNormalBoilingPoint.units === "m3/kmol") {
-        const liqVol = parseCoefficient(props.LiquidVolumeAtNormalBoilingPoint.value);
-        if (liqVol !== null) {
-            V_L_m3mol_value = liqVol / 1000.0; // Convert from m3/kmol to m3/mol
+            console.warn(`Antoine parameters incomplete for "${compoundName}"`);
         }
     } else {
-        console.warn(`Direct V_L not found for CAS ${casn}.`);
+        console.warn(`Antoine data not found for "${compoundName}":`, antoineError?.message);
     }
 
-    if (V_L_m3mol_value === undefined) {
-        console.warn(`Liquid Molar Volume (V_L_m3mol) could not be extracted for CAS ${casn}`);
+    // 3. Extract pure component properties
+    // HYSYS stores temperatures in °C — convert to K
+    const Tc_C = pureData['CriticalTemperature'] ?? null;
+    const Tc_K = Tc_C != null ? Tc_C + 273.15 : null; // °C → K
+    const Pc_kPa = pureData['CriticalPressure'] ?? null;  // kPa
+    const omega = pureData['Acentricity'] ?? null;
+    const MW = pureData['MolecularWeight'] ?? null;
+    const nbp_C = pureData['NormalBoilingPoint'] ?? null;
+    const nbp_K = nbp_C != null ? nbp_C + 273.15 : null; // °C → K
+    const uniquac_r = pureData['UNIQUAC_r'] ?? null;
+    const uniquac_q = pureData['UNIQUAC_q'] ?? null;
+    const wilsonVol_m3kmol = pureData['WilsonVolume'] ?? null; // m³/kmol
+    const critVol = pureData['CriticalVolume'] ?? null; // m³/kmol
+
+    // Build critical properties (Pc: kPa → Pa)
+    let criticalProperties: CriticalProperties | null = null;
+    if (Tc_K != null && Pc_kPa != null && omega != null) {
+        criticalProperties = {
+            Tc_K,
+            Pc_Pa: Pc_kPa * 1000, // kPa → Pa
+            omega,
+        };
     }
 
-    // Extract UNIFAC Groups
-    const unifacData = props.UnifacVLE?.group || props.UNIFAC?.group || props.unifac?.group;
-    if (unifacData) {
-        const groups: UnifacGroupComposition = {};
-        
-        if (Array.isArray(unifacData)) {
-            // Handle array format: [{"id": "1", "value": "2"}, ...]
-            for (const group of unifacData) {
-                const subgroupId = parseInt(group.id);
-                const count = parseInt(group.value);
-                if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
-                    groups[subgroupId] = count;
+    // Build UNIQUAC params
+    let uniquacParams: UniquacPureComponentParams | null = null;
+    if (uniquac_r != null && uniquac_q != null) {
+        uniquacParams = { r: uniquac_r, q: uniquac_q };
+    }
+
+    // Wilson molar volume: m³/kmol → m³/mol (÷ 1000)
+    let V_L_m3mol: number | undefined = undefined;
+    if (wilsonVol_m3kmol != null) {
+        V_L_m3mol = wilsonVol_m3kmol / 1000.0;
+    }
+
+    // 4. Fetch UNIFAC groups (still from compound_properties table since UNIFAC tables are unchanged)
+    let unifacGroups: UnifacGroupComposition | null = null;
+    try {
+        const { data: compoundRows, error: compoundError } = await supabase
+            .from('compound_properties')
+            .select('properties')
+            .ilike('name', compoundName)
+            .limit(1);
+
+        const compoundData = compoundRows?.[0] ?? null;
+        if (!compoundError && compoundData) {
+            const props = compoundData.properties as any;
+            const unifacData = props?.UnifacVLE?.group || props?.UNIFAC?.group || props?.unifac?.group;
+            if (unifacData) {
+                const groups: UnifacGroupComposition = {};
+                if (Array.isArray(unifacData)) {
+                    for (const group of unifacData) {
+                        const subgroupId = parseInt(group.id);
+                        const count = parseInt(group.value);
+                        if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
+                            groups[subgroupId] = count;
+                        }
+                    }
+                } else if (typeof unifacData === 'object' && unifacData.id && unifacData.value) {
+                    const subgroupId = parseInt(unifacData.id);
+                    const count = parseInt(unifacData.value);
+                    if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
+                        groups[subgroupId] = count;
+                    }
+                }
+                if (Object.keys(groups).length > 0) {
+                    unifacGroups = groups;
                 }
             }
-        } else if (typeof unifacData === 'object' && unifacData.id && unifacData.value) {
-            // Handle single object format: {"id": "17", "value": "1"}
-            const subgroupId = parseInt(unifacData.id);
-            const count = parseInt(unifacData.value);
-            if (!isNaN(subgroupId) && !isNaN(count) && count > 0) {
-                groups[subgroupId] = count;
-            }
         }
-        
-        if (Object.keys(groups).length > 0) {
-            unifacGroups_value = groups;
-        } else {
-            console.warn(`UNIFAC groups found but empty or invalid for CAS ${casn}`);
-        }
-    } else {
-        console.warn(`UNIFAC groups missing for CAS ${casn}`);
-    }
-
-    // Extract Critical Properties (Tc, Pc, omega)
-    const tcProp = props.CriticalTemperature;
-    const pcProp = props.CriticalPressure;
-    const omegaProp = props.AcentricityFactor;
-
-    if (tcProp && pcProp && omegaProp) {
-        const Tc_K = parseCoefficient(tcProp.value);
-        const Pc_raw = parseCoefficient(pcProp.value);
-        const omega = parseCoefficient(omegaProp.value);
-        
-        if (Tc_K !== null && Pc_raw !== null && omega !== null && typeof pcProp.units === 'string') {
-            let Pc_Pa = Pc_raw;
-            const pcUnitsLower = pcProp.units.toLowerCase();
-
-            if (pcUnitsLower === 'kpa') Pc_Pa *= 1000;
-            else if (pcUnitsLower === 'bar') Pc_Pa *= 100000;
-            else if (pcUnitsLower !== 'pa') {
-                console.warn(`Unrecognized critical pressure units '${pcProp.units}' for CAS ${casn}. Assuming Pa if not kPa or bar.`);
-            }
-
-            criticalProperties_value = { Tc_K, Pc_Pa, omega };
-        } else {
-            console.warn(`Critical properties (Tc, Pc, omega) could not be parsed for CAS ${casn}`);
-        }
-    } else {
-        console.warn(`Critical properties (Tc, Pc, omega) missing or incomplete for CAS ${casn}`);
-    }
-
-    // Extract UNIQUAC Parameters (r, q)
-    const rPropUQ = props.UniquacR || props.VanDerWaalsVolume;
-    const qPropUQ = props.UniquacQ || props.VanDerWaalsArea;
-
-    if (rPropUQ && qPropUQ) {
-        const r = parseCoefficient(rPropUQ.value);
-        const q = parseCoefficient(qPropUQ.value);
-        if (r !== null && q !== null) {
-            uniquacParams_value = { r, q };
-        } else {
-            console.warn(`UNIQUAC parameters (r, q) could not be parsed for CAS ${casn}`);
-        }
-    } else {
-        console.warn(`UNIQUAC parameters (r, q) missing or incomplete for CAS ${casn}`);
+    } catch (e) {
+        console.warn(`UNIFAC groups lookup failed for "${compoundName}" (non-fatal):`, e);
     }
 
     return {
-        casNumber: casn,
+        compoundName,
         antoine: antoineParams,
-        nbp_K: nbp_K_value,
-        V_L_m3mol: V_L_m3mol_value,
-        unifacGroups: unifacGroups_value,
-        criticalProperties: criticalProperties_value, // Use generic criticalProperties
-        uniquacParams: uniquacParams_value,
+        nbp_K: nbp_K,
+        molecularWeight: MW,
+        V_L_m3mol,
+        unifacGroups,
+        criticalProperties,
+        uniquacParams,
+        criticalVolume_m3kmol: critVol,
+    };
+}
+
+/**
+ * Convenience function to build a full CompoundData object from HYSYS tables.
+ */
+export async function fetchCompoundDataFromHysys(
+    supabase: SupabaseClient,
+    compoundName: string
+): Promise<CompoundData> {
+    const therm = await fetchAndConvertThermData(supabase, compoundName);
+    
+    return {
+        name: compoundName,
+        cas_number: null,
+        molecularWeight: therm.molecularWeight,
+        antoine: therm.antoine,
+        unifacGroups: therm.unifacGroups,
+        prParams: therm.criticalProperties ? {
+            Tc_K: therm.criticalProperties.Tc_K,
+            Pc_Pa: therm.criticalProperties.Pc_Pa,
+            omega: therm.criticalProperties.omega,
+        } : null,
+        srkParams: therm.criticalProperties ? {
+            Tc_K: therm.criticalProperties.Tc_K,
+            Pc_Pa: therm.criticalProperties.Pc_Pa,
+            omega: therm.criticalProperties.omega,
+        } : null,
+        uniquacParams: therm.uniquacParams,
+        wilsonParams: therm.V_L_m3mol != null ? { V_L_m3mol: therm.V_L_m3mol } : null,
     };
 }

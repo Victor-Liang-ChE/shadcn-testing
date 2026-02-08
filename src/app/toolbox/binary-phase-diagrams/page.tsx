@@ -45,6 +45,7 @@ import {
     fetchWilsonInteractionParams,
     calculateBubbleTemperatureWilson,
     calculateBubblePressureWilson,
+    antoineBoilingPointSolverLocal,
 } from '@/lib/vle-calculations';
 
 // Import Shared VLE Types
@@ -58,6 +59,7 @@ import type {
     UniquacPureComponentParams,
     WilsonPureComponentParams,
 } from '@/lib/vle-types';
+import { fetchCompoundDataFromHysys } from '@/lib/antoine-utils';
 
 export type FluidPackageType = 'unifac' | 'pr' | 'srk' | 'uniquac' | 'wilson' | 'nrtl';
 export type DiagramType = 'txy' | 'pxy' | 'xy';
@@ -105,8 +107,8 @@ function computeStep(maxVal: number): number {
 
 export default function VleDiagramPage() {
     const { resolvedTheme } = useTheme();
-    const [comp1Name, setComp1Name] = useState('methanol');
-    const [comp2Name, setComp2Name] = useState('water');
+    const [comp1Name, setComp1Name] = useState('Methanol');
+    const [comp2Name, setComp2Name] = useState('H2O');
     const [diagramType, setDiagramType] = useState<DiagramType>('txy');
     const [temperatureC, setTemperatureC] = useState<number | null>(null);
     const [pressureBar, setPressureBar] = useState<number | null>(1);
@@ -461,94 +463,9 @@ export default function VleDiagramPage() {
     async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
         if (!supabase) { throw new Error("Supabase client not initialized."); }
         console.log(`PhaseDiagrams: Fetching data for ${compoundName}...`);
-    
         try {
-            const { data: compoundDbData, error: compoundError } = await supabase
-                .from('compound_properties')
-                .select('name, properties')
-                .ilike('name', compoundName)
-                .limit(1);
-    
-            if (compoundError) throw new Error(`Supabase compound query error: ${compoundError.message}`);
-            if (!compoundDbData || compoundDbData.length === 0) throw new Error(`Compound '${compoundName}' not found.`);
-            
-            const foundName = compoundDbData[0].name;
-            const properties = compoundDbData[0].properties;
-            const casNumber = properties?.CAS?.value;
-
-            if (!properties || typeof properties !== 'object') {
-                throw new Error(`No properties found for ${foundName}.`);
-            }
-    
-            let antoine: AntoineParams | null = null;
-            const antoineChemsep = properties.AntoineVaporPressure || properties.Antoine;
-            if (antoineChemsep?.A?.value && antoineChemsep.B?.value && antoineChemsep.C?.value) {
-                antoine = {
-                    A: parseFloat(antoineChemsep.A.value),
-                    B: parseFloat(antoineChemsep.B.value),
-                    C: parseFloat(antoineChemsep.C.value),
-                    Tmin_K: parseFloat(antoineChemsep.Tmin?.value ?? 0),
-                    Tmax_K: parseFloat(antoineChemsep.Tmax?.value ?? 10000),
-                    Units: antoineChemsep.units || 'Pa',
-                    EquationNo: antoineChemsep.eqno?.value
-                };
-            }
-            if (!antoine || isNaN(antoine.A) || isNaN(antoine.B) || isNaN(antoine.C)) throw new Error(`Failed to extract valid Antoine params for ${foundName}.`);
-    
-            let unifacGroups: UnifacGroupComposition | null = null;
-            const unifacData = properties.UnifacVLE?.group;
-            if (unifacData && Array.isArray(unifacData)) {
-                unifacGroups = {};
-                for (const group of unifacData) {
-                    const subgroupId = parseInt(group.id);
-                    const count = parseInt(group.value);
-                    if (!isNaN(subgroupId) && !isNaN(count) && count > 0) unifacGroups[subgroupId] = count;
-                }
-                if (Object.keys(unifacGroups).length === 0) unifacGroups = null;
-            }
-    
-            let prParams: PrPureComponentParams | null = null;
-            let srkParams: SrkPureComponentParams | null = null;
-            const tcPropObj = properties.CriticalTemperature;
-            const pcPropObj = properties.CriticalPressure;
-            const omegaPropObj = properties.AcentricityFactor;
-            if (tcPropObj && pcPropObj && omegaPropObj) {
-                const Tc_K_val = parseFloat(tcPropObj.value);
-                const pcValue = parseFloat(pcPropObj.value);
-                const pcUnits = String(pcPropObj.units).toLowerCase();
-                const Pc_Pa_val = pcValue * (pcUnits === 'kpa' ? 1000 : pcUnits === 'bar' ? 100000 : 1);
-                const omega_val = parseFloat(omegaPropObj.value);
-                if (!isNaN(Tc_K_val) && !isNaN(Pc_Pa_val) && !isNaN(omega_val)) {
-                    prParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
-                    srkParams = { Tc_K: Tc_K_val, Pc_Pa: Pc_Pa_val, omega: omega_val };
-                }
-            }
-    
-            let uniquacParams: UniquacPureComponentParams | null = null;
-            const rPropObj = properties.UniquacR || properties.VanDerWaalsVolume;
-            const qPropObj = properties.UniquacQ || properties.VanDerWaalsArea;
-            if (rPropObj && qPropObj) {
-                const r_val = parseFloat(rPropObj.value ?? rPropObj);
-                const q_val = parseFloat(qPropObj.value ?? qPropObj);
-                if (!isNaN(r_val) && !isNaN(q_val)) uniquacParams = { r: r_val, q: q_val };
-            }
-            
-            let wilsonParams: WilsonPureComponentParams | null = null;
-            const vLPropObj = properties.WilsonVolume;
-            if (vLPropObj) {
-                const vL_val_any_unit = parseFloat(vLPropObj.value ?? vLPropObj);
-                const vL_units = String(vLPropObj.units).toLowerCase() || 'cm3/mol';
-                let vL_m3mol: number | undefined;
-                if (!isNaN(vL_val_any_unit)) {
-                    if (vL_units === 'cm3/mol' || vL_units === 'cm^3/mol') vL_m3mol = vL_val_any_unit * 1e-6;
-                    else if (vL_units === 'm3/mol' || vL_units === 'm^3/mol') vL_m3mol = vL_val_any_unit;
-                    else if (vL_units === 'm3/kmol' || vL_units === 'm^3/kmol') vL_m3mol = vL_val_any_unit / 1000;
-                    else if (vL_units === 'l/mol' || vL_units === 'dm3/mol' || vL_units === 'dm^3/mol') vL_m3mol = vL_val_any_unit * 1e-3;
-                }
-                if (vL_m3mol !== undefined && !isNaN(vL_m3mol) && vL_m3mol > 0) wilsonParams = { V_L_m3mol: vL_m3mol };
-            }
-    
-            return { name: foundName, antoine, unifacGroups, cas_number: casNumber, prParams, srkParams, uniquacParams, wilsonParams };
+            const result = await fetchCompoundDataFromHysys(supabase, compoundName);
+            return result;
         } catch (err: any) {
             console.error(`Error fetching data for ${compoundName}:`, err.message);
             setError(`Data fetch failed for ${compoundName}: ${err.message}`);
@@ -556,21 +473,7 @@ export default function VleDiagramPage() {
         }
     }
 
-    const antoineBoilingPointSolverLocal = (antoineParams: AntoineParams | null, P_target: number): number | null => {
-        if (!antoineParams) return null;
-        try {
-            let logP: number;
-            const P_converted_to_antoine_units = P_target / (antoineParams.Units?.toLowerCase() === 'kpa' ? 1000 : 1);
-            if (antoineParams.EquationNo === 1 || antoineParams.EquationNo === '1') {
-                logP = Math.log10(P_converted_to_antoine_units);
-            } else {
-                logP = Math.log(P_converted_to_antoine_units);
-            }
-            if (antoineParams.A - logP === 0) return null;
-            const T_K = antoineParams.B / (antoineParams.A - logP) - antoineParams.C;
-            return (T_K > 0 && T_K < 1000) ? T_K : null;
-        } catch { return null; }
-    };
+
     
     const generateDiagram = useCallback(async (showLoading: boolean = true) => {
         if (showLoading) {
@@ -600,15 +503,15 @@ export default function VleDiagramPage() {
                     [fetched1, fetched2].forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
                     fetchedParams = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
                 } else if (fluidPackage === 'nrtl') {
-                    fetchedParams = await fetchNrtlParameters(supabase, fetched1.cas_number!, fetched2.cas_number!);
+                    fetchedParams = await fetchNrtlParameters(supabase, fetched1.name, fetched2.name);
                 } else if (fluidPackage === 'pr') {
-                    fetchedParams = await fetchPrInteractionParams(supabase, fetched1.cas_number!, fetched2.cas_number!);
+                    fetchedParams = await fetchPrInteractionParams(supabase, fetched1.name, fetched2.name);
                 } else if (fluidPackage === 'srk') {
-                    fetchedParams = await fetchSrkInteractionParams(supabase, fetched1.cas_number!, fetched2.cas_number!);
+                    fetchedParams = await fetchSrkInteractionParams(supabase, fetched1.name, fetched2.name);
                 } else if (fluidPackage === 'uniquac') {
-                    fetchedParams = await fetchUniquacInteractionParams(supabase, fetched1.cas_number!, fetched2.cas_number!);
+                    fetchedParams = await fetchUniquacInteractionParams(supabase, fetched1.name, fetched2.name);
                 } else if (fluidPackage === 'wilson') {
-                    fetchedParams = await fetchWilsonInteractionParams(supabase, fetched1.cas_number!, fetched2.cas_number!);
+                    fetchedParams = await fetchWilsonInteractionParams(supabase, fetched1.name, fetched2.name);
                 }
                 
                 setComp1Data(fetched1); setComp2Data(fetched2); setInteractionParams(fetchedParams);
@@ -617,8 +520,8 @@ export default function VleDiagramPage() {
             if (!d1 || !d2 || !params) { throw new Error("Component data or parameters not available."); }
             const components: [CompoundData, CompoundData] = [d1, d2];
             
-            const pointsCount = 51;
-            // THIS LINE IS RESTORED
+            const pointsCount = 101; // 101 points => 0.01 spacing for x
+            // Use fine resolution matching McCabe-Thiele (0.01 spacing)
             const x_feed = Array.from({ length: pointsCount }, (_, i) => i / (pointsCount - 1));
             
             const results: { x: number[], y: number[], t?: number[], p?: number[] } = { x: [], y: [] };
@@ -861,9 +764,9 @@ export default function VleDiagramPage() {
             return;
         }
         try {
-            const { data, error } = await supabase.from('compound_properties').select('name').ilike('name', `${inputValue}%`).limit(5);
+            const { data, error } = await supabase.from('HYSYS PROPS PARAMS').select('Component').ilike('Component', `${inputValue}%`).limit(5);
             if (error) { throw error; }
-            const suggestions = data ? data.map((item: any) => item.name) : [];
+            const suggestions = data ? data.map((item: any) => item.Component) : [];
             if (inputTarget === 'comp1') {
                 setComp1Suggestions(suggestions);
                 setShowComp1Suggestions(suggestions.length > 0);

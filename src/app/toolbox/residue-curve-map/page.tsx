@@ -40,7 +40,6 @@ import {
     type AzeotropeResult
 } from '@/lib/residue-curves-ode';
 import {
-  R_gas_const_J_molK,
   calculatePsat_Pa,
   calculateSaturationTemperaturePurePr,
   calculateSaturationTemperaturePureSrk,
@@ -95,7 +94,6 @@ interface ComponentInputState {
 // To store component data along with its original index and NBP for sorting
 interface ProcessedComponentData {
     name: string;
-    casNumber: string;
     thermData: FetchedCompoundThermData; // This now contains criticalProperties
     originalIndex: number; // 0, 1, or 2 based on input order
     bp_at_Psys_K?: number | null; // Boiling point at system pressure
@@ -315,9 +313,9 @@ export default function TernaryResidueMapPage() {
         }
         try {
             const { data, error } = await supabase
-                .from('compound_properties')
-                .select('name')
-                .ilike('name', `${query.trim()}%`) // Changed to "starts with" pattern
+                .from('HYSYS PROPS PARAMS')
+                .select('Component')
+                .ilike('Component', `${query.trim()}%`)
                 .limit(5);
 
             if (error) {
@@ -336,7 +334,7 @@ export default function TernaryResidueMapPage() {
             }
 
             if (data) {
-                const suggestions = data.map((item: { name: string }) => item.name);
+                const suggestions = data.map((item: { Component: string }) => item.Component);
                 setComponentSuggestions(prev => {
                     const updated = [...prev];
                     updated[index] = suggestions;
@@ -515,44 +513,18 @@ export default function TernaryResidueMapPage() {
 
     // Component-data fetching WITHOUT caching (always hits Supabase so that any
     // fluid-package-specific logic downstream starts from a clean slate).
-    async function fetchComponentData(compoundName: string): Promise<{ casNumber: string, thermData: FetchedCompoundThermData } | null> {
+    async function fetchComponentData(compoundName: string): Promise<{ thermData: FetchedCompoundThermData } | null> {
         if (!supabase) throw new Error("Supabase client is not available.");
 
         try {
-            const casNumber = await fetchCasNumberByName(supabase, compoundName);
-            const thermData = await fetchAndConvertThermData(supabase, casNumber);
-            return { casNumber, thermData };
+            const thermData = await fetchAndConvertThermData(supabase, compoundName);
+            return { thermData };
         } catch (err: any) {
             console.error(`Error fetching data for ${compoundName} in ResidueCurveMap:`, err.message);
             setError(err.message);
             return null;
         }
     }
-
-    const fetchCasNumberByName = async (supabaseClient: SupabaseClient, name: string): Promise<string> => {
-        if (!name.trim()) {
-            console.error("fetchCasNumberByName: Name is empty.");
-            throw new Error("Component name cannot be empty.");
-        }
-        const trimmedName = name.trim();
-        const { data, error } = await supabaseClient
-            .from('compound_properties')
-            .select('name, properties') // Select properties to get CAS number
-            .ilike('name', trimmedName) // Changed from %${trimmedName}% to trimmedName for exact match (case-insensitive)
-            .limit(1)
-            .single();
-
-        if (error) {
-            console.error(`fetchCasNumberByName: Error fetching CAS for "${trimmedName}":`, error);
-            throw new Error(`Could not fetch CAS number for ${trimmedName}: ${error.message}`);
-        }
-        const casNumber = data?.properties?.CAS?.value;
-        if (!data || !casNumber) {
-            console.error(`fetchCasNumberByName: No CAS number found for "${trimmedName}". Data received:`, data);
-            throw new Error(`No CAS number found for ${trimmedName}.`);
-        }
-        return casNumber;
-    };
 
     // Helper function to calculate boiling point of a pure component at P_sys_Pa using Secant method
     function calculateBoilingPointAtPressureSecant(
@@ -646,8 +618,7 @@ export default function TernaryResidueMapPage() {
             );
             const fetchedComponentDataArray = await Promise.all(componentDataPromises);
             
-            // Extract cas numbers and therm data from cached results
-            const fetchedCasNumbers = fetchedComponentDataArray.map(data => data?.casNumber || '');
+            // Extract therm data from fetched results
             const fetchedThermDataArray = fetchedComponentDataArray.map(data => data?.thermData || null);
 
             const processedComponents: ProcessedComponentData[] = componentsInput.map((input, index) => {
@@ -701,7 +672,6 @@ export default function TernaryResidueMapPage() {
 
                 return {
                     name: input.name,
-                    casNumber: fetchedCasNumbers[index],
                     thermData: thermData,
                     originalIndex: index,
                     bp_at_Psys_K: bp_at_Psys_K_val,
@@ -796,7 +766,6 @@ export default function TernaryResidueMapPage() {
                 .sort((a,b) => a.originalIndex - b.originalIndex)
                 .map(pc => ({
                     name: pc.name,
-                    cas_number: pc.casNumber,
                     antoine: pc.thermData.antoine!,
                     wilsonParams: fluidPackage === 'wilson' ? { V_L_m3mol: pc.thermData.V_L_m3mol! } as WilsonPureParams : undefined,
                     unifacGroups: fluidPackage === 'unifac' ? pc.thermData.unifacGroups! : undefined,
@@ -807,48 +776,21 @@ export default function TernaryResidueMapPage() {
 
 
 
-            const cas = compoundsForBackend.map(c => c.cas_number!);
+            const names = compoundsForBackend.map(c => c.name);
             let activityModelParams: any;
 
             if (fluidPackage === 'wilson') {
-                const fetchWilsonBothWays = async (c1:string,c2:string) => {
-                    let p = await fetchWilsonInteractionParams(supabase, c1, c2);
-                    if ((p.a12_J_mol === 0 && p.a21_J_mol === 0)) {
-                        // Try the opposite orientation – many tables are asymmetric.
-                        const pRev = await fetchWilsonInteractionParams(supabase, c2, c1);
-                        if (pRev.a12_J_mol !== 0 || pRev.a21_J_mol !== 0) {
-                            p = { a12_J_mol: pRev.a21_J_mol, a21_J_mol: pRev.a12_J_mol };
-                        }
-                    }
-                    return p;
-                };
-
-                const params01 = await fetchWilsonBothWays(cas[0], cas[1]);
-                const params02 = await fetchWilsonBothWays(cas[0], cas[2]);
-                const params12 = await fetchWilsonBothWays(cas[1], cas[2]);
-
-
-
-                const symmetric = (a_forward:number|undefined, a_reverse:number|undefined):[number,number] => {
-                    const f = (a_forward !== undefined && !Number.isNaN(a_forward)) ? a_forward : undefined;
-                    const r = (a_reverse !== undefined && !Number.isNaN(a_reverse)) ? a_reverse : undefined;
-                    if (f !== undefined && r !== undefined) return [f,r];
-                    if (f !== undefined) return [f,f];
-                    if (r !== undefined) return [r,r];
-                    return [0,0];
-                };
-
-                const [a01,a10] = symmetric(params01.a12_J_mol, params01.a21_J_mol);
-                const [a02,a20] = symmetric(params02.a12_J_mol, params02.a21_J_mol);
-                const [a12,a21] = symmetric(params12.a12_J_mol, params12.a21_J_mol);
+                const params01 = await fetchWilsonInteractionParams(supabase, names[0], names[1]);
+                const params02 = await fetchWilsonInteractionParams(supabase, names[0], names[2]);
+                const params12 = await fetchWilsonInteractionParams(supabase, names[1], names[2]);
 
                 activityModelParams = {
-                    a01_J_mol: a01,
-                    a10_J_mol: a10,
-                    a02_J_mol: a02,
-                    a20_J_mol: a20,
-                    a12_J_mol: a12,
-                    a21_J_mol: a21,
+                    A01: params01.Aij ?? 0, B01: params01.Bij ?? 0,
+                    A10: params01.Aji ?? 0, B10: params01.Bji ?? 0,
+                    A02: params02.Aij ?? 0, B02: params02.Bij ?? 0,
+                    A20: params02.Aji ?? 0, B20: params02.Bji ?? 0,
+                    A12: params12.Aij ?? 0, B12: params12.Bij ?? 0,
+                    A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
                 } as TernaryWilsonParams;
 
             } else if (fluidPackage === 'unifac') {
@@ -868,53 +810,53 @@ export default function TernaryResidueMapPage() {
                     throw new Error("Failed to fetch UNIFAC interaction parameters. The parameters object is null.");
                 }
             } else if (fluidPackage === 'nrtl') {
-                const params01 = await fetchNrtlParameters(supabase, cas[0], cas[1]);
-                const params02 = await fetchNrtlParameters(supabase, cas[0], cas[2]);
-                const params12 = await fetchNrtlParameters(supabase, cas[1], cas[2]);
+                const params01 = await fetchNrtlParameters(supabase, names[0], names[1]);
+                const params02 = await fetchNrtlParameters(supabase, names[0], names[2]);
+                const params12 = await fetchNrtlParameters(supabase, names[1], names[2]);
 
                 if (!params01 || !params02 || !params12) {
                     throw new Error("NRTL parameters for one or more binary pairs could not be fetched.");
                 }
                 activityModelParams = {
-                    g01_J_mol: (params01 as any).A12 ?? 0, g10_J_mol: (params01 as any).A21 ?? 0, alpha01: (params01 as any).alpha ?? 0,
-                    g02_J_mol: (params02 as any).A12 ?? 0, g20_J_mol: (params02 as any).A21 ?? 0, alpha02: (params02 as any).alpha ?? 0,
-                    g12_J_mol: (params12 as any).A12 ?? 0, g21_J_mol: (params12 as any).A21 ?? 0, alpha12: (params12 as any).alpha ?? 0,
+                    A01: params01.Aij ?? 0, B01: params01.Bij ?? 0, A10: params01.Aji ?? 0, B10: params01.Bji ?? 0, alpha01: params01.alpha ?? 0.3,
+                    A02: params02.Aij ?? 0, B02: params02.Bij ?? 0, A20: params02.Aji ?? 0, B20: params02.Bji ?? 0, alpha02: params02.alpha ?? 0.3,
+                    A12: params12.Aij ?? 0, B12: params12.Bij ?? 0, A21: params12.Aji ?? 0, B21: params12.Bji ?? 0, alpha12: params12.alpha ?? 0.3,
                 } as TernaryNrtlParams;
 
             } else if (fluidPackage === 'pr') {
-                const params01 = await fetchPrInteractionParams(supabase, cas[0], cas[1]); 
-                const params02 = await fetchPrInteractionParams(supabase, cas[0], cas[2]);
-                const params12 = await fetchPrInteractionParams(supabase, cas[1], cas[2]);
+                const params01 = await fetchPrInteractionParams(supabase, names[0], names[1]); 
+                const params02 = await fetchPrInteractionParams(supabase, names[0], names[2]);
+                const params12 = await fetchPrInteractionParams(supabase, names[1], names[2]);
 
                 activityModelParams = {
-                    k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
-                    k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
-                    k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
+                    k01: params01.k_ij ?? 0, k10: params01.k_ij ?? 0,
+                    k02: params02.k_ij ?? 0, k20: params02.k_ij ?? 0,
+                    k12: params12.k_ij ?? 0, k21: params12.k_ij ?? 0,
                 } as TernaryPrParams;
 
             } else if (fluidPackage === 'srk') {
-                const params01 = await fetchSrkInteractionParams(supabase, cas[0], cas[1]); 
-                const params02 = await fetchSrkInteractionParams(supabase, cas[0], cas[2]);
-                const params12 = await fetchSrkInteractionParams(supabase, cas[1], cas[2]);
+                const params01 = await fetchSrkInteractionParams(supabase, names[0], names[1]); 
+                const params02 = await fetchSrkInteractionParams(supabase, names[0], names[2]);
+                const params12 = await fetchSrkInteractionParams(supabase, names[1], names[2]);
 
                 activityModelParams = {
-                    k01: params01.k_ij ?? 0, k10: params01.k_ji ?? 0,
-                    k02: params02.k_ij ?? 0, k20: params02.k_ji ?? 0,
-                    k12: params12.k_ij ?? 0, k21: params12.k_ji ?? 0,
+                    k01: params01.k_ij ?? 0, k10: params01.k_ij ?? 0,
+                    k02: params02.k_ij ?? 0, k20: params02.k_ij ?? 0,
+                    k12: params12.k_ij ?? 0, k21: params12.k_ij ?? 0,
                 } as TernarySrkParams;
 
             } else if (fluidPackage === 'uniquac') {
-                const params01 = await fetchUniquacInteractionParams(supabase, cas[0], cas[1]);
-                const params02 = await fetchUniquacInteractionParams(supabase, cas[0], cas[2]);
-                const params12 = await fetchUniquacInteractionParams(supabase, cas[1], cas[2]);
+                const params01 = await fetchUniquacInteractionParams(supabase, names[0], names[1]);
+                const params02 = await fetchUniquacInteractionParams(supabase, names[0], names[2]);
+                const params12 = await fetchUniquacInteractionParams(supabase, names[1], names[2]);
 
                 if (!params01 || !params02 || !params12) {
                     throw new Error("UNIQUAC parameters for one or more binary pairs could not be fetched.");
                 }
                 activityModelParams = {
-                    a01_J_mol: ((params01 as any).A12 ?? 0) * R_gas_const_J_molK, a10_J_mol: ((params01 as any).A21 ?? 0) * R_gas_const_J_molK,
-                    a02_J_mol: ((params02 as any).A12 ?? 0) * R_gas_const_J_molK, a20_J_mol: ((params02 as any).A21 ?? 0) * R_gas_const_J_molK,
-                    a12_J_mol: ((params12 as any).A12 ?? 0) * R_gas_const_J_molK, a21_J_mol: ((params12 as any).A21 ?? 0) * R_gas_const_J_molK,
+                    A01: params01.Aij ?? 0, B01: params01.Bij ?? 0, A10: params01.Aji ?? 0, B10: params01.Bji ?? 0,
+                    A02: params02.Aij ?? 0, B02: params02.Bij ?? 0, A20: params02.Aji ?? 0, B20: params02.Bji ?? 0,
+                    A12: params12.Aij ?? 0, B12: params12.Bij ?? 0, A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
                 } as TernaryUniquacParams;
 
             } else {
@@ -1029,8 +971,7 @@ export default function TernaryResidueMapPage() {
                   // the original order with `toInputOrder`.
                   const compsForBinary = [...sortedComponents]
                         .map((sc, idx) => {
-                            const found = compoundsForBackend.find(c => c.cas_number === sc.casNumber)!;
-                            // console.log(`[MapLBH->Binary] idx ${idx} LBH=${sc.name} maps to backend pos=${compoundsForBackend.indexOf(found)} name=${found.name}`);
+                            const found = compoundsForBackend.find(c => c.name === sc.name)!;
                             return found;
                         }) as CompoundData[];
 
@@ -1039,32 +980,37 @@ export default function TernaryResidueMapPage() {
                   let paramsForBinary = activityModelParams;
                   if (fluidPackage === 'wilson') {
                       const perm: number[] = sortedComponents.map(sc => sc.originalIndex); // newIndex -> origIndex
-                      const a = (i:number,j:number) => {
+                      const getA = (i:number,j:number) => {
                         const pair = `${i}${j}`;
                         switch(pair){
-                          case '01': return activityModelParams.a01_J_mol;
-                          case '10': return activityModelParams.a10_J_mol;
-                          case '02': return activityModelParams.a02_J_mol;
-                          case '20': return activityModelParams.a20_J_mol;
-                          case '12': return activityModelParams.a12_J_mol;
-                          case '21': return activityModelParams.a21_J_mol;
+                          case '01': return activityModelParams.A01;
+                          case '10': return activityModelParams.A10;
+                          case '02': return activityModelParams.A02;
+                          case '20': return activityModelParams.A20;
+                          case '12': return activityModelParams.A12;
+                          case '21': return activityModelParams.A21;
                           default: return 0;
                         }
                       };
-                      // If a specific orientation value is missing (0), fall back to the reverse
-                      const aSafe = (i:number,j:number):number => {
-                        const val = a(i,j);
-                        if (val !== 0 && !Number.isNaN(val)) return val;
-                        const rev = a(j,i);
-                        return (rev !== 0 && !Number.isNaN(rev)) ? rev : 0;
+                      const getB = (i:number,j:number) => {
+                        const pair = `${i}${j}`;
+                        switch(pair){
+                          case '01': return activityModelParams.B01;
+                          case '10': return activityModelParams.B10;
+                          case '02': return activityModelParams.B02;
+                          case '20': return activityModelParams.B20;
+                          case '12': return activityModelParams.B12;
+                          case '21': return activityModelParams.B21;
+                          default: return 0;
+                        }
                       };
-                      const aLM = (i:number,j:number)=> aSafe(perm[i],perm[j]);
+                      const aLM = (i:number,j:number)=> getA(perm[i],perm[j]);
+                      const bLM = (i:number,j:number)=> getB(perm[i],perm[j]);
                       paramsForBinary = {
-                        a01_J_mol: aLM(0,1), a10_J_mol: aLM(1,0),
-                        a02_J_mol: aLM(0,2), a20_J_mol: aLM(2,0),
-                        a12_J_mol: aLM(1,2), a21_J_mol: aLM(2,1)
+                        A01: aLM(0,1), B01: bLM(0,1), A10: aLM(1,0), B10: bLM(1,0),
+                        A02: aLM(0,2), B02: bLM(0,2), A20: aLM(2,0), B20: bLM(2,0),
+                        A12: aLM(1,2), B12: bLM(1,2), A21: aLM(2,1), B21: bLM(2,1)
                       } as TernaryWilsonParams;
-                      // console.log('[ParamReorder] Wilson params remapped for L/M/H order');
                   }
 
                   const binaryHitsSorted = systematicBinaryAzeotropeSearch(
@@ -1380,7 +1326,7 @@ export default function TernaryResidueMapPage() {
                 setDisplayedComponentNames(componentsInput.map(ci=>ci.name));
             }
         }
-    }, [componentsInput, systemPressure, supabase, fetchCasNumberByName, fetchAndConvertThermData, fluidPackage]); // Removed initialTempGuess_K
+    }, [componentsInput, systemPressure, supabase, fetchAndConvertThermData, fluidPackage]); // Removed initialTempGuess_K
 
     useEffect(() => {
         if (supabase && !initialMapGenerated.current) {
@@ -1447,94 +1393,99 @@ export default function TernaryResidueMapPage() {
             return 'unknown';
         }
 
-        // --- Start Debugging Group ---
-        console.group(`[Azeotrope Classifier Debug] for x=[${az.x.map(v => v.toFixed(4)).join(', ')}]`);
+        // 1. Identification of Independent Variables
+        // To avoid driving small mole fractions negative during perturbation,
+        // we pick the component with the LARGEST mole fraction to be the "dependent" variable (k).
+        // The other two (i, j) are independent.
+        let k = 0;
+        if (az.x[1] > az.x[k]) k = 1;
+        if (az.x[2] > az.x[k]) k = 2;
 
-        // Use a centered finite difference method for the Jacobian
-        const J: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-        for (let j = 0; j < 3; j++) {
-            const x_plus = [...az.x];
-            x_plus[j] += h;
-            const r_plus = evaluateResidueODE(displayedFluidPackage, x_plus, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
+        const indices = [0, 1, 2].filter(idx => idx !== k);
+        const idx_i = indices[0];
+        const idx_j = indices[1];
 
-            const x_minus = [...az.x];
-            x_minus[j] -= h;
-            const r_minus = evaluateResidueODE(displayedFluidPackage, x_minus, az.T_K, backendPressurePa, backendComps as unknown as CompoundData[], backendPkgParams);
+        // Helper to evaluate derivatives [f_i, f_j] where f = x - y
+        // We only care about the derivatives of the independent components
+        const evaluateRestricted = (x_independent: number[]) => {
+            const x_full = [0, 0, 0];
+            x_full[idx_i] = x_independent[0];
+            x_full[idx_j] = x_independent[1];
+            x_full[k] = 1.0 - x_full[idx_i] - x_full[idx_j];
 
-            if (!r_plus || !r_minus) {
-                console.warn('Evaluation of residue ODE failed for Jacobian calculation.');
-                console.groupEnd();
-                return 'unknown';
-            }
+            // Safety clamp to prevent negative compositions during finite diff
+            if (x_full[k] < 0) x_full[k] = 0; 
 
-            for (let i = 0; i < 3; i++) {
-                J[i][j] = (r_plus.d[i] - r_minus.d[i]) / (2 * h);
-            }
-        }
+            // Evaluate the full ODE system
+            // Note: We use the fixed azeotrope temperature T_K. 
+            // At a stationary point (azeotrope), dT/dx is zero, so using constant T 
+            // for the Jacobian linearization is mathematically valid.
+            const res = evaluateResidueODE(
+                displayedFluidPackage, 
+                x_full, 
+                az.T_K, 
+                backendPressurePa, 
+                backendComps as unknown as CompoundData[], 
+                backendPkgParams
+            );
+            
+            if (!res) return null;
+            return [res.d[idx_i], res.d[idx_j]]; // Return deriv of independent vars
+        };
 
-        // Dynamically select the component with the smallest mole fraction to eliminate
-        let elim_idx = 0;
-        if (az.x[1] < az.x[0]) elim_idx = 1;
-        if (az.x[2] < az.x[elim_idx]) elim_idx = 2;
+        const x_center = [az.x[idx_i], az.x[idx_j]];
+        const f_center = evaluateRestricted(x_center);
+
+        if (!f_center) return 'unknown';
+
+        // 2. Compute 2x2 Jacobian using finite differences
+        // J = [ df_i/dx_i  df_i/dx_j ]
+        //     [ df_j/dx_i  df_j/dx_j ]
         
-        const ind_indices = [0, 1, 2].filter(i => i !== elim_idx);
-        const idx1 = ind_indices[0];
-        const idx2 = ind_indices[1];
+        // Perturb i
+        const f_plus_i = evaluateRestricted([x_center[0] + h, x_center[1]]);
+        const f_minus_i = evaluateRestricted([x_center[0] - h, x_center[1]]);
+        
+        // Perturb j
+        const f_plus_j = evaluateRestricted([x_center[0], x_center[1] + h]);
+        const f_minus_j = evaluateRestricted([x_center[0], x_center[1] - h]);
 
-        // Form the 2x2 reduced Jacobian 'A'
-        const A = [
-            [J[idx1][idx1] - J[idx1][elim_idx], J[idx1][idx2] - J[idx1][elim_idx]],
-            [J[idx2][idx1] - J[idx2][elim_idx], J[idx2][idx2] - J[idx2][elim_idx]],
-        ];
+        if (!f_plus_i || !f_minus_i || !f_plus_j || !f_minus_j) return 'unknown';
 
-        const tr = A[0][0] + A[1][1];
-        const det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
+        const J11 = (f_plus_i[0] - f_minus_i[0]) / (2 * h);
+        const J21 = (f_plus_i[1] - f_minus_i[1]) / (2 * h);
+        
+        const J12 = (f_plus_j[0] - f_minus_j[0]) / (2 * h);
+        const J22 = (f_plus_j[1] - f_minus_j[1]) / (2 * h);
+
+        // 3. Eigenvalue Analysis
+        const tr = J11 + J22;
+        const det = J11 * J22 - J12 * J21;
         const disc = tr * tr - 4 * det;
 
-        console.log('Eigenvalue Analysis:', {
-            trace: tr.toExponential(4),
-            determinant: det.toExponential(4),
-            discriminant: disc.toExponential(4)
-        });
+        // 4. Classification
+        // Residue Curve Map Topology Rules:
+        // Eigenvalues > 0 (Positive Real Parts) -> Unstable Node (Source) -> MINIMUM BOILING
+        // Eigenvalues < 0 (Negative Real Parts) -> Stable Node (Sink) -> MAXIMUM BOILING
+        // Mixed Signs -> SADDLE
 
         if (disc < 0) {
-            console.log('Result: Discriminant is negative -> SADDLE');
-            console.groupEnd();
-            return 'saddle';
+            // Complex eigenvalues.
+            // Stability depends on the sign of the real part, which is Trace/2.
+            const realPart = tr / 2;
+            if (realPart > 1e-6) return 'min';
+            if (realPart < -1e-6) return 'max';
+            return 'saddle'; // Pure imaginary? unlikely in RCM, treat as saddle/indeterminate
         }
 
         const sqrtDisc = Math.sqrt(disc);
-        const l1 = 0.5 * (tr + sqrtDisc);
-        const l2 = 0.5 * (tr - sqrtDisc);
+        const l1 = (tr + sqrtDisc) / 2;
+        const l2 = (tr - sqrtDisc) / 2;
+
+        if (l1 > 0 && l2 > 0) return 'min';
+        if (l1 < 0 && l2 < 0) return 'max';
         
-        console.log('Calculated Eigenvalues:', { lambda_1: l1.toExponential(4), lambda_2: l2.toExponential(4) });
-        
-        const isBinary = az.x.some(xi => xi < 1e-4);
-        let finalClassification: 'min' | 'max' | 'saddle' = 'saddle';
-
-        if (isBinary) {
-            console.log('Logic path: isBinary = true');
-            const significantEigenvalue = Math.abs(l1) > Math.abs(l2) ? l1 : l2;
-            const EIGENVALUE_TOLERANCE = 1e-4;
-
-            if (significantEigenvalue > EIGENVALUE_TOLERANCE) {
-                finalClassification = 'min';
-            } else if (significantEigenvalue < -EIGENVALUE_TOLERANCE) {
-                finalClassification = 'max';
-            } else {
-                finalClassification = 'saddle';
-            }
-            console.log(`Binary classification based on significant eigenvalue ${significantEigenvalue.toExponential(3)} -> ${finalClassification.toUpperCase()}`);
-        } else {
-            console.log('Logic path: isBinary = false');
-            if (l1 > 0 && l2 > 0) finalClassification = 'min';
-            else if (l1 < 0 && l2 < 0) finalClassification = 'max';
-            else finalClassification = 'saddle';
-            console.log(`Ternary classification based on eigenvalue signs -> ${finalClassification.toUpperCase()}`);
-        }
-
-        console.groupEnd();
-        return finalClassification;
+        return 'saddle';
 
     }, [backendComps, backendPkgParams, backendPressurePa, displayedFluidPackage]);
 
