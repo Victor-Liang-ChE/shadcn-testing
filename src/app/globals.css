@@ -144,6 +144,12 @@ input[type=number] {
       font-family: 'Merriweather Sans', sans-serif; /* Apply Merriweather Sans globally */
       line-height: 1.6; /* Increase line spacing */
     }
+
+    /* Tight subscript helper: remove unwanted gap between base character and subscript */
+    .tight-sub sub {
+      margin-left: -0.12em; /* slight negative spacing to remove visual gap */
+      padding-left: 0; 
+    }
     .equal-spacing > * {
       @apply my-3; /* Adjust spacing if needed */
     }
