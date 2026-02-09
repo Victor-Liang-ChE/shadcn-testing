@@ -3484,7 +3484,7 @@ export default function Home() {
               const comp1_vle = fetchedVleData.get(comp1_setup.id);
               const comp2_vle = fetchedVleData.get(comp2_setup.id);
 
-              if (!comp1_vle?.cas_number || !comp2_vle?.cas_number) continue;
+              if (!comp1_vle?.name || !comp2_vle?.name) continue;
 
               const key = `${i}-${j}`;
 
@@ -3499,23 +3499,24 @@ export default function Home() {
 
                       switch (fluidPackage) {
                           case 'NRTL':
-                              params = await fetchNrtlParameters(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!, (source) => { sourceType = source; });
+                              params = await fetchNrtlParameters(supabase, comp1_vle.name!, comp2_vle.name!);
+                              sourceType = 'Database';
                               break;
                           case 'Wilson':
-                              params = await fetchWilsonInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
-                              sourceType = 'Database'; // Assuming no estimation for now
+                              params = await fetchWilsonInteractionParams(supabase, comp1_vle.name!, comp2_vle.name!);
+                              sourceType = 'Database';
                               break;
                           case 'UNIQUAC':
-                              params = await fetchUniquacInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
-                              sourceType = 'Database'; // Assuming no estimation for now
+                              params = await fetchUniquacInteractionParams(supabase, comp1_vle.name!, comp2_vle.name!);
+                              sourceType = 'Database';
                               break;
                           case 'Peng-Robinson':
-                              params = await fetchPrInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
-                              sourceType = 'Database'; // Assuming no estimation for now
+                              params = await fetchPrInteractionParams(supabase, comp1_vle.name!, comp2_vle.name!);
+                              sourceType = 'Database';
                               break;
                           case 'SRK':
-                              params = await fetchSrkInteractionParams(supabase, comp1_vle.cas_number!, comp2_vle.cas_number!);
-                              sourceType = 'Database'; // Assuming no estimation for now
+                              params = await fetchSrkInteractionParams(supabase, comp1_vle.name!, comp2_vle.name!);
+                              sourceType = 'Database';
                               break;
                       }
                   } catch (err) {
