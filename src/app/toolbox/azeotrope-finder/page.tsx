@@ -77,7 +77,8 @@ import type {
     AntoineParams, PrPureComponentParams, SrkPureComponentParams, UniquacPureComponentParams, WilsonPureComponentParams,
     CompoundData, BubbleDewResult, UnifacGroupComposition
 } from '@/lib/vle-types';
-import { fetchCompoundDataFromHysys } from '@/lib/antoine-utils';
+import { fetchCompoundDataFromHysys, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils';
+import type { CompoundAlias } from '@/lib/antoine-utils';
 
 type FluidPackageTypeAzeotrope = 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac' | 'wilson';
 type AzeotropeScanType = 'vs_P_find_T' | 'vs_T_find_P'; // Scan P, find T_az OR Scan T, find P_az
@@ -135,14 +136,18 @@ export default function AzeotropeFinderPage() {
   const echartsRef = useRef<ReactECharts | null>(null);
 
   // Suggestion states (copy from mccabe-thiele)
-  const [comp1Suggestions, setComp1Suggestions] = useState<string[]>([]);
-  const [comp2Suggestions, setComp2Suggestions] = useState<string[]>([]);
+  const [comp1Suggestions, setComp1Suggestions] = useState<CompoundAlias[]>([]);
+  const [comp2Suggestions, setComp2Suggestions] = useState<CompoundAlias[]>([]);
   const [showComp1Suggestions, setShowComp1Suggestions] = useState(false);
   const [showComp2Suggestions, setShowComp2Suggestions] = useState(false);
   const [activeSuggestionInput, setActiveSuggestionInput] = useState<'comp1' | 'comp2' | null>(null);
   const input1Ref = useRef<HTMLInputElement>(null);
   const input2Ref = useRef<HTMLInputElement>(null);
   const activeComponentRef = useRef<HTMLDivElement>(null);
+
+  // Display names (human-readable FullName from HYSYS ALIASES)
+  const [comp1DisplayName, setComp1DisplayName] = useState('Acetone');
+  const [comp2DisplayName, setComp2DisplayName] = useState('Water');
   
   // Displayed parameters for title
   const [displayedComp1, setDisplayedComp1] = useState('');
@@ -201,7 +206,7 @@ export default function AzeotropeFinderPage() {
     }
   }
 
-  // --- Suggestion Handlers (copy from mccabe-thiele) ---
+  // --- Suggestion Handlers (using HYSYS ALIASES table) ---
   const fetchSuggestions = useCallback(async (inputValue: string, inputTarget: 'comp1' | 'comp2') => {
     if (!inputValue || inputValue.length < 2 || !supabase) {
       if (inputTarget === 'comp1') { setComp1Suggestions([]); setShowComp1Suggestions(false); }
@@ -209,13 +214,7 @@ export default function AzeotropeFinderPage() {
       return;
     }
     try {
-      const { data, error } = await supabase
-        .from('HYSYS PROPS PARAMS')
-        .select('Component')
-        .ilike('Component', `${inputValue}%`)
-        .limit(5);
-      if (error) { console.error("Azeo: Supabase suggestion fetch error:", error); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); return; }
-      const suggestions = data ? data.map((item: any) => item.Component) : [];
+      const suggestions = await fetchCompoundSuggestions(supabase, inputValue);
       if (inputTarget === 'comp1') { setComp1Suggestions(suggestions); setShowComp1Suggestions(suggestions.length > 0); }
       else { setComp2Suggestions(suggestions); setShowComp2Suggestions(suggestions.length > 0); }
     } catch (err) { console.error("Azeo: Error fetching suggestions:", err); if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]); }
@@ -226,6 +225,7 @@ export default function AzeotropeFinderPage() {
   const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp1Name(newValue);
+    setComp1DisplayName(newValue);
     setActiveSuggestionInput('comp1');
     if (newValue.trim() === "") { setShowComp1Suggestions(false); setComp1Suggestions([]); }
     else { fetchSuggestions(newValue, 'comp1'); }
@@ -234,16 +234,17 @@ export default function AzeotropeFinderPage() {
   const handleComp2NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp2Name(newValue);
+    setComp2DisplayName(newValue);
     setActiveSuggestionInput('comp2');
     if (newValue.trim() === "") { setShowComp2Suggestions(false); setComp2Suggestions([]); }
     else { fetchSuggestions(newValue, 'comp2'); }
   };
 
-  const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
+  const handleSuggestionClick = (alias: CompoundAlias, inputTarget: 'comp1' | 'comp2') => {
     if (inputTarget === 'comp1') {
-      setComp1Name(suggestion); setShowComp1Suggestions(false); setComp1Suggestions([]);
+      setComp1Name(alias.simName); setComp1DisplayName(formatCompoundName(alias.fullName)); setShowComp1Suggestions(false); setComp1Suggestions([]);
     } else {
-      setComp2Name(suggestion); setShowComp2Suggestions(false); setComp2Suggestions([]);
+      setComp2Name(alias.simName); setComp2DisplayName(formatCompoundName(alias.fullName)); setShowComp2Suggestions(false); setComp2Suggestions([]);
     }
   };
 
@@ -262,9 +263,12 @@ export default function AzeotropeFinderPage() {
   }, [activeSuggestionInput]);
 
   const handleSwapComponents = () => { 
-    const temp = comp1Name; 
-    setComp1Name(comp2Name); 
-    setComp2Name(temp); 
+    const tempName = comp1Name;
+    const tempDisplay = comp1DisplayName;
+    setComp1Name(comp2Name);
+    setComp1DisplayName(comp2DisplayName);
+    setComp2Name(tempName);
+    setComp2DisplayName(tempDisplay);
     // Auto-trigger azeotrope scan after swap
     setTimeout(() => handleAzeotropeScan(), 100);
   };
@@ -350,7 +354,11 @@ export default function AzeotropeFinderPage() {
     if (!supabase) { setError("Supabase not initialized."); setLoading(false); return; }
 
     try {
-        const [data1, data2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
+        // Resolve display names to SimNames
+        const [sim1, sim2] = await Promise.all([resolveSimName(supabase, comp1Name), resolveSimName(supabase, comp2Name)]);
+        const resolvedComp1 = sim1 || comp1Name;
+        const resolvedComp2 = sim2 || comp2Name;
+        const [data1, data2] = await Promise.all([fetchCompoundDataLocal(resolvedComp1), fetchCompoundDataLocal(resolvedComp2)]);
         if (!data1 || !data2) { setLoading(false); return; } // Error set in fetchCompoundDataLocal
 
         // Check for pure component system
@@ -510,8 +518,8 @@ export default function AzeotropeFinderPage() {
         }
         if (myScanId === scanGenerationRef.current) {
             setAzeotropeScanData(scanResultsArray);
-            setDisplayedComp1(comp1Name);
-            setDisplayedComp2(comp2Name);
+            setDisplayedComp1(comp1DisplayName || comp1Name);
+            setDisplayedComp2(comp2DisplayName || comp2Name);
             setDisplayedFluidPackage(fluidPackage);
             setDisplayedScanType(azeotropeScanType);
         }
@@ -672,24 +680,24 @@ export default function AzeotropeFinderPage() {
                 <div className="flex items-center gap-2">
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp1NameAzeo">Component 1</Label> */}
-                        <Input ref={input1Ref} id="comp1NameAzeo" value={comp1Name} onChange={handleComp1NameChange} 
-                               onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1Name.trim()) fetchSuggestions(comp1Name, 'comp1');}}
+                        <Input ref={input1Ref} id="comp1NameAzeo" value={comp1DisplayName} onChange={handleComp1NameChange} 
+                               onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1DisplayName.trim()) fetchSuggestions(comp1DisplayName, 'comp1');}}
                                placeholder="e.g., Ethanol" autoComplete="off" />
                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
                             <div ref={activeSuggestionInput === 'comp1' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
-                                {comp1Suggestions.map((s, i) => <div key={i} onClick={() => handleSuggestionClick(s, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>)}
+                                {comp1Suggestions.map((alias, i) => <div key={i} onClick={() => handleSuggestionClick(alias, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{formatCompoundName(alias.fullName)}</div>)}
                             </div>
                         )}
                     </div>
                     <Button variant="ghost" size="icon" onClick={handleSwapComponents} title="Swap Components" className="self-end mb-1"><ArrowLeftRight className="h-4 w-4" /></Button>
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp2NameAzeo">Component 2</Label> */}
-                        <Input ref={input2Ref} id="comp2NameAzeo" value={comp2Name} onChange={handleComp2NameChange} 
-                               onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2Name.trim()) fetchSuggestions(comp2Name, 'comp2');}}
+                        <Input ref={input2Ref} id="comp2NameAzeo" value={comp2DisplayName} onChange={handleComp2NameChange} 
+                               onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2DisplayName.trim()) fetchSuggestions(comp2DisplayName, 'comp2');}}
                                placeholder="e.g., Water" autoComplete="off" />
                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
                             <div ref={activeSuggestionInput === 'comp2' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
-                                {comp2Suggestions.map((s, i) => <div key={i} onClick={() => handleSuggestionClick(s, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{s}</div>)}
+                                {comp2Suggestions.map((alias, i) => <div key={i} onClick={() => handleSuggestionClick(alias, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">{formatCompoundName(alias.fullName)}</div>)}
                             </div>
                         )}
                     </div>

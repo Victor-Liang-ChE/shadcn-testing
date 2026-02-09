@@ -1,6 +1,87 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AntoineParams, UnifacGroupComposition, UniquacPureComponentParams, CompoundData } from './vle-types';
 
+// ─── Alias helpers (HYSYS ALIASES table) ───────────────────────────────────────
+
+/** An entry from the HYSYS ALIASES table. */
+export interface CompoundAlias {
+    fullName: string;
+    simName: string;
+}
+
+/**
+ * Format compound names for display by replacing underscores with spaces.
+ * E.g., "Water_Vapor" becomes "Water Vapor".
+ */
+export function formatCompoundName(name: string): string {
+    return name.replace(/_/g, ' ');
+}
+
+/**
+ * Search the HYSYS ALIASES table for compounds whose FullName matches the
+ * user-typed prefix.  Returns `{fullName, simName}` pairs so the UI can
+ * display the human-readable name while keeping the internal SimName for
+ * look-ups in the other HYSYS tables.
+ */
+export async function fetchCompoundSuggestions(
+    supabase: SupabaseClient,
+    query: string,
+    limit = 5,
+): Promise<CompoundAlias[]> {
+    if (!query || query.trim().length < 1) return [];
+
+    const { data, error } = await supabase
+        .from('HYSYS ALIASES')
+        .select('"FullName","SimName"')
+        .ilike('FullName', `${query.trim()}%`)
+        .limit(limit);
+
+    if (error || !data) {
+        console.error('fetchCompoundSuggestions error:', error?.message);
+        return [];
+    }
+
+    return data.map((row: any) => ({
+        fullName: row.FullName as string,
+        simName: row.SimName as string,
+    }));
+}
+
+/**
+ * Given a name (could be FullName _or_ SimName), resolve the SimName that the
+ * rest of the HYSYS tables expect.  Tries FullName first, then SimName, so
+ * that users can type either.
+ */
+export async function resolveSimName(
+    supabase: SupabaseClient,
+    name: string,
+): Promise<string | null> {
+    if (!name) return null;
+
+    // 1. Try FullName → SimName
+    const { data: byFull } = await supabase
+        .from('HYSYS ALIASES')
+        .select('"SimName"')
+        .ilike('FullName', name.trim())
+        .limit(1);
+
+    if (byFull && byFull.length > 0) return byFull[0].SimName as string;
+
+    // 2. Try SimName directly (backward compat – user typed a SimName)
+    const { data: bySim } = await supabase
+        .from('HYSYS ALIASES')
+        .select('"SimName"')
+        .ilike('SimName', name.trim())
+        .limit(1);
+
+    if (bySim && bySim.length > 0) return bySim[0].SimName as string;
+
+    // 3. Fall back – assume the caller typed the exact SimName already
+    return name.trim();
+}
+
+// ─── Core therm-data helpers ────────────────────────────────────────────────────
+
 export interface CriticalProperties {
     Tc_K: number;
     Pc_Pa: number;

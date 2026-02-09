@@ -38,11 +38,13 @@ function normX(x:number[]):number[]{
   return x.map(v=>Math.max(MIN_X,Math.min(mx,v/s)));
 }
 function lambdasWilson(V:number[],T:number,p:TernaryWilsonParams){
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert A (cal/mol) to per-K term
+  // HYSYS Wilson Aij are in cal/mol. Use R_cal=1.9872 and swap convention:
+  // L01 uses A10/B10 (reverse) to match HYSYS export format.
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   return {
-    L01:(V[1]/V[0])*Math.exp(-(p.A01/(R_cal*T)+p.B01)), L10:(V[0]/V[1])*Math.exp(-(p.A10/(R_cal*T)+p.B10)),
-    L02:(V[2]/V[0])*Math.exp(-(p.A02/(R_cal*T)+p.B02)), L20:(V[0]/V[2])*Math.exp(-(p.A20/(R_cal*T)+p.B20)),
-    L12:(V[2]/V[1])*Math.exp(-(p.A12/(R_cal*T)+p.B12)), L21:(V[1]/V[2])*Math.exp(-(p.A21/(R_cal*T)+p.B21)),
+    L01:(V[1]/V[0])*Math.exp(-(p.A10/(R_cal*T)+p.B10)), L10:(V[0]/V[1])*Math.exp(-(p.A01/(R_cal*T)+p.B01)),
+    L02:(V[2]/V[0])*Math.exp(-(p.A20/(R_cal*T)+p.B20)), L20:(V[0]/V[2])*Math.exp(-(p.A02/(R_cal*T)+p.B02)),
+    L12:(V[2]/V[1])*Math.exp(-(p.A21/(R_cal*T)+p.B21)), L21:(V[1]/V[2])*Math.exp(-(p.A12/(R_cal*T)+p.B12)),
   };
 }
 function gammaWilson(x:number[],T:number,comps:CompoundData[],p:TernaryWilsonParams):number[]{
@@ -137,19 +139,19 @@ async function simulateODE_Wilson(initX:number[],P:number,comps:CompoundData[],p
 // ===========================================================================
 //  N R T L  (trimmed copy – essential parts only)
 // ===========================================================================
-const Rnrtl = 8.31446261815324;
+const Rnrtl = 1.9872; // cal·mol⁻¹·K⁻¹ - HYSYS NRTL table uses cal/mol for Aij in this dataset
 interface TernaryNrtlParams {
   A01:number;B01:number;A10:number;B10:number;alpha01:number;
   A02:number;B02:number;A20:number;B20:number;alpha02:number;
   A12:number;B12:number;A21:number;B21:number;alpha12:number;
 }
 function gammaNrtl(x:number[],T:number,params:TernaryNrtlParams){
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert A (cal/mol) to per-K term
-  const g=[[0,params.A01,params.A02],[params.A10,0,params.A12],[params.A20,params.A21,0]];
-  const bMat=[[0,params.B01,params.B02],[params.B10,0,params.B12],[params.B20,params.B21,0]];
+  // Swap convention: g[i][j] uses A{j}{i} (reverse) to match HYSYS export format.
+  const g=[[0,params.A10,params.A20],[params.A01,0,params.A21],[params.A02,params.A12,0]];
+  const bMat=[[0,params.B10,params.B20],[params.B01,0,params.B21],[params.B02,params.B12,0]];
   const a=[[0,params.alpha01,params.alpha02],[params.alpha01,0,params.alpha12],[params.alpha02,params.alpha12,0]];
   const tau=[[0,0,0],[0,0,0],[0,0,0]],G=[[0,0,0],[0,0,0],[0,0,0]];
-  for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i===j)continue; tau[i][j]=g[i][j]/(R_cal*T)+bMat[i][j]; G[i][j]=Math.exp(-a[i][j]*tau[i][j]);}
+  for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i===j)continue; tau[i][j]=g[i][j]/(Rnrtl*T)+bMat[i][j]; G[i][j]=Math.exp(-a[i][j]*tau[i][j]);}
   const ln=[0,0,0];
   for(let i=0;i<3;i++){
     let sum1=0,sum2=0;
@@ -542,8 +544,16 @@ interface TernaryUniquacParams {
 const Z_UNIQ=10; const MIN_X_UNI=1e-9;
 function normX_uni(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_UNI*(x.length-1);return x.map(v=>Math.max(MIN_X_UNI,Math.min(mx,v/s)));}
 function tausUni(T:number,p:TernaryUniquacParams){
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert A (cal/mol) to per-K term in exponential
-  return{t01:Math.exp(-(p.A01/(R_cal*T)+p.B01)),t10:Math.exp(-(p.A10/(R_cal*T)+p.B10)),t02:Math.exp(-(p.A02/(R_cal*T)+p.B02)),t20:Math.exp(-(p.A20/(R_cal*T)+p.B20)),t12:Math.exp(-(p.A12/(R_cal*T)+p.B12)),t21:Math.exp(-(p.A21/(R_cal*T)+p.B21))};
+  // Use SI gas constant imported as `R` (J·mol⁻¹·K⁻¹), swap convention:
+  // t01 uses A10/B10 (reverse) to match HYSYS export format.
+  return {
+    t01: Math.exp(-(p.A10/(R*T) + p.B10)),
+    t10: Math.exp(-(p.A01/(R*T) + p.B01)),
+    t02: Math.exp(-(p.A20/(R*T) + p.B20)),
+    t20: Math.exp(-(p.A02/(R*T) + p.B02)),
+    t12: Math.exp(-(p.A21/(R*T) + p.B21)),
+    t21: Math.exp(-(p.A12/(R*T) + p.B12)),
+  };
 }
 function gammaUni(x:number[],T:number,comps:CompoundData[],p:TernaryUniquacParams){if(comps.some(c=>!c.uniquacParams))return null;const r=comps.map(c=>c.uniquacParams!.r);const q=comps.map(c=>c.uniquacParams!.q);const tau=tausUni(T,p);const sum_r=x.reduce((s,xi,i)=>s+r[i]*xi,0);const phi=r.map((ri,i)=>ri*x[i]/sum_r);const sum_q=x.reduce((s,xi,i)=>s+q[i]*xi,0);const theta=q.map((qi,i)=>qi*x[i]/sum_q);const l=r.map((ri,i)=>(Z_UNIQ/2)*(ri-q[i])-(ri-1));const sum_xl=x.reduce((s,xi,i)=>s+xi*l[i],0);
 const lnGammaC=phi.map((phi_i,i)=>Math.log(phi_i/x[i])+ (Z_UNIQ/2)*q[i]*Math.log(theta[i]/phi_i)+l[i]-(phi_i/x[i])*sum_xl);

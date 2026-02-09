@@ -102,7 +102,8 @@ export function calculateNrtlGammaMulticomponent(
 
   const tau = Array(n).fill(0).map(() => Array(n).fill(0));
   const G = Array(n).fill(0).map(() => Array(n).fill(0));
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - convert Aij (cal/mol) to per-K term
+  // NRTL in HYSYS table uses Aij in cal/mol for this dataset
+  const R_nrtl_cal = 1.9872; // cal·mol⁻¹·K⁻¹
 
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
@@ -124,8 +125,10 @@ export function calculateNrtlGammaMulticomponent(
           ? pairParams 
           : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij, alpha: pairParams.alpha };
       
-      tau[i][j] = p.Aij / (R_cal * T_K) + p.Bij;
-      tau[j][i] = p.Aji / (R_cal * T_K) + p.Bji;
+      // Use cal-based R for NRTL interactions from HYSYS, with swap convention:
+      // tau[i][j] uses Aji/Bji and tau[j][i] uses Aij/Bij to match HYSYS export format.
+      tau[i][j] = p.Aji / (R_nrtl_cal * T_K) + p.Bji;
+      tau[j][i] = p.Aij / (R_nrtl_cal * T_K) + p.Bij;
       G[i][j] = Math.exp(-p.alpha * tau[i][j]);
       G[j][i] = Math.exp(-p.alpha * tau[j][i]);
     }
@@ -202,7 +205,8 @@ export function calculateWilsonGammaMulticomponent(
 
   const V_L = comps.map(c => c.wilsonParams?.V_L_m3mol);
   if (V_L.some(v => v === undefined)) return null;
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - used in Lambda calculation
+  // HYSYS Wilson Aij are in cal/mol. Use R_cal and swap convention.
+  const R_wilson_cal = 1.9872; // cal·mol⁻¹·K⁻¹
 
   const Lambda = Array(n).fill(0).map(() => Array(n).fill(0));
   for (let i = 0; i < n; i++) {
@@ -227,7 +231,8 @@ export function calculateWilsonGammaMulticomponent(
       const p = params.has(`${i}-${j}`)
         ? pairParams
         : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij };
-      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
+      // Swap convention: Lambda[i][j] uses Aji/Bji to match HYSYS export format.
+      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(-(p.Aji / (R_wilson_cal * T_K) + p.Bji));
     }
   }
 
@@ -444,7 +449,7 @@ export function calculateUniquacGammaMulticomponent(
   );
 
   // Residual part
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - used in UNIQUAC tau calculation
+  const R_si = R_gas_const_J_molK; // J·mol⁻¹·K⁻¹ - used in UNIQUAC tau calculation
   const tau = Array(n).fill(0).map(() => Array(n).fill(0));
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
@@ -467,7 +472,8 @@ export function calculateUniquacGammaMulticomponent(
     const p = params.has(`${i}-${j}`)
       ? pairParams
       : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij };
-        tau[i][j] = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
+        // Swap convention: tau[i][j] uses Aji/Bji to match HYSYS export format.
+        tau[i][j] = Math.exp(-(p.Aji / (R_si * T_K) + p.Bji));
     }
   }
 

@@ -56,7 +56,8 @@ import {
   type UniquacInteractionParams,
 } from '@/lib/vle-calculations';
 
-import { fetchAndConvertThermData, FetchedCompoundThermData } from '@/lib/antoine-utils'; 
+import { fetchAndConvertThermData, FetchedCompoundThermData, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils'; 
+import type { CompoundAlias } from '@/lib/antoine-utils';
 import type { Data, Layout } from 'plotly.js'; 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"; 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -88,7 +89,8 @@ if (SUPABASE_URL !== "your_supabase_url" && SUPABASE_ANON_KEY !== "your_supabase
 // Debounce function removed for instantaneous suggestions
 
 interface ComponentInputState {
-    name: string; 
+    name: string;
+    displayName: string; // Human-readable FullName from HYSYS ALIASES
 }
 
 // To store component data along with its original index and NBP for sorting
@@ -102,6 +104,7 @@ interface ProcessedComponentData {
 
 const initialComponentState = (): ComponentInputState => ({
     name: '',
+    displayName: '',
 });
 
 // Default average boiling point for initial guess if NBP is missing
@@ -217,11 +220,11 @@ export default function TernaryResidueMapPage() {
     // stale data from persisting across fluid-package switches.
     
     const [componentsInput, setComponentsInput] = useState<ComponentInputState[]>([
-        { name: 'Acetone' },
-        { name: 'Chloroform' },
-        { name: 'Methanol' },
+        { name: 'Acetone', displayName: 'Acetone' },
+        { name: 'Chloroform', displayName: 'Chloroform' },
+        { name: 'Methanol', displayName: 'Methanol' },
     ]);
-    const [componentSuggestions, setComponentSuggestions] = useState<string[][]>([[], [], []]); // Suggestions for each component
+    const [componentSuggestions, setComponentSuggestions] = useState<CompoundAlias[][]>([[], [], []]); // Suggestions for each component
     const [showSuggestions, setShowSuggestions] = useState<boolean[]>([false, false, false]); // Control dropdown visibility
     const [activeSuggestionIndex, setActiveSuggestionIndex] = useState<number | null>(null);
     const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -312,40 +315,17 @@ export default function TernaryResidueMapPage() {
             return;
         }
         try {
-            const { data, error } = await supabase
-                .from('HYSYS PROPS PARAMS')
-                .select('Component')
-                .ilike('Component', `${query.trim()}%`)
-                .limit(5);
-
-            if (error) {
-                console.error(`Error fetching suggestions for "${query}":`, error.message);
-                setComponentSuggestions(prev => {
-                    const updated = [...prev];
-                    updated[index] = [];
-                    return updated;
-                });
-                setShowSuggestions(prev => {
-                    const newShow = [...prev];
-                    newShow[index] = false;
-                    return newShow;
-                });
-                return;
-            }
-
-            if (data) {
-                const suggestions = data.map((item: { Component: string }) => item.Component);
-                setComponentSuggestions(prev => {
-                    const updated = [...prev];
-                    updated[index] = suggestions;
-                    return updated;
-                });
-                setShowSuggestions(prev => {
-                    const newShow = [...prev];
-                    newShow[index] = suggestions.length > 0;
-                    return newShow;
-                });
-            }
+            const suggestions = await fetchCompoundSuggestions(supabase, query.trim());
+            setComponentSuggestions(prev => {
+                const updated = [...prev];
+                updated[index] = suggestions;
+                return updated;
+            });
+            setShowSuggestions(prev => {
+                const newShow = [...prev];
+                newShow[index] = suggestions.length > 0;
+                return newShow;
+            });
         } catch (err) {
             console.error(`Error fetching suggestions for "${query}":`, err);
             setComponentSuggestions(prev => {
@@ -366,6 +346,10 @@ export default function TernaryResidueMapPage() {
     const handleComponentInputChange = (index: number, field: keyof ComponentInputState, value: string) => {
         const newInputs = [...componentsInput];
         newInputs[index] = { ...newInputs[index], [field]: value };
+        // When typing, keep name and displayName in sync
+        if (field === 'name') {
+            newInputs[index].displayName = value;
+        }
         setComponentsInput(newInputs);
 
         if (field === 'name') {
@@ -388,9 +372,10 @@ export default function TernaryResidueMapPage() {
         }
     };
 
-    const handleSuggestionClick = (index: number, suggestion: string) => {
+    const handleSuggestionClick = (index: number, alias: CompoundAlias) => {
         const newInputs = [...componentsInput];
-        newInputs[index].name = suggestion;
+        newInputs[index].name = alias.simName;
+        newInputs[index].displayName = formatCompoundName(alias.fullName);
         setComponentsInput(newInputs);
 
         setShowSuggestions(prev => {
@@ -612,9 +597,12 @@ export default function TernaryResidueMapPage() {
                 throw new Error("Invalid system pressure input.");
             }
 
-            // Use cached data fetching
-            const componentDataPromises = componentsInput.map(input => 
-                fetchComponentData(input.name)
+            // Resolve display names to SimNames before fetching
+            const resolvedNames = await Promise.all(
+                componentsInput.map(input => resolveSimName(supabase, input.name))
+            );
+            const componentDataPromises = resolvedNames.map((resolved, i) => 
+                fetchComponentData(resolved || componentsInput[i].name)
             );
             const fetchedComponentDataArray = await Promise.all(componentDataPromises);
             
@@ -724,9 +712,9 @@ export default function TernaryResidueMapPage() {
             const getBp = (orig:number)=> sortedComponents.find(c=>c.originalIndex===orig)?.bp_at_Psys_K ?? sortedComponents.find(c=>c.originalIndex===orig)?.thermData.nbp_K;
 
             setPlotAxisTitles({
-                c: `<b>${componentsInput[0]?.name || 'Comp 1'}</b><br>(${labelByOrig[0] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(0))}`:''})`,
-                a: `<b>${componentsInput[1]?.name || 'Comp 2'}</b><br>(${labelByOrig[1] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(1))}`:''})`,
-                b: `<b>${componentsInput[2]?.name || 'Comp 3'}</b><br>(${labelByOrig[2] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(2))}`:''})`
+                c: `<b>${componentsInput[0]?.displayName || componentsInput[0]?.name || 'Comp 1'}</b><br>(${labelByOrig[0] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(0))}`:''})`,
+                a: `<b>${componentsInput[1]?.displayName || componentsInput[1]?.name || 'Comp 2'}</b><br>(${labelByOrig[1] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(1))}`:''})`,
+                b: `<b>${componentsInput[2]?.displayName || componentsInput[2]?.name || 'Comp 3'}</b><br>(${labelByOrig[2] || ''}${sortedComponents.length===3?`, ${formatBp(getBp(2))}`:''})`
             });
 
             // Supercritical component check
@@ -1323,7 +1311,7 @@ export default function TernaryResidueMapPage() {
                 setIsLoading(false);
                 setDisplayedFluidPackage(generatingFluidPackage);
                 setDisplayedPressure(systemPressure);
-                setDisplayedComponentNames(componentsInput.map(ci=>ci.name));
+                setDisplayedComponentNames(componentsInput.map(ci=>ci.displayName || ci.name));
             }
         }
     }, [componentsInput, systemPressure, supabase, fetchAndConvertThermData, fluidPackage]); // Removed initialTempGuess_K
@@ -2034,7 +2022,7 @@ export default function TernaryResidueMapPage() {
                                                 <Input
                                                     id={`name-${index}`}
                                                     ref={el => { inputRefs.current[index] = el; }}
-                                                    value={component.name}
+                                                    value={component.displayName}
                                                     onChange={e => handleComponentInputChange(index, 'name', e.target.value)}
                                                     placeholder={`e.g. Acetone`}
                                                     autoComplete="off"
@@ -2046,8 +2034,9 @@ export default function TernaryResidueMapPage() {
                                                     }}
                                                     onFocus={() => {
                                                         setActiveSuggestionIndex(index);
-                                                        if (componentsInput[index].name.trim()) {
-                                                            fetchComponentSuggestions(componentsInput[index].name, index);
+                                                        const query = componentsInput[index].displayName || componentsInput[index].name;
+                                                        if (query.trim()) {
+                                                            fetchComponentSuggestions(query, index);
                                                         }
                                                     }}
                                                 />
@@ -2059,14 +2048,14 @@ export default function TernaryResidueMapPage() {
                                                             ? 'bg-gray-800 border border-gray-700 text-gray-200'
                                                             : 'bg-white border border-gray-300 text-gray-900'}`}
                                                     >
-                                                        {componentSuggestions[index].map((suggestion, si) => (
+                                                        {componentSuggestions[index].map((alias, si) => (
                                                             <li
                                                                 key={si}
                                                                 className={`px-4 py-2 cursor-pointer
                                                                 ${currentTheme === 'dark' ? 'hover:bg-gray-700' : 'hover:bg-gray-100'}`}
-                                                                onMouseDown={() => handleSuggestionClick(index, suggestion)}
+                                                                onMouseDown={() => handleSuggestionClick(index, alias)}
                                                             >
-                                                                {suggestion}
+                                                                {formatCompoundName(alias.fullName)}
                                                             </li>
                                                         ))}
                                                     </ul>

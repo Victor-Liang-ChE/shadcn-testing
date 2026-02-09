@@ -59,7 +59,8 @@ import type {
     UniquacPureComponentParams,
     WilsonPureComponentParams,
 } from '@/lib/vle-types';
-import { fetchCompoundDataFromHysys } from '@/lib/antoine-utils';
+import { fetchCompoundDataFromHysys, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils';
+import type { CompoundAlias } from '@/lib/antoine-utils';
 
 export type FluidPackageType = 'unifac' | 'pr' | 'srk' | 'uniquac' | 'wilson' | 'nrtl';
 export type DiagramType = 'txy' | 'pxy' | 'xy';
@@ -129,12 +130,16 @@ export default function VleDiagramPage() {
     const [comp2Data, setComp2Data] = useState<CompoundData | null>(null);
     const [interactionParams, setInteractionParams] = useState<any>(null);
 
-    const [comp1Suggestions, setComp1Suggestions] = useState<string[]>([]);
-    const [comp2Suggestions, setComp2Suggestions] = useState<string[]>([]);
+    const [comp1Suggestions, setComp1Suggestions] = useState<CompoundAlias[]>([]);
+    const [comp2Suggestions, setComp2Suggestions] = useState<CompoundAlias[]>([]);
     const [showComp1Suggestions, setShowComp1Suggestions] = useState(false);
     const [showComp2Suggestions, setShowComp2Suggestions] = useState(false);
     const [activeSuggestionInput, setActiveSuggestionInput] = useState<'comp1' | 'comp2' | null>(null);
     const [autoGenerateOnCompChange, setAutoGenerateOnCompChange] = useState(true); // Auto-generate on first load
+
+    // Display names (human-readable FullName from HYSYS ALIASES)
+    const [comp1DisplayName, setComp1DisplayName] = useState('Methanol');
+    const [comp2DisplayName, setComp2DisplayName] = useState('Water');
 
     const input1Ref = useRef<HTMLInputElement>(null);
     const input2Ref = useRef<HTMLInputElement>(null);
@@ -311,7 +316,8 @@ export default function VleDiagramPage() {
             silent: true // Prevents dot from triggering tooltips
         });
         
-        const titleText = `${comp1Label}-${comp2Label} ${diagramType.toUpperCase()} Diagram ${titleConditionText}`;
+        const displayDiagramLabel = diagramType === 'txy' ? 'Txy' : (diagramType === 'pxy' ? 'Pxy' : 'xy');
+        const titleText = `${comp1Label}-${comp2Label} ${displayDiagramLabel} Diagram ${titleConditionText}`;
         const xAxisName = diagramType === 'xy' ? `Liquid Mole Fraction ${comp1Label} (x)` : `Mole Fraction ${comp1Label} (x/y)`;
 
         setEchartsOptions({
@@ -345,6 +351,7 @@ export default function VleDiagramPage() {
                 type: 'value', name: yAxisName,
                 min: yMin,
                 max: yMax,
+                interval: diagramType === 'xy' ? 0.1 : undefined,
                 nameLocation: 'middle', nameGap: 60, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
                 axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor } },
                 axisLabel: { 
@@ -352,9 +359,9 @@ export default function VleDiagramPage() {
                     fontSize: 14, 
                     fontFamily: 'Merriweather Sans',
                     formatter: (value: number) => {
-                        // Hide the min and max values, show others
-                        if ((yMin !== undefined && Math.abs(value - yMin) < 0.001) || 
-                            (yMax !== undefined && Math.abs(value - yMax) < 0.001)) {
+                        // In XY mode show all labels (including 0 and 1). For other diagrams, hide the min and max values.
+                        if (diagramType !== 'xy' && ((yMin !== undefined && Math.abs(value - yMin) < 0.001) || 
+                            (yMax !== undefined && Math.abs(value - yMax) < 0.001))) {
                             return '';
                         }
                         return value.toString();
@@ -493,7 +500,11 @@ export default function VleDiagramPage() {
             
             if (needsFetching) {
                 console.log("Cache miss or inputs changed. Fetching new data...");
-                const [fetched1, fetched2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
+                // Resolve display names to SimNames
+                const [sim1, sim2] = await Promise.all([resolveSimName(supabase, comp1Name), resolveSimName(supabase, comp2Name)]);
+                const resolvedComp1 = sim1 || comp1Name;
+                const resolvedComp2 = sim2 || comp2Name;
+                const [fetched1, fetched2] = await Promise.all([fetchCompoundDataLocal(resolvedComp1), fetchCompoundDataLocal(resolvedComp2)]);
                 if (!fetched1 || !fetched2) { if (showLoading) setLoading(false); return; }
                 
                 let fetchedParams: any;
@@ -585,7 +596,7 @@ export default function VleDiagramPage() {
             
             setChartData(results);
             const newParams = {
-                comp1: d1.name, comp2: d2.name,
+                comp1: comp1DisplayName || d1.name, comp2: comp2DisplayName || d2.name,
                 temp: diagramType === 'pxy' || (diagramType === 'xy' && useTemperatureForXY) ? temperatureC : null,
                 pressure: diagramType === 'txy' || (diagramType === 'xy' && !useTemperatureForXY) ? pressureBar : null,
                 package: fluidPackage, type: diagramType
@@ -764,9 +775,7 @@ export default function VleDiagramPage() {
             return;
         }
         try {
-            const { data, error } = await supabase.from('HYSYS PROPS PARAMS').select('Component').ilike('Component', `${inputValue}%`).limit(5);
-            if (error) { throw error; }
-            const suggestions = data ? data.map((item: any) => item.Component) : [];
+            const suggestions = await fetchCompoundSuggestions(supabase, inputValue);
             if (inputTarget === 'comp1') {
                 setComp1Suggestions(suggestions);
                 setShowComp1Suggestions(suggestions.length > 0);
@@ -780,6 +789,7 @@ export default function VleDiagramPage() {
     const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newValue = e.target.value;
         setComp1Name(newValue);
+        setComp1DisplayName(newValue);
         setActiveSuggestionInput('comp1');
         fetchSuggestions(newValue, 'comp1');
     };
@@ -787,17 +797,20 @@ export default function VleDiagramPage() {
     const handleComp2NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newValue = e.target.value;
         setComp2Name(newValue);
+        setComp2DisplayName(newValue);
         setActiveSuggestionInput('comp2');
         fetchSuggestions(newValue, 'comp2');
     };
 
-    const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
+    const handleSuggestionClick = (alias: CompoundAlias, inputTarget: 'comp1' | 'comp2') => {
         setAutoGenerateOnCompChange(true);
         if (inputTarget === 'comp1') {
-            setComp1Name(suggestion);
+            setComp1Name(alias.simName);
+            setComp1DisplayName(formatCompoundName(alias.fullName));
             setShowComp1Suggestions(false);
         } else {
-            setComp2Name(suggestion);
+            setComp2Name(alias.simName);
+            setComp2DisplayName(formatCompoundName(alias.fullName));
             setShowComp2Suggestions(false);
         }
     };
@@ -826,7 +839,7 @@ export default function VleDiagramPage() {
         const cursorX = params.axesInfo[0].value
         const cursorY = params.axesInfo[1].value
 
-        // Logic for T-x-y and P-x-y diagrams
+        // Logic for Txy and Pxy diagrams
         if (diagramType === 'txy' || diagramType === 'pxy') {
             const { bubble, dew } = plotDataRef.current
             if (bubble.length < 2 || dew.length < 2) {
@@ -977,7 +990,7 @@ export default function VleDiagramPage() {
                     ]
                 })
             }
-        // Logic for other diagrams (like x-y)
+        // Logic for other diagrams (like xy)
         } else {
             echartsInstance.setOption({
                 series: [
@@ -1012,21 +1025,21 @@ export default function VleDiagramPage() {
                         <CardHeader><CardTitle>VLE Diagram Generator</CardTitle></CardHeader>
                         <CardContent className="space-y-6">
                             <Tabs value={diagramType} onValueChange={(v) => setDiagramType(v as DiagramType)} className="w-full">
-                                <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="txy">T-x-y</TabsTrigger><TabsTrigger value="pxy">P-x-y</TabsTrigger><TabsTrigger value="xy">x-y</TabsTrigger></TabsList>
+                                <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="txy">Txy</TabsTrigger><TabsTrigger value="pxy">Pxy</TabsTrigger><TabsTrigger value="xy">xy</TabsTrigger></TabsList>
                             </Tabs>
                             <div className="space-y-4">
                                 <div className="flex items-center gap-2">
                                     <div className="relative flex-1">
                                         <Input
-                                            ref={input1Ref} id="comp1Name" value={comp1Name} onChange={handleComp1NameChange} onKeyDown={handleKeyDown}
-                                            onFocus={() => { setActiveSuggestionInput('comp1'); fetchSuggestions(comp1Name, 'comp1'); }}
+                                            ref={input1Ref} id="comp1Name" value={comp1DisplayName} onChange={handleComp1NameChange} onKeyDown={handleKeyDown}
+                                            onFocus={() => { setActiveSuggestionInput('comp1'); fetchSuggestions(comp1DisplayName, 'comp1'); }}
                                             placeholder="Methanol" required className="w-full" autoComplete="off"
                                         />
                                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
                                             <div ref={activeSuggestionInput === 'comp1' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
-                                                {comp1Suggestions.map((suggestion, index) => (
-                                                    <div key={index} onClick={() => handleSuggestionClick(suggestion, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
-                                                        {suggestion}
+                                                {comp1Suggestions.map((alias, index) => (
+                                                    <div key={index} onClick={() => handleSuggestionClick(alias, 'comp1')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
+                                                        {formatCompoundName(alias.fullName)}
                                                     </div>
                                                 ))}
                                             </div>
@@ -1034,8 +1047,11 @@ export default function VleDiagramPage() {
                                     </div>
                                     <Button variant="ghost" size="icon" onClick={() => {
                                         const temp = comp1Name;
+                                        const tempDisplay = comp1DisplayName;
                                         setComp1Name(comp2Name);
+                                        setComp1DisplayName(comp2DisplayName);
                                         setComp2Name(temp);
+                                        setComp2DisplayName(tempDisplay);
                                         setAutoGenerateOnCompChange(true);
                                         // REMOVED: generateDiagram();
                                         // By removing the direct call, we let the useEffect hook handle
@@ -1043,15 +1059,15 @@ export default function VleDiagramPage() {
                                     }} title="Swap Components"><ArrowLeftRight className="h-4 w-4" /></Button>
                                     <div className="relative flex-1">
                                         <Input
-                                            ref={input2Ref} id="comp2Name" value={comp2Name} onChange={handleComp2NameChange} onKeyDown={handleKeyDown}
-                                            onFocus={() => { setActiveSuggestionInput('comp2'); fetchSuggestions(comp2Name, 'comp2'); }}
+                                            ref={input2Ref} id="comp2Name" value={comp2DisplayName} onChange={handleComp2NameChange} onKeyDown={handleKeyDown}
+                                            onFocus={() => { setActiveSuggestionInput('comp2'); fetchSuggestions(comp2DisplayName, 'comp2'); }}
                                             placeholder="Water" required className="w-full" autoComplete="off"
                                         />
                                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
                                             <div ref={activeSuggestionInput === 'comp2' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
-                                                {comp2Suggestions.map((suggestion, index) => (
-                                                    <div key={index} onClick={() => handleSuggestionClick(suggestion, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
-                                                        {suggestion}
+                                                {comp2Suggestions.map((alias, index) => (
+                                                    <div key={index} onClick={() => handleSuggestionClick(alias, 'comp2')} className="px-3 py-2 hover:bg-accent cursor-pointer text-sm">
+                                                        {formatCompoundName(alias.fullName)}
                                                     </div>
                                                 ))}
                                             </div>
@@ -1059,14 +1075,26 @@ export default function VleDiagramPage() {
                                     </div>
                                 </div>
                                 {renderConditionalInput()}
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 w-full">
                                     <Label htmlFor="fluidPackage" className="text-sm font-medium whitespace-nowrap">Fluid Package:</Label>
-                                    <Select value={fluidPackage} onValueChange={(v) => {
-                                        setFluidPackage(v as FluidPackageType);
-                                        // The generateDiagram() call is removed from here.
-                                        // The useEffect hook will handle the regeneration
-                                        // when the fluidPackage state changes.
-                                    }}><SelectTrigger id="fluidPackage"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="wilson">Wilson</SelectItem><SelectItem value="uniquac">UNIQUAC</SelectItem><SelectItem value="nrtl">NRTL</SelectItem><SelectItem value="unifac">UNIFAC</SelectItem><SelectItem value="pr">Peng-Robinson</SelectItem><SelectItem value="srk">SRK</SelectItem></SelectContent></Select>
+                                    <div className="flex-1">
+                                        <Select value={fluidPackage} onValueChange={(v) => {
+                                            setFluidPackage(v as FluidPackageType);
+                                            // The generateDiagram() call is removed from here.
+                                            // The useEffect hook will handle the regeneration
+                                            // when the fluidPackage state changes.
+                                        }}>
+                                            <SelectTrigger id="fluidPackage" className="w-full"><SelectValue /></SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="wilson">Wilson</SelectItem>
+                                                <SelectItem value="uniquac">UNIQUAC</SelectItem>
+                                                <SelectItem value="nrtl">NRTL</SelectItem>
+                                                <SelectItem value="unifac">UNIFAC</SelectItem>
+                                                <SelectItem value="pr">Peng-Robinson</SelectItem>
+                                                <SelectItem value="srk">SRK</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
                                 </div>
                             </div>
                             <Button onClick={() => generateDiagram()} disabled={loading} className="w-full">{loading ? 'Calculating...' : 'Generate Diagram'}</Button>

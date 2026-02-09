@@ -92,11 +92,12 @@ export function calculateNrtlGamma(
   if (Math.abs(x1 + x2 - 1) > 1e-6) return null;
   if (x1 < 1e-9 || x2 < 1e-9) return [1, 1];
 
-  // FIX: Divide Aij/Aji by R (1.9872 cal/mol·K) because HYSYS stores interaction
-  // parameters in energy units (cal/mol). Bij remains dimensionless.
-  const R_cal = 1.9872;
-  const tau12 = p.Aij / (R_cal * T_K) + p.Bij;
-  const tau21 = p.Aji / (R_cal * T_K) + p.Bji;
+  // HYSYS NRTL parameters for this dataset are in cal/mol. Use R in cal/mol·K.
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
+  // Note: the HYSYS data convention maps Aij/Aji to the tau terms such that
+  // tau12 corresponds to Aji and tau21 corresponds to Aij for this table.
+  const tau12 = p.Aji / (R_cal * T_K) + p.Bji;
+  const tau21 = p.Aij / (R_cal * T_K) + p.Bij;
   const G12 = Math.exp(-p.alpha * tau12);
   const G21 = Math.exp(-p.alpha * tau21);
 
@@ -203,10 +204,11 @@ export function calculateWilsonGamma(
 
   const V1 = comps[0].wilsonParams.V_L_m3mol;
   const V2 = comps[1].wilsonParams.V_L_m3mol;
-  // FIX: Divide Aij/Aji by R (1.9872 cal/mol·K) in the exponential
-  const R_cal = 1.9872;
-  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
-  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
+  // HYSYS stores Wilson Aij in cal/mol. Use R_cal and swap convention
+  // (Lambda12 uses Aji/Bji, Lambda21 uses Aij/Bij) to match HYSYS export format.
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
+  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
+  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
 
   const [x1, x2] = x;
   const denom1 = x1 + Lambda12 * x2;
@@ -1269,11 +1271,10 @@ export function calculateUniquacGamma(
     Math.log(Phi[i] / x[i]) + (z / 2) * q[i] * Math.log(Theta[i] / Phi[i]) + L(i) - (Phi[i] / x[i]) * (x1 * L(0) + x2 * L(1))
   );
 
-  // FIX: Divide Aij/Aji by R (1.9872 cal/mol·K) because HYSYS interaction
-  // parameters are stored in cal/mol units. Bij is left as-is (typically negligible).
-  const R_cal = 1.9872;
-  const tau12 = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
-  const tau21 = Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
+  // HYSYS UNIQUAC parameters are in J/mol. Use R_gas (8.314 J/mol·K) and swap
+  // convention (tau12 uses Aji/Bji, tau21 uses Aij/Bij) to match HYSYS export format.
+  const tau12 = Math.exp(-(p.Aji / (R_gas_const_J_molK * T_K) + p.Bji));
+  const tau21 = Math.exp(-(p.Aij / (R_gas_const_J_molK * T_K) + p.Bij));
 
   const Theta_res = Theta; // same symbols
   const s1 = Theta_res[0] + Theta_res[1] * tau21;

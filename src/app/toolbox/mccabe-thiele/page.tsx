@@ -94,7 +94,8 @@ import type {
     BubbleDewResult,
     UnifacGroupComposition
 } from '@/lib/vle-types';
-import { fetchCompoundDataFromHysys } from '@/lib/antoine-utils';
+import { fetchCompoundDataFromHysys, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils';
+import type { CompoundAlias } from '@/lib/antoine-utils';
 
 
 type EChartsPoint = [number, number] | [number | null, number | null];
@@ -185,11 +186,15 @@ export default function McCabeThielePage() {
   const [displayedFluidPackage, setDisplayedFluidPackage] = useState<FluidPackageTypeMcCabe>('unifac');
 
   // Suggestion states
-  const [comp1Suggestions, setComp1Suggestions] = useState<string[]>([]);
-  const [comp2Suggestions, setComp2Suggestions] = useState<string[]>([]);
+  const [comp1Suggestions, setComp1Suggestions] = useState<CompoundAlias[]>([]);
+  const [comp2Suggestions, setComp2Suggestions] = useState<CompoundAlias[]>([]);
   const [showComp1Suggestions, setShowComp1Suggestions] = useState(false);
   const [showComp2Suggestions, setShowComp2Suggestions] = useState(false);
   const [activeSuggestionInput, setActiveSuggestionInput] = useState<'comp1' | 'comp2' | null>(null);
+
+  // Display names (human-readable FullName from HYSYS ALIASES)
+  const [comp1DisplayName, setComp1DisplayName] = useState('Methanol');
+  const [comp2DisplayName, setComp2DisplayName] = useState('Water');
 
   const input1Ref = useRef<HTMLInputElement>(null);
   const input2Ref = useRef<HTMLInputElement>(null);
@@ -221,7 +226,7 @@ export default function McCabeThielePage() {
     }
   }
 
-  // --- Fetch Suggestions ---
+  // --- Fetch Suggestions (from HYSYS ALIASES table) ---
   const fetchSuggestions = useCallback(async (inputValue: string, inputTarget: 'comp1' | 'comp2') => {
     if (!inputValue || inputValue.length < 2 || !supabase) {
       if (inputTarget === 'comp1') {
@@ -235,19 +240,7 @@ export default function McCabeThielePage() {
     }
 
     try {
-      const { data, error } = await supabase
-        .from('HYSYS PROPS PARAMS')
-        .select('Component')
-        .ilike('Component', `${inputValue}%`)
-        .limit(5);
-
-      if (error) {
-        console.error("Supabase suggestion fetch error:", error);
-        if (inputTarget === 'comp1') setComp1Suggestions([]); else setComp2Suggestions([]);
-        return;
-      }
-
-      const suggestions = data ? data.map((item: any) => item.Component) : [];
+      const suggestions = await fetchCompoundSuggestions(supabase, inputValue);
       if (inputTarget === 'comp1') {
         setComp1Suggestions(suggestions);
         setShowComp1Suggestions(suggestions.length > 0);
@@ -264,6 +257,7 @@ export default function McCabeThielePage() {
   const handleComp1NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp1Name(newValue);
+    setComp1DisplayName(newValue);
     setActiveSuggestionInput('comp1');
     if (newValue.trim() === "") {
       setShowComp1Suggestions(false);
@@ -276,6 +270,7 @@ export default function McCabeThielePage() {
   const handleComp2NameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
     setComp2Name(newValue);
+    setComp2DisplayName(newValue);
     setActiveSuggestionInput('comp2');
     if (newValue.trim() === "") {
       setShowComp2Suggestions(false);
@@ -285,13 +280,15 @@ export default function McCabeThielePage() {
     }
   };
 
-  const handleSuggestionClick = (suggestion: string, inputTarget: 'comp1' | 'comp2') => {
+  const handleSuggestionClick = (alias: CompoundAlias, inputTarget: 'comp1' | 'comp2') => {
     if (inputTarget === 'comp1') {
-      setComp1Name(suggestion);
+      setComp1Name(alias.simName);
+      setComp1DisplayName(formatCompoundName(alias.fullName));
       setShowComp1Suggestions(false);
       setComp1Suggestions([]);
     } else {
-      setComp2Name(suggestion);
+      setComp2Name(alias.simName);
+      setComp2DisplayName(formatCompoundName(alias.fullName));
       setShowComp2Suggestions(false);
       setComp2Suggestions([]);
     }
@@ -355,7 +352,11 @@ export default function McCabeThielePage() {
         const needsFetching = !data1 || !data2 || !activityParameters || data1.name !== comp1Name || data2.name !== comp2Name || displayedFluidPackage !== fluidPackage;
 
         if (needsFetching) {
-            const [fetchedData1, fetchedData2] = await Promise.all([fetchCompoundDataLocal(comp1Name), fetchCompoundDataLocal(comp2Name)]);
+            // Resolve display names to SimNames (handles case where user typed a FullName without selecting a suggestion)
+            const [sim1, sim2] = await Promise.all([resolveSimName(supabase, comp1Name), resolveSimName(supabase, comp2Name)]);
+            const resolvedComp1 = sim1 || comp1Name;
+            const resolvedComp2 = sim2 || comp2Name;
+            const [fetchedData1, fetchedData2] = await Promise.all([fetchCompoundDataLocal(resolvedComp1), fetchCompoundDataLocal(resolvedComp2)]);
             if (!fetchedData1 || !fetchedData2) {
                 setLoading(false);
                 return;
@@ -464,8 +465,8 @@ export default function McCabeThielePage() {
 
         setEquilibriumData({ x: sortedPairs.map(p => p.x), y: sortedPairs.map(p => p.y) });
 
-        setDisplayedComp1(comp1Name);
-        setDisplayedComp2(comp2Name);
+        setDisplayedComp1(comp1DisplayName || comp1Name);
+        setDisplayedComp2(comp2DisplayName || comp2Name);
         setDisplayedUseTemp(useTemperature);
         setDisplayedFluidPackage(fluidPackage);
         if (useTemperature) { setDisplayedTemp(temperatureC); setDisplayedPressure(null); }
@@ -954,8 +955,11 @@ export default function McCabeThielePage() {
   
   const handleSwapComponents = () => {
     const tempName = comp1Name;
+    const tempDisplay = comp1DisplayName;
     setComp1Name(comp2Name);
+    setComp1DisplayName(comp2DisplayName);
     setComp2Name(tempName);
+    setComp2DisplayName(tempDisplay);
     setAutoGeneratePending(true); // trigger auto regenerate after swap
   };
 
@@ -1072,13 +1076,13 @@ export default function McCabeThielePage() {
                       <Input
                         ref={input1Ref}
                         id="comp1Name"
-                        value={comp1Name}
+                        value={comp1DisplayName}
                         onChange={handleComp1NameChange}
                         onKeyDown={(e) => handleKeyDown(e, 'comp1')}
                         onFocus={() => {
                             setActiveSuggestionInput('comp1');
-                            if (comp1Name.trim() !== "" && comp1Suggestions.length > 0) setShowComp1Suggestions(true);
-                            else if (comp1Name.trim() !== "") fetchSuggestions(comp1Name, 'comp1');
+                            if (comp1DisplayName.trim() !== "" && comp1Suggestions.length > 0) setShowComp1Suggestions(true);
+                            else if (comp1DisplayName.trim() !== "") fetchSuggestions(comp1DisplayName, 'comp1');
                         }}
                         placeholder="Methanol"
                         required
@@ -1087,13 +1091,13 @@ export default function McCabeThielePage() {
                       />
                       {showComp1Suggestions && comp1Suggestions.length > 0 && (
                         <div ref={activeSuggestionInput === 'comp1' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
-                          {comp1Suggestions.map((suggestion, index) => (
+                          {comp1Suggestions.map((alias, index) => (
                             <div
                               key={index}
-                              onClick={() => handleSuggestionClick(suggestion, 'comp1')}
+                              onClick={() => handleSuggestionClick(alias, 'comp1')}
                               className="px-3 py-2 hover:bg-accent cursor-pointer text-sm"
                             >
-                              {suggestion}
+                              {formatCompoundName(alias.fullName)}
                             </div>
                           ))}
                         </div>
@@ -1106,13 +1110,13 @@ export default function McCabeThielePage() {
                       <Input
                         ref={input2Ref}
                         id="comp2Name"
-                        value={comp2Name}
+                        value={comp2DisplayName}
                         onChange={handleComp2NameChange}
                         onKeyDown={(e) => handleKeyDown(e, 'comp2')}
                         onFocus={() => {
                             setActiveSuggestionInput('comp2');
-                            if (comp2Name.trim() !== "" && comp2Suggestions.length > 0) setShowComp2Suggestions(true);
-                            else if (comp2Name.trim() !== "") fetchSuggestions(comp2Name, 'comp2');
+                            if (comp2DisplayName.trim() !== "" && comp2Suggestions.length > 0) setShowComp2Suggestions(true);
+                            else if (comp2DisplayName.trim() !== "") fetchSuggestions(comp2DisplayName, 'comp2');
                         }}
                         placeholder="Water"
                         required
@@ -1121,13 +1125,13 @@ export default function McCabeThielePage() {
                       />
                       {showComp2Suggestions && comp2Suggestions.length > 0 && (
                         <div ref={activeSuggestionInput === 'comp2' ? activeComponentRef : null} className="absolute z-20 w-full bg-background border border-input rounded-md shadow-lg mt-1">
-                          {comp2Suggestions.map((suggestion, index) => (
+                          {comp2Suggestions.map((alias, index) => (
                             <div
                               key={index}
-                              onClick={() => handleSuggestionClick(suggestion, 'comp2')}
+                              onClick={() => handleSuggestionClick(alias, 'comp2')}
                               className="px-3 py-2 hover:bg-accent cursor-pointer text-sm"
                             >
-                              {suggestion}
+                              {formatCompoundName(alias.fullName)}
                             </div>
                           ))}
                         </div>
