@@ -372,6 +372,9 @@ export default function McCabeThielePage() {
                 fetchedActivityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
             } else if (fluidPackage === 'nrtl') {
                 fetchedActivityParameters = await fetchNrtlParameters(supabase, fetchedData1.name, fetchedData2.name);
+                if ((fetchedActivityParameters as any)?._usedUnifacFallback) {
+                    setError(`Warning: NRTL parameters not found in database for ${fetchedData1.name}–${fetchedData2.name}. Using UNIFAC-based estimate.`);
+                }
             } else if (fluidPackage === 'pr') {
                 if (!fetchedData1.prParams || !fetchedData2.prParams) throw new Error("PR pure component params missing.");
                 fetchedActivityParameters = await fetchPrInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
@@ -381,6 +384,9 @@ export default function McCabeThielePage() {
             } else if (fluidPackage === 'uniquac') {
                 if (!fetchedData1.uniquacParams || !fetchedData2.uniquacParams) throw new Error("UNIQUAC pure component params missing.");
                 fetchedActivityParameters = await fetchUniquacInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
+                if ((fetchedActivityParameters as any)?._usedUnifacFallback) {
+                    setError(`Warning: UNIQUAC parameters not found in database for ${fetchedData1.name}–${fetchedData2.name}. Using UNIFAC-based estimate.`);
+                }
             } else if (fluidPackage === 'wilson') {
                 if (!fetchedData1.wilsonParams || !fetchedData2.wilsonParams) throw new Error("Wilson pure component params missing.");
                 fetchedActivityParameters = await fetchWilsonInteractionParams(supabase, fetchedData1.name, fetchedData2.name);
@@ -1150,7 +1156,6 @@ export default function McCabeThielePage() {
                               <SelectItem value="wilson">Wilson</SelectItem>
                               <SelectItem value="uniquac">UNIQUAC</SelectItem>
                               <SelectItem value="nrtl">NRTL</SelectItem>
-                              <SelectItem value="unifac">UNIFAC</SelectItem>
                               <SelectItem value="pr">Peng-Robinson</SelectItem>
                               <SelectItem value="srk">SRK</SelectItem>
                           </SelectContent>

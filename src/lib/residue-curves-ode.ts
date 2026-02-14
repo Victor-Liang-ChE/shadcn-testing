@@ -42,9 +42,9 @@ function lambdasWilson(V:number[],T:number,p:TernaryWilsonParams){
   // L01 uses A10/B10 (reverse) to match HYSYS export format.
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   return {
-    L01:(V[1]/V[0])*Math.exp(-(p.A10/(R_cal*T)+p.B10)), L10:(V[0]/V[1])*Math.exp(-(p.A01/(R_cal*T)+p.B01)),
-    L02:(V[2]/V[0])*Math.exp(-(p.A20/(R_cal*T)+p.B20)), L20:(V[0]/V[2])*Math.exp(-(p.A02/(R_cal*T)+p.B02)),
-    L12:(V[2]/V[1])*Math.exp(-(p.A21/(R_cal*T)+p.B21)), L21:(V[1]/V[2])*Math.exp(-(p.A12/(R_cal*T)+p.B12)),
+    L01:(V[1]/V[0])*Math.exp(-(p.A01/(R_cal*T)+p.B01)), L10:(V[0]/V[1])*Math.exp(-(p.A10/(R_cal*T)+p.B10)),
+    L02:(V[2]/V[0])*Math.exp(-(p.A02/(R_cal*T)+p.B02)), L20:(V[0]/V[2])*Math.exp(-(p.A20/(R_cal*T)+p.B20)),
+    L12:(V[2]/V[1])*Math.exp(-(p.A12/(R_cal*T)+p.B12)), L21:(V[1]/V[2])*Math.exp(-(p.A21/(R_cal*T)+p.B21)),
   };
 }
 function gammaWilson(x:number[],T:number,comps:CompoundData[],p:TernaryWilsonParams):number[]{
@@ -79,7 +79,7 @@ function bubbleTWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonP
   let Tprev = T;
   let errprev = 0;
   // console.log(`[bubbleTWilson] START: x=${JSON.stringify(x)}, P=${P}, Ti=${Ti}`);
-  for(let i=0;i<50;i++){
+  for(let i=0;i<80;i++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaWilson(x,T,comps,p); if(g.length === 0) {
         console.error(`[bubbleTWilson] iter ${i}: gammaWilson returned failure`);
@@ -88,16 +88,13 @@ function bubbleTWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonP
     const Pcalc = x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
     const err=Pcalc-P;
 
-    // console.log(`[bubbleTWilson] iter ${i}: T=${T.toFixed(2)}, Pcalc=${Pcalc.toFixed(2)}, err=${err.toFixed(2)}`);
-
     if(Math.abs(err/P)<1e-5) {
-        // console.log(`[bubbleTWilson] CONVERGED after ${i} iterations.`);
         return {T,g,Ps};
     }
 
     let dT: number;
     if (i === 0) {
-      dT = -Math.sign(err/P) * 2.0;
+      dT = -Math.sign(err/P) * 5.0;
     } else {
       const denom = err - errprev;
       dT = denom === 0 ? -Math.sign(err/P) * 2.0 : -err * (T - Tprev) / denom;
@@ -146,11 +143,12 @@ interface TernaryNrtlParams {
   A12:number;B12:number;A21:number;B21:number;alpha12:number;
 }
 function gammaNrtl(x:number[],T:number,params:TernaryNrtlParams){
-  // Swap convention: g[i][j] uses A{j}{i} (reverse) to match HYSYS export format.
-  const g=[[0,params.A10,params.A20],[params.A01,0,params.A21],[params.A02,params.A12,0]];
-  const bMat=[[0,params.B10,params.B20],[params.B01,0,params.B21],[params.B02,params.B12,0]];
+  // g[i][j] = A{i}{j} – the swap from HYSYS DB conventions is already applied
+  // in the fetch function (fetchNrtlParameters), so params are in model convention.
+  const g=[[0,params.A01,params.A02],[params.A10,0,params.A12],[params.A20,params.A21,0]];
+  const bMat=[[0,params.B01,params.B02],[params.B10,0,params.B12],[params.B20,params.B21,0]];
   const a=[[0,params.alpha01,params.alpha02],[params.alpha01,0,params.alpha12],[params.alpha02,params.alpha12,0]];
-  const tau=[[0,0,0],[0,0,0],[0,0,0]],G=[[0,0,0],[0,0,0],[0,0,0]];
+  const tau=[[0,0,0],[0,0,0],[0,0,0]],G=[[1,0,0],[0,1,0],[0,0,1]];
   for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i===j)continue; tau[i][j]=g[i][j]/(Rnrtl*T)+bMat[i][j]; G[i][j]=Math.exp(-a[i][j]*tau[i][j]);}
   const ln=[0,0,0];
   for(let i=0;i<3;i++){
@@ -173,7 +171,7 @@ function bubbleTNrtl(x:number[],P:number,comps:CompoundData[],params:TernaryNrtl
   let T=Ti;
   let Tprev = T;
   let errprev = 0;
-  for(let i=0;i<50;i++){
+  for(let i=0;i<80;i++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaNrtl(x,T,params);
     const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
@@ -181,7 +179,7 @@ function bubbleTNrtl(x:number[],P:number,comps:CompoundData[],params:TernaryNrtl
     
     let dT: number;
     if (i === 0) {
-      dT = -Math.sign(err/P) * 2.0;
+      dT = -Math.sign(err/P) * 5.0;
     } else {
       const denom = err - errprev;
       dT = denom === 0 ? -Math.sign(err/P) * 2.0 : -err * (T - Tprev) / denom;
@@ -245,7 +243,7 @@ function bubbleTUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacPar
   let T=Ti;
   let Tprev = T;
   let errprev = 0;
-  for(let i=0;i<35;i++){
+  for(let i=0;i<80;i++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     if(Ps.some(p=>!isFinite(p)||p<=0))return null;
     const g=calculateUnifacGamma(comps,x,T,params) as number[];
@@ -255,7 +253,7 @@ function bubbleTUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacPar
 
     let dT: number;
     if (i === 0) {
-      dT = -Math.sign(err/P) * 2.0;
+      dT = -Math.sign(err/P) * 5.0;
     } else {
       const denom = err - errprev;
       dT = denom === 0 ? -Math.sign(err/P) * 2.0 : -err * (T - Tprev) / denom;
@@ -297,7 +295,22 @@ async function simulateODE_Unifac(initX:number[],P:number,comps:CompoundData[],p
 interface TernaryPrParams {k01:number;k10?:number;k02:number;k20?:number;k12:number;k21?:number;}
 const MIN_X_PR=1e-9;
 function normX_pr(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_PR*(x.length-1);return x.map(v=>Math.max(MIN_X_PR,Math.min(mx,v/s)));}
-function getKijPr(i:number,j:number,p:TernaryPrParams):number{const key=`${Math.min(i,j)}${Math.max(i,j)}`;if(i===j)return 0;switch(key){case'01':return p.k01;case'02':return p.k02;case'12':return p.k12;}if(i===1&&j===0&&p.k10!==undefined)return p.k10;if(i===2&&j===0&&p.k20!==undefined)return p.k20;if(i===2&&j===1&&p.k21!==undefined)return p.k21;return 0;}
+function getKijPr(i:number,j:number,p:TernaryPrParams):number{
+    // Handle asymmetric kij values first (explicitly provided opposites)
+    if (i === 1 && j === 0 && p.k10 !== undefined) return p.k10;
+    if (i === 2 && j === 0 && p.k20 !== undefined) return p.k20;
+    if (i === 2 && j === 1 && p.k21 !== undefined) return p.k21;
+
+    const key = `${Math.min(i,j)}${Math.max(i,j)}`;
+    if (i === j) return 0;
+
+    switch(key){
+        case '01': return p.k01;
+        case '02': return p.k02;
+        case '12': return p.k12;
+    }
+    return 0;
+}
 function calcPurePR(T:number,pr:{Tc_K:number;Pc_Pa:number;omega:number}){const Tr=T/pr.Tc_K;const m=0.37464+1.54226*pr.omega-0.26992*pr.omega*pr.omega;const alpha=(1+m*(1-Math.sqrt(Tr)))**2;const ac=0.45724*R*R*pr.Tc_K*pr.Tc_K/pr.Pc_Pa;const a=ac*alpha;const b=0.07780*R*pr.Tc_K/pr.Pc_Pa;return{a,b};}
 function calcMixturePR(x:number[],T:number,comps:CompoundData[],p:TernaryPrParams){const a_i=comps.map(c=>calcPurePR(T,c.prParams!).a);const b_i=comps.map(c=>calcPurePR(T,c.prParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijPr(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
 function prFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernaryPrParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijPr(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(2*Math.sqrt(2)*B)*((2*sum/a_mix)-b_i[k]/b_mix)*Math.log((Z+(1+Math.sqrt(2))*B)/(Z+(1-Math.sqrt(2))*B));phi.push(Math.exp(term1+term2-term3));}return phi;}
@@ -419,7 +432,22 @@ async function simulateODE_Pr(initX:number[],P:number,comps:CompoundData[],p:Ter
 interface TernarySrkParams { k01:number;k10?:number;k02:number;k20?:number;k12:number;k21?:number; }
 const MIN_X_SRK = 1e-9;
 function normX_srk(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_SRK*(x.length-1);return x.map(v=>Math.max(MIN_X_SRK,Math.min(mx,v/s)));}
-function getKijSrk(i:number,j:number,p:TernarySrkParams):number{const key=`${Math.min(i,j)}${Math.max(i,j)}`;if(i===j)return 0;switch(key){case'01':return p.k01;case'02':return p.k02;case'12':return p.k12;}if(i===1&&j===0&&p.k10!==undefined)return p.k10;if(i===2&&j===0&&p.k20!==undefined)return p.k20;if(i===2&&j===1&&p.k21!==undefined)return p.k21;return 0;}
+function getKijSrk(i:number,j:number,p:TernarySrkParams):number{
+    // Handle asymmetric kij values first
+    if (i === 1 && j === 0 && p.k10 !== undefined) return p.k10;
+    if (i === 2 && j === 0 && p.k20 !== undefined) return p.k20;
+    if (i === 2 && j === 1 && p.k21 !== undefined) return p.k21;
+
+    const key = `${Math.min(i,j)}${Math.max(i,j)}`;
+    if (i === j) return 0;
+
+    switch(key){
+        case '01': return p.k01;
+        case '02': return p.k02;
+        case '12': return p.k12;
+    }
+    return 0;
+}
 function calcPureSRK(T:number,srk:{Tc_K:number;Pc_Pa:number;omega:number}){const Tr=T/srk.Tc_K;const m=0.48+1.574*srk.omega-0.176*srk.omega*srk.omega;const alpha=(1+m*(1-Math.sqrt(Tr)))**2;const ac=0.42748*R*R*srk.Tc_K*srk.Tc_K/srk.Pc_Pa;const a=ac*alpha;const b=0.08664*R*srk.Tc_K/srk.Pc_Pa;return{a,b};}
 function mixSRK(x:number[],T:number,comps:CompoundData[],p:TernarySrkParams){const a_i=comps.map(c=>calcPureSRK(T,c.srkParams!).a);const b_i=comps.map(c=>calcPureSRK(T,c.srkParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijSrk(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
 function srkFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernarySrkParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijSrk(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(B)*(b_i[k]/b_mix - (2*sum/a_mix) )*Math.log(1+B/Z);phi.push(Math.exp(term1+term2+term3));}return phi;}
@@ -544,28 +572,40 @@ interface TernaryUniquacParams {
 const Z_UNIQ=10; const MIN_X_UNI=1e-9;
 function normX_uni(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_UNI*(x.length-1);return x.map(v=>Math.max(MIN_X_UNI,Math.min(mx,v/s)));}
 function tausUni(T:number,p:TernaryUniquacParams){
-  // Use SI gas constant imported as `R` (J·mol⁻¹·K⁻¹), swap convention:
-  // t01 uses A10/B10 (reverse) to match HYSYS export format.
+  // HYSYS UNIQUAC database: Aij, Bij in calories → use R_cal = 1.9872 cal·mol⁻¹·K⁻¹
+  // Align to standard Aij/Bij convention: t_ij uses Aij/Bij.
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   return {
-    t01: Math.exp(-(p.A10/(R*T) + p.B10)),
-    t10: Math.exp(-(p.A01/(R*T) + p.B01)),
-    t02: Math.exp(-(p.A20/(R*T) + p.B20)),
-    t20: Math.exp(-(p.A02/(R*T) + p.B02)),
-    t12: Math.exp(-(p.A21/(R*T) + p.B21)),
-    t21: Math.exp(-(p.A12/(R*T) + p.B12)),
+    t01: Math.exp(-(p.A01/(R_cal*T) + p.B01)),
+    t10: Math.exp(-(p.A10/(R_cal*T) + p.B10)),
+    t02: Math.exp(-(p.A02/(R_cal*T) + p.B02)),
+    t20: Math.exp(-(p.A20/(R_cal*T) + p.B20)),
+    t12: Math.exp(-(p.A12/(R_cal*T) + p.B12)),
+    t21: Math.exp(-(p.A21/(R_cal*T) + p.B21)),
   };
 }
 function gammaUni(x:number[],T:number,comps:CompoundData[],p:TernaryUniquacParams){if(comps.some(c=>!c.uniquacParams))return null;const r=comps.map(c=>c.uniquacParams!.r);const q=comps.map(c=>c.uniquacParams!.q);const tau=tausUni(T,p);const sum_r=x.reduce((s,xi,i)=>s+r[i]*xi,0);const phi=r.map((ri,i)=>ri*x[i]/sum_r);const sum_q=x.reduce((s,xi,i)=>s+q[i]*xi,0);const theta=q.map((qi,i)=>qi*x[i]/sum_q);const l=r.map((ri,i)=>(Z_UNIQ/2)*(ri-q[i])-(ri-1));const sum_xl=x.reduce((s,xi,i)=>s+xi*l[i],0);
 const lnGammaC=phi.map((phi_i,i)=>Math.log(phi_i/x[i])+ (Z_UNIQ/2)*q[i]*Math.log(theta[i]/phi_i)+l[i]-(phi_i/x[i])*sum_xl);
-// Residual part (only tau values need):
+// Residual part (only tau values needed):
 const tauMat=[[1,tau.t01,tau.t02],[tau.t10,1,tau.t12],[tau.t20,tau.t21,1]];
+// Precompute per-j denominators: sumThetaTau_j = Σ_k θ_k τ_{kj}
+const sumThetaTau: number[] = [0,1,2].map(j => {
+  let s = 0; for (let k = 0; k < 3; k++) s += theta[k] * tauMat[k][j]; return s;
+});
 const lnGammaR=[] as number[];
-for(let i=0;i<3;i++){let sum1=0;for(let j=0;j<3;j++){sum1+=theta[j]*tauMat[j][i];}let ln= q[i]*(1-Math.log(sum1)-theta.reduce((s,k,kidx)=>s+theta[kidx]*tauMat[i][kidx]/sum1,0));lnGammaR.push(ln);}return lnGammaC.map((c,i)=>Math.exp(c+lnGammaR[i]));}
+for(let i=0;i<3;i++){
+  const sum_ji = sumThetaTau[i]; // Σ_j θ_j τ_{ji}
+  let lastTerm = 0;
+  for (let j = 0; j < 3; j++) { lastTerm += theta[j] * tauMat[i][j] / sumThetaTau[j]; }
+  const ln = q[i] * (1 - Math.log(sum_ji) - lastTerm);
+  lnGammaR.push(ln);
+}
+return lnGammaC.map((c,i)=>Math.exp(c+lnGammaR[i]));}
 function bubbleQUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniquacParams,Ti:number){
   let T=Ti;
   let Tprev = T;
   let errprev = 0;
-  for(let iter=0;iter<40;iter++){
+  for(let iter=0;iter<80;iter++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaUni(x,T,comps,params);if(!g)return null;
     const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
@@ -573,7 +613,7 @@ function bubbleQUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniqu
 
     let dT: number;
     if (iter === 0) {
-      dT = -Math.sign(err/P) * 2.0;
+      dT = -Math.sign(err/P) * 5.0;
     } else {
       const denom = err - errprev;
       dT = denom === 0 ? -Math.sign(err/P) * 2.0 : -err * (T - Tprev) / denom;
@@ -787,24 +827,171 @@ function azeotropeUniquacSolver(P:number, comps:CompoundData[], p:TernaryUniquac
   return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleQUni,p,normX_uni);
 }
 // Cubic EOS wrappers
-function _solveAzeotropeCubic(x0:number[],P:number,comps:CompoundData[],Ti:number,
-  bubbleFunc:(x:number[],P:number,comps:CompoundData[],params:any,Ti:number)=>any,
-  params:any,
-  normFunc:(x:number[])=>number[], maxIter:number=300,tol:number=1e-6
-):AzeotropeResult|null{
-  let x=normFunc([...x0]);
-  let T=Ti;
-  for(let iter=0;iter<maxIter;iter++){
-    const bub=bubbleFunc(x,P,comps,params,T);
-    if(!bub) return null;
-    T=bub.T;
-    const y=bub.K.map((k:number,i:number)=>k*x[i]);
-    const errNorm=Math.sqrt(y.reduce((s:number,v:number,idx:number)=>s+(v-x[idx])**2,0));
-    if(errNorm<tol) return {x: normFunc(x), T_K:T, errorNorm:errNorm, converged:true};
-    const alpha = 0.2; // Increased damping factor
-    x=normFunc(x.map((v,i)=>(v * (1-alpha) + y[i] * alpha)));
+function _solveAzeotropeCubic(
+  x0: number[], P: number, comps: CompoundData[], Ti: number,
+  bubbleFunc: (x: number[], P: number, comps: CompoundData[], params: any, Ti: number) => any,
+  params: any,
+  normFunc: (x: number[]) => number[],
+  maxIter: number = 100, tol: number = 1e-7
+): AzeotropeResult | null {
+
+  // --- Linear Algebra Helpers (Scoped) ---
+  const vecAdd = (v1: number[], v2: number[]) => v1.map((v, i) => v + v2[i]);
+  const vecSub = (v1: number[], v2: number[]) => v1.map((v, i) => v - v2[i]);
+  const vecDot = (v1: number[], v2: number[]) => v1.reduce((sum, v, i) => sum + v * v2[i], 0);
+  const matVecMul = (m: number[][], v: number[]) => m.map(row => vecDot(row, v));
+  const matAdd = (m1: number[][], m2: number[][]) => m1.map((row, i) => vecAdd(row, m2[i]));
+  const vecMatMul = (v: number[], m: number[][]): number[] => {
+    const m_cols = m[0].length;
+    const result = new Array(m_cols).fill(0);
+    for (let j = 0; j < m_cols; j++) {
+      for (let i = 0; i < v.length; i++) {
+        result[j] += v[i] * m[i][j];
+      }
+    }
+    return result;
+  };
+  function invertMatrix(m: number[][]): number[][] | null {
+    const n = m.length;
+    if (n === 1) return m[0][0] === 0 ? null : [[1 / m[0][0]]];
+    if (n === 2) {
+      const [a, b] = m[0];
+      const [c, d] = m[1];
+      const det = a * d - b * c;
+      if (Math.abs(det) < 1e-12) return null;
+      return [[d / det, -b / det], [-c / det, a / det]];
+    }
+    return null; // Only 2x2 supported for ternary (2 independent vars)
   }
-  return null;
+
+  const n = comps.length;
+  if (n < 2) return null;
+  const m = n - 1; // Number of independent variables
+
+  let T = Ti;
+  let x_full = [...x0];
+  let X = x0.slice(0, m); // Independent vars
+
+  // Error function F: Ki - 1 = 0
+  const getF = (currentX: number[], currentT: number): { F: number[], T_K: number, K: number[], x: number[] } | null => {
+    const x_independent = [...currentX];
+    const x_last = 1.0 - x_independent.reduce((a, b) => a + b, 0);
+
+    // Bounds check
+    if (x_independent.some(v => v < -1e-5) || x_last < -1e-5) return null;
+    
+    // Normalize strictly for the bubble calculation
+    let x_calc = [...x_independent, x_last];
+    x_calc = x_calc.map(v => Math.max(0, v));
+    const sum = x_calc.reduce((a, b) => a + b, 0);
+    x_calc = x_calc.map(v => v / sum);
+
+    const bubble = bubbleFunc(x_calc, P, comps, params, currentT);
+    if (!bubble) return null;
+
+    // EOS bubbleFunc returns {T, K} directly
+    const { T: newT, K } = bubble;
+    
+    // F[i] = K[i] - 1
+    const F = new Array(m);
+    for (let i = 0; i < m; i++) F[i] = K[i] - 1;
+
+    return { F, T_K: newT, K, x: x_calc };
+  };
+
+  // 1. Initial Evaluation
+  let evalResult = getF(X, T);
+  if (!evalResult) return null; // Bad initial guess
+  let { F, T_K, x: current_x_full } = evalResult;
+  T = T_K;
+  x_full = current_x_full;
+
+  // 2. Compute Initial Jacobian (Finite Difference)
+  const h = 1e-5;
+  const J = new Array(m).fill(0).map(() => new Array(m).fill(0));
+  for (let j = 0; j < m; j++) {
+    const X_pert = [...X];
+    X_pert[j] += h;
+    const pertResult = getF(X_pert, T);
+    if (!pertResult) { // Fallback if perturbation fails
+      for (let i = 0; i < m; i++) J[i][i] = 1; 
+      break; 
+    }
+    const F_pert = pertResult.F;
+    for (let i = 0; i < m; i++) J[i][j] = (F_pert[i] - F[i]) / h;
+  }
+
+  let B = invertMatrix(J);
+  if (!B) {
+    // If singular, fallback to Identity * damping
+    B = new Array(m).fill(0).map((_, i) => new Array(m).fill(0).map((__, j) => i === j ? -0.1 : 0));
+  }
+
+  // 3. Main Newton-Broyden Loop
+  for (let iter = 0; iter < maxIter; iter++) {
+    const errorNorm = Math.sqrt(F.reduce((a, b) => a + b * b, 0));
+    if (errorNorm < tol) {
+      return { x: normFunc(x_full), T_K: T, errorNorm, converged: true };
+    }
+
+    // Newton step: s = -B * F
+    const s = matVecMul(B, F).map(v => -v);
+
+    // Line search (damped update)
+    let alpha = 1.0;
+    let nextX: number[] | undefined;
+    let nextEval: ReturnType<typeof getF> | undefined;
+
+    while (alpha > 0.05) {
+      const currentNextX = vecAdd(X, s.map(v => v * alpha));
+      // Quick bounds check before calling expensive EOS
+      const next_last = 1.0 - currentNextX.reduce((a,b)=>a+b,0);
+      if (currentNextX.every(v => v > -0.01) && next_last > -0.01) {
+          const res = getF(currentNextX, T); // T updates inside here usually
+          if (res) {
+             // Check descent (optional, but good for stability)
+             const nextErr = Math.sqrt(res.F.reduce((a,b)=>a+b*b,0));
+             if (nextErr < errorNorm || alpha < 0.2) { // Accept if error decreases or step is small
+                 nextX = currentNextX;
+                 nextEval = res;
+                 break;
+             }
+          }
+      }
+      alpha *= 0.5;
+    }
+
+    if (!nextX || !nextEval) {
+      // Line search failed -> try simple steepest descent or just terminate
+      return { x: normFunc(x_full), T_K: T, errorNorm, converged: false };
+    }
+
+    const { F: nextF, T_K: nextT, x: next_x_full } = nextEval;
+    
+    // Broyden Update
+    const dx = vecSub(nextX, X);
+    const dy = vecSub(nextF, F);
+    const B_dy = matVecMul(B, dy);
+    const dxT_B = vecMatMul(dx, B);
+    const dxT_B_dy = vecDot(dxT_B, dy);
+
+    if (Math.abs(dxT_B_dy) > 1e-12) {
+      const term_vec = vecSub(dx, B_dy);
+      // Outer product update
+      for (let i = 0; i < m; i++) {
+        for (let j = 0; j < m; j++) {
+          B[i][j] += (term_vec[i] * dxT_B[j]) / dxT_B_dy;
+        }
+      }
+    }
+
+    X = nextX;
+    T = nextT;
+    F = nextF;
+    x_full = next_x_full;
+  }
+
+  return { x: normFunc(x_full), T_K: T, errorNorm: Infinity, converged: false };
 }
 function azeotropePrSolver(P:number, comps:CompoundData[], p:TernaryPrParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
   return _solveAzeotropeCubic(xGuess,P,comps,Tguess,solvePRBubbleT,p,normX_pr);
@@ -1166,7 +1353,7 @@ export function systematicTernaryAzeotropeSearch(
   comps: CompoundData[],
   pkgParams: any,
   initialT_K: number = 350,
-  gridStep: number = 0.1 // coarse step (mole fraction)
+  gridStep: number = 0.05 // finer step for better saddle-azeotrope detection
 ): AzeotropeResult[] {
   const results: AzeotropeResult[] = [];
 

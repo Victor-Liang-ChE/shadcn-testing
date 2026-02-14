@@ -84,7 +84,7 @@ export interface HysysUniquacParams {
 }
 
 /**
- * HYSYS PR SRK shared Kij table.
+ * HYSYS PR/SRK Kij table.
  * Binary interaction parameter, dimensionless.
  */
 export interface HysysPrSrkParams {

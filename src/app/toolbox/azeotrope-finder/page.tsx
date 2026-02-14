@@ -386,12 +386,18 @@ export default function AzeotropeFinderPage() {
             activityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
         } else if (fluidPackage === 'nrtl') {
             activityParameters = await fetchNrtlParameters(supabase, data1.name, data2.name);
+            if ((activityParameters as any)?._usedUnifacFallback) {
+                setError(`NRTL parameters not found in database for ${data1.name}–${data2.name}. Using UNIFAC-based estimate.`);
+            }
         } else if (fluidPackage === 'pr') {
             activityParameters = await fetchPrInteractionParams(supabase, data1.name, data2.name);
         } else if (fluidPackage === 'srk') {
             activityParameters = await fetchSrkInteractionParams(supabase, data1.name, data2.name);
         } else if (fluidPackage === 'uniquac') {
             activityParameters = await fetchUniquacInteractionParams(supabase, data1.name, data2.name);
+            if ((activityParameters as any)?._usedUnifacFallback) {
+                setError(`UNIQUAC parameters not found in database for ${data1.name}–${data2.name}. Using UNIFAC-based estimate.`);
+            }
         } else if (fluidPackage === 'wilson') {
             activityParameters = await fetchWilsonInteractionParams(supabase, data1.name, data2.name);
         } else {
@@ -713,7 +719,6 @@ export default function AzeotropeFinderPage() {
                               <SelectItem value="wilson">Wilson</SelectItem>
                               <SelectItem value="uniquac">UNIQUAC</SelectItem>
                               <SelectItem value="nrtl">NRTL</SelectItem>
-                              <SelectItem value="unifac">UNIFAC</SelectItem>
                               <SelectItem value="pr">Peng-Robinson</SelectItem>
                               <SelectItem value="srk">SRK</SelectItem>
                           </SelectContent>

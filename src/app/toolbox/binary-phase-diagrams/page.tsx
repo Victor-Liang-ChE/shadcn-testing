@@ -515,12 +515,18 @@ export default function VleDiagramPage() {
                     fetchedParams = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
                 } else if (fluidPackage === 'nrtl') {
                     fetchedParams = await fetchNrtlParameters(supabase, fetched1.name, fetched2.name);
+                    if ((fetchedParams as any)?._usedUnifacFallback) {
+                        setError(`Warning: NRTL parameters not found in database for ${fetched1.name}–${fetched2.name}. Using UNIFAC-based estimate.`);
+                    }
                 } else if (fluidPackage === 'pr') {
                     fetchedParams = await fetchPrInteractionParams(supabase, fetched1.name, fetched2.name);
                 } else if (fluidPackage === 'srk') {
                     fetchedParams = await fetchSrkInteractionParams(supabase, fetched1.name, fetched2.name);
                 } else if (fluidPackage === 'uniquac') {
                     fetchedParams = await fetchUniquacInteractionParams(supabase, fetched1.name, fetched2.name);
+                    if ((fetchedParams as any)?._usedUnifacFallback) {
+                        setError(`Warning: UNIQUAC parameters not found in database for ${fetched1.name}–${fetched2.name}. Using UNIFAC-based estimate.`);
+                    }
                 } else if (fluidPackage === 'wilson') {
                     fetchedParams = await fetchWilsonInteractionParams(supabase, fetched1.name, fetched2.name);
                 }
@@ -1089,7 +1095,6 @@ export default function VleDiagramPage() {
                                                 <SelectItem value="wilson">Wilson</SelectItem>
                                                 <SelectItem value="uniquac">UNIQUAC</SelectItem>
                                                 <SelectItem value="nrtl">NRTL</SelectItem>
-                                                <SelectItem value="unifac">UNIFAC</SelectItem>
                                                 <SelectItem value="pr">Peng-Robinson</SelectItem>
                                                 <SelectItem value="srk">SRK</SelectItem>
                                             </SelectContent>

@@ -730,7 +730,10 @@ export async function fetchNrtlParameters(
   }
   
   const est = await estimateNrtlFromUnifac(supabase, name1, name2);
-  if (est) return est;
+  if (est) {
+    (est as any)._usedUnifacFallback = true;
+    return est;
+  }
   return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 }
 
@@ -765,12 +768,12 @@ export async function fetchPrInteractionParams(
   if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
   
   const { data, error } = await supabase
-    .from('HYSYS PR SRK')
+    .from('HYSYS PR')
     .select('*')
     .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
     
-  if (error) console.warn(`HYSYS PR SRK fetch error: ${error.message}`);
+  if (error) console.warn(`HYSYS PR fetch error: ${error.message}`);
   if (data && data.length > 0 && typeof data[0].Kij === 'number') {
     return { k_ij: data[0].Kij };
   }
@@ -786,12 +789,12 @@ export async function fetchSrkInteractionParams(
   if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
   
   const { data, error } = await supabase
-    .from('HYSYS PR SRK')
+    .from('HYSYS SRK')
     .select('*')
     .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
     
-  if (error) console.warn(`HYSYS PR SRK fetch error: ${error.message}`);
+  if (error) console.warn(`HYSYS SRK fetch error: ${error.message}`);
   if (data && data.length > 0 && typeof data[0].Kij === 'number') {
     return { k_ij: data[0].Kij };
   }

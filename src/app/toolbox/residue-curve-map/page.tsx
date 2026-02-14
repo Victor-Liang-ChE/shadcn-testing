@@ -388,6 +388,13 @@ export default function TernaryResidueMapPage() {
             updated[index] = [];
             return updated;
         });
+
+        // Check if all 3 components are now filled after this selection
+        const allComponentsFilled = newInputs.every(comp => comp.name.trim() !== '');
+        if (allComponentsFilled) {
+            // Defer the call to next tick so state updates are processed
+            setTimeout(() => handleGenerateMap(), 0);
+        }
     };
 
     useEffect(() => {
@@ -802,6 +809,12 @@ export default function TernaryResidueMapPage() {
                 const params02 = await fetchNrtlParameters(supabase, names[0], names[2]);
                 const params12 = await fetchNrtlParameters(supabase, names[1], names[2]);
 
+                const usedFallback = (params01 as any)?._usedUnifacFallback || (params02 as any)?._usedUnifacFallback || (params12 as any)?._usedUnifacFallback;
+                if (usedFallback) {
+                    const msg = `Warning: Some NRTL parameters missing and estimated using UNIFAC.`;
+                    setError(msg);
+                }
+
                 if (!params01 || !params02 || !params12) {
                     throw new Error("NRTL parameters for one or more binary pairs could not be fetched.");
                 }
@@ -837,6 +850,12 @@ export default function TernaryResidueMapPage() {
                 const params01 = await fetchUniquacInteractionParams(supabase, names[0], names[1]);
                 const params02 = await fetchUniquacInteractionParams(supabase, names[0], names[2]);
                 const params12 = await fetchUniquacInteractionParams(supabase, names[1], names[2]);
+
+                const usedFallback = (params01 as any)?._usedUnifacFallback || (params02 as any)?._usedUnifacFallback || (params12 as any)?._usedUnifacFallback;
+                if (usedFallback) {
+                    const msg = `Warning: Some UNIQUAC parameters missing and estimated using UNIFAC.`;
+                    setError(msg);
+                }
 
                 if (!params01 || !params02 || !params12) {
                     throw new Error("UNIQUAC parameters for one or more binary pairs could not be fetched.");
@@ -963,10 +982,11 @@ export default function TernaryResidueMapPage() {
                             return found;
                         }) as CompoundData[];
 
-                  // Re-map Wilson interaction parameters to match L/M/H order so they
-                  // stay consistent with `compsForBinary`.
+                  // Re-map interaction parameters to match L/M/H order so they
+                  // stay consistent with `compsForBinary`.  Applies to all
+                  // activity-coefficient models that use A/B pair parameters.
                   let paramsForBinary = activityModelParams;
-                  if (fluidPackage === 'wilson') {
+                  if (['wilson', 'nrtl', 'uniquac'].includes(fluidPackage)) {
                       const perm: number[] = sortedComponents.map(sc => sc.originalIndex); // newIndex -> origIndex
                       const getA = (i:number,j:number) => {
                         const pair = `${i}${j}`;
@@ -994,11 +1014,27 @@ export default function TernaryResidueMapPage() {
                       };
                       const aLM = (i:number,j:number)=> getA(perm[i],perm[j]);
                       const bLM = (i:number,j:number)=> getB(perm[i],perm[j]);
-                      paramsForBinary = {
+                      const reordered: any = {
                         A01: aLM(0,1), B01: bLM(0,1), A10: aLM(1,0), B10: bLM(1,0),
                         A02: aLM(0,2), B02: bLM(0,2), A20: aLM(2,0), B20: bLM(2,0),
                         A12: aLM(1,2), B12: bLM(1,2), A21: aLM(2,1), B21: bLM(2,1)
-                      } as TernaryWilsonParams;
+                      };
+                      // NRTL also has alpha parameters that need reordering
+                      if (fluidPackage === 'nrtl') {
+                        const getAlpha = (i:number,j:number) => {
+                          const pair = `${Math.min(i,j)}${Math.max(i,j)}`;
+                          switch(pair){
+                            case '01': return (activityModelParams as any).alpha01 ?? 0.3;
+                            case '02': return (activityModelParams as any).alpha02 ?? 0.3;
+                            case '12': return (activityModelParams as any).alpha12 ?? 0.3;
+                            default: return 0.3;
+                          }
+                        };
+                        reordered.alpha01 = getAlpha(perm[0], perm[1]);
+                        reordered.alpha02 = getAlpha(perm[0], perm[2]);
+                        reordered.alpha12 = getAlpha(perm[1], perm[2]);
+                      }
+                      paramsForBinary = reordered;
                   }
 
                   const binaryHitsSorted = systematicBinaryAzeotropeSearch(
@@ -1021,8 +1057,20 @@ export default function TernaryResidueMapPage() {
                   }
                   const ternarySeed = estimateTernaryGuessFromBinary(binaryHits);
                   if (ternarySeed) {
-                    initialGuessPool.push({ x: ternarySeed.x, T_K: ternarySeed.T_K }); // ternarySeed.x already in input order
-                    // console.log('[BinarySearch] Added averaged ternary seed.');
+                    initialGuessPool.push({ x: ternarySeed.x, T_K: ternarySeed.T_K });
+                  }
+
+                  // Multi-start: for every pair of converged binary azeotropes,
+                  // generate an interior guess at their composition midpoint.
+                  const goodBinaryHits = binaryHits.filter(h => h.converged && h.errorNorm !== undefined && h.errorNorm < BINARY_ERR_TOL);
+                  for (let bi = 0; bi < goodBinaryHits.length; bi++) {
+                    for (let bj = bi + 1; bj < goodBinaryHits.length; bj++) {
+                      const xMid = [0, 1, 2].map(k => (goodBinaryHits[bi].x[k] + goodBinaryHits[bj].x[k]) / 2);
+                      const sMid = xMid.reduce((a, b) => a + b, 0) || 1;
+                      const xNorm = xMid.map(v => v / sMid);
+                      const TMid = (goodBinaryHits[bi].T_K + goodBinaryHits[bj].T_K) / 2;
+                      initialGuessPool.push({ x: xNorm, T_K: TMid });
+                    }
                   }
                 } catch (err) {
                   console.warn('[BinarySearch] Error during systematic scan:', err);
@@ -1030,7 +1078,7 @@ export default function TernaryResidueMapPage() {
 
                 // --- NEW systematic interior ternary scan ---
                 try {
-                  const ternaryHits = systematicTernaryAzeotropeSearch(generatingFluidPackage as FluidPackageResidue, P_system_Pa, compoundsForBackend, activityModelParams, initialTempGuess_K);
+                  const ternaryHits = systematicTernaryAzeotropeSearch(generatingFluidPackage as FluidPackageResidue, P_system_Pa, compoundsForBackend, activityModelParams, initialTempGuess_K, 0.02);
                   // console.log(`[TernarySearch] ${ternaryHits.length} interior ternary azeotrope candidates found.`);
                   for (const th of ternaryHits) {
                     if (th.converged) {
@@ -1593,20 +1641,6 @@ export default function TernaryResidueMapPage() {
         }
 
         traces = cleanedResidueCurves.map((curve, index) => {
-            const compNameA = componentsInput[1]?.name || 'Comp 2'; // top axis
-            const compNameB = componentsInput[2]?.name || 'Comp 3'; // left axis
-            const compNameC = componentsInput[0]?.name || 'Comp 1'; // right axis
-
-            const labelByOrig: Record<number,string> = {};
-            if(plotSortedComponents.length===3){
-                labelByOrig[plotSortedComponents[0].originalIndex] = 'L';
-                labelByOrig[plotSortedComponents[1].originalIndex] = 'M';
-                labelByOrig[plotSortedComponents[2].originalIndex] = 'H';
-            }
-            const labelA = labelByOrig[1] ?? '';
-            const labelB = labelByOrig[2] ?? '';
-            const labelC = labelByOrig[0] ?? '';
-
             return {
                 type: 'scatterternary',
                 mode: curve.length > 1 ? 'lines' : 'markers',
@@ -1881,7 +1915,7 @@ export default function TernaryResidueMapPage() {
 
         return { baseTraces: allTraces, baseLayout: finalLayout, minAz, maxAz, sadAz };
 
-    }, [cleanedResidueCurves, componentsInput, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope]);
+    }, [cleanedResidueCurves, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope]);
 
     useEffect(() => {
         const { baseTraces, baseLayout, minAz, maxAz, sadAz } = memoizedPlotData;
@@ -2132,11 +2166,10 @@ export default function TernaryResidueMapPage() {
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectItem value="wilson">Wilson</SelectItem>
-                                                <SelectItem value="unifac">UNIFAC</SelectItem>
+                                                <SelectItem value="uniquac">UNIQUAC</SelectItem>
                                                 <SelectItem value="nrtl">NRTL</SelectItem>
                                                 <SelectItem value="pr">Peng–Robinson</SelectItem>
                                                 <SelectItem value="srk">SRK</SelectItem>
-                                                <SelectItem value="uniquac">UNIQUAC</SelectItem>
                                             </SelectContent>
                                         </Select>
                                     </div>

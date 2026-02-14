@@ -277,7 +277,8 @@ async function fetchInteractionParams(pkg: FluidPackageType, c1: CompoundData, c
     
     let table: string;
     switch(pkg) {
-        case 'pr': case 'srk': table = 'HYSYS PR SRK'; break;
+        case 'pr': table = 'HYSYS PR'; break;
+        case 'srk': table = 'HYSYS SRK'; break;
         case 'nrtl': table = 'HYSYS NRTL'; break;
         case 'uniquac': table = 'HYSYS UNIQUAC'; break;
         case 'wilson': table = 'HYSYS WILSON'; break;

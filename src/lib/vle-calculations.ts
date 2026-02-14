@@ -94,10 +94,9 @@ export function calculateNrtlGamma(
 
   // HYSYS NRTL parameters for this dataset are in cal/mol. Use R in cal/mol·K.
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
-  // Note: the HYSYS data convention maps Aij/Aji to the tau terms such that
-  // tau12 corresponds to Aji and tau21 corresponds to Aij for this table.
-  const tau12 = p.Aji / (R_cal * T_K) + p.Bji;
-  const tau21 = p.Aij / (R_cal * T_K) + p.Bij;
+  // Use standard convention: tau12 uses A12/B12 and tau21 uses A21/B21
+  const tau12 = p.Aij / (R_cal * T_K) + p.Bij;
+  const tau21 = p.Aji / (R_cal * T_K) + p.Bji;
   const G12 = Math.exp(-p.alpha * tau12);
   const G21 = Math.exp(-p.alpha * tau21);
 
@@ -183,12 +182,13 @@ export function calculateBubblePressureNrtl(
 // ==========================================
 /**
  * Wilson interaction params – HYSYS convention:
- *   Λ_12 = (V2/V1) · exp(-(A12/T + B12))
- *   Aij in K, Bij dimensionless.
+ *   The database stores a_ij = (λ_ij − λ_jj), so fetchWilsonInteractionParams
+ *   swaps Aij↔Aji to obtain a_12 = (λ_12 − λ_11) which the Wilson equation needs.
+ *   Aij in cal/mol, Bij dimensionless.
  */
 export interface WilsonInteractionParams {
-  Aij: number;     // K
-  Aji: number;     // K
+  Aij: number;     // cal/mol (energy param for Λ_12)
+  Aji: number;     // cal/mol (energy param for Λ_21)
   Bij: number;     // dimensionless
   Bji: number;     // dimensionless
 }
@@ -204,11 +204,10 @@ export function calculateWilsonGamma(
 
   const V1 = comps[0].wilsonParams.V_L_m3mol;
   const V2 = comps[1].wilsonParams.V_L_m3mol;
-  // HYSYS stores Wilson Aij in cal/mol. Use R_cal and swap convention
-  // (Lambda12 uses Aji/Bji, Lambda21 uses Aij/Bij) to match HYSYS export format.
+  // Standard convention: Lambda12 uses Aij/Bij (i=1,j=2), Lambda21 uses Aji/Bji
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
-  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
-  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
+  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
+  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
 
   const [x1, x2] = x;
   const denom1 = x1 + Lambda12 * x2;
@@ -1271,10 +1270,11 @@ export function calculateUniquacGamma(
     Math.log(Phi[i] / x[i]) + (z / 2) * q[i] * Math.log(Theta[i] / Phi[i]) + L(i) - (Phi[i] / x[i]) * (x1 * L(0) + x2 * L(1))
   );
 
-  // HYSYS UNIQUAC parameters are in J/mol. Use R_gas (8.314 J/mol·K) and swap
-  // convention (tau12 uses Aji/Bji, tau21 uses Aij/Bij) to match HYSYS export format.
-  const tau12 = Math.exp(-(p.Aji / (R_gas_const_J_molK * T_K) + p.Bji));
-  const tau21 = Math.exp(-(p.Aij / (R_gas_const_J_molK * T_K) + p.Bij));
+  // HYSYS UNIQUAC database: Aij, Bij in calories → use R_cal = 1.9872 cal·mol⁻¹·K⁻¹
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
+  // Use standard convention: tau12 uses Aij/Bij and tau21 uses Aji/Bji
+  const tau12 = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
+  const tau21 = Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
 
   const Theta_res = Theta; // same symbols
   const s1 = Theta_res[0] + Theta_res[1] * tau21;
@@ -1389,13 +1389,18 @@ export async function fetchNrtlParameters(
   if (data && data.length > 0) {
     const row = data[0];
     const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
+    // HYSYS NRTL DB convention: same as Wilson – row indices are reversed relative
+    // to the model convention. When isForward, our model's Aij comes from row.Aji.
     return isForward
-      ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0, alpha: row.Cij_Alpha ?? 0.3 }
-      : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0, alpha: row.Cji_Alpha ?? row.Cij_Alpha ?? 0.3 };
+      ? { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0, alpha: row.Cij_Alpha ?? 0.3 }
+      : { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0, alpha: row.Cji_Alpha ?? row.Cij_Alpha ?? 0.3 };
   }
   // Fallback to UNIFAC-based estimate
   const est = await estimateNrtlFromUnifac(supabase, name1, name2);
-  if (est) return est;
+  if (est) {
+    (est as any)._usedUnifacFallback = true;
+    return est;
+  }
   return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 }
 
@@ -1416,9 +1421,12 @@ export async function fetchWilsonInteractionParams(
   if (error || !data || data.length === 0) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
   const row = data[0];
   const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
+  // HYSYS Wilson DB convention: row.Aij = (λ_ij − λ_jj), but the Wilson equation
+  // needs a_12 = (λ_12 − λ_11). So when isForward (Component_i = comp1),
+  // our model's Aij must come from row.Aji and vice-versa.
   return isForward
-    ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
-    : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
+    ? { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 }
+    : { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 };
 }
 
 // --- Peng-Robinson ---
@@ -1430,12 +1438,12 @@ export async function fetchPrInteractionParams(
   if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
   
   const { data, error } = await supabase
-    .from('HYSYS PR SRK')
+    .from('HYSYS PR')
     .select('*')
     .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
     
-  if (error) console.warn(`HYSYS PR SRK fetch error: ${error.message}`);
+  if (error) console.warn(`HYSYS PR fetch error: ${error.message}`);
   if (data && data.length > 0 && typeof data[0].Kij === 'number') {
     return { k_ij: data[0].Kij };
   }
@@ -1452,14 +1460,13 @@ export async function fetchSrkInteractionParams(
 ): Promise<SrkInteractionParams> {
   if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
   
-  // PR and SRK share the same HYSYS table
   const { data, error } = await supabase
-    .from('HYSYS PR SRK')
+    .from('HYSYS SRK')
     .select('*')
     .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
     .limit(1);
     
-  if (error) console.warn(`HYSYS PR SRK fetch error: ${error.message}`);
+  if (error) console.warn(`HYSYS SRK fetch error: ${error.message}`);
   if (data && data.length > 0 && typeof data[0].Kij === 'number') {
     return { k_ij: data[0].Kij };
   }
@@ -1484,14 +1491,19 @@ export async function fetchUniquacInteractionParams(
   if (!error && data && data.length > 0) {
     const row = data[0];
     const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
+    // HYSYS UNIQUAC DB convention: same as Wilson/NRTL – row indices are reversed
+    // relative to the model convention. When isForward, our model's Aij comes from row.Aji.
     return isForward
-      ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
-      : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
+      ? { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 }
+      : { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 };
   }
   if (error) console.warn(`HYSYS UNIQUAC fetch error: ${error.message}`);
   // Fallback using UNIFAC
   const est = await estimateUniquacFromUnifac(supabase, name1, name2);
-  if (est) return est;
+  if (est) {
+    (est as any)._usedUnifacFallback = true;
+    return est;
+  }
   return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
 }
 
