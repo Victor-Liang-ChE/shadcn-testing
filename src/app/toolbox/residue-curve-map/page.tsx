@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { ChevronsUpDown } from 'lucide-react';
+import { ChevronsUpDown, Check } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -252,6 +252,16 @@ export default function TernaryResidueMapPage() {
     const [displayedComponentNames, setDisplayedComponentNames] = useState<string[]>(componentsInput.map(c=>c.name));
     // Track which azeotrope (if any) is being hovered so we can highlight it on the plot
     const [highlightedAzeoIdx, setHighlightedAzeoIdx] = useState<number | null>(null);
+    // Transient "copied" indicator for azeotrope rows
+    const [copiedAzeoIdx, setCopiedAzeoIdx] = useState<number | null>(null);
+    const copyTimeoutRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        return () => {
+            if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+        };
+    }, []);
+
     const [backendComps, setBackendComps] = useState<CompoundData[]>([]);
     const [backendPkgParams, setBackendPkgParams] = useState<any>(null);
     const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
@@ -772,6 +782,14 @@ export default function TernaryResidueMapPage() {
 
 
             const names = compoundsForBackend.map(c => c.name);
+            console.log(`[RCM] Compounds for backend:`, compoundsForBackend.map(c => ({
+                name: c.name,
+                antoine: c.antoine,
+                prParams: c.prParams,
+                srkParams: c.srkParams,
+                wilsonParams: c.wilsonParams,
+                uniquacParams: c.uniquacParams,
+            })));
             let activityModelParams: any;
 
             if (fluidPackage === 'wilson') {
@@ -787,6 +805,7 @@ export default function TernaryResidueMapPage() {
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0,
                     A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
                 } as TernaryWilsonParams;
+                console.log(`[RCM] Wilson params:`, activityModelParams);
 
             } else if (fluidPackage === 'unifac') {
                 const allSubgroupIds = new Set<number>();
@@ -823,6 +842,7 @@ export default function TernaryResidueMapPage() {
                     A02: params02.Aij ?? 0, B02: params02.Bij ?? 0, A20: params02.Aji ?? 0, B20: params02.Bji ?? 0, alpha02: params02.alpha ?? 0.3,
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0, A21: params12.Aji ?? 0, B21: params12.Bji ?? 0, alpha12: params12.alpha ?? 0.3,
                 } as TernaryNrtlParams;
+                console.log(`[RCM] NRTL params:`, activityModelParams);
 
             } else if (fluidPackage === 'pr') {
                 const params01 = await fetchPrInteractionParams(supabase, names[0], names[1]); 
@@ -834,6 +854,8 @@ export default function TernaryResidueMapPage() {
                     k02: params02.k_ij ?? 0, k20: params02.k_ij ?? 0,
                     k12: params12.k_ij ?? 0, k21: params12.k_ij ?? 0,
                 } as TernaryPrParams;
+                console.log(`[RCM] PR kij params:`, activityModelParams);
+                console.log(`[RCM] PR raw fetch: 01=${JSON.stringify(params01)}, 02=${JSON.stringify(params02)}, 12=${JSON.stringify(params12)}`);
 
             } else if (fluidPackage === 'srk') {
                 const params01 = await fetchSrkInteractionParams(supabase, names[0], names[1]); 
@@ -845,6 +867,8 @@ export default function TernaryResidueMapPage() {
                     k02: params02.k_ij ?? 0, k20: params02.k_ij ?? 0,
                     k12: params12.k_ij ?? 0, k21: params12.k_ij ?? 0,
                 } as TernarySrkParams;
+                console.log(`[RCM] SRK kij params:`, activityModelParams);
+                console.log(`[RCM] SRK raw fetch: 01=${JSON.stringify(params01)}, 02=${JSON.stringify(params02)}, 12=${JSON.stringify(params12)}`);
 
             } else if (fluidPackage === 'uniquac') {
                 const params01 = await fetchUniquacInteractionParams(supabase, names[0], names[1]);
@@ -865,6 +889,7 @@ export default function TernaryResidueMapPage() {
                     A02: params02.Aij ?? 0, B02: params02.Bij ?? 0, A20: params02.Aji ?? 0, B20: params02.Bji ?? 0,
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0, A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
                 } as TernaryUniquacParams;
+                console.log(`[RCM] UNIQUAC params:`, activityModelParams);
 
             } else {
                 throw new Error(`Unsupported fluid package: ${fluidPackage}`);
@@ -1548,25 +1573,37 @@ export default function TernaryResidueMapPage() {
         const axisTitleFont = { ...basePlotFontObject, size: 15 };
         const tickFont = { ...basePlotFontObject, size: 14 };
 
+        // Reverse the tick labels to force a counter-clockwise reading direction (0 to 1)
+        // include endpoints so the corner '1' and '0' markers are visible again
+        const reversedTickVals = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1];
+        const reversedTickText = ['1', '0.9', '0.8', '0.7', '0.6', '0.5', '0.4', '0.3', '0.2', '0.1', '0'];
+
+        // Add two non-breaking spaces (\u00A0) to the RIGHT of the bottom-axis text
+        // This nudges the labels slightly left to counteract diagonal visual drift
+        const tickTextBottom = reversedTickText.map(t => t + '\u00A0\u00A0')
+
+
         const baseLayout: Partial<Layout> = {
             title: {
                 text: `Ternary Residue Curve Map (ODE Simulation)`,
-                font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor }, 
+                font: { family: merriweatherFamilyString, size: 18, color: plotTitleColor },
+                y: 0.98,
+                yanchor: 'top'
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Top (Intermediate) - title removed, will use annotation
-                baxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Left (Heaviest) - title removed, will use annotation
-                caxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: '#4b5563', gridcolor: 'transparent' }, // Right (Lightest) - title removed, will use annotation
-                bgcolor: 'transparent',
+                aaxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: 'transparent', tickvals: reversedTickVals, ticktext: reversedTickText, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
+                baxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: 'transparent', tickvals: reversedTickVals, ticktext: tickTextBottom, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
+                caxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: 'transparent', tickvals: reversedTickVals, ticktext: reversedTickText, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
+                bgcolor: 'transparent'
             },
-            margin: { l: 90, r: 90, b: 90, t: 110, pad: 10 }, // Increased margins for better text display
+            margin: { l: 60, r: 60, b: 60, t: 90, pad: 0 },
             autosize: true,
             paper_bgcolor: 'transparent', 
-            font: basePlotFontObject, // Global font setting
+            font: basePlotFontObject,
             plot_bgcolor: 'transparent', 
-            annotations: [], 
-            shapes: [], 
+            annotations: [],
+            shapes: [],
         };
 
         // Get container dimensions for coordinate transformation
@@ -1625,6 +1662,7 @@ export default function TernaryResidueMapPage() {
             finalTriOriginX_paper = plotAreaPaperOriginX + triangleOffsetX_paper;
             finalTriOriginY_paper = plotAreaPaperOriginY + triangleOffsetY_paper;
         }
+
 
         // Only show empty plot if not currently loading - this ensures seamless transitions
         if (!isLoading && (cleanedResidueCurves.length === 0 || plotSortedComponents.length !== 3)) { // Use cleanedResidueCurves
@@ -1755,6 +1793,61 @@ export default function TernaryResidueMapPage() {
         }
         
         const allTraces = [...traces];
+
+        // ---- START: Mathematically Perfect Bisecting Ticks ----
+        const tickA: number[] = []
+        const tickB: number[] = []
+        const tickC: number[] = []
+        const tickAngles: number[] = []
+
+        const tickValues = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+        // Bottom Edge (a axis = 0)
+        tickValues.forEach(i => {
+            const t = i / 10.0
+            tickA.push(0)
+            tickB.push(t)
+            tickC.push(1 - t)
+            tickAngles.push(90)
+        })
+
+        // Right Edge (b axis = 0)
+        tickValues.forEach(i => {
+            const t = i / 10.0
+            tickA.push(t)
+            tickB.push(0)
+            tickC.push(1 - t)
+            tickAngles.push(-30)
+        })
+
+        // Left Edge (c axis = 0)
+        tickValues.forEach(i => {
+            const t = i / 10.0
+            tickA.push(1 - t)
+            tickB.push(t)
+            tickC.push(0)
+            tickAngles.push(30)
+        })
+
+        allTraces.push({
+            type: 'scatterternary',
+            mode: 'markers',
+            name: 'ternary-ticks',
+            a: tickA,
+            b: tickB,
+            c: tickC,
+            cliponaxis: false,
+            marker: {
+                symbol: 'line-ew',
+                size: 6,
+                line: { width: 2, color: 'white' },
+                angle: tickAngles
+            },
+            hoverinfo: 'skip',
+            showlegend: false
+        } as Data)
+        // ---- END: Mathematically Perfect Bisecting Ticks ----
+
         if (arrowMarkerTraceData.a.length > 0) {
             allTraces.push({
                 type: 'scatterternary',
@@ -1784,6 +1877,8 @@ export default function TernaryResidueMapPage() {
                 showlegend: false,
             } as Data);
         }
+
+        // (removed old 'Mathematically Perfect Perpendicular Ticks' lines — replaced by marker-based ticks)
 
         const minAz: AzeotropeDisplayInfo[] = [];
         const maxAz: AzeotropeDisplayInfo[] = [];
@@ -1852,7 +1947,9 @@ export default function TernaryResidueMapPage() {
 
         const finalLayout: Partial<Layout> = {
             ...baseLayout,
-            shapes: [], // Clear old shapes if any, or manage them if other shapes are needed
+            shapes: [
+                ...(baseLayout.shapes || [])
+            ],
             annotations: [
                 ...(baseLayout.annotations || []),
                 // Custom corner labels for ternary diagram
@@ -1946,14 +2043,25 @@ export default function TernaryResidueMapPage() {
         
         if (useRightTriangle) {
             const convertTrace = (t: any): any => {
-                if (t.type !== 'scatterternary') return t;
-                const newT: any = { ...t, type: 'scatter' };
-                newT.x = t.c;
-                newT.y = t.a;
-                delete newT.a; delete newT.b; delete newT.c; delete newT.subplot;
-                return newT;
-            };
-            const newTraces = finalTraces.map(convertTrace);
+                if (t.name === 'ternary-ticks') {
+                    return null
+                }
+
+                if (t.type !== 'scatterternary') {
+                    return t
+                }
+
+                const newT: any = { ...t, type: 'scatter' }
+                newT.x = t.c
+                newT.y = t.a
+                delete newT.a
+                delete newT.b
+                delete newT.c
+                delete newT.subplot
+                return newT
+            }
+            
+            const newTraces = finalTraces.map(convertTrace).filter(Boolean)
             const highContrastColor = currentTheme === 'dark' ? '#FFFFFF' : '#000000';
 
             const hypotenuseAnnotations = [];
@@ -2034,6 +2142,30 @@ export default function TernaryResidueMapPage() {
             }
             return newInputs;
         });
+    };
+
+    /**
+     * Copy an azeotrope row to the clipboard and show a transient indicator.
+     * Format: "Acetone: 0.792, Chloroform: 0.000, Methanol: 0.208, Temperature: 55.0 C"
+     */
+    const handleCopyAzeo = async (az: AzeotropeDisplayInfo, originalIndex: number) => {
+        if (!az) return;
+        const comp0 = displayedComponentNames[0] || 'Comp 1';
+        const comp1 = displayedComponentNames[1] || 'Comp 2';
+        const comp2 = displayedComponentNames[2] || 'Comp 3';
+        const text = `${comp0}: ${az.x[0].toFixed(3)}, ${comp1}: ${az.x[1].toFixed(3)}, ${comp2}: ${az.x[2].toFixed(3)}, Temperature: ${(az.T_K - 273.15).toFixed(1)} C`;
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopiedAzeoIdx(originalIndex);
+            if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+            copyTimeoutRef.current = window.setTimeout(() => setCopiedAzeoIdx(null), 1500);
+        } catch (err) {
+            console.error('Failed to copy azeotrope:', err);
+            // still show a transient indicator so user knows we attempted copy
+            setCopiedAzeoIdx(originalIndex);
+            if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+            copyTimeoutRef.current = window.setTimeout(() => setCopiedAzeoIdx(null), 1500);
+        }
     };
 
      return (
@@ -2168,7 +2300,7 @@ export default function TernaryResidueMapPage() {
                                                 <SelectItem value="wilson">Wilson</SelectItem>
                                                 <SelectItem value="uniquac">UNIQUAC</SelectItem>
                                                 <SelectItem value="nrtl">NRTL</SelectItem>
-                                                <SelectItem value="pr">Peng–Robinson</SelectItem>
+                                                <SelectItem value="pr">Peng-Robinson</SelectItem>
                                                 <SelectItem value="srk">SRK</SelectItem>
                                             </SelectContent>
                                         </Select>
@@ -2188,6 +2320,15 @@ export default function TernaryResidueMapPage() {
                             saddle: { color: '#FF0000', label: 'Saddle', bgColor: 'bg-red-50 dark:bg-red-900/20', borderColor: 'border-red-200 dark:border-red-800' },
                             unknown: { color: '#666666', label: 'Unknown', bgColor: 'bg-gray-50 dark:bg-gray-900/20', borderColor: 'border-gray-200 dark:border-gray-800' }
                         };
+
+                        // Convert hex color (e.g. "#00C000") to an rgba() string with alpha.
+                        const hexToRgba = (hex: string, alpha: number) => {
+                            const cleaned = (hex || '').replace('#', '');
+                            const r = parseInt(cleaned.substring(0, 2), 16) || 0;
+                            const g = parseInt(cleaned.substring(2, 4), 16) || 0;
+                            const b = parseInt(cleaned.substring(4, 6), 16) || 0;
+                            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+                        }; 
 
                         const grouped: Record<string, typeof directAzeotropes> = {};
                         directAzeotropes.forEach(az => {
@@ -2218,15 +2359,20 @@ export default function TernaryResidueMapPage() {
                                                 </div>
                                                 <div className="space-y-2">
                                                     {azeos.map((az, idx) => {
-                                                        const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az);
+                                                        const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az)
+                                                        const isCopied = copiedAzeoIdx === originalIndex
+                                                        
                                                         return (
                                                             <div
                                                                 key={idx}
-                                                                className="flex items-center gap-2 p-2 rounded transition-all duration-200 cursor-pointer hover:opacity-75"
+                                                                className={`relative flex items-center gap-2 p-2 rounded transition-all duration-200 cursor-pointer ${isCopied ? '' : 'hover:opacity-75 hover:bg-muted/50'}`}
+                                                                style={isCopied ? { backgroundColor: hexToRgba(typeConfig.color, 0.08) } : undefined}
                                                                 onMouseEnter={() => setHighlightedAzeoIdx(originalIndex)}
                                                                 onMouseLeave={() => setHighlightedAzeoIdx(null)}
+                                                                onClick={() => handleCopyAzeo(az, originalIndex)}
+                                                                title="Click to copy azeotrope data"
                                                             >
-                                                                <div className="flex-1 grid grid-cols-3 gap-2 text-xs">
+                                                                <div className={`flex-1 grid grid-cols-3 gap-2 text-xs transition-opacity ${isCopied ? 'opacity-20' : 'opacity-100'}`}>
                                                                     <div className="text-center">
                                                                         {idx === 0 ? (
                                                                             <>
@@ -2276,11 +2422,17 @@ export default function TernaryResidueMapPage() {
                                                                         )}
                                                                     </div>
                                                                 </div>
-                                                                <div className={`text-xs font-mono whitespace-nowrap ${idx === 0 ? 'self-end' : ''}`}>
+                                                                <div className={`text-xs font-mono whitespace-nowrap transition-opacity ${idx === 0 ? 'self-end' : ''} ${isCopied ? 'opacity-20' : 'opacity-100'}`}>
                                                                     {(az.T_K - 273.15).toFixed(1)}°C
                                                                 </div>
+                                                                
+                                                                {isCopied && (
+                                                                    <div className="absolute inset-0 flex items-center justify-center font-bold text-sm pointer-events-none" style={{ color: typeConfig.color }}>
+                                                                        <Check className="w-4 h-4 mr-1" /> Copied!
+                                                                    </div>
+                                                                )}
                                                             </div>
-                                                        );
+                                                        )
                                                     })}
                                                 </div>
                                             </div>

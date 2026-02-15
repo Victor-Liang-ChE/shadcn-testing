@@ -3,6 +3,9 @@
 // Additional packages can be migrated into this file incrementally.
 // -----------------------------------------------------------------
 import type { CompoundData } from './vle-types';
+
+// Module-level verbose flag: set true during azeotrope solving to enable bubble-T logging
+let _verboseBubbleT = false;
 import {
   R_gas_const_J_molK as R,
   calculatePsat_Pa,
@@ -89,6 +92,7 @@ function bubbleTWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonP
     const err=Pcalc-P;
 
     if(Math.abs(err/P)<1e-5) {
+        if(_verboseBubbleT) console.log(`[bubbleTWilson] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
         return {T,g,Ps};
     }
 
@@ -175,7 +179,10 @@ function bubbleTNrtl(x:number[],P:number,comps:CompoundData[],params:TernaryNrtl
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaNrtl(x,T,params);
     const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
-    const err=Pcalc-P; if(Math.abs(err/P)<1e-5) return {T,g,Ps};
+    const err=Pcalc-P; if(Math.abs(err/P)<1e-5) {
+      if(_verboseBubbleT) console.log(`[bubbleTNrtl] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
+      return {T,g,Ps};
+    }
     
     let dT: number;
     if (i === 0) {
@@ -249,7 +256,10 @@ function bubbleTUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacPar
     const g=calculateUnifacGamma(comps,x,T,params) as number[];
     if(!g||g.some(v=>!isFinite(v)||v<=0))return null;
     const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
-    const err=Pcalc-P;if(Math.abs(err/P)<1e-4) return {T,g,Ps};
+    const err=Pcalc-P;if(Math.abs(err/P)<1e-4) {
+      if(_verboseBubbleT) console.log(`[bubbleTUnifac] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
+      return {T,g,Ps};
+    }
 
     let dT: number;
     if (i === 0) {
@@ -321,42 +331,54 @@ function solvePRBubbleT(x:number[],P:number,comps:CompoundData[],p:TernaryPrPara
   let T = Ti;
   let Tprev = T;
   let errprev = 0;
-  // console.log(`[solvePRBubbleT] START: x=${JSON.stringify(x)}, P=${P}, Ti=${Ti}`);
+  // Initialize K from Raoult's law
+  let K = comps.map(c => { const Psat = calculatePsat_Pa(c.antoine!, T); return Psat / P; });
+  if(_verboseBubbleT) console.log(`[solvePRBubbleT] START: x=[${x.map(v=>v.toFixed(4))}], P=${P.toFixed(0)}, Ti=${Ti.toFixed(2)}`);
 
-  for(let iter=0;iter<60;iter++){
-    const mix=calcMixturePR(x,T,comps,p);
-    const coeff = {A:mix.a_mix*P/(R*R*T*T),B:mix.b_mix*P/(R*T)};
-    const roots = solveCubicEOS(1,-(1-coeff.B),coeff.A-3*coeff.B*coeff.B-2*coeff.B,-(coeff.A*coeff.B-coeff.B*coeff.B-coeff.B*coeff.B*coeff.B)) as number[];
-    
-    if(!roots || roots.length === 0) {
-        console.error(`[solvePRBubbleT] iter ${iter}: solveCubicEOS failed.`);
-        return null;
+  for(let iter=0;iter<80;iter++){
+    // Liquid phase: EOS with composition x → smallest valid Z
+    const mixL = calcMixturePR(x, T, comps, p);
+    const AL = mixL.a_mix*P/(R*R*T*T), BL = mixL.b_mix*P/(R*T);
+    const rootsL = solveCubicEOS(1, -(1-BL), AL-3*BL*BL-2*BL, -(AL*BL-BL*BL-BL*BL*BL)) as number[];
+    if(!rootsL || rootsL.length === 0) { console.error(`[solvePRBubbleT] iter ${iter}: No liquid EOS roots`); return null; }
+    const validL = rootsL.filter(r => r > BL);
+    if(validL.length === 0) { console.error(`[solvePRBubbleT] iter ${iter}: No valid liquid roots (Z>B). roots=${JSON.stringify(rootsL)}, B=${BL}`); return null; }
+    const ZL = Math.min(...validL);
+    const phiL = prFugacity(x, T, P, ZL, mixL.a_mix, mixL.b_mix, mixL.a_i, mixL.b_i, p);
+
+    // Inner phi-phi loop: converge K and y at current T
+    for(let inner=0; inner<20; inner++){
+      const sumKx_inner = K.reduce((s,k,i) => s + k*x[i], 0);
+      if(sumKx_inner <= 0 || !isFinite(sumKx_inner)) break;
+      const y = K.map((k,i) => k*x[i]/sumKx_inner);
+      // Vapor phase: EOS with composition y → largest valid Z
+      const mixV = calcMixturePR(y, T, comps, p);
+      const AV = mixV.a_mix*P/(R*R*T*T), BV = mixV.b_mix*P/(R*T);
+      const rootsV = solveCubicEOS(1, -(1-BV), AV-3*BV*BV-2*BV, -(AV*BV-BV*BV-BV*BV*BV)) as number[];
+      if(!rootsV || rootsV.length === 0) break;
+      const validV = rootsV.filter(r => r > BV);
+      if(validV.length === 0) break;
+      const ZV = Math.max(...validV);
+      const phiV = prFugacity(y, T, P, ZV, mixV.a_mix, mixV.b_mix, mixV.a_i, mixV.b_i, p);
+      const Knew = phiL.map((pl,i) => pl / phiV[i]);
+      if(Knew.some(k => !isFinite(k) || k <= 0)) break;
+      const maxRelChange = Math.max(...K.map((k,i) => Math.abs((Knew[i]-k)/(k||1e-10))));
+      K = Knew;
+      if(maxRelChange < 1e-8) break;
     }
-    const validRoots = roots.filter(r => r > coeff.B);
-    if (validRoots.length === 0) {
-        console.error(`[solvePRBubbleT] iter ${iter}: No valid roots from EOS (Z > B). Z_roots=${JSON.stringify(roots)}, B=${coeff.B}`);
-        return null;
+
+    const sumKx = K.reduce((s,k,i) => s + k*x[i], 0);
+    const err = sumKx - 1;
+    if(iter % 10 === 0 || Math.abs(err) < 1e-3) {
+      if(_verboseBubbleT) console.log(`[solvePRBubbleT] iter ${iter}: T=${T.toFixed(2)}, err=${err.toExponential(3)}, K=[${K.map(v=>v.toFixed(4))}], ZL=${ZL.toFixed(4)}`);
     }
-
-    const ZL = Math.min(...validRoots);
-    const phiL=prFugacity(x,T,P,ZL,mix.a_mix,mix.b_mix,mix.a_i,mix.b_i,p);
-    const K=phiL.map((phi_val,i)=>{const Psat=calculatePsat_Pa(comps[i].antoine!,T);return phi_val*Psat/P;});
-    const sumKx=K.reduce((acc,k,i)=>acc+k*x[i],0);
-    const err=sumKx-1;
-
-    // console.log(`[solvePRBubbleT] iter ${iter}: T=${T.toFixed(2)}, err=${err.toExponential(3)}, ZL=${ZL.toFixed(4)}`);
-
-    if(!isFinite(err)){
-        // console.warn(`[solvePRBubbleT] iter ${iter}: Error is not finite. Aborting.`);
-        return null;
-    }
-
+    if(!isFinite(err)){ console.warn(`[solvePRBubbleT] iter ${iter}: Non-finite error`); return null; }
     if(Math.abs(err) < 1e-5) {
-        // console.log(`[solvePRBubbleT] CONVERGED after ${iter} iterations.`);
-        return {T, K};
+      if(_verboseBubbleT) console.log(`[solvePRBubbleT] CONVERGED: T=${T.toFixed(2)} K, K=[${K.map(v=>v.toFixed(4))}]`);
+      return {T, K};
     }
 
-    // Secant step
+    // Secant step on T
     let dT: number;
     if (iter === 0) {
       dT = -Math.sign(err) * 5;
@@ -364,22 +386,13 @@ function solvePRBubbleT(x:number[],P:number,comps:CompoundData[],p:TernaryPrPara
       const denom = err - errprev;
       dT = denom === 0 ? -Math.sign(err) * 5 : -err * (T - Tprev) / denom;
     }
-    
-    // Fallback to smaller step if dT is non-finite or huge
-    if (!isFinite(dT)) {
-        dT = -Math.sign(err) * 2;
-    }
-    
+    if (!isFinite(dT)) dT = -Math.sign(err) * 2;
     Tprev = T;
     errprev = err;
     T += Math.max(-25, Math.min(25, dT));
-
-    if(!isFinite(T) || T < 50 || T > 1500) {
-        // console.warn(`[solvePRBubbleT] iter ${iter}: Temperature became invalid (T=${T}). Aborting.`);
-        return null;
-    }
+    if(!isFinite(T) || T < 50 || T > 1500) { console.warn(`[solvePRBubbleT] iter ${iter}: T=${T} out of range`); return null; }
   }
-  // console.error(`[solvePRBubbleT] FAILED to converge for x=${JSON.stringify(x)}`);
+  console.error(`[solvePRBubbleT] FAILED to converge for x=[${x.map(v=>v.toFixed(4))}]`);
   return null;
 }
 function odePr(x:number[],P:number,comps:CompoundData[],p:TernaryPrParams,Ti:number){const bub=solvePRBubbleT(normX_pr(x),P,comps,p,Ti);if(!bub)return null;const {T,K}=bub;const y=K.map((k,i)=>k*x[i]);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
@@ -457,41 +470,54 @@ function solveSRKBubbleT(x:number[],P:number,comps:CompoundData[],p:TernarySrkPa
   let T = Ti;
   let Tprev = T;
   let errprev = 0;
-  // console.log(`[solveSRKBubbleT] START: x=${JSON.stringify(x)}, P=${P}, Ti=${Ti}`);
+  // Initialize K from Raoult's law
+  let K = comps.map(c => { const Psat = calculatePsat_Pa(c.antoine!, T); return Psat / P; });
+  if(_verboseBubbleT) console.log(`[solveSRKBubbleT] START: x=[${x.map(v=>v.toFixed(4))}], P=${P.toFixed(0)}, Ti=${Ti.toFixed(2)}`);
 
-  for(let iter=0;iter<60;iter++){
-    const mix=mixSRK(x,T,comps,p);
-    const coeff={A:mix.a_mix*P/(R*R*T*T),B:mix.b_mix*P/(R*T)};
-    const roots = solveCubicEOS(1, -1, coeff.A - coeff.B - coeff.B * coeff.B, -coeff.A * coeff.B) as number[];
-    
-    if(!roots||roots.length===0) {
-        console.error(`[solveSRKBubbleT] iter ${iter}: solveCubicEOS failed.`);
-        return null;
+  for(let iter=0;iter<80;iter++){
+    // Liquid phase: EOS with composition x → smallest valid Z
+    const mixL = mixSRK(x, T, comps, p);
+    const AL = mixL.a_mix*P/(R*R*T*T), BL = mixL.b_mix*P/(R*T);
+    const rootsL = solveCubicEOS(1, -1, AL-BL-BL*BL, -AL*BL) as number[];
+    if(!rootsL || rootsL.length === 0) { console.error(`[solveSRKBubbleT] iter ${iter}: No liquid EOS roots`); return null; }
+    const validL = rootsL.filter(r => r > BL);
+    if(validL.length === 0) { console.error(`[solveSRKBubbleT] iter ${iter}: No valid liquid roots. roots=${JSON.stringify(rootsL)}, B=${BL}`); return null; }
+    const ZL = Math.min(...validL);
+    const phiL = srkFugacity(x, T, P, ZL, mixL.a_mix, mixL.b_mix, mixL.a_i, mixL.b_i, p);
+
+    // Inner phi-phi loop: converge K and y at current T
+    for(let inner=0; inner<20; inner++){
+      const sumKx_inner = K.reduce((s,k,i) => s + k*x[i], 0);
+      if(sumKx_inner <= 0 || !isFinite(sumKx_inner)) break;
+      const y = K.map((k,i) => k*x[i]/sumKx_inner);
+      // Vapor phase: EOS with composition y → largest valid Z
+      const mixV = mixSRK(y, T, comps, p);
+      const AV = mixV.a_mix*P/(R*R*T*T), BV = mixV.b_mix*P/(R*T);
+      const rootsV = solveCubicEOS(1, -1, AV-BV-BV*BV, -AV*BV) as number[];
+      if(!rootsV || rootsV.length === 0) break;
+      const validV = rootsV.filter(r => r > BV);
+      if(validV.length === 0) break;
+      const ZV = Math.max(...validV);
+      const phiV = srkFugacity(y, T, P, ZV, mixV.a_mix, mixV.b_mix, mixV.a_i, mixV.b_i, p);
+      const Knew = phiL.map((pl,i) => pl / phiV[i]);
+      if(Knew.some(k => !isFinite(k) || k <= 0)) break;
+      const maxRelChange = Math.max(...K.map((k,i) => Math.abs((Knew[i]-k)/(k||1e-10))));
+      K = Knew;
+      if(maxRelChange < 1e-8) break;
     }
-    const validRoots = roots.filter(r=>r>coeff.B);
-    if (validRoots.length === 0) {
-        console.error(`[solveSRKBubbleT] iter ${iter}: No valid roots from EOS (Z > B). Z_roots=${JSON.stringify(roots)}, B=${coeff.B}`);
-        return null;
+
+    const sumKx = K.reduce((s,k,i) => s + k*x[i], 0);
+    const err = sumKx - 1;
+    if(iter % 10 === 0 || Math.abs(err) < 1e-3) {
+      if(_verboseBubbleT) console.log(`[solveSRKBubbleT] iter ${iter}: T=${T.toFixed(2)}, err=${err.toExponential(3)}, K=[${K.map(v=>v.toFixed(4))}], ZL=${ZL.toFixed(4)}`);
     }
-
-    const ZL=Math.min(...validRoots);
-    const phiL=srkFugacity(x,T,P,ZL,mix.a_mix,mix.b_mix,mix.a_i,mix.b_i,p);
-    const K=phiL.map((phi,i)=>{const Psat=calculatePsat_Pa(comps[i].antoine!,T);return phi*Psat/P;});
-    const err=K.reduce((acc,k,i)=>acc+k*x[i],0)-1;
-
-    // console.log(`[solveSRKBubbleT] iter ${iter}: T=${T.toFixed(2)}, err=${err.toExponential(3)}, ZL=${ZL.toFixed(4)}`);
-    
-    if(!isFinite(err)){
-        // console.warn(`[solveSRKBubbleT] iter ${iter}: Error is not finite. Aborting.`);
-        return null;
-    }
-
+    if(!isFinite(err)){ console.warn(`[solveSRKBubbleT] iter ${iter}: Non-finite error`); return null; }
     if(Math.abs(err) < 1e-5) {
-        // console.log(`[solveSRKBubbleT] CONVERGED after ${iter} iterations.`);
-        return {T, K};
+      if(_verboseBubbleT) console.log(`[solveSRKBubbleT] CONVERGED: T=${T.toFixed(2)} K, K=[${K.map(v=>v.toFixed(4))}]`);
+      return {T, K};
     }
 
-    // Secant step
+    // Secant step on T
     let dT: number;
     if (iter === 0) {
       dT = -Math.sign(err) * 5;
@@ -499,22 +525,13 @@ function solveSRKBubbleT(x:number[],P:number,comps:CompoundData[],p:TernarySrkPa
       const denom = err - errprev;
       dT = denom === 0 ? -Math.sign(err) * 5 : -err * (T - Tprev) / denom;
     }
-
-    // Fallback to smaller step if dT is non-finite or huge
-    if (!isFinite(dT)) {
-        dT = -Math.sign(err) * 2;
-    }
-
+    if (!isFinite(dT)) dT = -Math.sign(err) * 2;
     Tprev = T;
     errprev = err;
     T += Math.max(-25, Math.min(25, dT));
-
-    if(!isFinite(T) || T < 50 || T > 1500) {
-      // console.warn(`[solveSRKBubbleT] iter ${iter}: Temperature became invalid (T=${T}). Aborting.`);
-      return null;
-    }
+    if(!isFinite(T) || T < 50 || T > 1500) { console.warn(`[solveSRKBubbleT] iter ${iter}: T=${T} out of range`); return null; }
   }
-  // console.error(`[solveSRKBubbleT] FAILED to converge for x=${JSON.stringify(x)}`);
+  console.error(`[solveSRKBubbleT] FAILED to converge for x=[${x.map(v=>v.toFixed(4))}]`);
   return null;
 }
 function odeSrk(x:number[],P:number,comps:CompoundData[],p:TernarySrkParams,Ti:number){const bub=solveSRKBubbleT(normX_srk(x),P,comps,p,Ti);if(!bub)return null;const {T,K}=bub;const y=K.map((k,i)=>k*x[i]);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
@@ -609,7 +626,10 @@ function bubbleQUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniqu
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaUni(x,T,comps,params);if(!g)return null;
     const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
-    const err=Pcalc-P;if(Math.abs(err/P)<1e-5)return{T,g,Ps};
+    const err=Pcalc-P;if(Math.abs(err/P)<1e-5){
+      if(_verboseBubbleT) console.log(`[bubbleQUni] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
+      return{T,g,Ps};
+    }
 
     let dT: number;
     if (iter === 0) {
@@ -660,6 +680,7 @@ function _solveAzeotropeActivity(
   normFunc:(x:number[])=>number[],
   maxIter:number=50, tol:number=1e-7
 ):AzeotropeResult|null {
+  console.log(`[_solveAzeotropeActivity] START: x0=[${x0.map(v=>v.toFixed(4))}], Ti=${Ti.toFixed(2)}, P=${P.toFixed(0)}`);
 
   // --- Helper functions embedded to avoid scope issues ---
   const vecAdd = (v1: number[], v2: number[]) => v1.map((v, i) => v + v2[i]);
@@ -754,7 +775,11 @@ function _solveAzeotropeActivity(
   for (let iter = 0; iter < maxIter; iter++) {
     const errorNorm = Math.sqrt(F.reduce((a, b) => a + b * b, 0));
     if (errorNorm < tol) {
+      console.log(`[_solveAzeotropeActivity] CONVERGED iter=${iter}: x=[${normFunc(x_full).map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, err=${errorNorm.toExponential(3)}`);
       return { x: normFunc(x_full), T_K: T, errorNorm, converged: true };
+    }
+    if (iter % 10 === 0) {
+      console.log(`[_solveAzeotropeActivity] iter ${iter}: x=[${x_full.map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, errNorm=${errorNorm.toExponential(3)}`);
     }
 
     // Update step: s_k = -B_k * F_k
@@ -815,16 +840,28 @@ function _solveAzeotropeActivity(
 
 // Activity models wrappers
 function azeotropeWilson(P:number, comps:CompoundData[], p:TernaryWilsonParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTWilson,p,normX);
+  _verboseBubbleT = true;
+  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTWilson,p,normX);
+  _verboseBubbleT = false;
+  return result;
 }
 function azeotropeNrtlSolver(P:number, comps:CompoundData[], p:TernaryNrtlParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTNrtl,p,normX);
+  _verboseBubbleT = true;
+  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTNrtl,p,normX);
+  _verboseBubbleT = false;
+  return result;
 }
 function azeotropeUnifac(P:number, comps:CompoundData[], p:UnifacParameters, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTUnifac,p,normX_unifac);
+  _verboseBubbleT = true;
+  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTUnifac,p,normX_unifac);
+  _verboseBubbleT = false;
+  return result;
 }
 function azeotropeUniquacSolver(P:number, comps:CompoundData[], p:TernaryUniquacParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleQUni,p,normX_uni);
+  _verboseBubbleT = true;
+  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleQUni,p,normX_uni);
+  _verboseBubbleT = false;
+  return result;
 }
 // Cubic EOS wrappers
 function _solveAzeotropeCubic(
@@ -834,6 +871,7 @@ function _solveAzeotropeCubic(
   normFunc: (x: number[]) => number[],
   maxIter: number = 100, tol: number = 1e-7
 ): AzeotropeResult | null {
+  console.log(`[_solveAzeotropeCubic] START: x0=[${x0.map(v=>v.toFixed(4))}], Ti=${Ti.toFixed(2)}, P=${P.toFixed(0)}`);
 
   // --- Linear Algebra Helpers (Scoped) ---
   const vecAdd = (v1: number[], v2: number[]) => v1.map((v, i) => v + v2[i]);
@@ -931,7 +969,11 @@ function _solveAzeotropeCubic(
   for (let iter = 0; iter < maxIter; iter++) {
     const errorNorm = Math.sqrt(F.reduce((a, b) => a + b * b, 0));
     if (errorNorm < tol) {
+      console.log(`[_solveAzeotropeCubic] CONVERGED iter=${iter}: x=[${normFunc(x_full).map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, err=${errorNorm.toExponential(3)}`);
       return { x: normFunc(x_full), T_K: T, errorNorm, converged: true };
+    }
+    if (iter % 10 === 0) {
+      console.log(`[_solveAzeotropeCubic] iter ${iter}: x=[${x_full.map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, errNorm=${errorNorm.toExponential(3)}`);
     }
 
     // Newton step: s = -B * F
@@ -994,31 +1036,55 @@ function _solveAzeotropeCubic(
   return { x: normFunc(x_full), T_K: T, errorNorm: Infinity, converged: false };
 }
 function azeotropePrSolver(P:number, comps:CompoundData[], p:TernaryPrParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return _solveAzeotropeCubic(xGuess,P,comps,Tguess,solvePRBubbleT,p,normX_pr);
+  _verboseBubbleT = true;
+  const result = _solveAzeotropeCubic(xGuess,P,comps,Tguess,solvePRBubbleT,p,normX_pr);
+  _verboseBubbleT = false;
+  return result;
 }
 function azeotropeSrkSolver(P:number, comps:CompoundData[], p:TernarySrkParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return _solveAzeotropeCubic(xGuess,P,comps,Tguess,solveSRKBubbleT,p,normX_srk);
+  _verboseBubbleT = true;
+  const result = _solveAzeotropeCubic(xGuess,P,comps,Tguess,solveSRKBubbleT,p,normX_srk);
+  _verboseBubbleT = false;
+  return result;
 }
 
 // ========================  PUBLIC EXPORTS  ===============================
 
 export function findAzeotropeWilson(P:number, comps:CompoundData[], params:TernaryWilsonParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return azeotropeWilson(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeWilson] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}`);
+  const result = azeotropeWilson(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeWilson] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
+  return result;
 }
 export function findAzeotropeUnifac(P:number, comps:CompoundData[], params:UnifacParameters, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return azeotropeUnifac(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeUnifac] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}`);
+  const result = azeotropeUnifac(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeUnifac] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
+  return result;
 }
 export function findAzeotropeNRTL(P:number, comps:CompoundData[], params:TernaryNrtlParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return azeotropeNrtlSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeNRTL] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}`);
+  const result = azeotropeNrtlSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeNRTL] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
+  return result;
 }
 export function findAzeotropePr(P:number, comps:CompoundData[], params:TernaryPrParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return azeotropePrSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropePr] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}, kij={k01:${params.k01},k02:${params.k02},k12:${params.k12}}`);
+  const result = azeotropePrSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropePr] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
+  return result;
 }
 export function findAzeotropeSrk(P:number, comps:CompoundData[], params:TernarySrkParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return azeotropeSrkSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeSrk] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}, kij={k01:${params.k01},k02:${params.k02},k12:${params.k12}}`);
+  const result = azeotropeSrkSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeSrk] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
+  return result;
 }
 export function findAzeotropeUniquac(P:number, comps:CompoundData[], params:TernaryUniquacParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  return azeotropeUniquacSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeUniquac] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}`);
+  const result = azeotropeUniquacSolver(P,comps,params,xGuess,Tguess);
+  console.log(`[findAzeotropeUniquac] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
+  return result;
 }
 
 // Re-export model parameter types for external use
@@ -1215,6 +1281,8 @@ export function systematicBinaryAzeotropeSearch(
   initialT_K: number = 350,
   dx: number = 0.005 // Finer grid step for initial scan
 ): AzeotropeResult[] {
+  console.log(`[systematicBinarySearch] pkg=${pkg}, P=${P_system_Pa.toFixed(0)}, comps=[${comps.map(c=>c.name)}], dx=${dx}`);
+  _verboseBubbleT = true;
   const results: AzeotropeResult[] = [];
   const pairs: [number, number][] = [[0, 1], [0, 2], [1, 2]];
   const eps = 1e-5; // Slightly larger offset to minimize perturbation of Ki calculations
@@ -1309,7 +1377,10 @@ export function systematicBinaryAzeotropeSearch(
     }
   }
 
-  return clusterAzeotropes(results);
+  _verboseBubbleT = false;
+  const clustered = clusterAzeotropes(results);
+  console.log(`[systematicBinarySearch] Found ${clustered.length} binary azeotropes:`, clustered.map(a=>`x=[${a.x.map(v=>v.toFixed(3))}] T=${a.T_K.toFixed(1)}K conv=${a.converged}`));
+  return clustered;
 }
 
 /**
@@ -1355,6 +1426,8 @@ export function systematicTernaryAzeotropeSearch(
   initialT_K: number = 350,
   gridStep: number = 0.05 // finer step for better saddle-azeotrope detection
 ): AzeotropeResult[] {
+  console.log(`[systematicTernarySearch] pkg=${pkg}, P=${P_system_Pa.toFixed(0)}, gridStep=${gridStep}`);
+  _verboseBubbleT = true;
   const results: AzeotropeResult[] = [];
 
   const normComp = (x:number[]):number[]=>{const s=x.reduce((a,b)=>a+b,0)||1; return x.map(v=>v/s);} // simple normaliser
@@ -1452,7 +1525,10 @@ export function systematicTernaryAzeotropeSearch(
   }
 
   // Deduplicate close results
-  return clusterAzeotropes(results);
+  _verboseBubbleT = false;
+  const clustered = clusterAzeotropes(results);
+  console.log(`[systematicTernarySearch] Found ${clustered.length} ternary azeotropes:`, clustered.map(a=>`x=[${a.x.map(v=>v.toFixed(3))}] T=${a.T_K.toFixed(1)}K conv=${a.converged}`));
+  return clustered;
 }
 
 // ---------------------------------------------------------------------------
