@@ -248,6 +248,9 @@ export default function TernaryResidueMapPage() {
     // Generation counter to identify the latest generate-map request
     const generationIdRef = useRef(0);
     const [displayedPressure, setDisplayedPressure] = useState<string>(systemPressure);
+
+    // Track whether the user has performed a zoom-in (used to allow double-click reset only after zoom-in)
+    const userHasZoomedInRef = useRef(false);
     // Names frozen after last successful generation to prevent flicker while typing
     const [displayedComponentNames, setDisplayedComponentNames] = useState<string[]>(componentsInput.map(c=>c.name));
     // Track which azeotrope (if any) is being hovered so we can highlight it on the plot
@@ -256,16 +259,55 @@ export default function TernaryResidueMapPage() {
     const [copiedAzeoIdx, setCopiedAzeoIdx] = useState<number | null>(null);
     const copyTimeoutRef = useRef<number | null>(null);
 
+    // Star pulse state for highlighted azeotrope animation
+    const [highlightedStarScale, setHighlightedStarScale] = useState<number>(1);
+    const pulseIntervalRef = useRef<number | null>(null);
+
     useEffect(() => {
         return () => {
             if (copyTimeoutRef.current) window.clearTimeout(copyTimeoutRef.current);
+            if (pulseIntervalRef.current) window.clearInterval(pulseIntervalRef.current);
         };
     }, []);
+
+    // Trigger a short pulse animation by varying `highlightedStarScale` over ~300ms
+    const startStarPulse = () => {
+        if (pulseIntervalRef.current) {
+            window.clearInterval(pulseIntervalRef.current);
+            pulseIntervalRef.current = null;
+        }
+        let frame = 0;
+        const totalFrames = 8; // ~8 frames -> ~240ms at 30ms/frame
+        pulseIntervalRef.current = window.setInterval(() => {
+            frame += 1;
+            // ease-out scale curve (0 -> 1 -> 0)
+            const t = frame / totalFrames;
+            const scale = 1 + 0.25 * Math.sin(Math.PI * t); // peaks at 1.25
+            setHighlightedStarScale(scale);
+            if (frame >= totalFrames) {
+                if (pulseIntervalRef.current) {
+                    window.clearInterval(pulseIntervalRef.current);
+                    pulseIntervalRef.current = null;
+                }
+                setHighlightedStarScale(1);
+            }
+        }, 30);
+    };
+
+    const stopStarPulse = () => {
+        if (pulseIntervalRef.current) {
+            window.clearInterval(pulseIntervalRef.current);
+            pulseIntervalRef.current = null;
+        }
+        setHighlightedStarScale(1);
+    };
 
     const [backendComps, setBackendComps] = useState<CompoundData[]>([]);
     const [backendPkgParams, setBackendPkgParams] = useState<any>(null);
     const [backendPressurePa, setBackendPressurePa] = useState<number>(0);
     const [useRightTriangle, setUseRightTriangle] = useState(false);
+    // Toggle to show/hide azeotrope star markers on the plot (ternary & right-triangle)
+    const [showAzeoStars, setShowAzeoStars] = useState<boolean>(true);
 
     // ... other useState/useRef hooks
     const isSwapping = useRef(false);
@@ -1696,7 +1738,8 @@ export default function TernaryResidueMapPage() {
             a: [] as number[],
             b: [] as number[],
             c: [] as number[],
-            angles: [] as number[],
+            angles: [] as number[],            // screen/ternary marker angles (deg)
+            cartesianAngles: [] as number[],  // precomputed right-triangle angles (deg)
             text: [] as string[], 
         };
         // --- Globals for arrow placement ---
@@ -1782,11 +1825,19 @@ export default function TernaryResidueMapPage() {
                 const raw_screen_angle_deg = Math.atan2(-pixel_dy, pixel_dx) * (180 / Math.PI);
                 const final_angle_deg = raw_screen_angle_deg + 90;
 
+                // Compute cartesian/right-triangle angle from composition deltas (x=c, y=a)
+                const dx_cart = after.x[0] - before.x[0]
+                const dy_cart = after.x[1] - before.x[1]
+
+                // Fix the rotation mapping for Plotly Cartesian coordinates
+                const cart_angle_deg = 90 - (Math.atan2(dy_cart, dx_cart) * 180 / Math.PI)
+
                 // Add the arrow data to the trace.
                 arrowMarkerTraceData.a.push(anchor.x[1]);
                 arrowMarkerTraceData.b.push(anchor.x[2]);
                 arrowMarkerTraceData.c.push(anchor.x[0]);
                 arrowMarkerTraceData.angles.push(final_angle_deg);
+                arrowMarkerTraceData.cartesianAngles.push(cart_angle_deg);
                 arrowMarkerTraceData.text.push('');
             }
             // ---- END: New arrowhead placement logic ----
@@ -1817,6 +1868,7 @@ export default function TernaryResidueMapPage() {
             tickA.push(t)
             tickB.push(0)
             tickC.push(1 - t)
+            // perpendicular to right edge → rotate marker by -30°
             tickAngles.push(-30)
         })
 
@@ -1826,6 +1878,7 @@ export default function TernaryResidueMapPage() {
             tickA.push(1 - t)
             tickB.push(t)
             tickC.push(0)
+            // perpendicular to left edge → rotate marker by 30°
             tickAngles.push(30)
         })
 
@@ -1856,6 +1909,9 @@ export default function TernaryResidueMapPage() {
                 b: arrowMarkerTraceData.b,
                 c: arrowMarkerTraceData.c,
                 text: arrowMarkerTraceData.text,
+                // supply cartesianAngles so convertTrace can use the correct rotation when
+                // converting this trace for the Right‑Triangle view
+                angle_cartesian: arrowMarkerTraceData.cartesianAngles,
                 hoverinfo: 'skip',
                 hoverlabel: {
                     bgcolor: currentTheme === 'dark' ? 'rgba(50,50,50,0.85)' : 'rgba(250,250,250,0.85)', // Adjusted for theme
@@ -1938,9 +1994,11 @@ export default function TernaryResidueMapPage() {
                 } as Data);
             };
 
-            pushAzeoTrace(minAz, '#00C000', 'Min-boiling'); // brighter green
-            pushAzeoTrace(maxAz, '#9900FF', 'Max-boiling'); // saturated purple
-            pushAzeoTrace(sadAz, 'red', 'Saddle');
+            if (showAzeoStars) {
+                pushAzeoTrace(minAz, '#00C000', 'Min-boiling'); // brighter green
+                pushAzeoTrace(maxAz, '#9900FF', 'Max-boiling'); // saturated purple
+                pushAzeoTrace(sadAz, 'red', 'Saddle');
+            }
         }
         // --- End Add Directly Found Azeotropes to Plot ---
 
@@ -2010,16 +2068,24 @@ export default function TernaryResidueMapPage() {
             // Removed transition to eliminate marker animation
         };
 
+        // Attach triangle paper metrics (avoid adding custom fields inside literal to satisfy TS)
+        (finalLayout as any)._trianglePaper = {
+            originX: finalTriOriginX_paper,
+            originY: finalTriOriginY_paper,
+            basePaper: actualRenderedTriangleBase_paper,
+            heightPaper: actualRenderedTriangleHeight_paper
+        };
+
         return { baseTraces: allTraces, baseLayout: finalLayout, minAz, maxAz, sadAz };
 
-    }, [cleanedResidueCurves, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope]);
+    }, [cleanedResidueCurves, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope, showAzeoStars]);
 
     useEffect(() => {
         const { baseTraces, baseLayout, minAz, maxAz, sadAz } = memoizedPlotData;
 
         const finalTraces = [...baseTraces];
 
-        if (highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length) {
+        if (highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length && showAzeoStars) {
             const highlightedAzeo = directAzeotropes[highlightedAzeoIdx];
             let highlightColor = 'red';
             if (minAz.includes(highlightedAzeo)) {
@@ -2035,7 +2101,8 @@ export default function TernaryResidueMapPage() {
                 c: [highlightedAzeo.x[0]],
                 cliponaxis:false,
                 hoverinfo:'skip',
-                marker:{symbol:'star',size:28,color:highlightColor,opacity:1,line:{color: currentTheme==='dark'? '#fff':'#000', width:2}},
+                // animated "zoom": scale base size by highlightedStarScale
+                marker:{symbol:'star',size: Math.round(28 * highlightedStarScale),color:highlightColor,opacity:1,line:{color: highlightColor, width: 0}},
                 showlegend:false,
                 legendgroup:'azeotropes'
             } as Data);
@@ -2043,12 +2110,61 @@ export default function TernaryResidueMapPage() {
         
         if (useRightTriangle) {
             const convertTrace = (t: any): any => {
-                if (t.name === 'ternary-ticks') {
-                    return null
-                }
-
+                // Only convert scatterternary traces here, pass through others untouched
                 if (t.type !== 'scatterternary') {
                     return t
+                }
+
+                // Convert the special ternary-ticks scatterternary trace into a
+                // cartesian scatter trace so the perpendicular tick markers appear
+                // on the right-triangle view as well
+                if (t.name === 'ternary-ticks') {
+                    const tickColor = currentTheme === 'dark' ? '#FFFFFF' : '#000000'
+                    
+                    let rightTriangleAngles = t.marker?.angle
+                    
+                    if (Array.isArray(t.marker?.angle)) {
+                        rightTriangleAngles = t.marker.angle.map((_: any, index: number) => {
+                            if (index < 9) {
+                                return 90
+                            } else if (index < 18) {
+                                return -45 
+                            } else {
+                                return 0
+                            }
+                        })
+                    }
+
+                    return {
+                        type: 'scatter',
+                        mode: 'markers',
+                        x: t.c,
+                        y: t.a,
+                        marker: {
+                            symbol: t.marker?.symbol || 'line-ew',
+                            size: t.marker?.size ?? 6,
+                            line: { width: t.marker?.line?.width ?? 2, color: t.marker?.line?.color ?? tickColor },
+                            angle: rightTriangleAngles ?? undefined
+                        },
+                        hoverinfo: 'skip',
+                        showlegend: false,
+                        cliponaxis: false,
+                    } as any
+                }
+                
+                // If this is the arrow-marker trace (triangle arrows), prefer the
+                // precomputed cartesian angles so arrowheads point correctly in
+                // the right-triangle projection.
+                if (t.marker?.symbol === 'triangle-up' && Array.isArray((t as any).angle_cartesian)) {
+                    const newT: any = { ...t, type: 'scatter' };
+                    newT.x = t.c;
+                    newT.y = t.a;
+                    newT.marker = { ...(t.marker || {}), angle: (t as any).angle_cartesian };
+                    delete newT.a;
+                    delete newT.b;
+                    delete newT.c;
+                    delete newT.subplot;
+                    return newT;
                 }
 
                 const newT: any = { ...t, type: 'scatter' }
@@ -2062,7 +2178,21 @@ export default function TernaryResidueMapPage() {
             }
             
             const newTraces = finalTraces.map(convertTrace).filter(Boolean)
-            const highContrastColor = currentTheme === 'dark' ? '#FFFFFF' : '#000000';
+            const highContrastColor = currentTheme === 'dark' ? '#FFFFFF' : '#000000'
+
+            const boundaryTrace: any = {
+                type: 'scatter',
+                mode: 'lines',
+                x: [0, 1, 0, 0],
+                y: [0, 0, 1, 0],
+                line: { color: highContrastColor, width: 2.5 },
+                hoverinfo: 'skip',
+                showlegend: false,
+                cliponaxis: false
+            }
+
+            // Insert the boundary trace just after the residue-curve traces so it behaves like a plot element
+            newTraces.splice(cleanedResidueCurves.length, 0, boundaryTrace)
 
             const hypotenuseAnnotations = [];
             for (let i = 1; i < 10; i++) {
@@ -2076,6 +2206,22 @@ export default function TernaryResidueMapPage() {
                     xanchor: 'left' as const, yanchor: 'bottom' as const,
                     xshift: 2, yshift: 2,
                 });
+            }
+
+            // Read ternary triangle paper metrics (if available) so the cartesian
+            // right-triangle occupies the exact same rendered width/height.
+            const trianglePaper: any = (baseLayout as any)?._trianglePaper;
+            let xDomain: [number, number] | undefined = undefined;
+            let yDomain: [number, number] | undefined = undefined;
+            if (trianglePaper && trianglePaper.basePaper > 0 && trianglePaper.heightPaper > 0) {
+                const xStart = Math.max(0, Math.min(1, trianglePaper.originX));
+                const xEnd = Math.max(0, Math.min(1, trianglePaper.originX + trianglePaper.basePaper));
+                const yStart = Math.max(0, Math.min(1, trianglePaper.originY));
+                const yEnd = Math.max(0, Math.min(1, trianglePaper.originY + trianglePaper.heightPaper));
+                if (xEnd > xStart && yEnd > yStart) {
+                    xDomain = [xStart, xEnd];
+                    yDomain = [yStart, yEnd];
+                }
             }
 
             const cartLayout: Partial<Layout> = {
@@ -2093,28 +2239,24 @@ export default function TernaryResidueMapPage() {
                     xanchor: 'right',
                     yanchor: 'top',
                 },
-                xaxis: { range: [0, 1], showgrid: false, zeroline: false, constrain: 'domain', showline: false, showticklabels: false, ticks: '' },
-                yaxis: { range: [0, 1], showgrid: false, zeroline: false, scaleanchor: 'x', showline: false, showticklabels: false, ticks: '' },
-                // The 'shapes' property below should be removed.
-                // shapes: [
-                //     { type: 'line', x0: 0, y0: 0, x1: 1, y1: 0, line: { color: highContrastColor, width: 1.5 } },
-                //     { type: 'line', x0: 0, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
-                //     { type: 'line', x0: 1, y0: 0, x1: 0, y1: 1, line: { color: highContrastColor, width: 1.5 } },
-                // ],
-                margin: { l: 80, r: 60, t: 80, b: 80 },
+                xaxis: { domain: [0, 1], range: [0, 1], showgrid: false, zeroline: false, constrain: 'domain', showline: false, showticklabels: false, ticks: '' },
+                yaxis: { domain: [0, 1], range: [0, 1], showgrid: false, zeroline: false, scaleanchor: 'x', showline: false, showticklabels: false, ticks: '' },
+                shapes: [],
+                margin: baseLayout.margin,
                 annotations: [
                     // --- Correctly positioned corner labels using pixel shifts ---
-                    // Corner 'c' (bottom-right): Anchor to (1,0) and shift right/down
-                    { x: 0.95, y: 0, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.c.includes(' (') ? `<b>${plotAxisTitles.c.split(' (')[0]}</b><br>(${plotAxisTitles.c.split(' (')[1]}` : `<b>${plotAxisTitles.c}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'left' as const, yanchor: 'top' as const, xshift: 10, yshift: -10 },
-                    // Corner 'a' (top-left): Anchor to (0,1) and shift left/up
-                    { x: 0.1, y: 1, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.a.includes(' (') ? `<b>${plotAxisTitles.a.split(' (')[0]}</b><br>(${plotAxisTitles.a.split(' (')[1]}` : `<b>${plotAxisTitles.a}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'bottom' as const, xshift: -10, yshift: 10 },
-                    // Corner 'b' (bottom-left): Anchor to (0,0) and shift left/down
-                    { x: 0.05, y: 0, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.b.includes(' (') ? `<b>${plotAxisTitles.b.split(' (')[0]}</b><br>(${plotAxisTitles.b.split(' (')[1]}` : `<b>${plotAxisTitles.b}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'top' as const, xshift: -10, yshift: -10 },
-                    
-                    // The tick mark annotations
-                    ...Array.from({ length: 9 }, (_, i) => ({ x: (i + 1) / 10.0, y: 0, xref: 'x' as const, yref: 'y' as const, text: ((i + 1) / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'center' as const, yanchor: 'top' as const, yshift: -4 })),
-                    ...Array.from({ length: 9 }, (_, i) => ({ x: 0, y: (i + 1) / 10.0, xref: 'x' as const, yref: 'y' as const, text: ((i + 1) / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'middle' as const, xshift: -4 })),
-                    ...hypotenuseAnnotations,
+                    // Corner 'c' (bottom-right): Anchor to (1,0) — nudge right and slightly up to avoid overlap with tick labels
+                    { x: 0.98, y: 0.01, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.c.includes(' (') ? `<b>${plotAxisTitles.c.split(' (')[0]}</b><br>(${plotAxisTitles.c.split(' (')[1]}` : `<b>${plotAxisTitles.c}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'left' as const, yanchor: 'top' as const, xshift: 26, yshift: -6 },
+                    // Corner 'a' (top-left): REVERTED — put it back to its original position near the corner
+                    { x: 0.1, y: 0.995, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.a.includes(' (') ? `<b>${plotAxisTitles.a.split(' (')[0]}</b><br>(${plotAxisTitles.a.split(' (')[1]}` : `<b>${plotAxisTitles.a}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'bottom' as const, xshift: -10, yshift: 10 },
+                    // Corner 'b' (bottom-left): keep the lowered position so it sits further from the corner
+                    { x: 0.02, y: 0.01, xref: 'x' as const, yref: 'y' as const, text: plotAxisTitles.b.includes(' (') ? `<b>${plotAxisTitles.b.split(' (')[0]}</b><br>(${plotAxisTitles.b.split(' (')[1]}` : `<b>${plotAxisTitles.b}</b>`, showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'top' as const, xshift: -32, yshift: -6 },
+
+                    // Re-introduce 0 and 1 endpoints for each axis — show integer endpoints (0 / 1) and keep 1-decimal for interior ticks
+                    ...Array.from({ length: 11 }, (_, i) => ({ x: i / 10.0, y: 0, xref: 'x' as const, yref: 'y' as const, text: (i === 0 || i === 10) ? String(i === 0 ? 0 : 1) : (i / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'center' as const, yanchor: 'top' as const, yshift: -4 })),
+                    ...Array.from({ length: 11 }, (_, i) => ({ x: 0, y: i / 10.0, xref: 'x' as const, yref: 'y' as const, text: (i === 0 || i === 10) ? String(i === 0 ? 0 : 1) : (i / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'right' as const, yanchor: 'middle' as const, xshift: -4 })),
+                    ...Array.from({ length: 11 }, (_, i) => ({ x: 1 - i / 10.0, y: i / 10.0, xref: 'x' as const, yref: 'y' as const, text: (i === 0 || i === 10) ? String(i === 0 ? 0 : 1) : (i / 10.0).toFixed(1), showarrow: false, font: { size: 14, color: highContrastColor }, xanchor: 'left' as const, yanchor: 'middle' as const, xshift: 2, yshift: 2 })),
+                    // (hypotenuseAnnotations kept for compatibility with earlier logic)
                 ],
             };
             setPlotlyData(newTraces);
@@ -2123,11 +2265,88 @@ export default function TernaryResidueMapPage() {
             setPlotlyData(finalTraces);
             setPlotlyLayout(baseLayout);
         }
-    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle, plotAxisTitles]);
+    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle, plotAxisTitles, showAzeoStars, highlightedStarScale]);
 
     const handleGenerateClick = () => {
         handleGenerateMap();
     };
+
+    // Prevent zooming out past the initial cartesian bounds when in Right-Triangle view.
+    const handleRelayout = useCallback((event: any) => {
+        if (!useRightTriangle) return
+
+        const extractRange = (axisKey: 'xaxis' | 'yaxis') => {
+            const explicitLow = event[`${axisKey}.range[0]`]
+            const explicitHigh = event[`${axisKey}.range[1]`]
+            const arrayRange = event[`${axisKey}.range`]
+            if (explicitLow !== undefined && explicitHigh !== undefined) return [Number(explicitLow), Number(explicitHigh)]
+            if (Array.isArray(arrayRange) && arrayRange.length === 2) return [Number(arrayRange[0]), Number(arrayRange[1])]
+            return null
+        }
+
+        const allowed = { x: [0, 1], y: [0, 1] }
+        const allowedWidth = allowed.x[1] - allowed.x[0]
+
+        if (event['xaxis.autorange'] || event['yaxis.autorange']) {
+            userHasZoomedInRef.current = false
+            setPlotlyLayout(prev => ({
+                ...prev,
+                xaxis: { ...(prev.xaxis || {}), range: allowed.x, autorange: false },
+                yaxis: { ...(prev.yaxis || {}), range: allowed.y, autorange: false }
+            }))
+            return
+        }
+
+        const currentX = (plotlyLayout.xaxis && Array.isArray((plotlyLayout.xaxis as any).range)) ? (plotlyLayout.xaxis as any).range as number[] : [0, 1]
+        const currentY = (plotlyLayout.yaxis && Array.isArray((plotlyLayout.yaxis as any).range)) ? (plotlyLayout.yaxis as any).range as number[] : [0, 1]
+
+        const proposedX = extractRange('xaxis') ?? currentX
+        const proposedY = extractRange('yaxis') ?? currentY
+
+        const proposedXWidth = proposedX[1] - proposedX[0]
+        const proposedYWidth = proposedY[1] - proposedY[0]
+        const EPS = 1e-8
+        const isZoomIn = proposedXWidth < allowedWidth - EPS || proposedYWidth < allowedWidth - EPS
+        
+        if (isZoomIn) {
+            userHasZoomedInRef.current = true
+        } else {
+            if (Math.abs(proposedXWidth - allowedWidth) < EPS && Math.abs(proposedYWidth - allowedWidth) < EPS) {
+                userHasZoomedInRef.current = false
+            }
+        }
+
+        const clampRange = (proposed: number[], allowedRange: number[]) => {
+            const [p0, p1] = proposed
+            const width = p1 - p0
+            const allowedWidthLocal = allowedRange[1] - allowedRange[0]
+
+            if (width > allowedWidthLocal + 1e-12) return allowedRange.slice() as number[]
+
+            let new0 = p0
+            let new1 = p1
+            if (new0 < allowedRange[0]) {
+                new0 = allowedRange[0]
+                new1 = new0 + width
+            }
+            if (new1 > allowedRange[1]) {
+                new1 = allowedRange[1]
+                new0 = new1 - width
+            }
+            return [new0, new1]
+        }
+
+        const clampedX = clampRange(proposedX, allowed.x)
+        const clampedY = clampRange(proposedY, allowed.y)
+
+        if (clampedX[0] !== proposedX[0] || clampedX[1] !== proposedX[1] || clampedY[0] !== proposedY[0] || clampedY[1] !== proposedY[1]) {
+            setPlotlyLayout(prev => ({ 
+                ...prev, 
+                xaxis: { ...(prev.xaxis || {}), range: clampedX }, 
+                yaxis: { ...(prev.yaxis || {}), range: clampedY } 
+            }))
+        }
+    }, [useRightTriangle, plotlyLayout])
 
     const handleSwapComponents = (index: number) => {
         isSwapping.current = true;
@@ -2248,13 +2467,13 @@ export default function TernaryResidueMapPage() {
                                 ))}
                             </div>
                             {/* Pressure and Fluid Package on same row */}
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-3 gap-4">
                                 {/* Pressure input */}
-                                <div className="flex items-center space-x-2">
+                                <div className="col-span-1 flex items-center space-x-2">
                                     <Label htmlFor="systemPressure" className="whitespace-nowrap">
                                         Pressure:
                                     </Label>
-                                    <div className="flex items-center w-full"> {/* Wrapper for input and unit */}
+                                    <div className="relative flex items-center"> {/* Wrapper for input and unit — sized to input so unit overlays inside */}
                                         <Input
                                             id="systemPressure"
                                             type="number"
@@ -2276,14 +2495,14 @@ export default function TernaryResidueMapPage() {
                                                 }
                                             }}
                                             placeholder="1.0"
-                                            className="flex-grow"
+                                            className="w-20 pr-12 text-center font-mono overflow-hidden whitespace-nowrap"
                                         />
-                                        <span className="ml-2 text-muted-foreground">bar</span> {/* Unit display */}
+                                        <span className="absolute right-3 inset-y-0 flex items-center text-xs text-muted-foreground pointer-events-none">bar</span> {/* Unit inside input */}
                                     </div>
                                 </div>
                                 {/* Fluid package dropdown */}
-                                <div className="flex items-center space-x-2 w-full">
-                                    <Label htmlFor="fluidPackage" className="whitespace-nowrap">
+                                <div className="col-span-2 flex items-center space-x-4 pl-2">
+                                    <Label htmlFor="fluidPackage" className="whitespace-nowrap mr-1">
                                         Fluid Package:
                                     </Label>
                                     <div className="flex-1">
@@ -2315,8 +2534,8 @@ export default function TernaryResidueMapPage() {
 
                     {directAzeotropes.length > 0 && (() => {
                         const typeConfigs: Record<string, any> = {
-                            min: { color: '#00C000', label: 'Min-boiling', bgColor: 'bg-green-50 dark:bg-green-900/20', borderColor: 'border-green-200 dark:border-green-800' },
-                            max: { color: '#9900FF', label: 'Max-boiling', bgColor: 'bg-purple-50 dark:bg-purple-900/20', borderColor: 'border-purple-200 dark:border-purple-800' },
+                            min: { color: '#00C000', label: 'Minimum Boiling', bgColor: 'bg-green-50 dark:bg-green-900/20', borderColor: 'border-green-200 dark:border-green-800' },
+                            max: { color: '#9900FF', label: 'Maximum Boiling', bgColor: 'bg-purple-50 dark:bg-purple-900/20', borderColor: 'border-purple-200 dark:border-purple-800' },
                             saddle: { color: '#FF0000', label: 'Saddle', bgColor: 'bg-red-50 dark:bg-red-900/20', borderColor: 'border-red-200 dark:border-red-800' },
                             unknown: { color: '#666666', label: 'Unknown', bgColor: 'bg-gray-50 dark:bg-gray-900/20', borderColor: 'border-gray-200 dark:border-gray-800' }
                         };
@@ -2367,8 +2586,8 @@ export default function TernaryResidueMapPage() {
                                                                 key={idx}
                                                                 className={`relative flex items-center gap-2 p-2 rounded transition-all duration-200 cursor-pointer ${isCopied ? '' : 'hover:opacity-75 hover:bg-muted/50'}`}
                                                                 style={isCopied ? { backgroundColor: hexToRgba(typeConfig.color, 0.08) } : undefined}
-                                                                onMouseEnter={() => setHighlightedAzeoIdx(originalIndex)}
-                                                                onMouseLeave={() => setHighlightedAzeoIdx(null)}
+                                                                onMouseEnter={() => { setHighlightedAzeoIdx(originalIndex); if (showAzeoStars) startStarPulse(); }}
+                                                                onMouseLeave={() => { setHighlightedAzeoIdx(null); stopStarPulse(); }}
                                                                 onClick={() => handleCopyAzeo(az, originalIndex)}
                                                                 title="Click to copy azeotrope data"
                                                             >
@@ -2469,6 +2688,18 @@ export default function TernaryResidueMapPage() {
                                     </div>
                                 ) : (
                                     <>
+                                      <div className="absolute top-1 left-4 z-20">
+                                        <Button
+                                          variant={showAzeoStars ? 'default' : 'ghost'}
+                                          size="sm"
+                                          onClick={() => setShowAzeoStars(s => !s)}
+                                          className="h-8 px-3"
+                                        >
+                                          <span className="mr-2">★</span>
+                                          {showAzeoStars ? 'Hide Azeotropes' : 'Show Azeotropes'}
+                                        </Button>
+                                      </div>
+
                                       <div className="absolute top-1 right-4 z-20">
                                         <div className="flex items-center gap-2 bg-muted rounded-lg p-1">
                                           <Button
@@ -2492,6 +2723,7 @@ export default function TernaryResidueMapPage() {
                                       <Plot
                                         data={plotlyData}
                                         layout={plotlyLayout}
+                                        onRelayout={handleRelayout}
                                         style={{ width: '100%', height: '100%' }}
                                         config={{ displayModeBar: false }}
                                         useResizeHandler
