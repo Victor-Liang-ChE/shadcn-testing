@@ -15,6 +15,8 @@ import { fetchCompoundDataFromHysys } from './antoine-utils';
 //  1. SHARED CONSTANTS/UTILS
 // =============================
 export const R_gas_const_J_molK = 8.314_462_618_153_24; // J·mol⁻¹·K⁻¹
+// SRK debug flag — set NEXT_PUBLIC_SRK_DEBUG=true to enable development logging for SRK routines
+export const SRK_DEBUG = process.env.NEXT_PUBLIC_SRK_DEBUG === 'true' || false;
 
 /**
  * Helper function to estimate boiling point temperature from HYSYS extended Antoine.
@@ -95,8 +97,8 @@ export function calculateNrtlGamma(
   // HYSYS NRTL parameters for this dataset are in cal/mol. Use R in cal/mol·K.
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   // Use standard convention: tau12 uses A12/B12 and tau21 uses A21/B21
-  const tau12 = p.Aij / (R_cal * T_K) + p.Bij;
-  const tau21 = p.Aji / (R_cal * T_K) + p.Bji;
+  const tau12 = p.Aij / (R_cal * T_K) + p.Bij / R_cal;
+  const tau21 = p.Aji / (R_cal * T_K) + p.Bji / R_cal;
   const G12 = Math.exp(-p.alpha * tau12);
   const G21 = Math.exp(-p.alpha * tau21);
 
@@ -206,8 +208,9 @@ export function calculateWilsonGamma(
   const V2 = comps[1].wilsonParams.V_L_m3mol;
   // Standard convention: Lambda12 uses Aij/Bij (i=1,j=2), Lambda21 uses Aji/Bji
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
-  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
-  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
+  // Scale Bij by R_cal
+  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij / R_cal));
+  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji / R_cal));
 
   const [x1, x2] = x;
   const denom1 = x1 + Lambda12 * x2;
@@ -559,11 +562,14 @@ export function calculatePrFugacityCoefficients(
   const pure = components.map(c => {
     const { Tc_K, Pc_Pa, omega } = c.prParams!;
     const Tr = T_K / Tc_K;
-    const kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
+    let kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
+    if (omega > 0.49) {
+      kappa = 0.379642 + 1.48503 * omega - 0.164423 * (omega * omega) + 0.016666 * (omega * omega * omega);
+    }
     const alpha = (1 + kappa * (1 - Math.sqrt(Tr))) ** 2;
-    const ac = 0.45723553 * (R_gas_const_J_molK * Tc_K) ** 2 / Pc_Pa * alpha;
-    const b  = 0.07779607 * R_gas_const_J_molK * Tc_K / Pc_Pa;
-    return { ac, b };
+    const ac = 0.457235 * (R_gas_const_J_molK * Tc_K) ** 2 / Pc_Pa * alpha;
+    const b  = 0.07796 * R_gas_const_J_molK * Tc_K / Pc_Pa;
+    return { ac, b }; 
   });
 
   const ac_mix = x1 * x1 * pure[0].ac + x2 * x2 * pure[1].ac + 2 * x1 * x2 * Math.sqrt(pure[0].ac * pure[1].ac) * (1 - k_ij);
@@ -890,7 +896,7 @@ export function calculateSrkFugacityCoefficients(
   interactionParams: SrkInteractionParams,
   phase: 'liquid' | 'vapor'
 ): [number, number] | null {
-  console.log(`[SRK Fugacity] Phase: ${phase}, T: ${T_K.toFixed(2)} K, x/y: [${x_or_y[0].toFixed(4)}]`);
+  if (SRK_DEBUG) console.log(`[SRK Fugacity] Phase: ${phase}, T: ${T_K.toFixed(2)} K, x/y: [${x_or_y[0].toFixed(4)}]`);
 
   if (components.length !== 2 || x_or_y.length !== 2) return null;
   if (!components[0].srkParams || !components[1].srkParams) return null;
@@ -915,17 +921,17 @@ export function calculateSrkFugacityCoefficients(
 
   const A_mix = a_mix * P_Pa / (R_gas_const_J_molK * T_K)**2;
   const B_mix = b_mix * P_Pa / (R_gas_const_J_molK * T_K);
-  console.log(`    A_mix: ${A_mix.toExponential(4)}, B_mix: ${B_mix.toExponential(4)}`);
+  if (SRK_DEBUG) console.log(`    A_mix: ${A_mix.toExponential(4)}, B_mix: ${B_mix.toExponential(4)}`);
 
   const roots = solveCubicEOS(1, -1, A_mix - B_mix - B_mix*B_mix, -A_mix*B_mix);
   if (!roots || roots.length === 0) {
     console.error(`    [SRK Fugacity] FAILED: No valid roots found for Z.`);
     return null;
   }
-  console.log(`    Z roots found: [${roots.map(r => r.toFixed(5)).join(', ')}]`);
+  if (SRK_DEBUG) console.log(`    Z roots found: [${roots.map(r => r.toFixed(5)).join(', ')}]`);
 
   const Z = phase === 'liquid' ? Math.min(...roots) : Math.max(...roots);
-  console.log(`    Selected Z for ${phase}: ${Z.toFixed(5)}`);
+  if (SRK_DEBUG) console.log(`    Selected Z for ${phase}: ${Z.toFixed(5)}`);
   
   if (Z <= B_mix) {
     console.warn(`    [SRK Fugacity] FAILED: Z <= B_mix (${Z.toFixed(5)} <= ${B_mix.toFixed(5)})`);
@@ -947,7 +953,7 @@ export function calculateSrkFugacityCoefficients(
     return Math.exp(term1 - term2);
   });
   
-  console.log(`    ==> Fugacity Coeffs (phi): [${phi[0].toFixed(5)}, ${phi[1].toFixed(5)}]`);
+  if (SRK_DEBUG) console.log(`    ==> Fugacity Coeffs (phi): [${phi[0].toFixed(5)}, ${phi[1].toFixed(5)}]`);
   return [phi[0], phi[1]];
 }
 
@@ -960,7 +966,7 @@ export function calculateBubbleTemperatureSrk(
   maxIter: number = 100,
   tolerance: number = 1e-6
 ): BubbleDewResult | null {
-    console.log(`%c[SRK Bubble T] START for x1=${x1_feed}`, 'color: blue; font-weight: bold;');
+    if (SRK_DEBUG) console.log(`%c[SRK Bubble T] START for x1=${x1_feed}`, 'color: blue; font-weight: bold;');
     
     const x = [x1_feed, 1 - x1_feed];
     const T_bp1 = calculateSaturationTemperaturePureSrk(components[0], P_system_Pa);
@@ -976,12 +982,12 @@ export function calculateBubbleTemperatureSrk(
     console.log(`[SRK Bubble T] Temp Bracket: [${T_low.toFixed(2)}, ${T_high.toFixed(2)}] K`);
 
     const objective = (T: number): number => {
-        console.log(`%c[SRK Bubble T] > Root finder testing T = ${T.toFixed(4)} K`, 'color: gray');
+        if (SRK_DEBUG) console.log(`%c[SRK Bubble T] > Root finder testing T = ${T.toFixed(4)} K`, 'color: gray');
         const phiL = calculateSrkFugacityCoefficients(components, x, T, P_system_Pa, srkInteractionParams, 'liquid');
         if (!phiL) return NaN;
 
         let y = [...x]; // Start guess with y=x
-        console.log(`    Inner loop START, initial y: [${y[0].toFixed(4)}]`);
+        if (SRK_DEBUG) console.log(`    Inner loop START, initial y: [${y[0].toFixed(4)}]`);
         for (let i = 0; i < 50; i++) {
             const y_old = [...y];
             const phiV = calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor');
@@ -991,7 +997,7 @@ export function calculateBubbleTemperatureSrk(
             }
 
             const K = [phiL[0] / phiV[0], phiL[1] / phiV[1]];
-            console.log(`    Iter ${i}, K-values: [${K[0].toFixed(4)}, ${K[1].toFixed(4)}]`);
+            if (SRK_DEBUG) console.log(`    Iter ${i}, K-values: [${K[0].toFixed(4)}, ${K[1].toFixed(4)}]`);
 
             const y_new_unnorm = [x[0] * K[0], x[1] * K[1]];
             const sumY = y_new_unnorm[0] + y_new_unnorm[1];
@@ -1001,17 +1007,17 @@ export function calculateBubbleTemperatureSrk(
                 return NaN;
             }
             y = [y_new_unnorm[0] / sumY, y_new_unnorm[1] / sumY];
-            console.log(`    Iter ${i}, new y: [${y[0].toFixed(4)}]`);
+            if (SRK_DEBUG) console.log(`    Iter ${i}, new y: [${y[0].toFixed(4)}]`);
 
             if (Math.abs(y[0] - y_old[0]) < 1e-9) {
-                console.log(`    Inner loop converged after ${i+1} iterations.`);
+                if (SRK_DEBUG) console.log(`    Inner loop converged after ${i+1} iterations.`);
                 break;
             }
         }
 
         const K_final = [phiL[0] / calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor')![0], phiL[1] / calculateSrkFugacityCoefficients(components, y, T, P_system_Pa, srkInteractionParams, 'vapor')![1]];
         const objective_val = x[0] * K_final[0] + x[1] * K_final[1] - 1.0;
-        console.log(`    > Objective Function Result for T=${T.toFixed(4)} K is ${objective_val.toExponential(4)}`);
+        if (SRK_DEBUG) console.log(`    > Objective Function Result for T=${T.toFixed(4)} K is ${objective_val.toExponential(4)}`);
         return objective_val;
     };
 
@@ -1020,7 +1026,7 @@ export function calculateBubbleTemperatureSrk(
         console.error("[SRK Bubble T] FAILED: Root finder could not converge on a bubble temperature.");
         return null;
     }
-    console.log(`%c[SRK Bubble T] Root finder SUCCESS. T_bubble = ${T_bubble.toFixed(4)} K`, 'color: green');
+    if (SRK_DEBUG) console.log(`%c[SRK Bubble T] Root finder SUCCESS. T_bubble = ${T_bubble.toFixed(4)} K`, 'color: green');
 
     // Final calculation of y at the converged temperature
     let y_final = [...x];
@@ -1033,7 +1039,7 @@ export function calculateBubbleTemperatureSrk(
     const sum_y = y_calc[0] + y_calc[1];
     y_final = [y_calc[0] / sum_y, y_calc[1] / sum_y];
     
-    console.log(`%c[SRK Bubble T] FINAL RESULT: x1=${x1_feed}, y1=${y_final[0].toFixed(5)}, T=${T_bubble.toFixed(2)} K`, 'color: blue; font-weight: bold;');
+    if (SRK_DEBUG) console.log(`%c[SRK Bubble T] FINAL RESULT: x1=${x1_feed}, y1=${y_final[0].toFixed(5)}, T=${T_bubble.toFixed(2)} K`, 'color: blue; font-weight: bold;');
     return { comp1_feed: x1_feed, comp1_equilibrium: y_final[0], T_K: T_bubble, P_Pa: P_system_Pa };
 }
 
@@ -1273,8 +1279,8 @@ export function calculateUniquacGamma(
   // HYSYS UNIQUAC database: Aij, Bij in calories → use R_cal = 1.9872 cal·mol⁻¹·K⁻¹
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   // Use standard convention: tau12 uses Aij/Bij and tau21 uses Aji/Bji
-  const tau12 = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij));
-  const tau21 = Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji));
+  const tau12 = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij / R_cal));
+  const tau21 = Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji / R_cal));
 
   const Theta_res = Theta; // same symbols
   const s1 = Theta_res[0] + Theta_res[1] * tau21;
@@ -1665,10 +1671,13 @@ export function calculateSaturationTemperaturePurePr(
     const Tr = T / Tc_K;
     if (T <= 0 || Tr >= 1) break;
 
-    const kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
-    const alpha = Math.pow(1 + kappa * (1 - Math.sqrt(Tr)), 2);
-    const a = 0.45723553 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha;
-    const b = 0.07779607 * R * Tc_K / Pc_Pa;
+    let kappa = 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
+    if (omega > 0.49) {
+      kappa = 0.379642 + 1.48503 * omega - 0.164423 * (omega * omega) + 0.016666 * (omega * omega * omega);
+    }
+    const alpha = (1 + kappa * (1 - Math.sqrt(Tr))) ** 2;
+    const a = 0.457235 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha;
+    const b = 0.07796 * R * Tc_K / Pc_Pa;
 
     const A = a * P_Pa / Math.pow(R * T, 2);
     const B = b * P_Pa / (R * T);
@@ -1694,8 +1703,8 @@ export function calculateSaturationTemperaturePurePr(
     const dT = 0.001 * T;
     const T_plus_dT = T + dT;
     const Tr_plus_dT = T_plus_dT / Tc_K;
-    const alpha_plus_dT = Math.pow(1 + kappa * (1 - Math.sqrt(Tr_plus_dT)), 2);
-    const a_plus_dT = 0.45723553 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha_plus_dT;
+    const alpha_plus_dT = (1 + kappa * (1 - Math.sqrt(Tr_plus_dT))) ** 2;
+    const a_plus_dT = 0.457235 * Math.pow(R * Tc_K, 2) / Pc_Pa * alpha_plus_dT;
     const A_plus_dT = a_plus_dT * P_Pa / Math.pow(R * T_plus_dT, 2);
     const B_plus_dT = b * P_Pa / (R * T_plus_dT);
     const roots_plus_dT = solveCubicEOS(1, -(1 - B_plus_dT), A_plus_dT - 3 * B_plus_dT * B_plus_dT - 2 * B_plus_dT, -(A_plus_dT * B_plus_dT - B_plus_dT * B_plus_dT - B_plus_dT * B_plus_dT * B_plus_dT));

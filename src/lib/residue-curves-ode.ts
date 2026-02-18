@@ -4,8 +4,9 @@
 // -----------------------------------------------------------------
 import type { CompoundData } from './vle-types';
 
-// Module-level verbose flag: set true during azeotrope solving to enable bubble-T logging
-let _verboseBubbleT = false;
+// Module-level verbose flag: controlled by SRK_DEBUG from `vle-calculations`
+import { SRK_DEBUG } from './vle-calculations';
+let _verboseBubbleT = SRK_DEBUG;
 import {
   R_gas_const_J_molK as R,
   calculatePsat_Pa,
@@ -41,13 +42,15 @@ function normX(x:number[]):number[]{
   return x.map(v=>Math.max(MIN_X,Math.min(mx,v/s)));
 }
 function lambdasWilson(V:number[],T:number,p:TernaryWilsonParams){
-  // HYSYS Wilson Aij are in cal/mol. Use R_cal=1.9872 and swap convention:
-  // L01 uses A10/B10 (reverse) to match HYSYS export format.
+  // HYSYS Wilson Aij/Bij use calorie units; use R_cal and temperature-dependent Bij contribution
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   return {
-    L01:(V[1]/V[0])*Math.exp(-(p.A01/(R_cal*T)+p.B01)), L10:(V[0]/V[1])*Math.exp(-(p.A10/(R_cal*T)+p.B10)),
-    L02:(V[2]/V[0])*Math.exp(-(p.A02/(R_cal*T)+p.B02)), L20:(V[0]/V[2])*Math.exp(-(p.A20/(R_cal*T)+p.B20)),
-    L12:(V[2]/V[1])*Math.exp(-(p.A12/(R_cal*T)+p.B12)), L21:(V[1]/V[2])*Math.exp(-(p.A21/(R_cal*T)+p.B21)),
+    L01: (V[1]/V[0]) * Math.exp(-(p.A01 + p.B01 * T) / (R_cal * T)),
+    L10: (V[0]/V[1]) * Math.exp(-(p.A10 + p.B10 * T) / (R_cal * T)),
+    L02: (V[2]/V[0]) * Math.exp(-(p.A02 + p.B02 * T) / (R_cal * T)),
+    L20: (V[0]/V[2]) * Math.exp(-(p.A20 + p.B20 * T) / (R_cal * T)),
+    L12: (V[2]/V[1]) * Math.exp(-(p.A12 + p.B12 * T) / (R_cal * T)),
+    L21: (V[1]/V[2]) * Math.exp(-(p.A21 + p.B21 * T) / (R_cal * T)),
   };
 }
 function gammaWilson(x:number[],T:number,comps:CompoundData[],p:TernaryWilsonParams):number[]{
@@ -150,10 +153,17 @@ function gammaNrtl(x:number[],T:number,params:TernaryNrtlParams){
   // g[i][j] = A{i}{j} – the swap from HYSYS DB conventions is already applied
   // in the fetch function (fetchNrtlParameters), so params are in model convention.
   const g=[[0,params.A01,params.A02],[params.A10,0,params.A12],[params.A20,params.A21,0]];
-  const bMat=[[0,params.B01,params.B02],[params.B10,0,params.B12],[params.B20,params.B21,0]];
-  const a=[[0,params.alpha01,params.alpha02],[params.alpha01,0,params.alpha12],[params.alpha02,params.alpha12,0]];
-  const tau=[[0,0,0],[0,0,0],[0,0,0]],G=[[1,0,0],[0,1,0],[0,0,1]];
-  for(let i=0;i<3;i++)for(let j=0;j<3;j++){if(i===j)continue; tau[i][j]=g[i][j]/(Rnrtl*T)+bMat[i][j]; G[i][j]=Math.exp(-a[i][j]*tau[i][j]);}
+  const bMat = [[0, params.B01, params.B02], [params.B10, 0, params.B12], [params.B20, params.B21, 0]];
+  const a = [[0, params.alpha01, params.alpha02], [params.alpha01, 0, params.alpha12], [params.alpha02, params.alpha12, 0]];
+  const tau = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], G = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      if (i === j) continue;
+      // HYSYS NRTL convention: tau = (Aij + Bij*T) / (R_cal * T)
+      tau[i][j] = (g[i][j] + bMat[i][j] * T) / (Rnrtl * T);
+      G[i][j] = Math.exp(-a[i][j] * tau[i][j]);
+    }
+  }
   const ln=[0,0,0];
   for(let i=0;i<3;i++){
     let sum1=0,sum2=0;
@@ -321,7 +331,28 @@ function getKijPr(i:number,j:number,p:TernaryPrParams):number{
     }
     return 0;
 }
-function calcPurePR(T:number,pr:{Tc_K:number;Pc_Pa:number;omega:number}){const Tr=T/pr.Tc_K;const m=0.37464+1.54226*pr.omega-0.26992*pr.omega*pr.omega;const alpha=(1+m*(1-Math.sqrt(Tr)))**2;const ac=0.45724*R*R*pr.Tc_K*pr.Tc_K/pr.Pc_Pa;const a=ac*alpha;const b=0.07780*R*pr.Tc_K/pr.Pc_Pa;return{a,b};}
+export function calcPurePR(T:number,pr:{Tc_K:number;Pc_Pa:number;omega:number}){
+    // Normalize units defensively: if Pc looks like kPa convert → Pa; if so, assume Tc was provided in °C and convert to K.
+    const isLikelyKPa = (pr.Pc_Pa != null && pr.Pc_Pa < 1e6);
+    const actualPc_Pa = isLikelyKPa ? pr.Pc_Pa * 1000 : pr.Pc_Pa;
+    const actualTc_K = isLikelyKPa ? pr.Tc_K + 273.15 : pr.Tc_K;
+
+    const Tr = T / actualTc_K;
+
+    // Acentric-factor dependent "m" (use HYSYS / recommended PR correction for ω > 0.49)
+    let m = 0.37464 + 1.54226 * pr.omega - 0.26992 * pr.omega * pr.omega;
+    if (pr.omega > 0.49) {
+        m = 0.379642 + 1.48503 * pr.omega - 0.164423 * pr.omega * pr.omega + 0.016666 * Math.pow(pr.omega, 3);
+    }
+
+    const alpha = Math.pow(1 + m * (1 - Math.sqrt(Tr)), 2);
+
+    // Use HYSYS constants for PR 'a' and 'b' with normalized units
+    const ac = 0.457235 * R * R * actualTc_K * actualTc_K / actualPc_Pa;
+    const a = ac * alpha;
+    const b = 0.07796 * R * actualTc_K / actualPc_Pa;
+    return { a, b };
+}
 function calcMixturePR(x:number[],T:number,comps:CompoundData[],p:TernaryPrParams){const a_i=comps.map(c=>calcPurePR(T,c.prParams!).a);const b_i=comps.map(c=>calcPurePR(T,c.prParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijPr(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
 function prFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernaryPrParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijPr(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(2*Math.sqrt(2)*B)*((2*sum/a_mix)-b_i[k]/b_mix)*Math.log((Z+(1+Math.sqrt(2))*B)/(Z+(1-Math.sqrt(2))*B));phi.push(Math.exp(term1+term2-term3));}return phi;}
 function solvePRBubbleT(x:number[],P:number,comps:CompoundData[],p:TernaryPrParams,Ti:number){
@@ -461,7 +492,20 @@ function getKijSrk(i:number,j:number,p:TernarySrkParams):number{
     }
     return 0;
 }
-function calcPureSRK(T:number,srk:{Tc_K:number;Pc_Pa:number;omega:number}){const Tr=T/srk.Tc_K;const m=0.48+1.574*srk.omega-0.176*srk.omega*srk.omega;const alpha=(1+m*(1-Math.sqrt(Tr)))**2;const ac=0.42748*R*R*srk.Tc_K*srk.Tc_K/srk.Pc_Pa;const a=ac*alpha;const b=0.08664*R*srk.Tc_K/srk.Pc_Pa;return{a,b};}
+export function calcPureSRK(T:number,srk:{Tc_K:number;Pc_Pa:number;omega:number}){
+    // Defensive unit normalization (handle kPa/°C source values):
+    const isLikelyKPa = (srk.Pc_Pa != null && srk.Pc_Pa < 1e6);
+    const actualPc_Pa = isLikelyKPa ? srk.Pc_Pa * 1000 : srk.Pc_Pa;
+    const actualTc_K = isLikelyKPa ? srk.Tc_K + 273.15 : srk.Tc_K;
+
+    const Tr = T / actualTc_K;
+    const m = 0.48 + 1.574 * srk.omega - 0.176 * srk.omega * srk.omega;
+    const alpha = Math.pow(1 + m * (1 - Math.sqrt(Tr)), 2);
+    const ac = 0.42748 * R * R * actualTc_K * actualTc_K / actualPc_Pa;
+    const a = ac * alpha;
+    const b = 0.08664 * R * actualTc_K / actualPc_Pa;
+    return { a, b };
+}
 function mixSRK(x:number[],T:number,comps:CompoundData[],p:TernarySrkParams){const a_i=comps.map(c=>calcPureSRK(T,c.srkParams!).a);const b_i=comps.map(c=>calcPureSRK(T,c.srkParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijSrk(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
 function srkFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernarySrkParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijSrk(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(B)*(b_i[k]/b_mix - (2*sum/a_mix) )*Math.log(1+B/Z);phi.push(Math.exp(term1+term2+term3));}return phi;}
 function solveSRKBubbleT(x:number[],P:number,comps:CompoundData[],p:TernarySrkParams,Ti:number){
@@ -593,16 +637,21 @@ function tausUni(T:number,p:TernaryUniquacParams){
   // Align to standard Aij/Bij convention: t_ij uses Aij/Bij.
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   return {
-    t01: Math.exp(-(p.A01/(R_cal*T) + p.B01)),
-    t10: Math.exp(-(p.A10/(R_cal*T) + p.B10)),
-    t02: Math.exp(-(p.A02/(R_cal*T) + p.B02)),
-    t20: Math.exp(-(p.A20/(R_cal*T) + p.B20)),
-    t12: Math.exp(-(p.A12/(R_cal*T) + p.B12)),
-    t21: Math.exp(-(p.A21/(R_cal*T) + p.B21)),
+    t01: Math.exp(-(p.A01 + p.B01 * T) / (R_cal * T)),
+    t10: Math.exp(-(p.A10 + p.B10 * T) / (R_cal * T)),
+    t02: Math.exp(-(p.A02 + p.B02 * T) / (R_cal * T)),
+    t20: Math.exp(-(p.A20 + p.B20 * T) / (R_cal * T)),
+    t12: Math.exp(-(p.A12 + p.B12 * T) / (R_cal * T)),
+    t21: Math.exp(-(p.A21 + p.B21 * T) / (R_cal * T)),
   };
 }
-function gammaUni(x:number[],T:number,comps:CompoundData[],p:TernaryUniquacParams){if(comps.some(c=>!c.uniquacParams))return null;const r=comps.map(c=>c.uniquacParams!.r);const q=comps.map(c=>c.uniquacParams!.q);const tau=tausUni(T,p);const sum_r=x.reduce((s,xi,i)=>s+r[i]*xi,0);const phi=r.map((ri,i)=>ri*x[i]/sum_r);const sum_q=x.reduce((s,xi,i)=>s+q[i]*xi,0);const theta=q.map((qi,i)=>qi*x[i]/sum_q);const l=r.map((ri,i)=>(Z_UNIQ/2)*(ri-q[i])-(ri-1));const sum_xl=x.reduce((s,xi,i)=>s+xi*l[i],0);
-const lnGammaC=phi.map((phi_i,i)=>Math.log(phi_i/x[i])+ (Z_UNIQ/2)*q[i]*Math.log(theta[i]/phi_i)+l[i]-(phi_i/x[i])*sum_xl);
+export function gammaUni(x:number[],T:number,comps:CompoundData[],p:TernaryUniquacParams){if(comps.some(c=>!c.uniquacParams))return null;const r=comps.map(c=>c.uniquacParams!.r);const q=comps.map(c=>c.uniquacParams!.q);const tau=tausUni(T,p);const sum_r=x.reduce((s,xi,i)=>s+r[i]*xi,0);const phi=r.map((ri,i)=>ri*x[i]/sum_r);const sum_q=x.reduce((s,xi,i)=>s+q[i]*xi,0);const theta=q.map((qi,i)=>qi*x[i]/sum_q);const l=r.map((ri,i)=>(Z_UNIQ/2)*(ri-q[i])-(ri-1));const sum_xl=x.reduce((s,xi,i)=>s+xi*l[i],0);
+const lnGammaC = phi.map((phi_i, i) => {
+    // Use algebraically-equivalent but clearer intermediate values
+    const phi_over_x = r[i] / sum_r; // equals phi_i / x[i]
+    const theta_over_phi = (q[i] / r[i]) * (sum_r / sum_q); // equals theta[i] / phi_i
+    return Math.log(phi_over_x) + (Z_UNIQ / 2) * q[i] * Math.log(theta_over_phi) + l[i] - phi_over_x * sum_xl;
+});
 // Residual part (only tau values needed):
 const tauMat=[[1,tau.t01,tau.t02],[tau.t10,1,tau.t12],[tau.t20,tau.t21,1]];
 // Precompute per-j denominators: sumThetaTau_j = Σ_k θ_k τ_{kj}

@@ -20,6 +20,7 @@ import {
 } from '@/lib/vle-types';
 import { 
     simulateResidueCurveODE,
+    evaluateResidueODE,
     type FluidPackageResidue
 } from '@/lib/residue-curves-ode';
 import { 
@@ -61,9 +62,7 @@ import type { CompoundAlias } from '@/lib/antoine-utils';
 import type { Data, Layout } from 'plotly.js'; 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"; 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import {
-  evaluateResidueODE
-} from '@/lib/residue-curves-ode';
+
 
 // Dynamically import Plotly to avoid SSR issues
 const Plot = dynamic(
@@ -209,6 +208,654 @@ function findApproximateAzeotropesFromCurves(
   return [...uniqueTernary, ...uniqueBinary];
 }
 
+/**
+ * Refine the Serafimov topological class by inspecting the linear stability
+ * of the three pure-component corners. Returns a more specific subclass
+ * when the corner stability pattern matches known refinements.
+ */
+function refineSerafimovClass(
+    foundAzeotropes: any[],
+    pkg: FluidPackageTypeResidue,
+    P_system_Pa: number,
+    comps: CompoundData[],
+    pkgParams: any,
+): string {
+    const getStability = (x: number[]) => {
+        const h = 1e-5
+        
+        let base_x = [...x]
+        base_x = base_x.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+        const sum = base_x.reduce((a, b) => a + b, 0)
+        base_x = base_x.map(v => v / sum)
+
+        const fBase = evaluateResidueODE(pkg as any, base_x, 350, P_system_Pa, comps, pkgParams)
+        
+        if (!fBase) {
+            return 'node'
+        }
+
+        let k = 0
+        
+        if (base_x[1] > base_x[k]) {
+            k = 1
+        }
+        if (base_x[2] > base_x[k]) {
+            k = 2
+        }
+
+        const indep = [0, 1, 2].filter(idx => idx !== k)
+        const i1 = indep[0]
+        const i2 = indep[1]
+
+        const xPert1 = [...base_x]
+        xPert1[i1] += h
+        xPert1[k] -= h
+        const fPert1 = evaluateResidueODE(pkg as any, xPert1, fBase.T_K, P_system_Pa, comps, pkgParams)
+
+        const xPert2 = [...base_x]
+        xPert2[i2] += h
+        xPert2[k] -= h
+        const fPert2 = evaluateResidueODE(pkg as any, xPert2, fBase.T_K, P_system_Pa, comps, pkgParams)
+
+        if (!fPert1 || !fPert2) {
+            return 'node'
+        }
+
+        const J11 = (fPert1.d[i1] - fBase.d[i1]) / h
+        const J21 = (fPert1.d[i2] - fBase.d[i2]) / h
+        const J12 = (fPert2.d[i1] - fBase.d[i1]) / h
+        const J22 = (fPert2.d[i2] - fBase.d[i2]) / h
+
+        const det = J11 * J22 - J12 * J21
+        
+        if (det < -1e-10) {
+            return 'saddle'
+        }
+        
+        return 'node'
+    };
+
+    const BINARY_THRESHOLD = 0.02;
+    const binaryAzeos = foundAzeotropes.filter(az => az.x.some((frac: number) => frac < BINARY_THRESHOLD));
+    const ternaryAzeos = foundAzeotropes.filter(az => !az.x.some((frac: number) => frac < BINARY_THRESHOLD));
+
+    let N1 = 0; let S1 = 0; let N2 = 0; let S2 = 0; let N3 = 0; let S3 = 0;
+
+    const pureCorners = [ [1,0,0], [0,1,0], [0,0,1] ];
+
+    for (const corner of pureCorners) {
+        if (getStability(corner) === 'saddle') S1++; else N1++;
+    }
+
+    for (const az of binaryAzeos) {
+        if (getStability(az.x) === 'saddle') S2++; else N2++;
+    }
+
+    for (const az of ternaryAzeos) {
+        if (getStability(az.x) === 'saddle') S3++; else N3++;
+    }
+
+    const sig = `${N3}-${S3}-${N2}-${S2}-${N1}-${S1}`;
+
+    switch (sig) {
+        case '0-0-0-0-2-1': return '0.0-1';
+        case '0-0-1-0-1-2': {
+            const az = binaryAzeos[0];
+            const missingIdx = az.x.findIndex((frac: number) => frac < BINARY_THRESHOLD);
+            const edgeCorners = pureCorners.filter((_, idx) => idx !== missingIdx);
+
+            const stab0 = getStability(edgeCorners[0]);
+            const stab1 = getStability(edgeCorners[1]);
+
+            if (stab0 === stab1) {
+                return '1.0-1a';
+            } else {
+                return '1.0-1b';
+            }
+        }
+        case '0-0-0-1-3-0': return '1.0-2';
+        case '0-1-1-0-3-0': {
+            const ternarySaddle = ternaryAzeos[0]
+            const nodes = [...pureCorners, ...binaryAzeos].filter(pt => {
+                const x = (pt as any).x || pt
+                return getStability(x) === 'node'
+            })
+            
+            const findDestination = (startX: number[]) => {
+                let currentX = [...startX]
+                let pt = evaluateResidueODE(pkg as any, currentX, ternarySaddle.T_K, P_system_Pa, comps, pkgParams)
+                
+                let i = 0
+                while (i < 500) {
+                    if (!pt) {
+                        break
+                    }
+                    
+                    const dx0 = pt.d[0]
+                    const dx1 = pt.d[1]
+                    const dx2 = pt.d.length > 2 ? pt.d[2] : -(dx0 + dx1)
+
+                    currentX[0] += dx0 * 0.2
+                    currentX[1] += dx1 * 0.2
+                    currentX[2] += dx2 * 0.2
+                    
+                    currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+                    const sum = currentX.reduce((a, b) => a + b, 0)
+                    currentX = currentX.map(v => v / sum)
+                    
+                    pt = evaluateResidueODE(pkg as any, currentX, pt.T_K, P_system_Pa, comps, pkgParams)
+                    i++
+                }
+                
+                let minDist = Infinity
+                let closestNode = null
+                
+                for (const node of nodes) {
+                    const nx = (node as any).x || node
+                    const dist = Math.hypot(currentX[0] - nx[0], currentX[1] - nx[1])
+                    if (dist < minDist) {
+                        minDist = dist
+                        closestNode = node
+                    }
+                }
+                
+                return closestNode
+            }
+
+            const hitNodes = new Set()
+            
+            const perturbations = [
+                [1e-3, 0, -1e-3],
+                [-1e-3, 0, 1e-3],
+                [0, 1e-3, -1e-3],
+                [0, -1e-3, 1e-3]
+            ]
+            
+            for (const offset of perturbations) {
+                let startX = [...ternarySaddle.x]
+                startX[0] += offset[0]
+                startX[1] += offset[1]
+                startX[2] += offset[2]
+                
+                const sum = startX.reduce((a, b) => a + b, 0)
+                startX = startX.map(v => v / sum)
+                
+                const dest = findDestination(startX)
+                if (dest) {
+                    const nx = dest.x || dest
+                    hitNodes.add(`${nx[0].toFixed(2)},${nx[1].toFixed(2)}`)
+                }
+            }
+            
+            if (hitNodes.size === 3) {
+                return '1.1-1a'
+            } else {
+                return '1.1-1b'
+            }
+        }
+        case '1-0-0-1-1-2': return '1.1-2';
+        case '0-0-2-0-0-3': return '2.0-1';
+        case '0-0-1-1-2-1': {
+            const saddleAz = binaryAzeos.find(az => getStability(az.x) === 'saddle');
+            const nodeAz = binaryAzeos.find(az => getStability(az.x) === 'node');
+
+            if (!saddleAz || !nodeAz) {
+                return '2.0-2a/b/c';
+            }
+
+            const sIdx = saddleAz.x.findIndex((v: number) => v < BINARY_THRESHOLD);
+            const nIdx = nodeAz.x.findIndex((v: number) => v < BINARY_THRESHOLD);
+
+            const sharedIdx = [0, 1, 2].find(i => i !== sIdx && i !== nIdx)! as number;
+            const sharedCorner = pureCorners[sharedIdx];
+
+            const unsharedSaddleIdx = [0, 1, 2].find(i => i !== sIdx && i !== sharedIdx)! as number;
+            const unsharedSaddleCorner = pureCorners[unsharedSaddleIdx];
+
+            let currentX = [...saddleAz.x];
+            currentX[sIdx] = 1e-3;
+
+            let sum = currentX.reduce((a, b) => a + b, 0);
+            currentX = currentX.map(v => v / sum);
+
+            let pt = evaluateResidueODE(pkg as any, currentX, saddleAz.T_K, P_system_Pa, comps, pkgParams);
+
+            if (!pt) {
+                return '2.0-2a/b/c';
+            }
+
+            const initialDx0 = pt.d[0];
+            const initialDx1 = pt.d[1];
+            const initialDx2 = pt.d.length > 2 ? pt.d[2] : -(initialDx0 + initialDx1);
+            const initialDxMissing = sIdx === 0 ? initialDx0 : (sIdx === 1 ? initialDx1 : initialDx2);
+
+            const stepSign = initialDxMissing > 0 ? 1 : -1;
+
+            for (let i = 0; i < 500; i++) {
+                pt = evaluateResidueODE(pkg as any, currentX, pt.T_K, P_system_Pa, comps, pkgParams);
+
+                if (!pt) {
+                    break;
+                }
+
+                const dx0 = pt.d[0];
+                const dx1 = pt.d[1];
+                const dx2 = pt.d.length > 2 ? pt.d[2] : -(dx0 + dx1);
+
+                currentX[0] += stepSign * dx0 * 0.2;
+                currentX[1] += stepSign * dx1 * 0.2;
+                currentX[2] += stepSign * dx2 * 0.2;
+
+                currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)));
+                sum = currentX.reduce((a, b) => a + b, 0);
+                currentX = currentX.map(v => v / sum);
+            }
+
+            const distToShared = Math.hypot(currentX[0] - sharedCorner[0], currentX[1] - sharedCorner[1]);
+            const distToUnsharedSaddle = Math.hypot(currentX[0] - unsharedSaddleCorner[0], currentX[1] - unsharedSaddleCorner[1]);
+            const distToNodeAz = Math.hypot(currentX[0] - nodeAz.x[0], currentX[1] - nodeAz.x[1]);
+
+            const minDist = Math.min(distToShared, distToUnsharedSaddle, distToNodeAz);
+
+            if (minDist === distToShared) {
+                return '2.0-2a';
+            } else if (minDist === distToUnsharedSaddle) {
+                return '2.0-2b';
+            } else {
+                return '2.0-2c';
+            }
+        }
+        case '1-0-1-1-0-3': return '2.1-1';
+        case '1-0-0-2-2-1': {
+            const binarySaddles = binaryAzeos.filter(az => getStability(az.x) === 'saddle')
+            const nodes = [...pureCorners, ...binaryAzeos, ...ternaryAzeos].filter(pt => {
+                const x = (pt as any).x || pt
+                return getStability(x) === 'node'
+            })
+            
+            const hitNodes = new Set()
+
+            for (const saddle of binarySaddles) {
+                const sIdx = saddle.x.findIndex((v: number) => v < BINARY_THRESHOLD)
+                let currentX = [...saddle.x]
+                currentX[sIdx] = 1e-3
+                
+                let sum = currentX.reduce((a, b) => a + b, 0)
+                currentX = currentX.map(v => v / sum)
+
+                let pt = evaluateResidueODE(pkg as any, currentX, saddle.T_K, P_system_Pa, comps, pkgParams)
+                
+                if (!pt) {
+                    continue
+                }
+                
+                const dx0 = pt.d[0]
+                const dx1 = pt.d[1]
+                const dx2 = pt.d.length > 2 ? pt.d[2] : -(dx0 + dx1)
+                const initialDxMissing = sIdx === 0 ? dx0 : (sIdx === 1 ? dx1 : dx2)
+                
+                const stepSign = initialDxMissing > 0 ? 1 : -1
+
+                let i = 0
+                while (i < 500) {
+                    pt = evaluateResidueODE(pkg as any, currentX, pt.T_K, P_system_Pa, comps, pkgParams)
+                    
+                    if (!pt) {
+                        break
+                    }
+                    
+                    const curDx0 = pt.d[0]
+                    const curDx1 = pt.d[1]
+                    const curDx2 = pt.d.length > 2 ? pt.d[2] : -(curDx0 + curDx1)
+
+                    currentX[0] += stepSign * curDx0 * 0.2
+                    currentX[1] += stepSign * curDx1 * 0.2
+                    currentX[2] += stepSign * curDx2 * 0.2
+                    
+                    currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+                    sum = currentX.reduce((a, b) => a + b, 0)
+                    currentX = currentX.map(v => v / sum)
+                    
+                    i++
+                }
+
+                let minDist = Infinity
+                let closestNode = null
+                
+                for (const node of nodes) {
+                    const nx = (node as any).x || node
+                    const dist = Math.hypot(currentX[0] - nx[0], currentX[1] - nx[1])
+                    if (dist < minDist) {
+                        minDist = dist
+                        closestNode = node
+                    }
+                }
+
+                if (closestNode) {
+                    const nx = (closestNode as any).x || closestNode
+                    hitNodes.add(`${nx[0].toFixed(2)},${nx[1].toFixed(2)}`)
+                }
+            }
+
+            if (hitNodes.size === 1) {
+                return '2.1-2a'
+            } else {
+                return '2.1-2b'
+            }
+        }
+        case '0-1-2-0-2-1': {
+            const ternarySaddle = ternaryAzeos[0]
+            const nodes = [...pureCorners, ...binaryAzeos].filter(pt => {
+                const x = (pt as any).x || pt
+                return getStability(x) === 'node'
+            })
+            
+            const findDestination = (startX: number[]) => {
+                let currentX = [...startX]
+                let pt = evaluateResidueODE(pkg as any, currentX, ternarySaddle.T_K, P_system_Pa, comps, pkgParams)
+                
+                let i = 0
+                while (i < 500) {
+                    if (!pt) {
+                        break
+                    }
+                    
+                    const dx0 = pt.d[0]
+                    const dx1 = pt.d[1]
+                    const dx2 = pt.d.length > 2 ? pt.d[2] : -(dx0 + dx1)
+
+                    currentX[0] += dx0 * 0.2
+                    currentX[1] += dx1 * 0.2
+                    currentX[2] += dx2 * 0.2
+                    
+                    currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+                    const sum = currentX.reduce((a, b) => a + b, 0)
+                    currentX = currentX.map(v => v / sum)
+                    
+                    pt = evaluateResidueODE(pkg as any, currentX, pt.T_K, P_system_Pa, comps, pkgParams)
+                    i++
+                }
+                
+                let minDist = Infinity
+                let closestNode = null
+                
+                for (const node of nodes) {
+                    const nx = (node as any).x || node
+                    const dist = Math.hypot(currentX[0] - nx[0], currentX[1] - nx[1])
+                    if (dist < minDist) {
+                        minDist = dist
+                        closestNode = node
+                    }
+                }
+                
+                return closestNode
+            }
+
+            const hitNodes = new Set()
+            
+            const perturbations = [
+                [1e-3, 0, -1e-3],
+                [-1e-3, 0, 1e-3],
+                [0, 1e-3, -1e-3],
+                [0, -1e-3, 1e-3]
+            ]
+            
+            for (const offset of perturbations) {
+                let startX = [...ternarySaddle.x]
+                startX[0] += offset[0]
+                startX[1] += offset[1]
+                startX[2] += offset[2]
+                
+                const sum = startX.reduce((a, b) => a + b, 0)
+                startX = startX.map(v => v / sum)
+                
+                const dest = findDestination(startX)
+                if (dest) {
+                    const nx = (dest as any).x || dest
+                    hitNodes.add(`${nx[0].toFixed(2)},${nx[1].toFixed(2)}`)
+                }
+            }
+            
+            if (hitNodes.size === 3) {
+                return '2.1-3a'
+            } else {
+                return '2.1-3b'
+            }
+        }
+        case '0-0-2-1-1-2': {
+            const saddleAz = binaryAzeos.find(az => getStability(az.x) === 'saddle')
+            const nodes = [...pureCorners, ...binaryAzeos].filter(pt => {
+                const x = pt.x || pt
+                return getStability(x) === 'node'
+            })
+            
+            if (!saddleAz) {
+                return '3.0-1a/b'
+            }
+
+            const sIdx = saddleAz.x.findIndex((v: number) => v < BINARY_THRESHOLD)
+            
+            let currentX = [...saddleAz.x]
+            currentX[sIdx] = 1e-3
+            
+            let sum = currentX.reduce((a, b) => a + b, 0)
+            currentX = currentX.map(v => v / sum)
+
+            let pt = evaluateResidueODE(pkg, currentX, saddleAz.T_K, P_system_Pa, comps, pkgParams)
+            
+            if (!pt) {
+                return '3.0-1a/b'
+            }
+            
+            const initialDx0 = pt.d[0]
+            const initialDx1 = pt.d[1]
+            const initialDx2 = pt.d.length > 2 ? pt.d[2] : -(initialDx0 + initialDx1)
+            const initialDxMissing = sIdx === 0 ? initialDx0 : (sIdx === 1 ? initialDx1 : initialDx2)
+            
+            const stepSign = initialDxMissing > 0 ? 1 : -1
+
+            let i = 0
+            while (i < 500) {
+                pt = evaluateResidueODE(pkg, currentX, pt.T_K, P_system_Pa, comps, pkgParams)
+                
+                if (!pt) {
+                    break
+                }
+                
+                const curDx0 = pt.d[0]
+                const curDx1 = pt.d[1]
+                const curDx2 = pt.d.length > 2 ? pt.d[2] : -(curDx0 + curDx1)
+
+                currentX[0] += stepSign * curDx0 * 0.2
+                currentX[1] += stepSign * curDx1 * 0.2
+                currentX[2] += stepSign * curDx2 * 0.2
+                
+                currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+                sum = currentX.reduce((a, b) => a + b, 0)
+                currentX = currentX.map(v => v / sum)
+                
+                i++
+            }
+
+            let minDist = Infinity
+            let closestNode = null
+            
+            for (const node of nodes) {
+                const nx = node.x || node
+                const dist = Math.hypot(currentX[0] - nx[0], currentX[1] - nx[1])
+                if (dist < minDist) {
+                    minDist = dist
+                    closestNode = node
+                }
+            }
+            
+            if (closestNode) {
+                const nx = closestNode.x || closestNode
+                const isPureCorner = nx.filter((v: number) => v < BINARY_THRESHOLD).length === 2
+                
+                if (isPureCorner) {
+                    return '3.0-1a'
+                } else {
+                    return '3.0-1b'
+                }
+            }
+            
+            return '3.0-1a/b'
+        }
+        case '0-0-1-2-3-0': return '3.0-2';
+        case '0-1-3-0-1-2': {
+            const ternarySaddle = ternaryAzeos[0]
+            const nodes = [...binaryAzeos, ...pureCorners].filter(pt => {
+                const x = (pt as any).x || pt
+                return getStability(x) === 'node'
+            })
+            
+            const findDestination = (startX: number[]) => {
+                let currentX = [...startX]
+                let pt = evaluateResidueODE(pkg as any, currentX, ternarySaddle.T_K, P_system_Pa, comps, pkgParams)
+                
+                for (let i = 0; i < 500; i++) {
+                    if (!pt) break
+                    
+                    const dx0 = pt.d[0]
+                    const dx1 = pt.d[1]
+                    const dx2 = pt.d.length > 2 ? pt.d[2] : -(dx0 + dx1)
+
+                    currentX[0] += dx0 * 0.2
+                    currentX[1] += dx1 * 0.2
+                    currentX[2] += dx2 * 0.2
+                    
+                    currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+                    const sum = currentX.reduce((a, b) => a + b, 0)
+                    currentX = currentX.map(v => v / sum)
+                    
+                    pt = evaluateResidueODE(pkg as any, currentX, pt.T_K, P_system_Pa, comps, pkgParams)
+                }
+                
+                let minDist = Infinity
+                let closestNode = null
+                
+                for (const node of nodes) {
+                    const nx = (node as any).x || node
+                    const dist = Math.hypot(currentX[0] - nx[0], currentX[1] - nx[1])
+                    if (dist < minDist) {
+                        minDist = dist
+                        closestNode = node
+                    }
+                }
+                
+                return closestNode
+            }
+
+            const hitNodes = new Set()
+            
+            const perturbations = [
+                [1e-3, 0, -1e-3],
+                [-1e-3, 0, 1e-3],
+                [0, 1e-3, -1e-3],
+                [0, -1e-3, 1e-3]
+            ]
+            
+            for (const offset of perturbations) {
+                let startX = [...ternarySaddle.x]
+                startX[0] += offset[0]
+                startX[1] += offset[1]
+                startX[2] += offset[2]
+                
+                const sum = startX.reduce((a, b) => a + b, 0)
+                startX = startX.map(v => v / sum)
+                
+                const dest = findDestination(startX)
+                if (dest) {
+                    const nx = (dest as any).x || dest
+                    hitNodes.add(`${nx[0].toFixed(2)},${nx[1].toFixed(2)}`)
+                }
+            }
+            
+            if (hitNodes.size === 3) return '3.1-1a'
+            if (hitNodes.size === 2) return '3.1-1b'
+            return '3.1-1c'
+        }
+        case '1-0-1-2-1-2': return '3.1-2';
+        case '0-1-2-1-3-0': {
+            const ternarySaddle = ternaryAzeos[0]
+            const nodes = [...pureCorners, ...binaryAzeos].filter(pt => {
+                const x = (pt as any).x || pt
+                return getStability(x) === 'node'
+            })
+            
+            const findDestination = (startX: number[]) => {
+                let currentX = [...startX]
+                let pt = evaluateResidueODE(pkg as any, currentX, ternarySaddle.T_K, P_system_Pa, comps, pkgParams)
+                
+                for (let i = 0; i < 500; i++) {
+                    if (!pt) break
+                    
+                    const dx0 = pt.d[0]
+                    const dx1 = pt.d[1]
+                    const dx2 = pt.d.length > 2 ? pt.d[2] : -(dx0 + dx1)
+
+                    currentX[0] += dx0 * 0.2
+                    currentX[1] += dx1 * 0.2
+                    currentX[2] += dx2 * 0.2
+                    
+                    currentX = currentX.map(v => Math.max(1e-8, Math.min(1 - 1e-8, v)))
+                    const sum = currentX.reduce((a, b) => a + b, 0)
+                    currentX = currentX.map(v => v / sum)
+                    
+                    pt = evaluateResidueODE(pkg as any, currentX, pt.T_K, P_system_Pa, comps, pkgParams)
+                }
+                
+                let minDist = Infinity
+                let closestNode = null
+                
+                for (const node of nodes) {
+                    const nx = (node as any).x || node
+                    const dist = Math.hypot(currentX[0] - nx[0], currentX[1] - nx[1])
+                    if (dist < minDist) {
+                        minDist = dist
+                        closestNode = node
+                    }
+                }
+                
+                return closestNode
+            }
+
+            const hitNodes = new Set()
+            
+            const perturbations = [
+                [1e-3, 0, -1e-3],
+                [-1e-3, 0, 1e-3],
+                [0, 1e-3, -1e-3],
+                [0, -1e-3, 1e-3]
+            ]
+            
+            for (const offset of perturbations) {
+                let startX = [...ternarySaddle.x]
+                startX[0] += offset[0]
+                startX[1] += offset[1]
+                startX[2] += offset[2]
+                
+                const sum = startX.reduce((a, b) => a + b, 0)
+                startX = startX.map(v => v / sum)
+                
+                const dest = findDestination(startX)
+                if (dest) {
+                    const nx = (dest as any).x || dest
+                    hitNodes.add(`${nx[0].toFixed(2)},${nx[1].toFixed(2)}`)
+                }
+            }
+            
+            if (hitNodes.size === 1) return '3.1-3a'
+            return '3.1-3b'
+        }
+        case '1-0-0-3-3-0':
+            return '3.1-4'
+        default:
+            return `${binaryAzeos.length}.${ternaryAzeos.length}`
+    }
+}
+
 // Map per-model azeotrope result names to unified interface
 type NrtlAzeotropeResult = AzeotropeResult;
 type PrAzeotropeResult = AzeotropeResult;
@@ -242,9 +889,14 @@ export default function TernaryResidueMapPage() {
     const [plotAxisTitles, setPlotAxisTitles] = useState({ a: 'Comp 2 (M)', b: 'Comp 3 (H)', c: 'Comp 1 (L)' });
     const initialMapGenerated = useRef(false); // Ref to track initial generation
     const [currentTheme, setCurrentTheme] = useState<'dark' | 'light'>('dark'); // Default to dark
+    const [showGrid, setShowGrid] = useState<boolean>(true); // Show faint gridlines by default
+    // Make gridlines more visible (less faint)
+    const axisGridColor = currentTheme === 'dark' ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.14)';
+    const axisGridWidth = 1.0;
     const [plotContainerRef, setPlotContainerRef] = React.useState<HTMLDivElement | null>(null); // State to hold the div element
     const [directAzeotropes, setDirectAzeotropes] = useState<AzeotropeDisplayInfo[]>([]); // Use common display info
     const [scfMessage, setScfMessage] = useState<string | null>(null);
+    const [serafimovClass, setSerafimovClass] = useState<string | null>(null);
     // Generation counter to identify the latest generate-map request
     const generationIdRef = useRef(0);
     const [displayedPressure, setDisplayedPressure] = useState<string>(systemPressure);
@@ -253,6 +905,18 @@ export default function TernaryResidueMapPage() {
     const userHasZoomedInRef = useRef(false);
     // Names frozen after last successful generation to prevent flicker while typing
     const [displayedComponentNames, setDisplayedComponentNames] = useState<string[]>(componentsInput.map(c=>c.name));
+
+    // Helper: choose header font-size class based on display name length (more granular for very long names)
+    const headerFontClass = (name?: string) => {
+        const len = (name || '').length;
+        if (len > 32) return 'text-[7px]';       // extremely long
+        if (len > 22) return 'text-[8px]';       // very long
+        if (len > 16) return 'text-[9px]';       // medium-long (covers alpha-Epichlohydrin)
+        if (len > 12) return 'text-[10px]';
+        if (len > 8) return 'text-xs';
+        return 'text-sm';
+    };
+
     // Track which azeotrope (if any) is being hovered so we can highlight it on the plot
     const [highlightedAzeoIdx, setHighlightedAzeoIdx] = useState<number | null>(null);
     // Transient "copied" indicator for azeotrope rows
@@ -816,8 +1480,18 @@ export default function TernaryResidueMapPage() {
                     antoine: pc.thermData.antoine!,
                     wilsonParams: fluidPackage === 'wilson' ? { V_L_m3mol: pc.thermData.V_L_m3mol! } as WilsonPureParams : undefined,
                     unifacGroups: fluidPackage === 'unifac' ? pc.thermData.unifacGroups! : undefined,
-                    prParams: fluidPackage === 'pr' ? pc.thermData.criticalProperties! as PrPureComponentParams : undefined,
-                    srkParams: fluidPackage === 'srk' ? pc.thermData.criticalProperties! as SrkPureComponentParams : undefined,
+                    prParams: ((): PrPureComponentParams | undefined => {
+                        if (fluidPackage !== 'pr' || !pc.thermData.criticalProperties) return undefined;
+                        const rawPc = pc.thermData.criticalProperties.Pc_Pa;
+                        const Pc_Pa = (rawPc && rawPc < 1e6) ? rawPc * 1000 : rawPc; // treat <1e6 as kPa
+                        return { ...pc.thermData.criticalProperties!, Pc_Pa } as PrPureComponentParams;
+                    })(),
+                    srkParams: ((): SrkPureComponentParams | undefined => {
+                        if (fluidPackage !== 'srk' || !pc.thermData.criticalProperties) return undefined;
+                        const rawPc = pc.thermData.criticalProperties.Pc_Pa;
+                        const Pc_Pa = (rawPc && rawPc < 1e6) ? rawPc * 1000 : rawPc; // treat <1e6 as kPa
+                        return { ...pc.thermData.criticalProperties!, Pc_Pa } as SrkPureComponentParams;
+                    })(),
                     uniquacParams: fluidPackage === 'uniquac' ? pc.thermData.uniquacParams! : undefined,
             }));
 
@@ -1338,6 +2012,15 @@ export default function TernaryResidueMapPage() {
             }
             
             setDirectAzeotropes(foundAzeotropes);
+            const refinedClass = refineSerafimovClass(
+                foundAzeotropes,
+                fluidPackage as FluidPackageTypeResidue,
+                P_system_Pa,
+                compoundsForBackend,
+                activityModelParams
+            );
+            setSerafimovClass(refinedClass);
+
             if (foundAzeotropes.length > 0) {
                 // console.log(`Directly found ${foundAzeotropes.length} potential azeotrope(s) using ${generatingFluidPackage}:`, foundAzeotropes.map(az => ({x: az.x, T_K: az.T_K, err: az.errorNorm})));
             } else {
@@ -1614,6 +2297,7 @@ export default function TernaryResidueMapPage() {
 
         const axisTitleFont = { ...basePlotFontObject, size: 15 };
         const tickFont = { ...basePlotFontObject, size: 14 };
+        // axis grid color/width are defined at component scope (theme-aware)
 
         // Reverse the tick labels to force a counter-clockwise reading direction (0 to 1)
         // include endpoints so the corner '1' and '0' markers are visible again
@@ -1634,9 +2318,9 @@ export default function TernaryResidueMapPage() {
             },
             ternary: {
                 sum: 1,
-                aaxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: 'transparent', tickvals: reversedTickVals, ticktext: reversedTickText, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
-                baxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: 'transparent', tickvals: reversedTickVals, ticktext: tickTextBottom, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
-                caxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: 'transparent', tickvals: reversedTickVals, ticktext: reversedTickText, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
+                aaxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: axisGridColor, gridwidth: axisGridWidth, tickvals: reversedTickVals, ticktext: reversedTickText, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
+                baxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: axisGridColor, gridwidth: axisGridWidth, tickvals: reversedTickVals, ticktext: tickTextBottom, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
+                caxis: { title: { text: '', font: axisTitleFont, standoff: 35 }, min: 0, max: 1, tickformat: '.1f', tickfont: tickFont, linecolor: 'white', gridcolor: axisGridColor, gridwidth: axisGridWidth, tickvals: reversedTickVals, ticktext: reversedTickText, layer: 'below traces', ticks: 'outside', ticklen: 8, tickcolor: 'transparent' }, 
                 bgcolor: 'transparent'
             },
             margin: { l: 60, r: 60, b: 60, t: 90, pad: 0 },
@@ -1970,7 +2654,7 @@ export default function TernaryResidueMapPage() {
                 `${displayedComponentNames[0] || 'Comp 1'}: ${fmt3(az.x[0])}<br>`+
                 `T: ${fmt3(az.T_K-273.15)}°C`;
 
-            const pushAzeoTrace = (dataArr:typeof minAz, color:string, name:string) => {
+            const pushAzeoTrace = (dataArr:typeof minAz, color:string, name:string, traceIdPrefix = 'rcm-azeo') => {
                 if (dataArr.length === 0) return;
                 allTraces.push({
                     type: 'scatterternary',
@@ -1982,8 +2666,11 @@ export default function TernaryResidueMapPage() {
                     text: dataArr.map(az=>mkText(az)),
                     hoverinfo:'text',
                     marker:{symbol:'star',size:14,color:color,opacity:1,line:{color: color, width:1.5}},
-                    name:name,
+                    name: name,
+                    traceId: `${traceIdPrefix}-${name.replace(/\s+/g,'')}`,
                     legendgroup:'azeotropes',
+                    visible: showAzeoStars, // initial visibility follows current toggle
+                    rcmType: 'azeo',
                     hoverlabel: {
                         font: {
                             family: merriweatherFamilyString,
@@ -1994,11 +2681,10 @@ export default function TernaryResidueMapPage() {
                 } as Data);
             };
 
-            if (showAzeoStars) {
-                pushAzeoTrace(minAz, '#00C000', 'Min-boiling'); // brighter green
-                pushAzeoTrace(maxAz, '#9900FF', 'Max-boiling'); // saturated purple
-                pushAzeoTrace(sadAz, 'red', 'Saddle');
-            }
+            // Always include azeotrope marker traces (visibility controlled separately)
+            pushAzeoTrace(minAz, '#00C000', 'Min-boiling'); // brighter green
+            pushAzeoTrace(maxAz, '#9900FF', 'Max-boiling'); // saturated purple
+            pushAzeoTrace(sadAz, 'red', 'Saddle');
         }
         // --- End Add Directly Found Azeotropes to Plot ---
 
@@ -2078,7 +2764,7 @@ export default function TernaryResidueMapPage() {
 
         return { baseTraces: allTraces, baseLayout: finalLayout, minAz, maxAz, sadAz };
 
-    }, [cleanedResidueCurves, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope, showAzeoStars]);
+    }, [cleanedResidueCurves, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope]);
 
     useEffect(() => {
         const { baseTraces, baseLayout, minAz, maxAz, sadAz } = memoizedPlotData;
@@ -2104,7 +2790,10 @@ export default function TernaryResidueMapPage() {
                 // animated "zoom": scale base size by highlightedStarScale
                 marker:{symbol:'star',size: Math.round(28 * highlightedStarScale),color:highlightColor,opacity:1,line:{color: highlightColor, width: 0}},
                 showlegend:false,
-                legendgroup:'azeotropes'
+                legendgroup:'azeotropes',
+                name: 'rcm-highlight-azeo',
+                rcmType: 'azeo-highlight',
+                visible: showAzeoStars
             } as Data);
         }
         
@@ -2180,6 +2869,71 @@ export default function TernaryResidueMapPage() {
             const newTraces = finalTraces.map(convertTrace).filter(Boolean)
             const highContrastColor = currentTheme === 'dark' ? '#FFFFFF' : '#000000'
 
+            // --- Custom, triangle-clipped grid traces (cartesian/right-triangle) ---
+            // We disable native axis gridlines for the cartesian view and draw
+            // grid segments constrained to the triangle so nothing appears outside.
+            const gridTraces: any[] = [];
+            if (showGrid) {
+                // vertical (x = const) segments: from y=0 up to hypotenuse y = 1 - x
+                for (let i = 1; i < 10; i++) {
+                    const xv = i / 10.0;
+                    gridTraces.push({
+                        type: 'scatter',
+                        mode: 'lines',
+                        x: [xv, xv],
+                        y: [0, 1 - xv],
+                        line: { color: axisGridColor, width: axisGridWidth },
+                        hoverinfo: 'skip',
+                        showlegend: false,
+                        cliponaxis: false,
+                        name: `rcm-grid-vert-${i}`,
+                        rcmType: 'grid',
+                        visible: showGrid
+                    });
+                }
+
+                // horizontal (y = const) segments: from x=0 up to hypotenuse x = 1 - y
+                for (let i = 1; i < 10; i++) {
+                    const yv = i / 10.0;
+                    gridTraces.push({
+                        type: 'scatter',
+                        mode: 'lines',
+                        x: [0, 1 - yv],
+                        y: [yv, yv],
+                        line: { color: axisGridColor, width: axisGridWidth },
+                        hoverinfo: 'skip',
+                        showlegend: false,
+                        cliponaxis: false,
+                        name: `rcm-grid-horz-${i}`,
+                        rcmType: 'grid',
+                        visible: showGrid
+                    });
+                }
+
+                // hypotenuse-parallel segments (x + y = const): draw from (0,s) to (s,0)
+                for (let i = 1; i < 10; i++) {
+                    const s = i / 10.0;
+                    gridTraces.push({
+                        type: 'scatter',
+                        mode: 'lines',
+                        x: [0, s],
+                        y: [s, 0],
+                        line: { color: axisGridColor, width: axisGridWidth },
+                        hoverinfo: 'skip',
+                        showlegend: false,
+                        cliponaxis: false,
+                        name: `rcm-grid-hypo-${i}`,
+                        rcmType: 'grid',
+                        visible: showGrid
+                    });
+                }
+            }
+
+            // Insert grid traces *before* residue-curve traces so curves draw on top
+            if (gridTraces.length > 0) {
+                newTraces.splice(0, 0, ...gridTraces);
+            }
+
             const boundaryTrace: any = {
                 type: 'scatter',
                 mode: 'lines',
@@ -2192,7 +2946,7 @@ export default function TernaryResidueMapPage() {
             }
 
             // Insert the boundary trace just after the residue-curve traces so it behaves like a plot element
-            newTraces.splice(cleanedResidueCurves.length, 0, boundaryTrace)
+            newTraces.splice(cleanedResidueCurves.length + gridTraces.length, 0, boundaryTrace)
 
             const hypotenuseAnnotations = [];
             for (let i = 1; i < 10; i++) {
@@ -2239,8 +2993,8 @@ export default function TernaryResidueMapPage() {
                     xanchor: 'right',
                     yanchor: 'top',
                 },
-                xaxis: { domain: [0, 1], range: [0, 1], showgrid: false, zeroline: false, constrain: 'domain', showline: false, showticklabels: false, ticks: '' },
-                yaxis: { domain: [0, 1], range: [0, 1], showgrid: false, zeroline: false, scaleanchor: 'x', showline: false, showticklabels: false, ticks: '' },
+                xaxis: { domain: [0, 1], range: [0, 1], showgrid: false, gridcolor: showGrid ? axisGridColor : 'transparent', gridwidth: showGrid ? axisGridWidth : 0, zeroline: false, constrain: 'domain', showline: false, showticklabels: false, ticks: '' },
+                yaxis: { domain: [0, 1], range: [0, 1], showgrid: false, gridcolor: showGrid ? axisGridColor : 'transparent', gridwidth: showGrid ? axisGridWidth : 0, zeroline: false, scaleanchor: 'x', showline: false, showticklabels: false, ticks: '' },
                 shapes: [],
                 margin: baseLayout.margin,
                 annotations: [
@@ -2265,7 +3019,82 @@ export default function TernaryResidueMapPage() {
             setPlotlyData(finalTraces);
             setPlotlyLayout(baseLayout);
         }
-    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle, plotAxisTitles, showAzeoStars, highlightedStarScale]);
+    }, [memoizedPlotData, highlightedAzeoIdx, directAzeotropes, currentTheme, useRightTriangle, plotAxisTitles, highlightedStarScale]);
+
+    // Lightweight toggle: show/hide azeotrope markers (no expensive recompute)
+    useEffect(() => {
+        setPlotlyData(prev => {
+            // Update visibility of existing azeotrope traces
+            let next = prev.map(t => {
+                const isAzeo = (t as any).legendgroup === 'azeotropes' || (t as any).rcmType === 'azeo';
+                const isHighlight = (t as any).name === 'rcm-highlight-azeo' || (t as any).rcmType === 'azeo-highlight';
+                if (isAzeo || isHighlight) {
+                    return { ...t, visible: showAzeoStars };
+                }
+                return t;
+            });
+
+            // If showAzeoStars enabled and there is a highlighted index but no highlight trace, add it
+            if (showAzeoStars && highlightedAzeoIdx !== null && highlightedAzeoIdx < directAzeotropes.length) {
+                const exists = next.some(t => (t as any).name === 'rcm-highlight-azeo');
+                if (!exists) {
+                    const highlightedAzeo = directAzeotropes[highlightedAzeoIdx];
+                    const cls = classifyAzeotrope(highlightedAzeo);
+                    let highlightColor = 'red';
+                    if (cls === 'min') highlightColor = '#00C000';
+                    if (cls === 'max') highlightColor = '#9900FF';
+
+                    const highlightTrace: any = {
+                        type: 'scatterternary',
+                        mode: 'markers',
+                        a: [highlightedAzeo.x[1]],
+                        b: [highlightedAzeo.x[2]],
+                        c: [highlightedAzeo.x[0]],
+                        cliponaxis: false,
+                        hoverinfo: 'skip',
+                        marker: { symbol: 'star', size: Math.round(28 * highlightedStarScale), color: highlightColor, opacity: 1, line: { color: highlightColor, width: 0 } },
+                        showlegend: false,
+                        legendgroup: 'azeotropes',
+                        name: 'rcm-highlight-azeo',
+                        rcmType: 'azeo-highlight',
+                        visible: true
+                    };
+                    next = [...next, highlightTrace];
+                }
+            } else {
+                // remove any existing highlight trace if hiding azeos or no highlighted index
+                next = next.filter(t => (t as any).name !== 'rcm-highlight-azeo');
+            }
+
+            return next;
+        });
+    }, [showAzeoStars, highlightedAzeoIdx, highlightedStarScale, directAzeotropes, classifyAzeotrope]);
+
+    // Lightweight toggle: show/hide gridlines without recomputing curves/layout
+    useEffect(() => {
+        // Update ternary axis grid color/width in layout (fast)
+        setPlotlyLayout(prev => {
+            const next = { ...(prev || {}) } as any;
+            if (next.ternary) {
+                next.ternary = {
+                    ...next.ternary,
+                    aaxis: { ...(next.ternary.aaxis || {}), gridcolor: showGrid ? axisGridColor : 'transparent', gridwidth: showGrid ? axisGridWidth : 0 },
+                    baxis: { ...(next.ternary.baxis || {}), gridcolor: showGrid ? axisGridColor : 'transparent', gridwidth: showGrid ? axisGridWidth : 0 },
+                    caxis: { ...(next.ternary.caxis || {}), gridcolor: showGrid ? axisGridColor : 'transparent', gridwidth: showGrid ? axisGridWidth : 0 },
+                };
+            }
+            // For cartesian view, custom grid traces are used (we toggle their visibility below)
+            return next;
+        });
+
+        // Toggle custom triangle grid traces (fast, no heavy recompute)
+        setPlotlyData(prev => prev.map(t => {
+            if ((t as any).rcmType === 'grid' || (typeof (t as any).name === 'string' && (t as any).name.startsWith('rcm-grid'))) {
+                return { ...t, visible: showGrid };
+            }
+            return t;
+        }));
+    }, [showGrid, axisGridColor, axisGridWidth]);
 
     const handleGenerateClick = () => {
         handleGenerateMap();
@@ -2387,6 +3216,89 @@ export default function TernaryResidueMapPage() {
         }
     };
 
+    // Export current Plotly plot as PNG
+    const exportPlot = useCallback(async () => {
+        try {
+            const container = plotContainerRef;
+            if (!container) throw new Error('Plot not ready');
+            const plotDiv = container.querySelector('.js-plotly-plot') as any || container.querySelector('[data-plotly]') as any;
+            if (!plotDiv) throw new Error('Plot DOM not found');
+
+            // Wait for Merriweather Sans to be available in the document (so canvas/svg rasterization uses it)
+            const waitForFont = async (family: string, timeout = 2000) => {
+                try {
+                    if (typeof document === 'undefined' || !('fonts' in document)) return;
+                    // quick check
+                    if ((document as any).fonts.check(`12px "${family}"`)) return;
+                    const p = (document as any).fonts.load(`12px "${family}"`);
+                    const t = new Promise(res => setTimeout(res, timeout));
+                    await Promise.race([p, t]);
+                } catch (e) {
+                    /* ignore */
+                }
+            };
+
+            await waitForFont('Merriweather Sans', 2500);
+            await waitForFont('Merriweather', 2500);
+
+            // Prefer the Plotly instance that react-plotly.js loads on the client (attached to window)
+            const plotly = (typeof window !== 'undefined' && (window as any).Plotly) ? (window as any).Plotly : null;
+            if (plotly && typeof plotly.downloadImage === 'function') {
+                // Ensure layout explicitly requests Merriweather Sans for all text elements (already set elsewhere), then export.
+                await plotly.downloadImage(plotDiv, { format: 'png', filename: `residue-curve-map-${Date.now()}`, width: 1200, height: 800, scale: 2 });
+            } else {
+                // Plotly not available on window yet — fallback to a DOM snapshot download
+                alert('Export not available: plotting library not loaded yet.');
+            }
+        } catch (err) {
+            console.error('Export plot failed', err);
+            // fallback: show user a message
+            alert('Unable to export plot — make sure the plot is rendered.');
+        }
+    }, [plotContainerRef]);
+
+    // Export azeotrope table as CSV
+    const exportAzeotropesCSV = useCallback(() => {
+        if (!directAzeotropes || directAzeotropes.length === 0) return;
+        const headers = [
+            displayedComponentNames[0] || 'Comp 1',
+            displayedComponentNames[1] || 'Comp 2',
+            displayedComponentNames[2] || 'Comp 3',
+            'Temperature (°C)',
+            'Classification'
+        ];
+
+        const rows = directAzeotropes.map(az => {
+            const cls = classifyAzeotrope(az);
+            return [
+                az.x[0].toFixed(6),
+                az.x[1].toFixed(6),
+                az.x[2].toFixed(6),
+                (az.T_K - 273.15).toFixed(2),
+                cls
+            ];
+        });
+
+        const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        // filename: include sanitized component names + fluid package (fallbacks) instead of timestamp
+        const sanitize = (s: string) => (s || '').toString().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-]/g, '').toLowerCase();
+        const compNames = [
+            displayedComponentNames[0] || 'Comp1',
+            displayedComponentNames[1] || 'Comp2',
+            displayedComponentNames[2] || 'Comp3'
+        ].map(sanitize).join('-');
+        const pkgLabel = sanitize(fluidPackage || 'pkg');
+        a.download = `azeotropes-${compNames}-${pkgLabel}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }, [directAzeotropes, classifyAzeotrope, displayedComponentNames, fluidPackage]);
+
      return (
         <div className="container mx-auto p-4">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2497,7 +3409,7 @@ export default function TernaryResidueMapPage() {
                                             placeholder="1.0"
                                             className="w-20 pr-12 text-center font-mono overflow-hidden whitespace-nowrap"
                                         />
-                                        <span className="absolute right-3 inset-y-0 flex items-center text-xs text-muted-foreground pointer-events-none">bar</span> {/* Unit inside input */}
+                                        <span className="absolute right-3 inset-y-0 flex items-center text-base md:text-sm font-mono text-muted-foreground pointer-events-none">bar</span> {/* Unit inside input */}
                                     </div>
                                 </div>
                                 {/* Fluid package dropdown */}
@@ -2532,134 +3444,144 @@ export default function TernaryResidueMapPage() {
                         </CardContent>
                     </Card>
 
-                    {directAzeotropes.length > 0 && (() => {
+                    {/* Azeotropes and Serafimov Classification Card */}
+                    {(directAzeotropes.length > 0 || serafimovClass) && (() => {
                         const typeConfigs: Record<string, any> = {
                             min: { color: '#00C000', label: 'Minimum Boiling', bgColor: 'bg-green-50 dark:bg-green-900/20', borderColor: 'border-green-200 dark:border-green-800' },
                             max: { color: '#9900FF', label: 'Maximum Boiling', bgColor: 'bg-purple-50 dark:bg-purple-900/20', borderColor: 'border-purple-200 dark:border-purple-800' },
                             saddle: { color: '#FF0000', label: 'Saddle', bgColor: 'bg-red-50 dark:bg-red-900/20', borderColor: 'border-red-200 dark:border-red-800' },
                             unknown: { color: '#666666', label: 'Unknown', bgColor: 'bg-gray-50 dark:bg-gray-900/20', borderColor: 'border-gray-200 dark:border-gray-800' }
-                        };
+                        }
 
-                        // Convert hex color (e.g. "#00C000") to an rgba() string with alpha.
                         const hexToRgba = (hex: string, alpha: number) => {
-                            const cleaned = (hex || '').replace('#', '');
-                            const r = parseInt(cleaned.substring(0, 2), 16) || 0;
-                            const g = parseInt(cleaned.substring(2, 4), 16) || 0;
-                            const b = parseInt(cleaned.substring(4, 6), 16) || 0;
-                            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-                        }; 
+                            const cleaned = (hex || '').replace('#', '')
+                            const r = parseInt(cleaned.substring(0, 2), 16) || 0
+                            const g = parseInt(cleaned.substring(2, 4), 16) || 0
+                            const b = parseInt(cleaned.substring(4, 6), 16) || 0
+                            return `rgba(${r}, ${g}, ${b}, ${alpha})`
+                        } 
 
-                        const grouped: Record<string, typeof directAzeotropes> = {};
+                        const grouped: Record<string, typeof directAzeotropes> = {}
                         directAzeotropes.forEach(az => {
-                            const type = classifyAzeotrope(az);
-                            if (!grouped[type]) grouped[type] = [];
-                            grouped[type].push(az);
-                        });
+                            const type = classifyAzeotrope(az)
+                            if (!grouped[type]) {
+                                grouped[type] = []
+                            }
+                            grouped[type].push(az)
+                        })
 
-                        const types = ['min', 'max', 'saddle', 'unknown'];
-                        const activeTypes = types.filter(t => grouped[t]?.length > 0);
+                        const types = ['min', 'max', 'saddle', 'unknown']
+                        const activeTypes = types.filter(t => grouped[t]?.length > 0)
 
                         return (
                             <Card>
-                                <CardContent className="space-y-4 pt-4">
-                                    {activeTypes.map(type => {
-                                        const typeConfig = typeConfigs[type];
-                                        const azeos = grouped[type].sort((a, b) => b.T_K - a.T_K);
-                                        return (
-                                            <div
-                                                key={type}
-                                                className={`p-4 rounded-lg border-2 ${typeConfig.bgColor} ${typeConfig.borderColor}`}
+                                <CardHeader className="pb-0 pt-2">
+                                    <div className="flex justify-between items-center">
+                                        <CardTitle className="text-lg">Azeotropes</CardTitle>
+                                        {serafimovClass && (
+                                            <div 
+                                                className="text-xs font-semibold bg-muted/80 text-muted-foreground px-2 py-1 rounded-md border"
+                                                title="Serafimov Topological Classification (Binary.Ternary)"
                                             >
-                                                <div className="flex items-center gap-2 mb-3">
-                                                    <span style={{color: typeConfig.color, fontSize: '1.2em'}}>★</span>
-                                                    <span className="font-medium text-sm" style={{color: typeConfig.color}}>
-                                                        {typeConfig.label}
-                                                    </span>
-                                                </div>
-                                                <div className="space-y-2">
-                                                    {azeos.map((az, idx) => {
-                                                        const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az)
-                                                        const isCopied = copiedAzeoIdx === originalIndex
-                                                        
-                                                        return (
-                                                            <div
-                                                                key={idx}
-                                                                className={`relative flex items-center gap-2 p-2 rounded transition-all duration-200 cursor-pointer ${isCopied ? '' : 'hover:opacity-75 hover:bg-muted/50'}`}
-                                                                style={isCopied ? { backgroundColor: hexToRgba(typeConfig.color, 0.08) } : undefined}
-                                                                onMouseEnter={() => { setHighlightedAzeoIdx(originalIndex); if (showAzeoStars) startStarPulse(); }}
-                                                                onMouseLeave={() => { setHighlightedAzeoIdx(null); stopStarPulse(); }}
-                                                                onClick={() => handleCopyAzeo(az, originalIndex)}
-                                                                title="Click to copy azeotrope data"
-                                                            >
-                                                                <div className={`flex-1 grid grid-cols-3 gap-2 text-xs transition-opacity ${isCopied ? 'opacity-20' : 'opacity-100'}`}>
-                                                                    <div className="text-center">
-                                                                        {idx === 0 ? (
-                                                                            <>
-                                                                                <div className="text-muted-foreground mb-1 truncate" title={displayedComponentNames[0] || 'Comp 1'}>
-                                                                                    {displayedComponentNames[0] || 'Comp 1'}
-                                                                                </div>
-                                                                                <div className="font-mono text-sm">
-                                                                                    {az.x[0].toFixed(3)}
-                                                                                </div>
-                                                                            </>
-                                                                        ) : (
-                                                                            <div className="font-mono text-sm">
-                                                                                {az.x[0].toFixed(3)}
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="text-center">
-                                                                        {idx === 0 ? (
-                                                                            <>
-                                                                                <div className="text-muted-foreground mb-1 truncate" title={displayedComponentNames[1] || 'Comp 2'}>
-                                                                                    {displayedComponentNames[1] || 'Comp 2'}
-                                                                                </div>
-                                                                                <div className="font-mono text-sm">
-                                                                                    {az.x[1].toFixed(3)}
-                                                                                </div>
-                                                                            </>
-                                                                        ) : (
-                                                                            <div className="font-mono text-sm">
-                                                                                {az.x[1].toFixed(3)}
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="text-center">
-                                                                        {idx === 0 ? (
-                                                                            <>
-                                                                                <div className="text-muted-foreground mb-1 truncate" title={displayedComponentNames[2] || 'Comp 3'}>
-                                                                                    {displayedComponentNames[2] || 'Comp 3'}
-                                                                                </div>
-                                                                                <div className="font-mono text-sm">
-                                                                                    {az.x[2].toFixed(3)}
-                                                                                </div>
-                                                                            </>
-                                                                        ) : (
-                                                                            <div className="font-mono text-sm">
-                                                                                {az.x[2].toFixed(3)}
-                                                                            </div>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-                                                                <div className={`text-xs font-mono whitespace-nowrap transition-opacity ${idx === 0 ? 'self-end' : ''} ${isCopied ? 'opacity-20' : 'opacity-100'}`}>
-                                                                    {(az.T_K - 273.15).toFixed(1)}°C
-                                                                </div>
-                                                                
-                                                                {isCopied && (
-                                                                    <div className="absolute inset-0 flex items-center justify-center font-bold text-sm pointer-events-none" style={{ color: typeConfig.color }}>
-                                                                        <Check className="w-4 h-4 mr-1" /> Copied!
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        )
-                                                    })}
-                                                </div>
+                                                Serafimov Class {serafimovClass}
                                             </div>
-                                        );
-                                    })}
+                                        )}
+                                    </div>
+                                </CardHeader>
+                                <CardContent className="space-y-4 pt-0">
+                                    {directAzeotropes.length === 0 ? (
+                                        <div className="text-sm text-muted-foreground text-center p-4 border-2 border-dashed rounded-lg">
+                                            Zeotropic Mixture (No azeotropes)
+                                        </div>
+                                    ) : (
+                                        <>
+                                        {activeTypes.map(type => {
+                                            const typeConfig = typeConfigs[type]
+                                            const azeos = grouped[type].sort((a, b) => b.T_K - a.T_K)
+                                            return (
+                                                <div
+                                                    key={type}
+                                                    className={`p-4 rounded-lg border-2 ${typeConfig.bgColor} ${typeConfig.borderColor}`}
+                                                >
+                                                    <div className="flex items-center gap-2 mb-3">
+                                                        <span style={{color: typeConfig.color, fontSize: '1.2em'}}>★</span>
+                                                        <span className="font-medium text-sm" style={{color: typeConfig.color}}>
+                                                            {typeConfig.label}
+                                                        </span>
+                                                    </div>
+                                                    <div className="space-y-2">
+                                                        {azeos.map((az, idx) => {
+                                                            const originalIndex = directAzeotropes.findIndex(originalAz => originalAz === az)
+                                                            const isCopied = copiedAzeoIdx === originalIndex
+
+                                                            // Render a separate, non-hoverable header row for the first azeotrope
+                                                            const headerRow = idx === 0 ? (
+                                                                <div key={`hdr-${idx}`} className="relative flex items-center gap-2 px-2 py-2">
+                                                                    <div className="flex-1 grid grid-cols-3 gap-2">
+                                                                        <div className={`flex items-center justify-center text-center text-muted-foreground font-mono leading-5 tracking-tight ${headerFontClass(displayedComponentNames[0])} whitespace-nowrap overflow-hidden`} title={displayedComponentNames[0] || 'Comp 1'}>{displayedComponentNames[0] || 'Comp 1'}</div>
+                                                                        <div className={`flex items-center justify-center text-center text-muted-foreground font-mono leading-5 tracking-tight ${headerFontClass(displayedComponentNames[1])} whitespace-nowrap overflow-hidden`} title={displayedComponentNames[1] || 'Comp 2'}>{displayedComponentNames[1] || 'Comp 2'}</div>
+                                                                        <div className={`flex items-center justify-center text-center text-muted-foreground font-mono leading-5 tracking-tight ${headerFontClass(displayedComponentNames[2])} whitespace-nowrap overflow-hidden`} title={displayedComponentNames[2] || 'Comp 3'}>{displayedComponentNames[2] || 'Comp 3'}</div>
+                                                                    </div>
+                                                                    {/* visible temperature header — fixed width to match temp column so flex-1 areas are always equal */}
+                                                                    <div className="text-center text-muted-foreground font-mono text-sm w-20 flex-none">Temp.</div>
+                                                                </div>
+                                                            ) : null;
+
+                                                            const row = (
+                                                                <div
+                                                                    key={`row-${idx}`}
+                                                                    className={`relative flex items-center gap-2 px-2 py-2 rounded transition-all duration-200 cursor-pointer ${isCopied ? '' : 'hover:opacity-75 hover:bg-muted/50'}`}
+                                                                    style={isCopied ? { backgroundColor: hexToRgba(typeConfig.color, 0.08) } : undefined}
+                                                                    onMouseEnter={() => {
+                                                                        setHighlightedAzeoIdx(originalIndex)
+                                                                        if (showAzeoStars) startStarPulse()
+                                                                    }}
+                                                                    onMouseLeave={() => {
+                                                                        setHighlightedAzeoIdx(null)
+                                                                        stopStarPulse()
+                                                                    }}
+                                                                    onClick={() => handleCopyAzeo(az, originalIndex)}
+                                                                    title="Click to copy azeotrope data"
+                                                                >
+                                                                    <div className={`flex-1 grid grid-cols-3 gap-2 transition-opacity ${isCopied ? 'opacity-20' : 'opacity-100'}`}>
+                                                                        <div className="text-center font-mono text-sm">{az.x[0].toFixed(3)}</div>
+                                                                        <div className="text-center font-mono text-sm">{az.x[1].toFixed(3)}</div>
+                                                                        <div className="text-center font-mono text-sm">{az.x[2].toFixed(3)}</div>
+                                                                    </div>
+                                                                    <div className={`font-mono text-sm w-20 flex-none text-center whitespace-nowrap transition-opacity ${isCopied ? 'opacity-20' : 'opacity-100'}`}>
+                                                                        {(az.T_K - 273.15).toFixed(1)}°C
+                                                                    </div>
+
+                                                                    {isCopied && (
+                                                                        <div className="absolute inset-0 flex items-center justify-center font-bold text-sm pointer-events-none" style={{ color: typeConfig.color }}>
+                                                                            <Check className="w-4 h-4 mr-1" /> Copied!
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )
+
+                                                            return (
+                                                                <div key={`wrap-${idx}`}>
+                                                                    {headerRow}
+                                                                    {row}
+                                                                </div>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+
+                                        <div className="mt-3">
+                                            <Button size="sm" variant="outline" onClick={exportAzeotropesCSV} disabled={directAzeotropes.length === 0} className="w-full h-8">
+                                                Export Azeotropes CSV
+                                            </Button>
+                                        </div>
+                                        </>
+                                    )}
                                 </CardContent>
                             </Card>
-                        );
+                        )
                     })()}
                 </div>
 
@@ -2688,15 +3610,30 @@ export default function TernaryResidueMapPage() {
                                     </div>
                                 ) : (
                                     <>
-                                      <div className="absolute top-1 left-4 z-20">
+                                      <div className="absolute top-2 left-4 z-20 flex flex-col gap-2">
                                         <Button
                                           variant={showAzeoStars ? 'default' : 'ghost'}
                                           size="sm"
                                           onClick={() => setShowAzeoStars(s => !s)}
-                                          className="h-8 px-3"
+                                          className="h-8 px-1 w-32 text-center whitespace-nowrap"
                                         >
-                                          <span className="mr-2">★</span>
                                           {showAzeoStars ? 'Hide Azeotropes' : 'Show Azeotropes'}
+                                        </Button>
+                                        <Button
+                                          variant={showGrid ? 'default' : 'ghost'}
+                                          size="sm"
+                                          onClick={() => setShowGrid(s => !s)}
+                                          className="h-8 px-1 w-32 text-center whitespace-nowrap"
+                                        >
+                                          {showGrid ? 'Hide Grid' : 'Show Grid'}
+                                        </Button>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={exportPlot}
+                                          className="h-8 px-1 w-32 text-center whitespace-nowrap"
+                                        >
+                                          Export Plot
                                         </Button>
                                       </div>
 
