@@ -24,6 +24,11 @@
 .DS_Store
 *.pem
 
+# ignore APLUS data and large data files in src/data except the one we keep
+/src/data/APLUS/**
+/src/data/*
+!/src/data/ufcChampionsData.ts
+
 # debug
 npm-debug.log*
 yarn-debug.log*
