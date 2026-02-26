@@ -269,31 +269,6 @@ export default function GeoGamePage() {
     }
     return disabledStyle;
   };
-  
-  // This function applies the correct base style to each part of a complex feature
-  function applyDifferentialStyle(layer: any, feature: Feature, selectableStyle: any, disabledStyle: any) {
-    const parentFeatureName = feature.properties!.name;
-    const complexFeatures = ['France', 'Indian Ocean Territories'];
-
-    if (complexFeatures.includes(parentFeatureName) && typeof layer.eachLayer === 'function') {
-      layer.eachLayer((polygonLayer: any) => {
-        const layerCenter = polygonLayer.getBounds().getCenter();
-        let isExcluded = false;
-
-        for (const region of excludedRegions) {
-          if (
-            parentFeatureName === region.parent &&
-            layerCenter.lat > region.bounds.south && layerCenter.lat < region.bounds.north &&
-            layerCenter.lng > region.bounds.west && layerCenter.lng < region.bounds.east
-          ) {
-            isExcluded = true;
-            break;
-          }
-        }
-        polygonLayer.setStyle(isExcluded ? disabledStyle : selectableStyle);
-      });
-    }
-  }
 
   const onEachFeature = (feature: Feature, layer: Layer) => {
     // This function now correctly applies the initial style to all parts of the feature
@@ -384,7 +359,7 @@ export default function GeoGamePage() {
         }
         (event.target as L.Path).bringToFront();
       },
-      mouseout: (event: LeafletMouseEvent) => {
+      mouseout: (_event: LeafletMouseEvent) => {
         if (highlightLayerRef.current) {
           highlightLayerRef.current.remove();
           highlightLayerRef.current = null;

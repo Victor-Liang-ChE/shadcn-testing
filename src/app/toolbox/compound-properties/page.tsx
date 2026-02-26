@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
+import { type SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
 
 import ReactECharts from 'echarts-for-react';
@@ -25,8 +26,7 @@ echarts.use([
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Terminal, Trash2, PlusCircle } from 'lucide-react'; 
+import { Trash2, PlusCircle } from 'lucide-react'; 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Label } from "@/components/ui/label"; 
 
@@ -37,7 +37,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added for plot mode toggle
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added for plot mode toggle
 
 import {
     calculatePropertyByEquation, // The only direct calculator you need now
@@ -50,20 +50,6 @@ import {
     type ConstantPropertyDefinition,
     constantPropertiesConfig
 } from '@/lib/constant-properties'; // Added import for constants
-
-// Supabase Client Setup
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-let supabase: SupabaseClient;
-if (supabaseUrl && supabaseAnonKey) {
-    try {
-        supabase = createClient(supabaseUrl, supabaseAnonKey);
-    } catch (error) {
-        console.error("Error initializing Supabase client for Compound Properties:", error);
-    }
-} else {
-    console.error("Supabase URL or Anon Key is missing for Compound Properties.");
-}
 
 // Updated formatNumberToPrecision function (assuming 2-argument version from previous state)
 // Format numbers with default rounding precision
@@ -149,26 +135,6 @@ const renderPropertyName = (displayName: string, symbol?: string): React.ReactNo
       )}
     </>
   );
-};
-
-// Helper function to convert symbol string to HTML string
-const renderSymbolToHtml = (symbol?: string): string => {
-  if (!symbol) return '';
-  const baseSymbol = symbol.replace(/^\s+|\s+$/g, '');
-  const parts = baseSymbol.match(/([^_^+]+|_[^_^+]+|\^[^_^+]+)/g);
-
-  if (parts) {
-    return parts.map(part => {
-      const cleanedPart = part.replace(/^\s+|\s+$/g, '');
-      if (cleanedPart.startsWith('_') && cleanedPart.length > 1) {
-        return `<sub>${cleanedPart.substring(1).replace(/^\s+|\s+$/g, '')}</sub>`;
-      } else if (cleanedPart.startsWith('^') && cleanedPart.length > 1) {
-        return `<sup>${cleanedPart.substring(1).replace(/^\s+|\s+$/g, '')}</sup>`;
-      }
-      return cleanedPart;
-    }).join('');
-  }
-  return baseSymbol;
 };
 
 // Helper function (can be placed inside CompoundPropertiesPage or at an accessible scope)
@@ -301,7 +267,7 @@ export default function CompoundPropertiesPage() {
   const [shouldAutoUpdate, setShouldAutoUpdate] = useState(true);
   
   // State to track if user explicitly clicked fetch button (to show empty compound errors)
-  const [userClickedFetch, setUserClickedFetch] = useState(false);
+  const [_userClickedFetch, setUserClickedFetch] = useState(false);
 
   // useEffect for initial data fetching (e.g., for 'Water')
   useEffect(() => {
@@ -444,7 +410,6 @@ export default function CompoundPropertiesPage() {
         const seriesData: AppLineSeriesOption[] = []; // Use the custom type here
         // let commonTmin: number | null = null; // Removed, replaced by commonTminK_forPlot
         // let commonTmax: number | null = null; // Removed, replaced by commonTmaxK_forPlot
-        let atLeastOneCompoundHasData = false;
         let titleCompoundNames = allCompoundsData.filter(c => c.data).map(c => c.data!.name).join(' vs ');
         if (!titleCompoundNames && allCompoundsData.length > 0 && allCompoundsData[0].name) {
             titleCompoundNames = allCompoundsData[0].name; 
@@ -551,7 +516,6 @@ export default function CompoundPropertiesPage() {
 
         allCompoundsData.forEach((compoundState, compoundIndex) => {
             if (!compoundState.data || !compoundState.data.properties) return;
-            atLeastOneCompoundHasData = true;
             const currentCompoundData = compoundState.data;
             const propData = currentCompoundData.properties[propDef.jsonKey];
             if (!propData) {
@@ -565,8 +529,6 @@ export default function CompoundPropertiesPage() {
 
             const rawCoeffs = propDef.coeffs.map(cKey => ({ key: cKey, value: parseCoefficient(propData[cKey]) }));
             const passedCoeffs = rawCoeffs.map((c: { key: string, value: number | null }) => c.value);
-            let Tc_K_series: number | null = null;
-            if (propDef.requiresTc && !isBoilingPointPlot) Tc_K_series = currentCompoundData.criticalTemp ?? null;
             const mw_kg_kmol_series: number | null = currentCompoundData.molarWeight ?? null;
             
             const points: [number, number][] = [];
@@ -656,7 +618,6 @@ export default function CompoundPropertiesPage() {
                 const loopStartCelsius = (finalPlotTminKelvin !== undefined) ? (finalPlotTminKelvin - 273.15) : (Tmin_compound_K - 273.15);
                 const loopEndCelsius = (finalPlotTmaxKelvin !== undefined) ? (finalPlotTmaxKelvin - 273.15) : (Tmax_compound_K - 273.15);
                 
-                const numDataPointsForLoop = 200; // Desired number of points over the range
                 let dataPointCelsiusStep = 1; // Fixed 1°C increment for data points
 
                 for (let currentC = loopStartCelsius; currentC <= loopEndCelsius + 1e-9; currentC += dataPointCelsiusStep) {

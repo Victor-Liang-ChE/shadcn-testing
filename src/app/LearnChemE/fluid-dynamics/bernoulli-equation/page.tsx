@@ -1,7 +1,7 @@
 // src/app/LearnChemE/fluid-dynamics/bernoulli-equation/page.tsx
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,14 +30,12 @@ export default function BernoulliPage() {
   const [v2, setV2] = useState<number>(0); // m/s
   const [p1AbsKPa, setP1AbsKPa] = useState<number>(p1AbsKPaInput); // kPa, Set from input
   const [p2AbsKPa, setP2AbsKPa] = useState<number>(0); // kPa
-  const [p1GaugeKPa, setP1GaugeKPa] = useState<number>(p1AbsKPaInput - ATM_PRESSURE_PA / 1000); // kPa
-  const [p2GaugeKPa, setP2GaugeKPa] = useState<number>(0); // kPa
+  const [_p1GaugeKPa, _setP1GaugeKPa] = useState<number>(p1AbsKPaInput - ATM_PRESSURE_PA / 1000); // kPa
+  const [_p2GaugeKPa, _setP2GaugeKPa] = useState<number>(0); // kPa
   const [massFlowRate, setMassFlowRate] = useState<number>(0); // kg/s
   const [volFlowRate, setVolFlowRate] = useState<number>(0); // m^3/s
 
   // Area calculations now use the dynamic d1Input and state d2
-  const area1 = useMemo(() => Math.PI * (d1Input / 2) ** 2, [d1Input]);
-  const area2 = useMemo(() => Math.PI * (d2 / 2) ** 2, [d2]);
 
   // --- Recalculation Logic ---
   useEffect(() => {
@@ -45,7 +43,7 @@ export default function BernoulliPage() {
     setZ2(z1 + deltaZInput); // z1 is fixed at 0
     setV1(v1Input);
     setP1AbsKPa(p1AbsKPaInput);
-    setP1GaugeKPa(p1AbsKPaInput - ATM_PRESSURE_PA / 1000);
+    _setP1GaugeKPa(p1AbsKPaInput - ATM_PRESSURE_PA / 1000);
 
     // Ensure diameters are positive for calculations
     const safeD1 = d1Input > 1e-9 ? d1Input : 1e-9;
@@ -65,7 +63,7 @@ export default function BernoulliPage() {
     // Ensure P2 is not below absolute zero (though negative gauge is fine)
     const safeP2AbsPa = Math.max(0, calculatedP2AbsPa);
     setP2AbsKPa(safeP2AbsPa / 1000); // Convert Pa back to kPa
-    setP2GaugeKPa((safeP2AbsPa - ATM_PRESSURE_PA) / 1000); // Convert Pa to gauge kPa
+    _setP2GaugeKPa((safeP2AbsPa - ATM_PRESSURE_PA) / 1000); // Convert Pa to gauge kPa
 
     // Calculate Flow Rates
     const calculatedVolFlowRate = Math.PI * (safeD1 / 2) ** 2 * v1Input;
@@ -110,7 +108,6 @@ export default function BernoulliPage() {
   const inlet_diameter_px = d1Input * 100 * 2; // Convert diameter to pixels for visualization (arbitrary scale factor 2)
   const y_inlet_center_svg = y_svg_baseline - z1 * scaleY; // Center of pipe at z1 (which is 0)
   const y_inlet_top_svg = y_inlet_center_svg - inlet_diameter_px / 2;
-  const y_inlet_bottom_svg = y_inlet_center_svg + inlet_diameter_px / 2;
 
   // Outlet pipe positioning (uses state diameter)
   const outlet_pipe_width = 100;

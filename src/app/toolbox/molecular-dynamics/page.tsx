@@ -43,9 +43,7 @@ import {
   Play, 
   Pause, 
   RotateCcw, 
-  MousePointer2, 
   Activity, 
-  List, 
   Zap,
   Info,
   AlertCircle
@@ -207,24 +205,6 @@ const LJ_REFERENCES: LJReference[] = [
     { formula: 'UF₆', substance: 'Uranium hexafluoride', sigmaAngstrom: 5.967, epsilonOverKbK: 236.8 }
 ]
 
-const LJ_EPSILON_STEP_K = 5
-const LJ_SIGMA_STEP_A = 0.01
-
-const roundToStep = (value: number, step: number) => Math.round(value / step) * step
-const nearlyEqual = (a: number, b: number, eps = 1e-9) => Math.abs(a - b) <= eps
-
-const getLJMatchesForPair = (epsilonK: number, sigmaA: number): LJReference[] => {
-    if (!Number.isFinite(epsilonK) || !Number.isFinite(sigmaA)) return []
-
-    const epsRounded = roundToStep(epsilonK, LJ_EPSILON_STEP_K)
-    const sigRounded = roundToStep(sigmaA, LJ_SIGMA_STEP_A)
-
-    return LJ_REFERENCES.filter((ref) => {
-        const refEpsRounded = roundToStep(ref.epsilonOverKbK, LJ_EPSILON_STEP_K)
-        const refSigRounded = roundToStep(ref.sigmaAngstrom, LJ_SIGMA_STEP_A)
-        return nearlyEqual(refEpsRounded, epsRounded) && nearlyEqual(refSigRounded, sigRounded)
-    })
-}
 
 const getLJMatchesForValue = (
     value: number,
@@ -290,9 +270,6 @@ export default function MolecularDynamicsPage() {
   
   // Keep backward-compat alias for existing code
   const epsilon = epsilonA
-  const setEpsilon = setEpsilonA
-  const sigma = sigmaA
-  const setSigma = setSigmaA
 
     // Use reduced temperature T* = T/ε as the primary UI control.
     // Note: since ε is stored in Kelvin (i.e., ε/kB), reduced temperature is simply T/ε.
@@ -564,7 +541,7 @@ export default function MolecularDynamicsPage() {
   const [showVelocity, setShowVelocity] = useState(false)
   
   // --- Analysis State ---
-  const [kineticEnergy, setKineticEnergy] = useState<number>(0)
+  const [_kineticEnergy, setKineticEnergy] = useState<number>(0)
   const [thermostatZeta, setThermostatZeta] = useState<number>(0) // Visualizing the friction
   const [pressure, setPressure] = useState<number>(0)
   const [rdfData, setRdfData] = useState<{r: number, gTotal: number, gAA: number, gBB: number, gAB: number}[]>([])
@@ -596,7 +573,7 @@ export default function MolecularDynamicsPage() {
   
   // --- Selected Particle View State ---
   const particleHistoryRef = useRef<{time: number, vx: number, vy: number, f: number}[]>([])
-  const [historyTrigger, setHistoryTrigger] = useState(0) 
+  const [_historyTrigger, setHistoryTrigger] = useState(0) 
 
   // Refs for Simulation Loop
   const requestRef = useRef<number | null>(null)
@@ -922,38 +899,6 @@ export default function MolecularDynamicsPage() {
 
   // --- ALGORITHM 1: Steepest Descent Minimization ---
   // Strictly moves particles "downhill" to fix overlaps
-  const runMinimization = (pList: Particle[]) => {
-      const MAX_STEPS = 200
-      const GAMMA = 0.01 
-      const box = paramsRef.current.box
-
-      for (let step = 0; step < MAX_STEPS; step++) {
-          const { pe: _ } = calculateForces(pList)
-          
-          let maxForce = 0
-          for (let p of pList) {
-              // 3D Magnitude
-              const fMag = Math.sqrt(p.fx**2 + p.fy**2 + p.fz**2)
-              if (fMag > maxForce) maxForce = fMag
-              
-              const scale = Math.min(GAMMA, 0.5 / (fMag + 1e-6))
-              
-              p.x += p.fx * scale
-              p.y += p.fy * scale
-              p.z += p.fz * scale
-              
-              // Enforce PBC 3D
-              if (p.x < 0) p.x += box; if (p.x >= box) p.x -= box
-              if (p.y < 0) p.y += box; if (p.y >= box) p.y -= box
-              if (p.z < 0) p.z += box; if (p.z >= box) p.z -= box
-              
-              // Zero velocities
-              p.vx = 0; p.vy = 0; p.vz = 0
-          }
-          if (maxForce < 10.0) break 
-      }
-  }
-
   // --- ALGORITHM 3: Accumulate Radial Distribution Function ---
   const sampleRDF = (currentParticles: Particle[]) => {
       const { box } = paramsRef.current
@@ -1606,7 +1551,6 @@ export default function MolecularDynamicsPage() {
           // Helper to generate curve data with rounder x-axis values
           const generateCurveForExport = (eps: number, sig: number, pC: number, pD?: number) => {
               const data: number[][] = []
-              const minSig = isBinary ? Math.min(sigmaA, sigmaB) : sigmaA
               const maxSig = isBinary ? Math.max(sigmaA, sigmaB) : sigmaA
               const start = potentialType === 'GAUSS' ? 0 : 0.05
               const end = maxSig * 3.5
@@ -1813,7 +1757,7 @@ export default function MolecularDynamicsPage() {
         const forceScale2D = forceRef2D > 1e-12 ? (maxArrowLenData / forceRef2D) : 0
 
     // --- 2D MODE CONFIGURATION ---
-    const renderArrow = (params: any, api: any) => {
+    const renderArrow = (_params: any, api: any) => {
         const x = api.value(0)
         const y = api.value(1)
         const dxVal = api.value(2)
@@ -1946,7 +1890,6 @@ export default function MolecularDynamicsPage() {
 
       // Use a shared r-range so curves fill the chart consistently.
       // Start small enough to show the repulsive wall trend without dividing by ~0.
-      const minSigma = isBinary ? Math.min(sigmaA, sigmaB) : sigmaA
       const maxSigma = isBinary ? Math.max(sigmaA, sigmaB) : sigmaA
     // Many potentials remain meaningful very close to r=0, but some have 1/r or 1/r^6 terms.
     // Use a tiny positive start for singular forms, and include r=0 for the Gaussian core.
@@ -2104,7 +2047,7 @@ export default function MolecularDynamicsPage() {
                   xAxis: sig,
                   lineStyle: { type: 'dashed', color, width: 1, opacity: 1 },
                   label: {
-                      formatter: (params: any) => {
+                      formatter: (_params: any) => {
                           const label = getSigMarkerLabel()
                           if (potentialType === 'GAUSS') {
                               return `${label} (1 std)`
@@ -2176,7 +2119,7 @@ export default function MolecularDynamicsPage() {
                       show: true,
                       position: 'insideEndTop',
                       rotate: 0,
-                      formatter: (params: any) => {
+                      formatter: (_params: any) => {
                           return `r{e|e}`
                       },
                       // Shift right for proper spacing
@@ -3970,7 +3913,6 @@ const Molecule3D = ({
     gravityFloorFading: boolean,
   onParticleClick: (id: number) => void
 }) => {
-  const particleColor = isDark ? "#ffffff" : "#3b82f6"
   const wireframeColor = isDark ? "#ffffff" : "#000000"
   
   // Colors for arrows

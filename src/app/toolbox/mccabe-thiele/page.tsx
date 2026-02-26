@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
+import { type SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
 
 // Import ECharts components
@@ -35,12 +36,12 @@ echarts.use([
   CanvasRenderer
 ]);
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip as ShadTooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeftRight } from 'lucide-react'; // Import swap icon
@@ -49,14 +50,12 @@ import { ArrowLeftRight } from 'lucide-react'; // Import swap icon
 import {
   calculatePsat_Pa as libCalculatePsat_Pa,
   // UNIFAC
-  calculateUnifacGamma,
   calculateBubbleTemperatureUnifac,
   calculateBubblePressureUnifac,
   fetchUnifacInteractionParams,
   type UnifacParameters,
   // NRTL
   fetchNrtlParameters,
-  calculateNrtlGamma,
   calculateBubbleTemperatureNrtl,
   calculateBubblePressureNrtl,
   type NrtlInteractionParams,
@@ -85,14 +84,8 @@ import {
 
 // Import Shared VLE Types
 import type {
-    AntoineParams,
-    PrPureComponentParams,
-    SrkPureComponentParams,
-    UniquacPureComponentParams,
-    WilsonPureComponentParams,
-    CompoundData, // This will be the primary type for component properties
+    CompoundData,
     BubbleDewResult,
-    UnifacGroupComposition
 } from '@/lib/vle-types';
 import { fetchCompoundDataFromHysys, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils';
 import type { CompoundAlias } from '@/lib/antoine-utils';
@@ -100,32 +93,6 @@ import type { CompoundAlias } from '@/lib/antoine-utils';
 
 type EChartsPoint = [number, number] | [number | null, number | null];
 type FluidPackageTypeMcCabe = 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac' | 'wilson';
-
-// --- Supabase Client Setup ---
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'YOUR_SUPABASE_ANON_KEY';
-
-let supabase: SupabaseClient;
-try {
-    supabase = createClient(supabaseUrl, supabaseAnonKey);
-} catch (error) {
-    console.error("Error initializing Supabase client for McCabe-Thiele:", error);
-}
-
-// Debounce function
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-
-  const debounced = (...args: Parameters<F>) => {
-    if (timeout !== null) {
-      clearTimeout(timeout);
-      timeout = null;
-    }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
-
-  return debounced as (...args: Parameters<F>) => void;
-}
 
 export default function McCabeThielePage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
@@ -137,8 +104,8 @@ export default function McCabeThielePage() {
   const [pressureBar, setPressureBar] = useState<number | null>(1); // Default, but will be overridden by useTemperature=true
   
   // New string states for input fields
-  const [temperatureInput, setTemperatureInput] = useState<string>(temperatureC !== null ? String(temperatureC) : '');
-  const [pressureInput, setPressureInput] = useState<string>(pressureBar !== null ? String(pressureBar) : '');
+  const [_temperatureInput, _setTemperatureInput] = useState<string>(temperatureC !== null ? String(temperatureC) : '');
+  const [_pressureInput, _setPressureInput] = useState<string>(pressureBar !== null ? String(pressureBar) : '');
   const [tempMax, setTempMax] = useState<string>('100');
   const [pressureMax, setPressureMax] = useState<string>('10');
   const [qMinSlider, setQMinSlider] = useState<string>('-1');
@@ -515,46 +482,6 @@ export default function McCabeThielePage() {
     return null; // Should ideally be covered by boundary checks
   };
 
-  const interpolateX = (yTarget: number, yData: number[], xData: number[]): number | null => {
-    if (!xData || !yData || yData.length === 0 || yData.length !== xData.length) return null;
-
-    // Attempt to find the correct segment for interpolation.
-    // This assumes yData is reasonably monotonic for typical VLE.
-    let bestSegment = -1;
-
-    // First pass: direct match or exact boundary
-    if (yTarget <= yData[0]) { // Using the sorted nature of xData, yData should correspond
-        if (yData[0] < yData[yData.length-1]) return xData[0]; // y is increasing
-        else return xData[xData.length-1]; // y is decreasing (less common for typical x-y)
-    }
-    if (yTarget >= yData[yData.length - 1]) {
-        if (yData[0] < yData[yData.length-1]) return xData[xData.length-1];
-        else return xData[0];
-    }
-
-
-    for (let i = 0; i < yData.length - 1; i++) {
-        const y1 = yData[i];
-        const y2 = yData[i+1];
-        if ((y1 <= yTarget && yTarget <= y2) || (y2 <= yTarget && yTarget <= y1)) {
-            bestSegment = i;
-            break;
-        }
-    }
-
-    if (bestSegment !== -1) {
-        const y1 = yData[bestSegment], x1 = xData[bestSegment];
-        const y2 = yData[bestSegment+1], x2 = xData[bestSegment+1];
-        if (y2 === y1) return (yTarget === y1) ? x1 : null; // Horizontal segment
-        return x1 + (x2 - x1) * (yTarget - y1) / (y2 - y1);
-    }
-    
-    // Fallback if no segment found (e.g. yTarget outside range not caught by initial checks)
-    // This part might need more robust handling depending on VLE data characteristics
-    console.warn("interpolateX: yTarget might be out of yData range or yData not suitable for simple interpolation.");
-    return null;
-  };
-
   const formatNumberToPrecision = (num: any, precision: number = 3): string => {
     if (typeof num === 'number') {
       if (num === 0) return '0';
@@ -891,7 +818,7 @@ export default function McCabeThielePage() {
                         }
                     }
 
-                    params.forEach((param: any, index: number) => {
+                    params.forEach((param: any, _index: number) => {
                         const seriesName = param.seriesName;
                         if (seriesName === 'Key Points') {
                             if (param.data && param.data.name) {

@@ -21,10 +21,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-
 
 import CSTRVisualization from "@/components/CSTRVisualization";
 import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
@@ -81,13 +77,6 @@ const fugThumbnailLightPath = "/thumbnails/FUG-thumbnail-light.png";
 export default function Home() {
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [feedbackType, setFeedbackType] = useState("feedback");
-  const [feedbackName, setFeedbackName] = useState("");
-  const [feedbackEmail, setFeedbackEmail] = useState("");
-  const [feedbackMessage, setFeedbackMessage] = useState("");
-  const [feedbackError, setFeedbackError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   // Search state for featured simulations
   const [searchQuery, setSearchQuery] = useState("");
 

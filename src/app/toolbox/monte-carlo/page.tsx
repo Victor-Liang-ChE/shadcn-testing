@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTheme } from "next-themes"
 
 // Import ECharts components
@@ -70,7 +70,7 @@ export default function MonteCarloPage() {
   const [latticeSize, setLatticeSize] = useState<number>(20) // 20x20 grid
   const [vacancyPercent, setVacancyPercent] = useState<number>(0.1) // 10% empty spots
   const [activationEnergy, setActivationEnergy] = useState<number>(0.5) // Barrier Ea (eV)
-  const [attemptFreq, setAttemptFreq] = useState<number>(1e12) // nu (Hz)
+  const [attemptFreq] = useState<number>(1e12) // nu (Hz)
   
   // --- STATE: Simulation Control ---
   const [isRunning, setIsRunning] = useState(false)
@@ -167,53 +167,7 @@ export default function MonteCarloPage() {
   // PHYSICS ENGINE 2: KINETIC (On-Lattice)
   // ==========================================
   // Model: Vacancy mediated diffusion with NN repulsion (Ising-like)
-  
-  const getLatticeEnergyChange = (x: number, y: number, nx: number, ny: number, grid: number[][], N: number): number => {
-    const particleType = grid[x][y] // Type of particle trying to move (1 or 2)
-    
-    // Helper to calc binding energy at a specific spot (x,y)
-    // We want to be near SAME type neighbors. 
-    // Interaction Energy J: Like-Like = -1, Like-Vacancy = 0, Like-Unlike = +1
-    const calcBindingEnergy = (cx: number, cy: number, pType: number) => {
-        let energy = 0
-        const dirs = [[0,1], [0,-1], [1,0], [-1,0]]
-        for (const [dx, dy] of dirs) {
-            let nX = cx + dx
-            let nY = cy + dy
-            if (nX < 0) nX += N
-            if (nX >= N) nX -= N
-            if (nY < 0) nY += N
-            if (nY >= N) nY -= N
-            
-            const neighbor = grid[nX][nY]
-            if (neighbor === 0) continue // Vacancy interaction = 0
-            if (neighbor === pType) energy -= 1.0 // Favor like neighbors
-            else energy += 1.0 // Disfavor unlike neighbors
-        }
-        return energy
-    }
 
-    // Energy BEFORE move (at current x,y)
-    // Note: We temporarily treat (nx, ny) as empty because the vacancy is there
-    const eOld = calcBindingEnergy(x, y, particleType)
-
-    // Energy AFTER move (at new nx, ny)
-    // Note: We temporarily treat (x, y) as empty because the vacancy moves there
-    // We must manually simulate the grid state for the calculation
-    const originalSource = grid[x][y]
-    const originalTarget = grid[nx][ny]
-    
-    // Swap virtually for calculation
-    grid[x][y] = originalTarget
-    grid[nx][ny] = originalSource
-    const eNew = calcBindingEnergy(nx, ny, particleType)
-    // Swap back
-    grid[nx][ny] = originalTarget
-    grid[x][y] = originalSource
-
-    return eNew - eOld
-  }
-  
   const performKMCSteps = () => {
     const grid = latticeRef.current
     const N = latticeSize

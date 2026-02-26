@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 interface ComponentProps {
   className?: string;
@@ -44,9 +44,6 @@ const CardHeader = ({ children, className = '', ...props }: ComponentProps) => (
 );
 const CardTitle = ({ children, className = '', ...props }: ComponentProps) => (
   <h3 className={`text-lg font-semibold ${className}`} {...props}>{children}</h3>
-);
-const CardDescription = ({ children, className = '', ...props }: ComponentProps) => (
-  <p className={`text-sm text-muted ${className}`} {...props}>{children}</p>
 );
 const CardContent = ({ children, className = '', ...props }: ComponentProps) => (
   <div className={`p-4 ${className}`} {...props}>{children}</div>
@@ -584,16 +581,6 @@ function simplifyAst(node: ASTNode | null): ASTNode | null {
 
 // --- Utility Functions ---
 
-const factorial = (n: string | number): number => {
-  let num = typeof n === 'string' ? parseInt(n) : n;
-  if (num < 0) return NaN;
-  if (num === 0 || num === 1) return 1;
-  for (let i = num - 1; i >= 1; i--) {
-    num *= i;
-  }
-  return num;
-};
-
 const gcd = (a: number, b: number): number => {
   return b === 0 ? Math.abs(a) : gcd(b, a % b);
 };
@@ -714,30 +701,7 @@ function matchExponential(node: ASTNode): { a: ASTNode } | null {
   return null;
 }
 
-// Pattern matching for power of t like t^n
-function matchPowerOfT(node: ASTNode): { n: number } | null {
-  if (isBinaryOp(node, '^') && isVariable(node.left, 't') && isConstant(node.right)) {
-    return { n: node.right.value };
-  }
-  if (isVariable(node, 't')) {
-    return { n: 1 };
-  }
-  return null;
-}
-
 // Pattern matching for trigonometric functions like sin(a*t)
-function matchTrigFunction(node: ASTNode, funcName: string): { a: ASTNode } | null {
-  if (isFunction(node, funcName)) {
-    if (isBinaryOp(node.argument, '*') && isVariable(node.argument.right, 't')) {
-      return { a: node.argument.left };
-    }
-    if (isVariable(node.argument, 't')) {
-      return { a: { type: 'Constant', value: 1 } };
-    }
-  }
-  return null;
-}
-
 // --- Helper Functions for Pattern Matching ---
 
 // Check if node is exp(-b t)
@@ -752,18 +716,6 @@ function isExpMinusBt(node: ASTNode): boolean {
          node.right.operand.right.type === "Variable" &&
          node.right.operand.right.name === "t" &&
          node.right.operand.left.type === "Constant";
-}
-
-// Extract b from exp(-b t)
-function extractB(node: ASTNode): ASTNode {
-  if (node.type === "UnaryMinus" &&
-      node.operand.type === "BinaryOperation" &&
-      node.operand.operator === "*" &&
-      node.operand.right.type === "Variable" &&
-      node.operand.right.name === "t") {
-    return node.operand.left; // the constant b
-  }
-  throw new Error("Not an exp(-b t) form");
 }
 
 // Check if node is exp(-t/τ)
@@ -790,14 +742,6 @@ function extractTau(node: ASTNode): ASTNode {
     return node.operand.right; // denominator is τ
   }
   throw new Error("Not an exp(-t/τ) form");
-}
-
-// Pattern matcher for (e^{-b1 t} - e^{-b2 t}) / (b2 - b1)
-function isDiffOfExponentialsWithBt(ast: ASTNode): boolean {
-  return ast.type === "BinaryOperation" && ast.operator === "/" &&
-         ast.left.type === "BinaryOperation" && ast.left.operator === "-" &&
-         isExpMinusBt(ast.left.left) && isExpMinusBt(ast.left.right) &&
-         ast.right.type === "BinaryOperation" && ast.right.operator === "-";
 }
 
 // Pattern matcher for (e^{-t/τ1} - e^{-t/τ2}) / (τ2 - τ1)
@@ -1307,7 +1251,6 @@ const inverseLaplaceRules: LaplaceRule[] = [
       const binOp = ast as BinaryOperation;
       const numerator = binOp.left as BinaryOperation; // ε cos η + s sin η
       const leftTerm = numerator.left as BinaryOperation; // ε * cos(η)
-      const rightTerm = numerator.right as BinaryOperation; // s * sin(η)
       
       // Extract ε from the first term
       const ε = leftTerm.left;
@@ -1524,13 +1467,13 @@ const simplifyLatex = (latex: string): string => {
 
   // Rule 1: Replace "+ (-number)" with "- number"
   // Example: s + (-2)  =>  s - 2
-  simplified = simplified.replace(/\+\s*\((-[^)]+)\)/g, (match, capturedGroup) => {
+  simplified = simplified.replace(/\+\s*\((-[^)]+)\)/g, (_match, capturedGroup) => {
     return `- ${capturedGroup.substring(1)}`;
   });
 
   // Rule 2: Replace "- (-number)" with "+ number"
   // Example: s - (-2)  =>  s + 2
-  simplified = simplified.replace(/-\s*\((-[^)]+)\)/g, (match, capturedGroup) => {
+  simplified = simplified.replace(/-\s*\((-[^)]+)\)/g, (_match, capturedGroup) => {
     return `+ ${capturedGroup.substring(1)}`;
   });
   
@@ -1602,7 +1545,7 @@ const transform = (input: string, from: string): string => {
 
 // --- Main Application Component ---
 export default function LaplaceTransformPage() {
-    const [isUpdating, setIsUpdating] = useState(false);
+    const [_isUpdating, setIsUpdating] = useState(false);
     const isUpdatingRef = useRef(false);
     const tMathQuillEl = useRef<HTMLDivElement>(null);
     const sMathQuillEl = useRef<HTMLDivElement>(null);

@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
+import { type SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
 
 // ECharts imports (ensure all necessary components are registered as in other pages)
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
-import type { EChartsOption, SeriesOption as EChartsSeriesOption } from 'echarts'; // Use EChartsOption
+import type { EChartsOption } from 'echarts';
 import { LineChart } from 'echarts/charts';
 import {
   TitleComponent,
@@ -24,7 +25,7 @@ echarts.use([
 ]);
 
 // Shadcn UI imports
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -32,50 +33,41 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TooltipProvider } from "@/components/ui/tooltip"; // Assuming you might use Shadcn tooltips
 import { ArrowLeftRight, Terminal } from 'lucide-react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added Tabs
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added Tabs
 
 // VLE Calculation Library – consolidated
 import {
     calculatePsat_Pa as libCalculatePsat_Pa,
     // UNIFAC
-    calculateUnifacGamma,
     calculateBubbleTemperatureUnifac,
     calculateBubblePressureUnifac,
     fetchUnifacInteractionParams,
-    type UnifacParameters,
     // NRTL
     fetchNrtlParameters,
-    calculateNrtlGamma,
     calculateBubbleTemperatureNrtl,
     calculateBubblePressureNrtl,
-    type NrtlInteractionParams,
     // Peng–Robinson
     fetchPrInteractionParams,
     calculateBubbleTemperaturePr,
     calculateBubblePressurePr,
-    type PrInteractionParams,
     // SRK
     fetchSrkInteractionParams,
     calculateBubbleTemperatureSrk,
     calculateBubblePressureSrk,
-    type SrkInteractionParams,
     // UNIQUAC
     fetchUniquacInteractionParams,
     calculateBubbleTemperatureUniquac,
     calculateBubblePressureUniquac,
-    type UniquacInteractionParams as LibUniquacInteractionParams,
     // Wilson
     fetchWilsonInteractionParams,
     calculateBubbleTemperatureWilson,
     calculateBubblePressureWilson,
-    type WilsonInteractionParams as LibWilsonInteractionParams,
     antoineBoilingPointSolverLocal
 } from '@/lib/vle-calculations';
 
 // Shared VLE Types
 import type {
-    AntoineParams, PrPureComponentParams, SrkPureComponentParams, UniquacPureComponentParams, WilsonPureComponentParams,
-    CompoundData, BubbleDewResult, UnifacGroupComposition
+    CompoundData, BubbleDewResult
 } from '@/lib/vle-types';
 import { fetchCompoundDataFromHysys, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils';
 import type { CompoundAlias } from '@/lib/antoine-utils';
@@ -83,19 +75,6 @@ import type { CompoundAlias } from '@/lib/antoine-utils';
 type FluidPackageTypeAzeotrope = 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac' | 'wilson';
 type AzeotropeScanType = 'vs_P_find_T' | 'vs_T_find_P'; // Scan P, find T_az OR Scan T, find P_az
 
-// Supabase Client Setup
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-let supabase: SupabaseClient;
-if (supabaseUrl && supabaseAnonKey) {
-    try {
-        supabase = createClient(supabaseUrl, supabaseAnonKey);
-    } catch (error) {
-        console.error("Error initializing Supabase client for Azeotrope Finder:", error);
-    }
-} else {
-    console.error("Supabase URL or Anon Key is missing for Azeotrope Finder.");
-}
 
 // Debounce function removed for instantaneous suggestions
 
@@ -114,9 +93,7 @@ const formatNumberToPrecision = (num: any, precision: number = 3): string => {
 export default function AzeotropeFinderPage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
   // NOTE: Caching is disabled to avoid stale data carrying over between
-  // fluid-package switches.  The ref is kept only to prevent type ripples,
-  // but it is no longer read from or written to.
-  const compoundDataCache = useRef(new Map<string, CompoundData | null>());
+  // fluid-package switches.
   
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
@@ -513,11 +490,6 @@ export default function AzeotropeFinderPage() {
             
             if (x_az_found !== null && dependent_val_found !== null) {
                 scanResultsArray.push({ scanVal: currentScanVal, x_az: x_az_found, dependentVal: dependent_val_found });
-                const dependentUnit = azeotropeScanType === 'vs_P_find_T' ? "°C" : "bar";
-                const dependentPrecision = azeotropeScanType === 'vs_P_find_T' ? 1 : 3; 
-                const dependentValFormatted = azeotropeScanType === 'vs_P_find_T' 
-                    ? dependent_val_found.toFixed(dependentPrecision) 
-                    : dependent_val_found.toPrecision(dependentPrecision);
 
                 // console.log(`Azeotrope found: ScanVal=${currentScanVal.toFixed(2)}, x_az=${x_az_found.toFixed(4)}, DependentVal=${dependentValFormatted} ${dependentUnit}`); // Logging removed
             }

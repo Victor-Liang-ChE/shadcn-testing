@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
 import { useTheme } from "next-themes";
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
@@ -25,12 +25,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip as ShadTooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Trash2, PlusCircle, Calculator, Search, Lock, Unlock } from 'lucide-react';
+import { Trash2, Calculator, Search, Lock, Unlock } from 'lucide-react';
 
 // --- Types ---
 type Compound = {
@@ -116,19 +115,15 @@ function ShrinkToFit({ text }: { text: string }) {
   );
 }
 
-// --- Supabase Client ---
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
+// --- FUG Simulation Component ---
 export default function FUGSimulation() {
-  const { theme, resolvedTheme } = useTheme(); // Use resolvedTheme for accurate dark/light detection
+  const { resolvedTheme } = useTheme(); // Use resolvedTheme for accurate dark/light detection
   const textColor = resolvedTheme === 'dark' ? '#ffffff' : '#000000'; // Dynamic text color
   const [showFlashBarChart, setShowFlashBarChart] = useState<boolean>(false);
 
 
   const echartsRef = useRef<ReactECharts>(null);
-  const [loading, setLoading] = useState(false);
+  const [_loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
   // Simulation State
@@ -149,7 +144,7 @@ export default function FUGSimulation() {
     str: string,
     setStr: (s: string) => void,
     setNum: (n: number) => void,
-    prevNum: number,
+    _prevNum: number,
     minAllowed?: number
   ) => {
     setStr(str);
@@ -189,18 +184,6 @@ export default function FUGSimulation() {
 
   // Informational message when automatic key swaps occur
   const [keySwapMsg, setKeySwapMsg] = useState<string | null>(null);
-
-  // Helper to prevent NaN/crash on empty input
-  const handleInput = (
-    val: string,
-    setter: (v: number) => void,
-    prev: number
-  ) => {
-    if (val === '' || val === '-') return; // Allow typing negative or clearing temporarily
-    const num = parseFloat(val);
-    if (isNaN(num)) return;
-    setter(num);
-  };
 
   // Autocomplete suggestions for component search
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -506,7 +489,7 @@ export default function FUGSimulation() {
         if (compounds.length > 0) return;
         // Load sequentially to maintain order and capture IDs
         const m = await handleAddCompound("Methanol");
-        const e = await handleAddCompound("Ethanol");
+        await handleAddCompound("Ethanol");
         const w = await handleAddCompound("Water");
 
         // Set default keys: Methanol (light) and Water (heavy) by their IDs if present
@@ -740,7 +723,6 @@ export default function FUGSimulation() {
     if (desiredQ <= 0) return { success: true, T: T_dew, psi: 1, stateMsg: 'Superheated Vapor' };
 
     let low = T_bub, high = T_dew;
-    let psiLow = 0, psiHigh = 1;
 
     for (let i = 0; i < 60; i++) {
       const mid = 0.5 * (low + high);

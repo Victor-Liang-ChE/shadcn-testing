@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useCallback, KeyboardEvent, useRef } from 'react';
+import { useState, useEffect, useCallback, KeyboardEvent, useRef } from 'react';
 import { useTheme } from "next-themes";
 
 // Import ECharts components
@@ -33,7 +33,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip as _Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 
 // Define a color palette for species
 const colorPalette = [
@@ -174,7 +174,7 @@ export default function KineticsPage() {
         throw new Error(`The following species are missing in C0: ${missingSpecies.join(', ')}`);
       }
 
-      function odes(t: number, y: number[]): number[] {
+      function odes(_t: number, y: number[]): number[] {
         const dydt = new Array(orderedSpecies.length).fill(0);
         const currentConcentrations: Record<string, number> = {};
         orderedSpecies.forEach((species, i) => { currentConcentrations[species] = Math.max(0, y[i]); });
@@ -216,7 +216,6 @@ export default function KineticsPage() {
       steadyStateTime = Math.min(steadyStateTime, tSpan[1]);
 
       const allYValues = solution.y.flat().filter(y => !isNaN(y) && isFinite(y));
-      const minY = Math.min(0, ...allYValues);
       const maxY = Math.max(1e-9, ...allYValues);
       const yAxisMax = maxY * 1.1;
       const xAxisMax = steadyStateTime;
@@ -446,7 +445,6 @@ export default function KineticsPage() {
         setTimeout(submitForm, 0);
     }
   };
-  const handleConcentrationChange = (species: string, value: number | '') => { setConcentrations(prev => ({ ...prev, [species]: value === '' ? '' : Number(value) })); if (confirmedReactions) { setTimeout(submitForm, 0); } };
   const handleReactionKeyDown = (e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { e.preventDefault(); confirmReactions(); } };
   const handleConcentrationKeyDown = (e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter') { e.preventDefault(); if (confirmedReactions) { submitForm(); } } };
   const formatSliderValue = (value: number | ''): string => {

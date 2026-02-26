@@ -12,6 +12,7 @@ import {
   calculatePsat_Pa,
   calculateUnifacGamma,
   solveCubicEOS,
+  hocFugacityCorrectionTernary,
   type UnifacParameters,
 } from './vle-calculations';
 
@@ -34,6 +35,12 @@ interface TernaryWilsonParams {
   A01: number; B01: number; A10: number; B10: number;
   A02: number; B02: number; A20: number; B20: number;
   A12: number; B12: number; A21: number; B21: number;
+  /** Aspen cij·(−R_cal): ln T coefficients for Λ. Default 0. */
+  C01?: number; C10?: number; C02?: number; C20?: number; C12?: number; C21?: number;
+  /** Aspen dij·(−R_cal): T coefficients for Λ. Default 0. */
+  D01?: number; D10?: number; D02?: number; D20?: number; D12?: number; D21?: number;
+  /** Hayden-O'Connell cross-association parameters. Default 0 (ideal vapor). */
+  eta_01?: number; eta_02?: number; eta_12?: number;
 }
 
 function normX(x:number[]):number[]{
@@ -42,19 +49,52 @@ function normX(x:number[]):number[]{
   return x.map(v=>Math.max(MIN_X,Math.min(mx,v/s)));
 }
 function lambdasWilson(V:number[],T:number,p:TernaryWilsonParams){
-  // HYSYS Wilson Aij/Bij use calorie units; use R_cal and temperature-dependent Bij contribution
+  // Full Aspen Wilson: ln Λ_ij = ln(Vj/Vi) + aij + bij/T + cij·lnT + dij·T
+  // Stored scaled: −(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T)
+  //   where Cij = −cij·R_cal, Dij = −dij·R_cal
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
+  const lT = Math.log(T);
   return {
-    L01: (V[1]/V[0]) * Math.exp(-(p.A01 + p.B01 * T) / (R_cal * T)),
-    L10: (V[0]/V[1]) * Math.exp(-(p.A10 + p.B10 * T) / (R_cal * T)),
-    L02: (V[2]/V[0]) * Math.exp(-(p.A02 + p.B02 * T) / (R_cal * T)),
-    L20: (V[0]/V[2]) * Math.exp(-(p.A20 + p.B20 * T) / (R_cal * T)),
-    L12: (V[2]/V[1]) * Math.exp(-(p.A12 + p.B12 * T) / (R_cal * T)),
-    L21: (V[1]/V[2]) * Math.exp(-(p.A21 + p.B21 * T) / (R_cal * T)),
+    L01: (V[1]/V[0]) * Math.exp(-(p.A01 + p.B01*T + (p.C01??0)*T*lT + (p.D01??0)*T*T) / (R_cal * T)),
+    L10: (V[0]/V[1]) * Math.exp(-(p.A10 + p.B10*T + (p.C10??0)*T*lT + (p.D10??0)*T*T) / (R_cal * T)),
+    L02: (V[2]/V[0]) * Math.exp(-(p.A02 + p.B02*T + (p.C02??0)*T*lT + (p.D02??0)*T*T) / (R_cal * T)),
+    L20: (V[0]/V[2]) * Math.exp(-(p.A20 + p.B20*T + (p.C20??0)*T*lT + (p.D20??0)*T*T) / (R_cal * T)),
+    L12: (V[2]/V[1]) * Math.exp(-(p.A12 + p.B12*T + (p.C12??0)*T*lT + (p.D12??0)*T*T) / (R_cal * T)),
+    L21: (V[1]/V[2]) * Math.exp(-(p.A21 + p.B21*T + (p.C21??0)*T*lT + (p.D21??0)*T*T) / (R_cal * T)),
   };
 }
 function gammaWilson(x:number[],T:number,comps:CompoundData[],p:TernaryWilsonParams):number[]{
-  const V=comps.map(c=>c.wilsonParams!.V_L_m3mol);
+  // FORMULA NOTE – this implementation is algebraically correct vs Aspen APV140/NIST140:
+  //   ln Λ_ij = ln(Vj/Vi) + a_ij + b_ij/T + c_ij·lnT + d_ij·T
+  //   All DB params (a,b,c,d) are stored R_cal-scaled internally (Aij=-bij·R_cal etc.)
+  //   and round-trip verified to match native Aspen values.
+  //   VL(T) computed via Rackett equation with RKTZRA, matching Aspen's regression basis.
+  //
+  // KNOWN LIMITATION vs ASPEN "WILS-HOC":
+  //   This uses modified Raoult's law (ideal vapor):  K_i = γ_i · Psat_i / P
+  //   Aspen WILS-HOC additionally applies Hayden-O'Connell (HOC) second-virial vapor
+  //   fugacity corrections:  K_i = γ_i · Psat_i · φ_i^sat / (φ_i^V · P)
+  //   For polar/associating molecules (MeOH, CHCl3) this shifts azeotrope compositions
+  //   significantly. Impact on this system (P=1 atm, APV140 params):
+  //     • ACE/CHCl3:  calculated ~x_ACE≈0.35, T≈63.9°C  vs Aspen 0.343, 64.1°C  ✓ good
+  //     • CHCl3/MeOH: calculated ~x_CHCl3≈0.57, T≈52.3°C vs Aspen 0.660, 53.8°C  (HOC shift)
+  //     • ACE/MeOH:   no azeotrope found here (K_ACE > K_MeOH everywhere);
+  //                   Aspen WILS-HOC finds one at x_ACE≈0.779 via HOC correction.
+  //
+  // T-dependent Rackett VL (Aspen convention): use critical props when available.
+  const R_SI = 8.314462618;
+  const _vl = (c: CompoundData): number => {
+    const wp = c.wilsonParams;
+    if (wp?.Tc_K && wp.Pc_Pa) {
+      const ZRA = wp.RKTZRA ?? (wp.omega != null ? 0.29056 - 0.08775 * wp.omega : null);
+      if (ZRA != null) {
+        const Tr = T / wp.Tc_K;
+        return (R_SI * wp.Tc_K / wp.Pc_Pa) * Math.pow(ZRA, 1 + Math.pow(1 - Tr, 2 / 7));
+      }
+    }
+    return wp?.V_L_m3mol ?? 0;
+  };
+  const V=comps.map(_vl);
   if (V.some(v => v == null || v <= 0)) {
     console.error(`[gammaWilson] FAILED: Component is missing required Wilson parameter 'V_L_m3mol'.`);
     return []; // Return empty array to signal critical failure
@@ -84,6 +124,17 @@ function bubbleTWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonP
   let T=Ti;
   let Tprev = T;
   let errprev = 0;
+  // Pre-check HOC usage once (avoid per-iteration overhead when no association)
+  const eta01 = p.eta_01 ?? 0, eta02 = p.eta_02 ?? 0, eta12 = p.eta_12 ?? 0;
+  const etaSelf = comps.map(c => c.hocProps?.eta_self ?? 0);
+  const useHoc = eta01 > 0 || eta02 > 0 || eta12 > 0 || etaSelf.some(e => e > 0);
+  // eta_matrix[i][j]: diagonal = self-association; off-diagonal = cross
+  const etaMat = [
+    [etaSelf[0], eta01, eta02],
+    [eta01, etaSelf[1], eta12],
+    [eta02, eta12, etaSelf[2]],
+  ];
+  let yEst = [...x]; // running vapor composition estimate for HOC correction
   // console.log(`[bubbleTWilson] START: x=${JSON.stringify(x)}, P=${P}, Ti=${Ti}`);
   for(let i=0;i<80;i++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
@@ -91,13 +142,21 @@ function bubbleTWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonP
         console.error(`[bubbleTWilson] iter ${i}: gammaWilson returned failure`);
         return null;
     }
-    const Pcalc = x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
+
+    const phi = useHoc
+      ? hocFugacityCorrectionTernary(comps, yEst, T, P, Ps, etaMat)
+      : [1, 1, 1];
+
+    const KPsat = [0,1,2].map(k => x[k]*g[k]*Ps[k]*phi[k]);
+    const Pcalc = KPsat.reduce((a,b)=>a+b,0);
     const err=Pcalc-P;
 
     if(Math.abs(err/P)<1e-5) {
         if(_verboseBubbleT) console.log(`[bubbleTWilson] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
-        return {T,g,Ps};
+        return {T,g,Ps,phi};
     }
+    // update y estimate
+    if (Pcalc > 0) yEst = KPsat.map(v => v / Pcalc);
 
     let dT: number;
     if (i === 0) {
@@ -121,7 +180,17 @@ function bubbleTWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonP
 }
 function odeWilson(x:number[],P:number,comps:CompoundData[],p:TernaryWilsonParams,Ti:number){
   const bub=bubbleTWilson(normX(x),P,comps,p,Ti); if(!bub) return null;
-  const {T,g,Ps}=bub; const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]/P); const d=[0,1,2].map(i=>x[i]-y[i]);
+  const {T,g,Ps}=bub;
+  const eta01 = p.eta_01 ?? 0, eta02 = p.eta_02 ?? 0, eta12 = p.eta_12 ?? 0;
+  const etaSelf = comps.map(c => c.hocProps?.eta_self ?? 0);
+  const useHoc = eta01 > 0 || eta02 > 0 || eta12 > 0 || etaSelf.some(e => e > 0);
+  const etaMat=[[etaSelf[0],eta01,eta02],[eta01,etaSelf[1],eta12],[eta02,eta12,etaSelf[2]]];
+  // Get y estimate from ideal K first, then refine with HOC
+  const KPsat_ideal=[0,1,2].map(i=>x[i]*g[i]*Ps[i]);
+  const Pcalc_ideal=KPsat_ideal.reduce((a,b)=>a+b,0)||P;
+  const yEst=KPsat_ideal.map(v=>v/Pcalc_ideal);
+  const phi = useHoc ? hocFugacityCorrectionTernary(comps,yEst,T,P,Ps,etaMat) : [1,1,1];
+  const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]*phi[i]/P); const d=[0,1,2].map(i=>x[i]-y[i]);
   return {dxdxi:d,T};
 }
 async function simulateODE_Wilson(initX:number[],P:number,comps:CompoundData[],p:TernaryWilsonParams,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{
@@ -143,25 +212,44 @@ async function simulateODE_Wilson(initX:number[],P:number,comps:CompoundData[],p
 // ===========================================================================
 //  N R T L  (trimmed copy – essential parts only)
 // ===========================================================================
-const Rnrtl = 1.9872; // cal·mol⁻¹·K⁻¹ - HYSYS NRTL table uses cal/mol for Aij in this dataset
+const Rnrtl = 1.9872; // cal·mol⁻¹·K⁻¹ - Aspen NRTL: Aij=bij*R_cal, so tau=Aij/(R*T)+Bij/R=bij/T+aij
 interface TernaryNrtlParams {
   A01:number;B01:number;A10:number;B10:number;alpha01:number;
   A02:number;B02:number;A20:number;B20:number;alpha02:number;
   A12:number;B12:number;A21:number;B21:number;alpha12:number;
+  /** Aspen dij: alpha temperature coefficient (symmetric per pair). Default 0. */
+  d01?:number;d02?:number;d12?:number;
+  /** Aspen eij·R_cal: ln T term in τ_ij. Default 0. */
+  E01?:number;E10?:number;E02?:number;E20?:number;E12?:number;E21?:number;
+  /** Aspen fij·R_cal: T term in τ_ij. Default 0. */
+  F01?:number;F10?:number;F02?:number;F20?:number;F12?:number;F21?:number;
+  /** Hayden-O'Connell cross-association parameters. Default 0 (ideal vapor). */
+  eta_01?:number; eta_02?:number; eta_12?:number;
 }
 function gammaNrtl(x:number[],T:number,params:TernaryNrtlParams){
   // g[i][j] = A{i}{j} – the swap from HYSYS DB conventions is already applied
   // in the fetch function (fetchNrtlParameters), so params are in model convention.
   const g=[[0,params.A01,params.A02],[params.A10,0,params.A12],[params.A20,params.A21,0]];
   const bMat = [[0, params.B01, params.B02], [params.B10, 0, params.B12], [params.B20, params.B21, 0]];
-  const a = [[0, params.alpha01, params.alpha02], [params.alpha01, 0, params.alpha12], [params.alpha02, params.alpha12, 0]];
+  // Optional lnT/T matrices (Eij = eij·R_cal, Fij = fij·R_cal)
+  const eMat = [[0,params.E01??0,params.E02??0],[params.E10??0,0,params.E12??0],[params.E20??0,params.E21??0,0]];
+  const fMat = [[0,params.F01??0,params.F02??0],[params.F10??0,0,params.F12??0],[params.F20??0,params.F21??0,0]];
+  // Base alpha matrix with optional temperature dependence: α(T) = alpha + d·(T−273.15)
+  const aBase = [[0,params.alpha01,params.alpha02],[params.alpha01,0,params.alpha12],[params.alpha02,params.alpha12,0]];
+  const dMat  = [[0,params.d01??0,params.d02??0],[params.d01??0,0,params.d12??0],[params.d02??0,params.d12??0,0]];
+  const lT = Math.log(T);
   const tau = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], G = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
       if (i === j) continue;
-      // HYSYS NRTL convention: tau = (Aij + Bij*T) / (R_cal * T)
-      tau[i][j] = (g[i][j] + bMat[i][j] * T) / (Rnrtl * T);
-      G[i][j] = Math.exp(-a[i][j] * tau[i][j]);
+      // Full Aspen NRTL: τ_ij = aij + bij/T + eij·lnT + fij·T
+      // Stored as: (g + b·T) / (R·T) + E·lnT/R + F·T/R = bij/T + aij + eij·lnT + fij·T
+      tau[i][j] = (g[i][j] + bMat[i][j] * T) / (Rnrtl * T)
+               + eMat[i][j] * lT / Rnrtl
+               + fMat[i][j] * T  / Rnrtl;
+      // Temperature-dependent non-randomness: α(T) = α₀ + d·(T-273.15)
+      const alpha_ij = aBase[i][j] + dMat[i][j] * (T - 273.15);
+      G[i][j] = Math.exp(-alpha_ij * tau[i][j]);
     }
   }
   const ln=[0,0,0];
@@ -171,9 +259,9 @@ function gammaNrtl(x:number[],T:number,params:TernaryNrtlParams){
     const term1=sum2===0?0:sum1/sum2;
     let term2=0;
     for(let j=0;j<3;j++){
-      const denom=x.reduce((acc,k,kk)=>acc+x[kk]*G[kk][j],0);
+      const denom=x.reduce((acc,_k,kk)=>acc+x[kk]*G[kk][j],0);
       const num=x[j]*G[i][j]; const f1=denom===0?0:num/denom;
-      const num2=x.reduce((acc,m,mm)=>acc+x[mm]*tau[mm][j]*G[mm][j],0);
+      const num2=x.reduce((acc,_m,mm)=>acc+x[mm]*tau[mm][j]*G[mm][j],0);
       const f2=denom===0?0:num2/denom;
       term2+=f1*(tau[i][j]-f2);
     }
@@ -185,14 +273,23 @@ function bubbleTNrtl(x:number[],P:number,comps:CompoundData[],params:TernaryNrtl
   let T=Ti;
   let Tprev = T;
   let errprev = 0;
+  const eta01=params.eta_01??0,eta02=params.eta_02??0,eta12=params.eta_12??0;
+  const etaSelf=comps.map(c=>c.hocProps?.eta_self??0);
+  const useHoc=eta01>0||eta02>0||eta12>0||etaSelf.some(e=>e>0);
+  const etaMat=[[etaSelf[0],eta01,eta02],[eta01,etaSelf[1],eta12],[eta02,eta12,etaSelf[2]]];
+  let yEst=[...x];
   for(let i=0;i<80;i++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaNrtl(x,T,params);
-    const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
+
+    const phi=useHoc?hocFugacityCorrectionTernary(comps,yEst,T,P,Ps,etaMat):[1,1,1];
+    const KPsat=[0,1,2].map(k=>x[k]*g[k]*Ps[k]*phi[k]);
+    const Pcalc=KPsat.reduce((a,b)=>a+b,0);
     const err=Pcalc-P; if(Math.abs(err/P)<1e-5) {
       if(_verboseBubbleT) console.log(`[bubbleTNrtl] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
-      return {T,g,Ps};
+      return {T,g,Ps,phi};
     }
+    if(Pcalc>0) yEst=KPsat.map(v=>v/Pcalc);
     
     let dT: number;
     if (i === 0) {
@@ -212,7 +309,16 @@ function bubbleTNrtl(x:number[],P:number,comps:CompoundData[],params:TernaryNrtl
 }
 function odeNrtl(x:number[],P:number,comps:CompoundData[],p:TernaryNrtlParams,Ti:number){
   const bub=bubbleTNrtl(normX(x),P,comps,p,Ti); if(!bub) return null;
-  const {T,g,Ps}=bub; const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]/P); const d=[0,1,2].map(i=>x[i]-y[i]);
+  const {T,g,Ps}=bub;
+  const eta01=p.eta_01??0,eta02=p.eta_02??0,eta12=p.eta_12??0;
+  const etaSelf=comps.map(c=>c.hocProps?.eta_self??0);
+  const useHoc=eta01>0||eta02>0||eta12>0||etaSelf.some(e=>e>0);
+  const etaMat=[[etaSelf[0],eta01,eta02],[eta01,etaSelf[1],eta12],[eta02,eta12,etaSelf[2]]];
+  const KPsat_ideal=[0,1,2].map(i=>x[i]*g[i]*Ps[i]);
+  const Pid=KPsat_ideal.reduce((a,b)=>a+b,0)||P;
+  const yEst=KPsat_ideal.map(v=>v/Pid);
+  const phi=useHoc?hocFugacityCorrectionTernary(comps,yEst,T,P,Ps,etaMat):[1,1,1];
+  const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]*phi[i]/P); const d=[0,1,2].map(i=>x[i]-y[i]);
   return {dxdxi:d,T};
 }
 async function simulateODE_Nrtl(initX:number[],P:number,comps:CompoundData[],p:TernaryNrtlParams,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{
@@ -268,7 +374,7 @@ function bubbleTUnifac(x:number[],P:number,comps:CompoundData[],params:UnifacPar
     const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
     const err=Pcalc-P;if(Math.abs(err/P)<1e-4) {
       if(_verboseBubbleT) console.log(`[bubbleTUnifac] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
-      return {T,g,Ps};
+      return {T,g,Ps,phi:[1,1,1] as number[]};
     }
 
     let dT: number;
@@ -629,24 +735,34 @@ interface TernaryUniquacParams {
   A01:number;B01:number;A10:number;B10:number;
   A02:number;B02:number;A20:number;B20:number;
   A12:number;B12:number;A21:number;B21:number;
+  /** Aspen cij·(−R_cal): ln T coefficients for τ. Default 0. */
+  C01?:number;C10?:number;C02?:number;C20?:number;C12?:number;C21?:number;
+  /** Aspen dij·(−R_cal): T coefficients for τ. Default 0. */
+  D01?:number;D10?:number;D02?:number;D20?:number;D12?:number;D21?:number;
+  /** Hayden-O'Connell cross-association parameters. Default 0 (ideal vapor). */
+  eta_01?:number; eta_02?:number; eta_12?:number;
 }
 const Z_UNIQ=10; const MIN_X_UNI=1e-9;
 function normX_uni(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_UNI*(x.length-1);return x.map(v=>Math.max(MIN_X_UNI,Math.min(mx,v/s)));}
 function tausUni(T:number,p:TernaryUniquacParams){
-  // HYSYS UNIQUAC database: Aij, Bij in calories → use R_cal = 1.9872 cal·mol⁻¹·K⁻¹
-  // Align to standard Aij/Bij convention: t_ij uses Aij/Bij.
+  // Full Aspen UNIQUAC: τ_ij = exp(aij + bij/T + cij·lnT + dij·T)
+  // Stored scaled: exp(−(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T))
+  //   where Cij = −cij·R_cal, Dij = −dij·R_cal
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
+  const lT = Math.log(T);
+  const _tau = (A:number,B:number,C:number,D:number) =>
+    Math.exp(-(A + B*T + C*T*lT + D*T*T) / (R_cal * T));
   return {
-    t01: Math.exp(-(p.A01 + p.B01 * T) / (R_cal * T)),
-    t10: Math.exp(-(p.A10 + p.B10 * T) / (R_cal * T)),
-    t02: Math.exp(-(p.A02 + p.B02 * T) / (R_cal * T)),
-    t20: Math.exp(-(p.A20 + p.B20 * T) / (R_cal * T)),
-    t12: Math.exp(-(p.A12 + p.B12 * T) / (R_cal * T)),
-    t21: Math.exp(-(p.A21 + p.B21 * T) / (R_cal * T)),
+    t01: _tau(p.A01,p.B01,p.C01??0,p.D01??0),
+    t10: _tau(p.A10,p.B10,p.C10??0,p.D10??0),
+    t02: _tau(p.A02,p.B02,p.C02??0,p.D02??0),
+    t20: _tau(p.A20,p.B20,p.C20??0,p.D20??0),
+    t12: _tau(p.A12,p.B12,p.C12??0,p.D12??0),
+    t21: _tau(p.A21,p.B21,p.C21??0,p.D21??0),
   };
 }
 export function gammaUni(x:number[],T:number,comps:CompoundData[],p:TernaryUniquacParams){if(comps.some(c=>!c.uniquacParams))return null;const r=comps.map(c=>c.uniquacParams!.r);const q=comps.map(c=>c.uniquacParams!.q);const tau=tausUni(T,p);const sum_r=x.reduce((s,xi,i)=>s+r[i]*xi,0);const phi=r.map((ri,i)=>ri*x[i]/sum_r);const sum_q=x.reduce((s,xi,i)=>s+q[i]*xi,0);const theta=q.map((qi,i)=>qi*x[i]/sum_q);const l=r.map((ri,i)=>(Z_UNIQ/2)*(ri-q[i])-(ri-1));const sum_xl=x.reduce((s,xi,i)=>s+xi*l[i],0);
-const lnGammaC = phi.map((phi_i, i) => {
+const lnGammaC = phi.map((_phi_i, i) => {
     // Use algebraically-equivalent but clearer intermediate values
     const phi_over_x = r[i] / sum_r; // equals phi_i / x[i]
     const theta_over_phi = (q[i] / r[i]) * (sum_r / sum_q); // equals theta[i] / phi_i
@@ -671,14 +787,23 @@ function bubbleQUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniqu
   let T=Ti;
   let Tprev = T;
   let errprev = 0;
+  const eta01=params.eta_01??0,eta02=params.eta_02??0,eta12=params.eta_12??0;
+  const etaSelf=comps.map(c=>c.hocProps?.eta_self??0);
+  const useHoc=eta01>0||eta02>0||eta12>0||etaSelf.some(e=>e>0);
+  const etaMat=[[etaSelf[0],eta01,eta02],[eta01,etaSelf[1],eta12],[eta02,eta12,etaSelf[2]]];
+  let yEst=[...x];
   for(let iter=0;iter<80;iter++){
     const Ps=comps.map(c=>calculatePsat_Pa(c.antoine!,T));
     const g=gammaUni(x,T,comps,params);if(!g)return null;
-    const Pcalc=x[0]*g[0]*Ps[0]+x[1]*g[1]*Ps[1]+x[2]*g[2]*Ps[2];
+
+    const phi=useHoc?hocFugacityCorrectionTernary(comps,yEst,T,P,Ps,etaMat):[1,1,1];
+    const KPsat=[0,1,2].map(k=>x[k]*g[k]*Ps[k]*phi[k]);
+    const Pcalc=KPsat.reduce((a,b)=>a+b,0);
     const err=Pcalc-P;if(Math.abs(err/P)<1e-5){
       if(_verboseBubbleT) console.log(`[bubbleQUni] CONVERGED: T=${T.toFixed(2)}, gamma=[${g.map(v=>v.toFixed(4))}], Ps=[${Ps.map(v=>v.toFixed(0))}]`);
-      return{T,g,Ps};
+      return{T,g,Ps,phi};
     }
+    if(Pcalc>0) yEst=KPsat.map(v=>v/Pcalc);
 
     let dT: number;
     if (iter === 0) {
@@ -696,7 +821,16 @@ function bubbleQUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniqu
   }
   return null;
 }
-function odeUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniquacParams,Ti:number){const bub=bubbleQUni(normX_uni(x),P,comps,params,Ti);if(!bub)return null;const {T,g,Ps}=bub;const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]/P);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
+function odeUni(x:number[],P:number,comps:CompoundData[],params:TernaryUniquacParams,Ti:number){const bub=bubbleQUni(normX_uni(x),P,comps,params,Ti);if(!bub)return null;const {T,g,Ps}=bub;
+  const eta01=params.eta_01??0,eta02=params.eta_02??0,eta12=params.eta_12??0;
+  const etaSelf=comps.map(c=>c.hocProps?.eta_self??0);
+  const useHoc=eta01>0||eta02>0||eta12>0||etaSelf.some(e=>e>0);
+  const etaMat=[[etaSelf[0],eta01,eta02],[eta01,etaSelf[1],eta12],[eta02,eta12,etaSelf[2]]];
+  const KPsat_i=[0,1,2].map(i=>x[i]*g[i]*Ps[i]);
+  const Pid=KPsat_i.reduce((a,b)=>a+b,0)||P;
+  const yEst=KPsat_i.map(v=>v/Pid);
+  const phi=useHoc?hocFugacityCorrectionTernary(comps,yEst,T,P,Ps,etaMat):[1,1,1];
+  const y=[0,1,2].map(i=>x[i]*g[i]*Ps[i]*phi[i]/P);const d=[0,1,2].map(i=>x[i]-y[i]);return{dxdxi:d,T};}
 async function simulateODE_Uniquac(initX:number[],P:number,comps:CompoundData[],params:TernaryUniquacParams,step:number,maxSteps:number,Ti:number):Promise<ResidueCurve|null>{
   async function runDir(forward:boolean){
     const curve:ResidueCurve=[];
@@ -729,7 +863,6 @@ function _solveAzeotropeActivity(
   normFunc:(x:number[])=>number[],
   maxIter:number=50, tol:number=1e-7
 ):AzeotropeResult|null {
-  console.log(`[_solveAzeotropeActivity] START: x0=[${x0.map(v=>v.toFixed(4))}], Ti=${Ti.toFixed(2)}, P=${P.toFixed(0)}`);
 
   // --- Helper functions embedded to avoid scope issues ---
   const vecAdd = (v1: number[], v2: number[]) => v1.map((v, i) => v + v2[i]);
@@ -786,8 +919,10 @@ function _solveAzeotropeActivity(
     const bubble = bubbleFunc(x, P, comps, params, currentT);
     if (!bubble) return null;
 
-    const { T: newT, g, Ps } = bubble;
-    const K = g.map((gi: number, j: number) => gi * Ps[j] / P);
+    const { T: newT, g, Ps, phi: phi_arr } = bubble;
+    const phi = phi_arr ?? [1, 1, 1];
+    // Include HOC phi correction in K: K_i = gamma_i * Psat_i * phi_i / P
+    const K = g.map((gi: number, j: number) => gi * Ps[j] * phi[j] / P);
     const F = new Array(m);
     for (let i = 0; i < m; i++) F[i] = K[i] - 1;
     
@@ -797,7 +932,7 @@ function _solveAzeotropeActivity(
   // Initial evaluation
   let evalResult = getF(X, T);
   if (!evalResult) return { x: x0, T_K: T, converged: false, errorNorm: Infinity };
-  let { F, T_K, K, x: current_x_full } = evalResult;
+  let { F, T_K, K: _K, x: current_x_full } = evalResult;
   T = T_K;
   x_full = current_x_full;
 
@@ -827,9 +962,7 @@ function _solveAzeotropeActivity(
       console.log(`[_solveAzeotropeActivity] CONVERGED iter=${iter}: x=[${normFunc(x_full).map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, err=${errorNorm.toExponential(3)}`);
       return { x: normFunc(x_full), T_K: T, errorNorm, converged: true };
     }
-    if (iter % 10 === 0) {
-      console.log(`[_solveAzeotropeActivity] iter ${iter}: x=[${x_full.map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, errNorm=${errorNorm.toExponential(3)}`);
-    }
+
 
     // Update step: s_k = -B_k * F_k
     const s = matVecMul(B, F).map(v => -v);
@@ -889,28 +1022,16 @@ function _solveAzeotropeActivity(
 
 // Activity models wrappers
 function azeotropeWilson(P:number, comps:CompoundData[], p:TernaryWilsonParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  _verboseBubbleT = true;
-  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTWilson,p,normX);
-  _verboseBubbleT = false;
-  return result;
+  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTWilson,p,normX);
 }
 function azeotropeNrtlSolver(P:number, comps:CompoundData[], p:TernaryNrtlParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  _verboseBubbleT = true;
-  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTNrtl,p,normX);
-  _verboseBubbleT = false;
-  return result;
+  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTNrtl,p,normX);
 }
 function azeotropeUnifac(P:number, comps:CompoundData[], p:UnifacParameters, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  _verboseBubbleT = true;
-  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTUnifac,p,normX_unifac);
-  _verboseBubbleT = false;
-  return result;
+  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleTUnifac,p,normX_unifac);
 }
 function azeotropeUniquacSolver(P:number, comps:CompoundData[], p:TernaryUniquacParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  _verboseBubbleT = true;
-  const result = _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleQUni,p,normX_uni);
-  _verboseBubbleT = false;
-  return result;
+  return _solveAzeotropeActivity(xGuess,P,comps,Tguess,bubbleQUni,p,normX_uni);
 }
 // Cubic EOS wrappers
 function _solveAzeotropeCubic(
@@ -920,14 +1041,12 @@ function _solveAzeotropeCubic(
   normFunc: (x: number[]) => number[],
   maxIter: number = 100, tol: number = 1e-7
 ): AzeotropeResult | null {
-  console.log(`[_solveAzeotropeCubic] START: x0=[${x0.map(v=>v.toFixed(4))}], Ti=${Ti.toFixed(2)}, P=${P.toFixed(0)}`);
 
   // --- Linear Algebra Helpers (Scoped) ---
   const vecAdd = (v1: number[], v2: number[]) => v1.map((v, i) => v + v2[i]);
   const vecSub = (v1: number[], v2: number[]) => v1.map((v, i) => v - v2[i]);
   const vecDot = (v1: number[], v2: number[]) => v1.reduce((sum, v, i) => sum + v * v2[i], 0);
   const matVecMul = (m: number[][], v: number[]) => m.map(row => vecDot(row, v));
-  const matAdd = (m1: number[][], m2: number[][]) => m1.map((row, i) => vecAdd(row, m2[i]));
   const vecMatMul = (v: number[], m: number[][]): number[] => {
     const m_cols = m[0].length;
     const result = new Array(m_cols).fill(0);
@@ -1021,9 +1140,7 @@ function _solveAzeotropeCubic(
       console.log(`[_solveAzeotropeCubic] CONVERGED iter=${iter}: x=[${normFunc(x_full).map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, err=${errorNorm.toExponential(3)}`);
       return { x: normFunc(x_full), T_K: T, errorNorm, converged: true };
     }
-    if (iter % 10 === 0) {
-      console.log(`[_solveAzeotropeCubic] iter ${iter}: x=[${x_full.map(v=>v.toFixed(4))}], T=${T.toFixed(2)}K, errNorm=${errorNorm.toExponential(3)}`);
-    }
+
 
     // Newton step: s = -B * F
     const s = matVecMul(B, F).map(v => -v);
@@ -1085,16 +1202,10 @@ function _solveAzeotropeCubic(
   return { x: normFunc(x_full), T_K: T, errorNorm: Infinity, converged: false };
 }
 function azeotropePrSolver(P:number, comps:CompoundData[], p:TernaryPrParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  _verboseBubbleT = true;
-  const result = _solveAzeotropeCubic(xGuess,P,comps,Tguess,solvePRBubbleT,p,normX_pr);
-  _verboseBubbleT = false;
-  return result;
+  return _solveAzeotropeCubic(xGuess,P,comps,Tguess,solvePRBubbleT,p,normX_pr);
 }
 function azeotropeSrkSolver(P:number, comps:CompoundData[], p:TernarySrkParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  _verboseBubbleT = true;
-  const result = _solveAzeotropeCubic(xGuess,P,comps,Tguess,solveSRKBubbleT,p,normX_srk);
-  _verboseBubbleT = false;
-  return result;
+  return _solveAzeotropeCubic(xGuess,P,comps,Tguess,solveSRKBubbleT,p,normX_srk);
 }
 
 // ========================  PUBLIC EXPORTS  ===============================
@@ -1218,7 +1329,7 @@ function _solveBinaryAzeotrope(
     //     and expand if needed until a sign-change is detected or the
     //     ends hit the composition limits.
     // ------------------------------------------------------------------
-    const expandUntilBracket = (xMid:number, fMid:number):{xl:number,xu:number,fl:number,fu:number}|null => {
+    const expandUntilBracket = (xMid:number, _fMid:number):{xl:number,xu:number,fl:number,fu:number}|null => {
         const MAX_EXPANSION=20;
         let delta=0.01; // initial step
         for(let n=0;n<MAX_EXPANSION;n++){
@@ -1331,7 +1442,16 @@ export function systematicBinaryAzeotropeSearch(
   dx: number = 0.005 // Finer grid step for initial scan
 ): AzeotropeResult[] {
   console.log(`[systematicBinarySearch] pkg=${pkg}, P=${P_system_Pa.toFixed(0)}, comps=[${comps.map(c=>c.name)}], dx=${dx}`);
-  _verboseBubbleT = true;
+  if (pkg === 'wilson') {
+    const _eta01 = (pkgParams as any).eta_01 ?? 0;
+    const _eta02 = (pkgParams as any).eta_02 ?? 0;
+    const _eta12 = (pkgParams as any).eta_12 ?? 0;
+    const _etaSelf = comps.map(c => (c as any).hocProps?.eta_self ?? 0);
+    const _useHoc = _eta01 > 0 || _eta02 > 0 || _eta12 > 0 || _etaSelf.some((e: number) => e > 0);
+    console.log(`[BinarySearch/Wilson] HOC: useHoc=${_useHoc}, eta_01=${_eta01.toFixed(3)}, eta_02=${_eta02.toFixed(3)}, eta_12=${_eta12.toFixed(3)}, etaSelf=[${_etaSelf.map((e: number) => e.toFixed(3))}]`);
+    console.log(`[BinarySearch/Wilson] A01=${(pkgParams as any).A01?.toFixed(2)}, A10=${(pkgParams as any).A10?.toFixed(2)}, A02=${(pkgParams as any).A02?.toFixed(2)}, A20=${(pkgParams as any).A20?.toFixed(2)}, A12=${(pkgParams as any).A12?.toFixed(2)}, A21=${(pkgParams as any).A21?.toFixed(2)}`);
+    console.log(`[BinarySearch/Wilson] B01=${(pkgParams as any).B01?.toFixed(2)}, B10=${(pkgParams as any).B10?.toFixed(2)}, B02=${(pkgParams as any).B02?.toFixed(2)}, B20=${(pkgParams as any).B20?.toFixed(2)}, B12=${(pkgParams as any).B12?.toFixed(2)}, B21=${(pkgParams as any).B21?.toFixed(2)}`);
+  }
   const results: AzeotropeResult[] = [];
   const pairs: [number, number][] = [[0, 1], [0, 2], [1, 2]];
   const eps = 1e-5; // Slightly larger offset to minimize perturbation of Ki calculations
@@ -1344,19 +1464,6 @@ export function systematicBinaryAzeotropeSearch(
     x[j] = (1.0 - xi) * (1 - eps);
     x[k] = eps;
     return x;
-  };
-
-  // Generic local solver call
-  const runLocalSolver = (xGuess: number[], Tguess: number): AzeotropeResult | null => {
-    switch (pkg) {
-      case 'wilson': return findAzeotropeWilson(P_system_Pa, comps, pkgParams, xGuess, Tguess);
-      case 'nrtl': return findAzeotropeNRTL(P_system_Pa, comps, pkgParams, xGuess, Tguess);
-      case 'unifac': return findAzeotropeUnifac(P_system_Pa, comps, pkgParams, xGuess, Tguess);
-      case 'pr': return findAzeotropePr(P_system_Pa, comps, pkgParams, xGuess, Tguess);
-      case 'srk': return findAzeotropeSrk(P_system_Pa, comps, pkgParams, xGuess, Tguess);
-      case 'uniquac': return findAzeotropeUniquac(P_system_Pa, comps, pkgParams, xGuess, Tguess);
-      default: return null;
-    }
   };
 
   // Evaluates K_i - K_j for a given binary pair
@@ -1374,7 +1481,8 @@ export function systematicBinaryAzeotropeSearch(
         const bubbleTFunc = activityBubbleTFuncs[pkg as keyof typeof activityBubbleTFuncs];
         const bubble = bubbleTFunc(x, P_system_Pa, comps, pkgParams, Tguess);
         if (!bubble) return null;
-        const K = bubble.g.map((gi: number, idx: number) => gi * bubble.Ps[idx] / P_system_Pa);
+        const phi_k = bubble.phi ?? [1, 1, 1];
+        const K = bubble.g.map((gi: number, idx: number) => gi * bubble.Ps[idx] * phi_k[idx] / P_system_Pa);
         bubbleResult = { T: bubble.T, K };
     } else if (pkg in eosSolveBubbleTFuncs) {
         const solveBubbleTFunc = eosSolveBubbleTFuncs[pkg as keyof typeof eosSolveBubbleTFuncs];
@@ -1407,6 +1515,19 @@ export function systematicBinaryAzeotropeSearch(
         }
     }
 
+    // Log K_i/K_j sign profile for this edge
+    {
+      const vals = evaluatedPoints.map(p => p.val);
+      const minV = Math.min(...vals), maxV = Math.max(...vals);
+      const brackets = evaluatedPoints.filter((p, k) => k > 0 && p.val * evaluatedPoints[k - 1].val < 0).length;
+      console.log(`[BinarySearch] pair(${i}-${j}) ${comps[i]?.name ?? i}/${comps[j]?.name ?? j}: ${evaluatedPoints.length} pts, lnK range=[${minV.toFixed(3)}, ${maxV.toFixed(3)}], brackets=${brackets}`);
+      if (brackets === 0 || evaluatedPoints.length < 5) {
+        const stride = Math.max(1, Math.floor(evaluatedPoints.length / 8));
+        const sample = evaluatedPoints.filter((_, k) => k % stride === 0).map(p => `x${i}=${p.xi.toFixed(2)}:lnK=${p.val.toFixed(3)}`);
+        console.log(`[BinarySearch] pair(${i}-${j}) profile: ${sample.join(', ')}`);
+      }
+    }
+
     // 2. Bracket Identification and Solving
     for (let k = 0; k < evaluatedPoints.length - 1; k++) {
         const p1 = evaluatedPoints[k];
@@ -1426,9 +1547,9 @@ export function systematicBinaryAzeotropeSearch(
     }
   }
 
-  _verboseBubbleT = false;
   const clustered = clusterAzeotropes(results);
-  console.log(`[systematicBinarySearch] Found ${clustered.length} binary azeotropes:`, clustered.map(a=>`x=[${a.x.map(v=>v.toFixed(3))}] T=${a.T_K.toFixed(1)}K conv=${a.converged}`));
+  console.log(`[systematicBinarySearch] Found ${clustered.length} binary azeotropes:`,
+ clustered.map(a=>`x=[${a.x.map(v=>v.toFixed(3))}] T=${a.T_K.toFixed(1)}K conv=${a.converged}`));
   return clustered;
 }
 
@@ -1476,7 +1597,6 @@ export function systematicTernaryAzeotropeSearch(
   gridStep: number = 0.05 // finer step for better saddle-azeotrope detection
 ): AzeotropeResult[] {
   console.log(`[systematicTernarySearch] pkg=${pkg}, P=${P_system_Pa.toFixed(0)}, gridStep=${gridStep}`);
-  _verboseBubbleT = true;
   const results: AzeotropeResult[] = [];
 
   const normComp = (x:number[]):number[]=>{const s=x.reduce((a,b)=>a+b,0)||1; return x.map(v=>v/s);} // simple normaliser
@@ -1574,7 +1694,6 @@ export function systematicTernaryAzeotropeSearch(
   }
 
   // Deduplicate close results
-  _verboseBubbleT = false;
   const clustered = clusterAzeotropes(results);
   console.log(`[systematicTernarySearch] Found ${clustered.length} ternary azeotropes:`, clustered.map(a=>`x=[${a.x.map(v=>v.toFixed(3))}] T=${a.T_K.toFixed(1)}K conv=${a.converged}`));
   return clustered;

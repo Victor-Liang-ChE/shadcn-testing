@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -50,7 +50,7 @@ const formatNumber = (num: number | undefined, options: { type?: 'default' | 'mo
   if (num === 0) { return type === 'molarMass' ? num.toFixed(3) : "0"; }
   if (type === 'molarMass') { return num.toFixed(3); }
   const scientificStr = num.toExponential(sigFigs - 1);
-  const [coefficient, exponentPart] = scientificStr.split('e');
+  const [, exponentPart] = scientificStr.split('e');
   const exponent = parseInt(exponentPart);
   if (exponent >= -3 && exponent <= 5) {
     const decimalPlaces = Math.max(0, sigFigs - Math.floor(Math.log10(Math.abs(num))) - 1);
@@ -95,7 +95,7 @@ export default function ChemistryTools() { /* ... (no change) ... */
 
 // --- Stoichiometry Calculator Component ---
 const StoichiometryCalculator: React.FC = () => {
-  const [equation, setEquation] = useState<string>('');
+  const [, setEquation] = useState<string>('');
   const [reactionData, setReactionData] = useState<ReactionData | null>(null);
   const [molarMasses, setMolarMasses] = useState<MolarMasses>({});
   const [inputData, setInputData] = useState<InputData>({});

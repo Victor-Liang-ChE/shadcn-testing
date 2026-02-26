@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import Papa, { ParseResult, ParseError } from 'papaparse'; // Import specific types
+import Papa, { ParseResult } from 'papaparse';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
 import type { EChartsOption, SeriesOption } from 'echarts';
@@ -202,7 +202,7 @@ export default function CsvToPlotPage() {
               setError("Could not determine initial X and Y axes. Please select columns.");
             }
           },
-          error: (error: Error, file?: File) => { // Keep Error type for basic info
+          error: (error: Error, _file?: File) => { // Keep Error type for basic info
             console.error("CSV Parsing Failed:", error);
             setError(`Failed to parse CSV file: ${error.message}`);
           }

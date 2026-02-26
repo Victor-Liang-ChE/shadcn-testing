@@ -1,13 +1,13 @@
 'use client';
 
-import React, { useState, useMemo, useCallback, memo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useTheme } from "next-themes";
 
 // Import ECharts components
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
 // Import specific types from the main echarts package
-import type { EChartsOption, SeriesOption } from 'echarts';
+import type { EChartsOption } from 'echarts';
 import { LineChart, ScatterChart } from 'echarts/charts';
 import {
   TitleComponent,
@@ -39,10 +39,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Info } from 'lucide-react';
 
 // --- Type Definitions ---
 type TuningMethod = 'ziegler-nichols' | 'itae' | 'amigo' | 'imc';
@@ -172,14 +170,14 @@ export default function PidTuningPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TuningResult | null>(null);
-  const [displayedMethod, setDisplayedMethod] = useState<string>('');
+  const [_displayedMethod, setDisplayedMethod] = useState<string>('');
   
   // Simulation Control States
   const [currentSetpoint, setCurrentSetpoint] = useState<number>(1);
-  const [simulationTime, setSimulationTime] = useState<number>(0);
+  const [_simulationTime, setSimulationTime] = useState<number>(0);
   const [isSimulationRunning, setIsSimulationRunning] = useState<boolean>(false);
-  const [currentPV, setCurrentPV] = useState<number>(0);
-  const [controlError, setControlError] = useState<number>(0);
+  const [_currentPV, setCurrentPV] = useState<number>(0);
+  const [_controlError, setControlError] = useState<number>(0);
   const [divergenceWarning, setDivergenceWarning] = useState<boolean>(false);
   const [resetCountdown, setResetCountdown] = useState<number>(0);
   const [showErrorGraph, setShowErrorGraph] = useState<boolean>(false);
@@ -359,7 +357,7 @@ export default function PidTuningPage() {
     modelCase: ImcModelCase,
     setpointValue: number
   ) => {
-    const { K, tau, theta, tau2, zeta } = processParams;
+    const { K, tau, theta, tau2 } = processParams;
     const { Kc, tauI, tauD } = controller;
 
     // Get current state from the ref
@@ -419,93 +417,6 @@ export default function PidTuningPage() {
     return { time, pv, sp: setpointValue, output: controller_output };
   };
 
-  // Simulation function for closed-loop response (kept for compatibility but not used in real-time mode)
-  const simulateClosedLoopResponse = (
-    processParams: { K: number; tau: number; theta: number; tau2?: number; zeta?: number },
-    controller: { Kc: number; tauI: number | null; tauD: number | null },
-    modelCase: ImcModelCase,
-    setpointValue: number = 1,
-    disturbanceTime?: number
-  ): { time: number; pv: number; sp: number }[] => {
-    
-    const { K, tau, theta, tau2, zeta } = processParams;
-    const { Kc, tauI, tauD } = controller;
-
-    // Simulation parameters
-    const dt = 0.1; // Time step
-    const simulationTime = Math.max(tau * 15, theta * 5, 80);
-    const n_steps = Math.floor(simulationTime / dt);
-    
-    // --- Derivative Filter ---
-    const alpha = 0.1; // Filter constant (0.1 is a common value)
-    const T_filter = (tauD && tauD > 0) ? Math.max(alpha * tauD, dt) : dt;
-
-    // Initial conditions
-    let pv = 0;
-    let prev_pv = 0;
-    let integral_error = 0;
-    let filtered_derivative = 0;
-
-    // Second-order model states (if needed)
-    let y1 = 0; // Output of first lag
-    let y2 = 0; // Output of second lag
-
-    // Time delay buffer
-    const delaySteps = Math.floor(theta / dt);
-    const delayBuffer = new Array(delaySteps).fill(0);
-    
-    const results = [{ time: 0, pv: 0, sp: 0 }];
-
-    for (let i = 1; i <= n_steps; i++) {
-      const time = i * dt;
-      
-      // Setpoint logic - step change at t > dt
-      let setpoint = time > dt ? setpointValue : 0;
-      
-      const error = setpoint - pv;
-
-      // --- PID Controller with Derivative Filter ---
-      const p_term = Kc * error;
-      if (tauI && tauI > 0) {
-        integral_error += (Kc / tauI) * error * dt;
-      }
-
-      // Calculate derivative on measurement (negative derivative of PV)
-      // When PV rises (positive dPV/dt), we want negative derivative action to reduce output
-      const raw_derivative = (pv - prev_pv) / dt;
-      // 2. Pass it through the low-pass filter
-      filtered_derivative += (dt / T_filter) * (raw_derivative - filtered_derivative);
-      // 3. The final D-term uses the filtered value with negative sign
-      const derivative_term = (tauD && tauD > 0) ? -Kc * tauD * filtered_derivative : 0;
-      
-      const controller_output = p_term + integral_error + derivative_term;
-      
-      // --- Process Simulation (Handles different models) ---
-      const delayed_input = delayBuffer.shift() || 0;
-      delayBuffer.push(controller_output); // No continuous disturbance
-
-      // Select the correct process model for simulation
-      if (modelCase === 'B' || modelCase === 'K' || modelCase === 'I') {
-        // Second-Order Overdamped (Two Lags in series)
-        const tau1_sim = tau;
-        const tau2_sim = tau2 || tau; // Fallback if tau2 not provided
-        const y1_deriv = (K * delayed_input - y1) / tau1_sim;
-        y1 += y1_deriv * dt;
-        const y2_deriv = (y1 - y2) / tau2_sim;
-        y2 += y2_deriv * dt;
-        pv = y2;
-      } else {
-        // Default to FOPTD for all other relevant cases (G, H, ITAE, AMIGO etc.)
-        const pv_deriv = tau > 0 ? (K * delayed_input - pv) / tau : 0;
-        pv += pv_deriv * dt;
-      }
-
-      prev_pv = pv;
-      results.push({ time, pv, sp: setpoint });
-    }
-    return results;
-  };
-
   // Helper function to get available controller types
   const getAvailableControllerTypes = (method: TuningMethod): ControllerType[] => {
     switch (method) {
@@ -520,23 +431,6 @@ export default function PidTuningPage() {
       default:
         return ['P', 'PI', 'PID'];
     }
-  };
-
-  // Helper function to get available IMC cases for controller type
-  const getAvailableImcCases = (controllerType: ControllerType): ImcModelCase[] => {
-    // These lists are now correct based on our previous discussion
-    const piOnlyCases: ImcModelCase[] = ['A', 'E', 'G', 'M'];
-    const pidCapableCases: ImcModelCase[] = ['B', 'C', 'D', 'F', 'H', 'I', 'J', 'K', 'L', 'N', 'O'];
-    
-    if (controllerType === 'PID') {
-      return pidCapableCases;
-    } else if (controllerType === 'PI') {
-      // CHANGE THIS LINE: Instead of returning all models, return only the ones
-      // that result in a PI controller according to the table.
-      return piOnlyCases;
-    }
-    
-    return []; // No P-only IMC rules
   };
 
   // Helper function to determine controller type from IMC model case
@@ -1683,7 +1577,6 @@ export default function PidTuningPage() {
     const textColor = isDark ? 'white' : '#000000';
     const tooltipBg = isDark ? '#08306b' : '#f8f9fa';
     const tooltipBorder = isDark ? '#55aaff' : '#dee2e6';
-    const axisLineStyle = { lineStyle: { color: textColor } };
 
     // --- BODE PLOT CONFIGURATION ---
     if (graphMode === 'bode') {
@@ -2304,7 +2197,7 @@ export default function PidTuningPage() {
           {
             name: 'Control Error Range',
             type: 'custom',
-            renderItem: (params: any, api: any) => {
+            renderItem: (_params: any, api: any) => {
               if (!simulationDataRef.current.length) return null;
               
               const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
@@ -2403,7 +2296,7 @@ export default function PidTuningPage() {
         {
           name: 'Warning Overlay',
           type: 'custom',
-          renderItem: (params: any, api: any) => {
+          renderItem: (_params: any, api: any) => {
             if (!divergenceWarningRef.current) return null;
             
             // Get the current visible x-axis range to properly center the warning
@@ -2557,7 +2450,7 @@ export default function PidTuningPage() {
           {
             name: 'Control Error Range',
             type: 'custom',
-            renderItem: (params: any, api: any) => {
+            renderItem: (_params: any, api: any) => {
               if (!simulationDataRef.current.length) return null;
               const currentData = simulationDataRef.current[simulationDataRef.current.length - 1];
               if (!currentData) return null;

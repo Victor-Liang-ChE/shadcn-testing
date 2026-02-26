@@ -26,9 +26,9 @@ export function calculatePsat_Pa(
   T_K: number
 ): number {
   if (!params || T_K <= 0) return NaN;
-  const { A, B, C, D, E, F } = params;
-  const lnP_kPa = A + B / (T_K + C) + D * Math.log(T_K) + E * Math.pow(T_K, F);
-  const P_Pa = Math.exp(lnP_kPa) * 1000; // kPa → Pa
+  const { C1, C2, C3, C4, C5, C6, C7 } = params;
+  const lnP_Pa = C1 + C2 / (T_K + C3) + C4 * T_K + C5 * Math.log(T_K) + C6 * Math.pow(T_K, C7);
+  const P_Pa = Math.exp(lnP_Pa); // already in Pa
   return isNaN(P_Pa) || P_Pa <= 0 ? NaN : P_Pa;
 }
 /**
@@ -125,11 +125,9 @@ export function calculateNrtlGammaMulticomponent(
           ? pairParams 
           : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij, alpha: pairParams.alpha };
       
-      // Use cal-based R for NRTL interactions from HYSYS, with swap convention:
-      // tau[i][j] uses Aji/Bji and tau[j][i] uses Aij/Bij to match HYSYS export format.
-      // Scale Bij by R_nrtl_cal per HYSYS convention
-      tau[i][j] = p.Aji / (R_nrtl_cal * T_K) + p.Bji / R_nrtl_cal;
-      tau[j][i] = p.Aij / (R_nrtl_cal * T_K) + p.Bij / R_nrtl_cal;
+      // tau[i][j] = Aij/(R*T) + Bij/R, tau[j][i] = Aji/(R*T) + Bji/R
+      tau[i][j] = p.Aij / (R_nrtl_cal * T_K) + p.Bij / R_nrtl_cal;
+      tau[j][i] = p.Aji / (R_nrtl_cal * T_K) + p.Bji / R_nrtl_cal;
       G[i][j] = Math.exp(-p.alpha * tau[i][j]);
       G[j][i] = Math.exp(-p.alpha * tau[j][i]);
     }
@@ -185,10 +183,20 @@ export function calculateNrtlGammaMulticomponent(
 //  3. W I L S O N (Multicomponent Activity Model)
 // ==================================================================
 export interface WilsonInteractionParams {
-  Aij: number;  // K (Lambda = (Vj/Vi)·exp(-(Aij/T + Bij)))
-  Aji: number;  // K
-  Bij: number;  // dimensionless
-  Bji: number;  // dimensionless
+  Aij: number;  // K (= −bij·R_cal)
+  Aji: number;  // K (= −bji·R_cal)
+  Bij: number;  // dimensionless (= −aij·R_cal)
+  Bji: number;  // dimensionless (= −aji·R_cal)
+  /** Aspen cij·(−R_cal): ln T coefficient for Λ_ij. Default 0. */
+  Cij?: number;
+  /** Aspen cji·(−R_cal): ln T coefficient for Λ_ji. Default 0. */
+  Cji?: number;
+  /** Aspen dij·(−R_cal): T coefficient for Λ_ij. Default 0. */
+  Dij?: number;
+  /** Aspen dji·(−R_cal): T coefficient for Λ_ji. Default 0. */
+  Dji?: number;
+  /** HOC cross-association parameter η_ij. Default 0. */
+  eta_cross?: number;
 }
 export type WilsonParameterMatrix = Map<string, WilsonInteractionParams>; // Key: "i-j"
 
@@ -204,9 +212,22 @@ export function calculateWilsonGammaMulticomponent(
   const n = comps.length;
   if (x.length !== n || n === 0) return null;
 
-  const V_L = comps.map(c => c.wilsonParams?.V_L_m3mol);
-  if (V_L.some(v => v === undefined)) return null;
-  // HYSYS Wilson Aij are in cal/mol. Use R_cal and swap convention.
+  // Use temperature-dependent Rackett VL when critical props are available (Yamada-Gunn ZRA).
+  const R_SI = 8.314_462_618; // J·mol⁻¹·K⁻¹
+  const _raccVL = (c: (typeof comps)[0]): number => {
+    const wp = c.wilsonParams;
+    if (wp?.Tc_K && wp.Pc_Pa) {
+      const ZRA = wp.RKTZRA ?? (wp.omega != null ? 0.29056 - 0.08775 * wp.omega : null);
+      if (ZRA != null) {
+        const Tr = T_K / wp.Tc_K;
+        return (R_SI * wp.Tc_K / wp.Pc_Pa) * Math.pow(ZRA, 1 + Math.pow(1 - Tr, 2 / 7));
+      }
+    }
+    return wp?.V_L_m3mol ?? NaN;
+  };
+  const V_L = comps.map(c => _raccVL(c));
+  if (V_L.some(v => v === undefined || isNaN(v as number))) return null;
+  // Aspen Wilson params are R_cal-scaled (see fetchWilsonInteractionParams).
   const R_wilson_cal = 1.9872; // cal·mol⁻¹·K⁻¹
 
   const Lambda = Array(n).fill(0).map(() => Array(n).fill(0));
@@ -231,10 +252,14 @@ export function calculateWilsonGammaMulticomponent(
 
       const p = params.has(`${i}-${j}`)
         ? pairParams
-        : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij };
-      // Swap convention: Lambda[i][j] uses Aji/Bji to match HYSYS export format.
-      // Scale Bij by R_wilson_cal
-      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(-(p.Aji / (R_wilson_cal * T_K) + p.Bji / R_wilson_cal));
+        : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij,
+            Cij: pairParams.Cji, Cji: pairParams.Cij, Dij: pairParams.Dji, Dji: pairParams.Dij };
+      // Full Aspen Wilson: ln Λ_ij = ln(Vj/Vi) + aij + bij/T + cij·lnT + dij·T
+      // Stored scaled: −(A + B·T + C·T·lnT + D·T²) / (R·T)
+      const lT = Math.log(T_K);
+      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(
+        -(p.Aji + p.Bji * T_K + (p.Cji ?? 0) * T_K * lT + (p.Dji ?? 0) * T_K * T_K) / (R_wilson_cal * T_K)
+      );
     }
   }
 
@@ -454,7 +479,7 @@ export function calculateUniquacGammaMulticomponent(
   );
 
   // Residual part
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - HYSYS UNIQUAC params are in calories
+  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹ - Aspen UNIQUAC params are R_cal-scaled
   const tau = Array(n).fill(0).map(() => Array(n).fill(0));
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
@@ -477,8 +502,8 @@ export function calculateUniquacGammaMulticomponent(
     const p = params.has(`${i}-${j}`)
       ? pairParams
       : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij };
-        // Swap convention: tau[i][j] uses Aji/Bji to match HYSYS export format.
-        tau[i][j] = Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji / R_cal));
+        // tau[i][j] = exp(-(Aij/(R*T) + Bij/R))
+        tau[i][j] = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij / R_cal));
     }
   }
 
@@ -582,7 +607,7 @@ export function calculateUnifacGamma(
   if (sum_XQ === 0) return ln_gamma_C.map(Math.exp);
   
   const theta_m = subgroupIds.map((id, idx) => (X_m[idx] * params.Qk[id]) / sum_XQ);
-  const psi = subgroupIds.map((id_m, mIdx) => subgroupIds.map((id_k, kIdx) => {
+  const psi = subgroupIds.map((id_m, _mIdx) => subgroupIds.map((id_k, _kIdx) => {
       const main_group_m = params.mainGroupMap[id_m];
       const main_group_k = params.mainGroupMap[id_k];
       if (main_group_m === undefined || main_group_k === undefined) return 1.0;
@@ -633,7 +658,7 @@ export function calculateUnifacGamma(
 // Helper to fetch all UNIFAC group parameters (Rk, Qk, a_mk)
 export async function fetchUnifacInteractionParams(
   supabase: SupabaseClient,
-  subgroupIds: number[]
+  _subgroupIds: number[]
 ): Promise<UnifacParameters | null> {
   return _getUnifacParams(supabase);
 }
@@ -641,8 +666,6 @@ export async function fetchUnifacInteractionParams(
 // --- DATABASE FETCHING & ESTIMATION ---
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { fetchCompoundDataFromHysys } from './antoine-utils';
-
 let unifacParamsCache: UnifacParameters | null = null;
 async function _getUnifacParams(supabase: SupabaseClient): Promise<UnifacParameters | null> {
     if (unifacParamsCache) return unifacParamsCache;
@@ -672,161 +695,12 @@ async function _getUnifacParams(supabase: SupabaseClient): Promise<UnifacParamet
     return unifacParamsCache;
 }
 
-async function _buildUnifacComponent(supabase: SupabaseClient, name: string): Promise<CompoundData | null> {
-  const therm = await fetchCompoundDataFromHysys(supabase, name).catch(() => null);
-  if (!therm || !therm.unifacGroups) return null;
-  return {
-    name: name,
-    antoine: null,
-    unifacGroups: therm.unifacGroups,
-    prParams: null,
-    srkParams: null,
-    uniquacParams: null,
-    wilsonParams: null,
-  } as CompoundData;
-}
+// ─── Binary fetch helpers — re-exported from the canonical vle-calculations module ──
+export {
+  fetchNrtlParameters,
+  fetchWilsonInteractionParams,
+  fetchPrInteractionParams,
+  fetchSrkInteractionParams,
+  fetchUniquacInteractionParams,
+} from './vle-calculations';
 
-async function estimateNrtlFromUnifac(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string,
-  T_ref_K: number = 350
-): Promise<NrtlInteractionParams | null> {
-    const unifacParams = await _getUnifacParams(supabase);
-    const comp1 = await _buildUnifacComponent(supabase, name1);
-    const comp2 = await _buildUnifacComponent(supabase, name2);
-
-    if (!unifacParams || !comp1 || !comp2) return null;
-
-    const gammas_1_in_2 = calculateUnifacGamma([comp1, comp2], [1e-9, 1.0 - 1e-9], T_ref_K, unifacParams);
-    const gammas_2_in_1 = calculateUnifacGamma([comp1, comp2], [1.0 - 1e-9, 1e-9], T_ref_K, unifacParams);
-
-    if (!gammas_1_in_2 || !gammas_2_in_1) return null;
-
-    const lnGamma1_inf = Math.log(gammas_2_in_1[0]);
-    const lnGamma2_inf = Math.log(gammas_1_in_2[1]);
-
-    // Heuristic: store as Bij (temperature-independent), Aij = 0
-    return { Aij: 0, Aji: 0, Bij: lnGamma2_inf, Bji: lnGamma1_inf, alpha: 0.3 };
-}
-
-// --- NRTL ---
-export async function fetchNrtlParameters(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string,
-): Promise<NrtlInteractionParams | null> {
-  if (!name1 || !name2 || name1 === name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
-
-  const { data, error } = await supabase
-    .from('HYSYS NRTL')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-
-  if (error) console.warn(`Supabase HYSYS NRTL query error: ${error.message}`);
-
-  if (data && data.length > 0) {
-    const row = data[0];
-    const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
-    return isForward
-      ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0, alpha: row.Cij_Alpha ?? 0.3 }
-      : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0, alpha: row.Cji_Alpha ?? row.Cij_Alpha ?? 0.3 };
-  }
-  
-  const est = await estimateNrtlFromUnifac(supabase, name1, name2);
-  if (est) {
-    (est as any)._usedUnifacFallback = true;
-    return est;
-  }
-  return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
-}
-
-// --- Wilson ---
-export async function fetchWilsonInteractionParams(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string
-): Promise<WilsonInteractionParams | null> {
-  if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
-
-  const { data, error } = await supabase
-    .from('HYSYS WILSON')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-
-  if (error || !data || data.length === 0) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
-  const row = data[0];
-  const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
-  return isForward
-    ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
-    : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
-}
-
-// --- Peng-Robinson ---
-export async function fetchPrInteractionParams(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string
-): Promise<PrSrkInteractionParams | null> {
-  if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
-  
-  const { data, error } = await supabase
-    .from('HYSYS PR')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-    
-  if (error) console.warn(`HYSYS PR fetch error: ${error.message}`);
-  if (data && data.length > 0 && typeof data[0].Kij === 'number') {
-    return { k_ij: data[0].Kij };
-  }
-  return { k_ij: 0 };
-}
-
-// --- SRK ---
-export async function fetchSrkInteractionParams(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string
-): Promise<PrSrkInteractionParams | null> {
-  if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
-  
-  const { data, error } = await supabase
-    .from('HYSYS SRK')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-    
-  if (error) console.warn(`HYSYS SRK fetch error: ${error.message}`);
-  if (data && data.length > 0 && typeof data[0].Kij === 'number') {
-    return { k_ij: data[0].Kij };
-  }
-  return { k_ij: 0 };
-}
-
-// --- UNIQUAC ---
-export async function fetchUniquacInteractionParams(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string
-): Promise<UniquacInteractionParams | null> {
-  if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
-
-  const { data, error } = await supabase
-    .from('HYSYS UNIQUAC')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-
-  if (!error && data && data.length > 0) {
-    const row = data[0];
-    const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
-    return isForward
-      ? { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 }
-      : { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 };
-  }
-  if (error) console.warn(`HYSYS UNIQUAC fetch error: ${error.message}`);
-  return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
-}

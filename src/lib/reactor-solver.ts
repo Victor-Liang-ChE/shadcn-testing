@@ -259,7 +259,7 @@ function solveODE_BDF(
   derivatives: (t: number, y: number[]) => number[],
   y0: number[],
   tSpan: [number, number],
-  componentNames: string[],
+  _componentNames: string[],
   stoppingCondition?: (t: number, y: number[], dy: number[]) => boolean
 ): { t: number[], y: number[][] } {
   const [t0, tf] = tSpan;
@@ -373,7 +373,7 @@ export const solvePFR_ODE_System = (
   const y0 = componentNames.map(name => initialFlowRates[name] || 0);
   const V_span: [number, number] = [0, V_total];
 
-  const derivatives = (V: number, F: number[]): number[] => {
+  const derivatives = (_V: number, F: number[]): number[] => {
     const currentFlowRates: { [key: string]: number } = {};
     componentNames.forEach((name, i) => { 
         currentFlowRates[name] = Math.max(0, F[i]); 
@@ -466,13 +466,13 @@ export const solveCSTRParallel = (
         inletConcentrations[name] = initialFlowRates[name] / volumetricFlowRate;
     });
 
-    const derivatives = (t: number, C_vector: number[]): number[] => {
+    const derivatives = (_t: number, C_vector: number[]): number[] => {
         const currentConcentrations: { [key: string]: number } = {};
         componentNames.forEach((name, i) => {
             currentConcentrations[name] = Math.max(0, C_vector[i]);
         });
 
-        const dCdt = componentNames.map((name, i) => {
+        const dCdt = componentNames.map((name, _i) => {
             const rate_i = calculateCombinedRate(name, currentConcentrations, parsedParallelReactions);
             const C_in_i = inletConcentrations[name] || 0;
             const C_i = currentConcentrations[name];
@@ -487,7 +487,7 @@ export const solveCSTRParallel = (
     const t_span: [number, number] = [0, integrationTime];
 
     const steadyStateTolerance = 1e-7;
-    const stoppingCondition = (t: number, y: number[], dy: number[]): boolean => {
+    const stoppingCondition = (t: number, _y: number[], dy: number[]): boolean => {
         if (t < Math.min(tau, 2.0)) {
             return false;
         }

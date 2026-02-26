@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
 import { useTheme } from "next-themes";
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts/core';
@@ -16,7 +16,6 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeftRight } from 'lucide-react';
-import { TooltipProvider } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
 
 import {
@@ -24,21 +23,15 @@ import {
     fetchUnifacInteractionParams,
     calculateBubbleTemperatureUnifac,
     calculateBubblePressureUnifac,
-    calculateDewTemperatureUnifac,
-    calculateDewPressureUnifac,
     fetchNrtlParameters,
     calculateBubbleTemperatureNrtl,
     calculateBubblePressureNrtl,
     fetchPrInteractionParams,
     calculateBubbleTemperaturePr,
     calculateBubblePressurePr,
-    calculateDewTemperaturePr,
-    calculateDewPressurePr,
     fetchSrkInteractionParams,
     calculateBubbleTemperatureSrk,
     calculateBubblePressureSrk,
-    calculateDewTemperatureSrk,
-    calculateDewPressureSrk,
     fetchUniquacInteractionParams,
     calculateBubbleTemperatureUniquac,
     calculateBubblePressureUniquac,
@@ -52,12 +45,6 @@ import {
 import type {
     CompoundData,
     BubbleDewResult,
-    AntoineParams,
-    UnifacGroupComposition,
-    PrPureComponentParams,
-    SrkPureComponentParams,
-    UniquacPureComponentParams,
-    WilsonPureComponentParams,
 } from '@/lib/vle-types';
 import { fetchCompoundDataFromHysys, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils';
 import type { CompoundAlias } from '@/lib/antoine-utils';
@@ -65,19 +52,7 @@ import type { CompoundAlias } from '@/lib/antoine-utils';
 export type FluidPackageType = 'unifac' | 'pr' | 'srk' | 'uniquac' | 'wilson' | 'nrtl';
 export type DiagramType = 'txy' | 'pxy' | 'xy';
 
-// Temporary types to satisfy linter
-type UnifacParameters = any;
-type NrtlInteractionParams = any;
-type PrInteractionParams = any;
-type SrkInteractionParams = any;
-type UniquacInteractionParams = any;
-type WilsonInteractionParams = any;
-
 echarts.use([TitleComponent, TooltipComponent, GridComponent, LegendComponent, MarkPointComponent, ToolboxComponent, LineChart, ScatterChart, CanvasRenderer]);
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -114,8 +89,8 @@ export default function VleDiagramPage() {
     const [temperatureC, setTemperatureC] = useState<number | null>(null);
     const [pressureBar, setPressureBar] = useState<number | null>(1);
     const [fluidPackage, setFluidPackage] = useState<FluidPackageType>('uniquac');
-    const [temperatureInput, setTemperatureInput] = useState<string>(String(temperatureC));
-    const [pressureInput, setPressureInput] = useState<string>(String(pressureBar));
+    const [_temperatureInput, _setTemperatureInput] = useState<string>(String(temperatureC));
+    const [_pressureInput, _setPressureInput] = useState<string>(String(pressureBar));
     const [tempMax, setTempMax] = useState<string>('120');
     const [pressureMax, setPressureMax] = useState<string>('10');
     const [useTemperatureForXY, setUseTemperatureForXY] = useState(false);
@@ -424,7 +399,6 @@ export default function VleDiagramPage() {
                         const unit='°C';
                         const bubbleT = tC ? interp(xVal, sortedX, tC) : null;
                         const dewYPoints = sortedData.map((d: {y:number}) => d.y).sort((a: number,b: number)=>a-b);
-                        const dewTPoints = sortedData.map((d: {t:number}) => d.t - 273.15).sort((a:number,b:number)=> a - (interp(b,dewYPoints, sortedData.map((d: {t:number})=>d.t-273.15))??0) );
                         const dewT = dewTArray ? interp(xVal, dewYPoints, dewTArray) : null;
                         
                         if(bubbleT!==null) html += `<span style="color: green;">Bubble Temp: ${formatNumberToPrecision(bubbleT,3)} ${unit}</span><br/>`;

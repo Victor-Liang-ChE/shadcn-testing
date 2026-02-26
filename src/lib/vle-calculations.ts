@@ -7,7 +7,7 @@
 // • UNIQUAC (UNIversal QUAsi Chemical) - activity coefficient model
 // All legacy VLE calculation files have been consolidated into this single module.
 // ---------------------------------------------------------------------------------------
-import type { AntoineParams, CompoundData, BubbleDewResult, UnifacGroupComposition, HysysNrtlParams, HysysWilsonParams, HysysUniquacParams, HysysPrSrkParams } from './vle-types';
+import type { AntoineParams, CompoundData, BubbleDewResult } from './vle-types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchCompoundDataFromHysys } from './antoine-utils';
 
@@ -19,28 +19,25 @@ export const R_gas_const_J_molK = 8.314_462_618_153_24; // J·mol⁻¹·K⁻¹
 export const SRK_DEBUG = process.env.NEXT_PUBLIC_SRK_DEBUG === 'true' || false;
 
 /**
- * Helper function to estimate boiling point temperature from HYSYS extended Antoine.
- * Uses Newton-Raphson on: ln(P_kPa) = A + B/(T+C) + D·ln(T) + E·T^F
- * T in Kelvin, P_target in Pa; Antoine gives kPa.
+ * Helper function to estimate boiling point temperature from Aspen PLXANT equation.
+ * Uses Newton-Raphson on: ln(P [Pa]) = C1 + C2/(T+C3) + C4·T + C5·ln(T) + C6·T^C7
+ * T in Kelvin, P_target in Pa.
  */
 export function antoineBoilingPointSolverLocal(antoineParams: AntoineParams | null, P_target: number): number | null {
   if (!antoineParams) return null;
   try {
-    const P_kPa = P_target / 1000; // Pa → kPa
-    const targetLnP = Math.log(P_kPa);
-    // Start guess: simple 3-param inversion
-    let T = antoineParams.B / (targetLnP - antoineParams.A) - antoineParams.C;
-    if (!isFinite(T) || T <= 0 || T > 2000) T = 350; // fallback
+    const targetLnP = Math.log(P_target); // target is already in Pa
+    // Start guess: invert the dominant C1 + C2/T term
+    let T = antoineParams.C2 / (targetLnP - antoineParams.C1);
+    if (!isFinite(T) || T <= 0 || T > 2000) T = 350;
 
+    const { C1, C2, C3, C4, C5, C6, C7 } = antoineParams;
     for (let i = 0; i < 30; i++) {
-      const lnP = antoineParams.A + antoineParams.B / (T + antoineParams.C)
-        + antoineParams.D * Math.log(T) + antoineParams.E * Math.pow(T, antoineParams.F);
+      const lnP = C1 + C2 / (T + C3) + C4 * T + C5 * Math.log(T) + C6 * Math.pow(T, C7);
       const err = lnP - targetLnP;
       if (Math.abs(err) < 1e-6) return T;
-      // Derivative: d(lnP)/dT
-      const dlnPdT = -antoineParams.B / (T + antoineParams.C) ** 2
-        + antoineParams.D / T
-        + antoineParams.E * antoineParams.F * Math.pow(T, antoineParams.F - 1);
+      // d(lnP)/dT = -C2/(T+C3)^2 + C4 + C5/T + C6·C7·T^(C7-1)
+      const dlnPdT = -C2 / (T + C3) ** 2 + C4 + C5 / T + C6 * C7 * Math.pow(T, C7 - 1);
       if (Math.abs(dlnPdT) < 1e-15) break;
       T -= err / dlnPdT;
       if (T <= 0 || T > 2000) break;
@@ -52,19 +49,19 @@ export function antoineBoilingPointSolverLocal(antoineParams: AntoineParams | nu
 }
 
 /**
- * Calculates saturation pressure (Pa) from HYSYS extended Antoine.
- *   ln(P [kPa]) = A + B/(T+C) + D·ln(T) + E·T^F
- * T in Kelvin. Returns pressure in Pa (kPa × 1000).
+ * Calculates saturation pressure (Pa) from Aspen PLXANT extended Antoine.
+ *   ln(P* [Pa]) = C1 + C2/(T+C3) + C4·T + C5·ln(T) + C6·T^C7
+ * T in Kelvin. Returns pressure in Pa directly.
  */
 export function calculatePsat_Pa(
   params: AntoineParams | null,
   T_K: number
 ): number {
   if (!params || T_K <= 0) return NaN;
-  const lnP_kPa = params.A + params.B / (T_K + params.C)
-    + params.D * Math.log(T_K) + params.E * Math.pow(T_K, params.F);
-  const P_kPa = Math.exp(lnP_kPa);
-  return isNaN(P_kPa) || P_kPa <= 0 ? NaN : P_kPa * 1000; // kPa → Pa
+  const { C1, C2, C3, C4, C5, C6, C7 } = params;
+  const lnP_Pa = C1 + C2 / (T_K + C3) + C4 * T_K + C5 * Math.log(T_K) + C6 * Math.pow(T_K, C7);
+  const P_Pa = Math.exp(lnP_Pa);
+  return isNaN(P_Pa) || P_Pa <= 0 ? NaN : P_Pa;
 }
 
 // ==========================================
@@ -76,11 +73,23 @@ export function calculatePsat_Pa(
  *   G_ij = exp(-alpha · τ_ij)
  */
 export interface NrtlInteractionParams {
-  Aij: number;   // K
-  Aji: number;   // K
-  Bij: number;   // dimensionless
-  Bji: number;   // dimensionless
+  Aij: number;   // K (= bij*R_cal)
+  Aji: number;   // K (= bji*R_cal)
+  Bij: number;   // dimensionless (= aij*R_cal)
+  Bji: number;   // dimensionless (= aji*R_cal)
   alpha: number; // non-randomness parameter (typically 0.2-0.47)
+  /** Aspen dij: alpha temperature coefficient — α(T) = alpha + dij*(T−273.15). Default 0. */
+  dij_alpha?: number;
+  /** Aspen eij·R_cal: ln T contribution to τ_ij = … + eij·ln T. Default 0. */
+  Eij?: number;
+  /** Aspen eji·R_cal: ln T contribution to τ_ji. Default 0. */
+  Eji?: number;
+  /** Aspen fij·R_cal: T contribution to τ_ij = … + fij·T. Default 0. */
+  Fij?: number;
+  /** Aspen fji·R_cal: T contribution to τ_ji. Default 0. */
+  Fji?: number;
+  /** Hayden-O'Connell cross-association parameter (η_ij). Default 0 (ideal vapor). */
+  eta_cross?: number;
 }
 
 export function calculateNrtlGamma(
@@ -94,13 +103,21 @@ export function calculateNrtlGamma(
   if (Math.abs(x1 + x2 - 1) > 1e-6) return null;
   if (x1 < 1e-9 || x2 < 1e-9) return [1, 1];
 
-  // HYSYS NRTL parameters for this dataset are in cal/mol. Use R in cal/mol·K.
+  // Aspen NRTL parameters: Aij = bij*R_cal, Bij = aij*R_cal (see fetchNrtlParameters).
+  // Full Aspen tau: τ_ij = aij + bij/T + eij·ln T + fij·T
+  // Stored as: Aij/(R*T) + Bij/R + Eij·lnT/R + Fij·T/R = bij/T + aij + eij·lnT + fij·T
+  // Alpha temp-dep: α(T) = alpha + dij_alpha·(T-273.15)
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
-  // Use standard convention: tau12 uses A12/B12 and tau21 uses A21/B21
-  const tau12 = p.Aij / (R_cal * T_K) + p.Bij / R_cal;
-  const tau21 = p.Aji / (R_cal * T_K) + p.Bji / R_cal;
-  const G12 = Math.exp(-p.alpha * tau12);
-  const G21 = Math.exp(-p.alpha * tau21);
+  const alpha_T = p.alpha + (p.dij_alpha ?? 0) * (T_K - 273.15);
+  // tau12: i=1,j=2 uses Aij/Bij/Eij/Fij; tau21: i=2,j=1 uses Aji/Bji/Eji/Fji
+  const tau12 = p.Aij / (R_cal * T_K) + p.Bij / R_cal
+              + (p.Eij ?? 0) * Math.log(T_K) / R_cal
+              + (p.Fij ?? 0) * T_K / R_cal;
+  const tau21 = p.Aji / (R_cal * T_K) + p.Bji / R_cal
+              + (p.Eji ?? 0) * Math.log(T_K) / R_cal
+              + (p.Fji ?? 0) * T_K / R_cal;
+  const G12 = Math.exp(-alpha_T * tau12);
+  const G21 = Math.exp(-alpha_T * tau21);
 
   const denom1 = x1 + x2 * G21;
   const denom2 = x2 + x1 * G12;
@@ -126,6 +143,10 @@ export function calculateBubbleTemperatureNrtl(
   let T = T_init_K;
   const x = [x1_feed, 1 - x1_feed];
   let y: number[] = [...x];
+  const eta_cross = (params as any).eta_cross ?? 0;
+  const useHoc = eta_cross > 0 ||
+    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
+    (comps[1].hocProps?.eta_self ?? 0) > 0;
 
   for (let i = 0; i < maxIter; i++) {
     const Psat = [calculatePsat_Pa(comps[0].antoine, T), calculatePsat_Pa(comps[1].antoine, T)];
@@ -133,13 +154,15 @@ export function calculateBubbleTemperatureNrtl(
     const gamma = calculateNrtlGamma(comps, x, T, params);
     if (!gamma) return null;
 
-    const Pcalc = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
+    const phi = useHoc
+      ? hocFugacityCorrection(comps, y, T, P_Pa, Psat, eta_cross)
+      : ([1, 1] as [number, number]);
+
+    const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
+    const Pcalc = KPsat[0] + KPsat[1];
     const err = Pcalc - P_Pa;
     if (Math.abs(err) < tol * P_Pa) {
-      y = [
-        (x[0] * gamma[0] * Psat[0]) / Pcalc,
-        (x[1] * gamma[1] * Psat[1]) / Pcalc,
-      ];
+      y = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
       return {
         comp1_feed: x1_feed,
         comp1_equilibrium: y[0],
@@ -149,6 +172,8 @@ export function calculateBubbleTemperatureNrtl(
         calculationType: 'bubbleT',
       };
     }
+    const Ptmp = Pcalc || P_Pa;
+    y = [KPsat[0] / Ptmp, KPsat[1] / Ptmp];
     // simple secant-like adjustment
     const dT = -err / P_Pa * T * 0.02;
     T = Math.max(100, T + (Math.abs(dT) > 5 ? Math.sign(dT) * 5 : dT));
@@ -167,8 +192,21 @@ export function calculateBubblePressureNrtl(
   if (Psat.some(v => isNaN(v))) return null;
   const gamma = calculateNrtlGamma(comps, x, T_K, params);
   if (!gamma) return null;
-  const Pcalc = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
-  const y1 = (x[0] * gamma[0] * Psat[0]) / Pcalc;
+
+  const eta_cross = (params as any).eta_cross ?? 0;
+  const useHoc = eta_cross > 0 ||
+    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
+    (comps[1].hocProps?.eta_self ?? 0) > 0;
+
+  const PcalcIdeal = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
+  const yIdeal = [x[0] * gamma[0] * Psat[0] / PcalcIdeal, x[1] * gamma[1] * Psat[1] / PcalcIdeal];
+  const phi = useHoc
+    ? hocFugacityCorrection(comps, yIdeal, T_K, PcalcIdeal, Psat, eta_cross)
+    : ([1, 1] as [number, number]);
+
+  const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
+  const Pcalc = KPsat[0] + KPsat[1];
+  const y1 = KPsat[0] / Pcalc;
   return {
     comp1_feed: x1_feed,
     comp1_equilibrium: y1,
@@ -189,10 +227,20 @@ export function calculateBubblePressureNrtl(
  *   Aij in cal/mol, Bij dimensionless.
  */
 export interface WilsonInteractionParams {
-  Aij: number;     // cal/mol (energy param for Λ_12)
-  Aji: number;     // cal/mol (energy param for Λ_21)
-  Bij: number;     // dimensionless
-  Bji: number;     // dimensionless
+  Aij: number;     // cal/mol (= −bij·R_cal), energy param for Λ_12
+  Aji: number;     // cal/mol (= −bji·R_cal), energy param for Λ_21
+  Bij: number;     // dimensionless (= −aij·R_cal)
+  Bji: number;     // dimensionless (= −aji·R_cal)
+  /** Aspen cij·(−R_cal): ln T coefficient of ln Λ_ij = … + cij·ln T. Default 0. */
+  Cij?: number;
+  /** Aspen cji·(−R_cal): ln T coefficient of ln Λ_ji. Default 0. */
+  Cji?: number;
+  /** Aspen dij·(−R_cal): T coefficient of ln Λ_ij = … + dij·T. Default 0. */
+  Dij?: number;
+  /** Aspen dji·(−R_cal): T coefficient of ln Λ_ji. Default 0. */
+  Dji?: number;
+  /** Hayden-O'Connell cross-association parameter (η_ij). Default 0 (ideal vapor). */
+  eta_cross?: number;
 }
 
 export function calculateWilsonGamma(
@@ -204,13 +252,33 @@ export function calculateWilsonGamma(
   if (x.length !== 2 || comps.length !== 2) return null;
   if (!comps[0].wilsonParams || !comps[1].wilsonParams) return null;
 
-  const V1 = comps[0].wilsonParams.V_L_m3mol;
-  const V2 = comps[1].wilsonParams.V_L_m3mol;
+  // Use temperature-dependent Rackett liquid molar volume when critical props are available.
+  // VL(T) = (R·Tc/Pc)·ZRA^[1+(1-Tr)^(2/7)], ZRA = 0.29056 - 0.08775·ω (Yamada-Gunn)
+  // This is consistent with how APV Wilson params were regressed in Aspen Plus.
+  const _rackett = (wp: typeof comps[0]['wilsonParams'], T: number): number => {
+    if (wp!.Tc_K && wp!.Pc_Pa) {
+      const ZRA = wp!.RKTZRA ?? (wp!.omega != null ? 0.29056 - 0.08775 * wp!.omega! : null);
+      if (ZRA != null) {
+        const Tr = T / wp!.Tc_K!;
+        return (R_gas_const_J_molK * wp!.Tc_K! / wp!.Pc_Pa!) * Math.pow(ZRA, 1 + Math.pow(1 - Tr, 2 / 7));
+      }
+    }
+    return wp!.V_L_m3mol; // fallback to stored reference value
+  };
+  const V1 = _rackett(comps[0].wilsonParams, T_K);
+  const V2 = _rackett(comps[1].wilsonParams, T_K);
   // Standard convention: Lambda12 uses Aij/Bij (i=1,j=2), Lambda21 uses Aji/Bji
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   // Scale Bij by R_cal
-  const Lambda12 = (V2 / V1) * Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij / R_cal));
-  const Lambda21 = (V1 / V2) * Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji / R_cal));
+  // Full Aspen Wilson: ln Λ_ij = ln(Vj/Vi) + aij + bij/T + cij·lnT + dij·T
+  // Stored scaled: -(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T)
+  //   = bij/T + aij + cij·lnT + dij·T  ✓  (Cij = -cij·R_cal, Dij = -dij·R_cal)
+  const Lambda12 = (V2 / V1) * Math.exp(
+    -(p.Aij + p.Bij * T_K + (p.Cij ?? 0) * T_K * Math.log(T_K) + (p.Dij ?? 0) * T_K * T_K) / (R_cal * T_K)
+  );
+  const Lambda21 = (V1 / V2) * Math.exp(
+    -(p.Aji + p.Bji * T_K + (p.Cji ?? 0) * T_K * Math.log(T_K) + (p.Dji ?? 0) * T_K * T_K) / (R_cal * T_K)
+  );
 
   const [x1, x2] = x;
   const denom1 = x1 + Lambda12 * x2;
@@ -233,25 +301,41 @@ export function calculateBubbleTemperatureWilson(
 ): BubbleDewResult | null {
   let T = T_init_K;
   const x = [x1_feed, 1 - x1_feed];
+  let y: number[] = [...x]; // initial estimate
+  const eta_cross = params.eta_cross ?? 0;
+  const useHoc = eta_cross > 0 ||
+    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
+    (comps[1].hocProps?.eta_self ?? 0) > 0;
+
   for (let i = 0; i < maxIter; i++) {
     const gammas = calculateWilsonGamma(comps, x, T, params);
     if (!gammas) return null;
     const Psat = [calculatePsat_Pa(comps[0].antoine, T), calculatePsat_Pa(comps[1].antoine, T)];
     if (Psat.some(v => isNaN(v))) return null;
 
-    const Pcalc = x[0] * gammas[0] * Psat[0] + x[1] * gammas[1] * Psat[1];
+    // HOC vapor-phase fugacity correction (φ_i^sat / φ_i^V)
+    const phi = useHoc
+      ? hocFugacityCorrection(comps, y, T, P_Pa, Psat, eta_cross)
+      : ([1, 1] as [number, number]);
+
+    // Modified Raoult's law: K_i = γ_i · Psat_i · φ_i^sat / (φ_i^V · P)
+    const KPsat = [x[0] * gammas[0] * Psat[0] * phi[0], x[1] * gammas[1] * Psat[1] * phi[1]];
+    const Pcalc = KPsat[0] + KPsat[1];
     const err = Pcalc - P_Pa;
     if (Math.abs(err) < tol * P_Pa) {
-      const y1 = (x[0] * gammas[0] * Psat[0]) / Pcalc;
+      y = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
       return {
         comp1_feed: x1_feed,
-        comp1_equilibrium: y1,
+        comp1_equilibrium: y[0],
         T_K: T,
         P_Pa,
         iterations: i + 1,
         calculationType: 'bubbleT',
       };
     }
+    // update y estimate before next iteration (for HOC correction)
+    const Ptmp = Pcalc || P_Pa;
+    y = [KPsat[0] / Ptmp, KPsat[1] / Ptmp];
     const dT = -err / P_Pa * (T * 0.05);
     T = Math.min(800, Math.max(150, T + (Math.abs(dT) > 5 ? Math.sign(dT) * 5 : dT)));
   }
@@ -269,8 +353,23 @@ export function calculateBubblePressureWilson(
   if (!gammas) return null;
   const Psat = [calculatePsat_Pa(comps[0].antoine, T_K), calculatePsat_Pa(comps[1].antoine, T_K)];
   if (Psat.some(v => isNaN(v))) return null;
-  const Pcalc = x[0] * gammas[0] * Psat[0] + x[1] * gammas[1] * Psat[1];
-  const y1 = (x[0] * gammas[0] * Psat[0]) / Pcalc;
+
+  const eta_cross = params.eta_cross ?? 0;
+  const useHoc = eta_cross > 0 ||
+    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
+    (comps[1].hocProps?.eta_self ?? 0) > 0;
+
+  // Initial ideal estimate for y (needed for HOC correction)
+  const PcalcIdeal = x[0] * gammas[0] * Psat[0] + x[1] * gammas[1] * Psat[1];
+  let y = [x[0] * gammas[0] * Psat[0] / PcalcIdeal, x[1] * gammas[1] * Psat[1] / PcalcIdeal];
+
+  const phi = useHoc
+    ? hocFugacityCorrection(comps, y, T_K, PcalcIdeal, Psat, eta_cross)
+    : ([1, 1] as [number, number]);
+
+  const KPsat = [x[0] * gammas[0] * Psat[0] * phi[0], x[1] * gammas[1] * Psat[1] * phi[1]];
+  const Pcalc = KPsat[0] + KPsat[1];
+  const y1 = KPsat[0] / Pcalc;
   return {
     comp1_feed: x1_feed,
     comp1_equilibrium: y1,
@@ -353,7 +452,7 @@ export function calculateUnifacGamma(
   if (sum_XQ === 0) return ln_gamma_C.map(Math.exp);
   
   const theta_m = subgroupIds.map((id, idx) => (X_m[idx] * params.Qk[id]) / sum_XQ);
-  const psi = subgroupIds.map((id_m, mIdx) => subgroupIds.map((id_k, kIdx) => {
+  const psi = subgroupIds.map((id_m, _mIdx) => subgroupIds.map((id_k, _kIdx) => {
       const key = `${params.mainGroupMap[id_m]}-${params.mainGroupMap[id_k]}`;
       const a_mk = params.a_mk.get(key) ?? 0;
       return Math.exp(-a_mk / T_kelvin);
@@ -601,11 +700,6 @@ export function calculatePrFugacityCoefficients(
   return [Math.exp(ln_phi[0]), Math.exp(ln_phi[1])];
 }
 
-// Small numerical derivative helper (central difference)
-function _numDeriv(func: (t: number) => number, t: number, h: number = 1e-4) {
-  return (func(t + h) - func(t - h)) / (2 * h);
-}
-
 // --- Replacement for calculateBubbleTemperaturePr ---
 // --- Final Replacement for calculateBubbleTemperaturePr ---
 // --- Final Replacement for calculateBubbleTemperaturePr ---
@@ -614,7 +708,7 @@ export function calculateBubbleTemperaturePr(
   x1_feed: number,
   P_system_Pa: number,
   params: PrInteractionParams,
-  initialTempGuess_K: number = 350,
+  _initialTempGuess_K: number = 350,
   maxIter: number = 100,
   tolerance: number = 1e-6
 ): BubbleDewResult | null {
@@ -735,7 +829,7 @@ export function calculateDewTemperaturePr(
   y1_feed: number,
   P_system_Pa: number,
   prInteractionParams: PrInteractionParams,
-  initialTempGuess_K: number = 350,
+  _initialTempGuess_K: number = 350,
   maxIter: number = 100,
   tolerance: number = 1e-6
 ): BubbleDewResult | null {
@@ -879,14 +973,7 @@ export function calculateDewPressurePr(
 
 export interface SrkInteractionParams { k_ij: number; }
 
-// type alias – avoid redeclaration
-type SrkInteractionParamsFetch = SrkInteractionParams;
-
 // (interface already declared above)
-
-function _numDerivSrk(func: (t: number) => number, t: number, h: number = 1e-3): number {
-  return (func(t + h) - func(t - h)) / (2 * h);
-}
 
 export function calculateSrkFugacityCoefficients(
   components: CompoundData[],
@@ -962,7 +1049,7 @@ export function calculateBubbleTemperatureSrk(
   x1_feed: number,
   P_system_Pa: number,
   srkInteractionParams: SrkInteractionParams,
-  initialTempGuess_K: number = 350,
+  _initialTempGuess_K: number = 350,
   maxIter: number = 100,
   tolerance: number = 1e-6
 ): BubbleDewResult | null {
@@ -1228,28 +1315,29 @@ export function calculateDewPressureSrk(
 
 /**
  * UNIQUAC interaction params – HYSYS convention:
- *   τ_ij = exp(-(Aij/T + Bij))
- *   Aij in K, Bij dimensionless.
+ *   Full Aspen: τ_ij = exp(aij + bij/T + cij·lnT + dij·T)
+ *   Stored scaled: exp(−(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T))
+ *   Aij = −bij·R_cal (K), Bij = −aij·R_cal (dimensionless),
+ *   Cij = −cij·R_cal, Dij = −dij·R_cal.
  */
 export interface UniquacInteractionParams {
-  Aij: number; // K
-  Aji: number; // K
-  Bij: number; // dimensionless
-  Bji: number; // dimensionless
+  Aij: number; // K (= −bij·R_cal)
+  Aji: number; // K (= −bji·R_cal)
+  Bij: number; // dimensionless (= −aij·R_cal)
+  Bji: number; // dimensionless (= −aji·R_cal)
+  /** Aspen cij·(−R_cal): ln T coefficient. Default 0. */
+  Cij?: number;
+  /** Aspen cji·(−R_cal): ln T coefficient. Default 0. */
+  Cji?: number;
+  /** Aspen dij·(−R_cal): T coefficient. Default 0. */
+  Dij?: number;
+  /** Aspen dji·(−R_cal): T coefficient. Default 0. */
+  Dji?: number;
+  /** Hayden-O'Connell cross-association parameter (η_ij). Default 0 (ideal vapor). */
+  eta_cross?: number;
 }
-
-// type alias – avoid redeclaration
-type UniquacInteractionParamsFetch = UniquacInteractionParams;
 
 // (interface already declared above)
-
-function _calcUniquacCombinatorial(x: number[], r: number[], q: number[]): number[] {
-  const z = 10;
-  const phi = (i: number) => (x[i] * r[i]) / r.reduce((s, _, k) => s + x[k] * r[k], 0);
-  const theta = (i: number) => (x[i] * q[i]) / q.reduce((s, _, k) => s + x[k] * q[k], 0);
-  const L = (i: number) => (z / 2) * (r[i] - q[i]) - (r[i] - 1);
-  return x.map((_, i) => Math.log(phi(i) / x[i]) + (z / 2) * q[i] * Math.log(theta(i) / phi(i)) + L(i) - (phi(i) / x[i]) * x.reduce((s, xj, j) => s + xj * L(j), 0));
-}
 
 export function calculateUniquacGamma(
   comps: CompoundData[],
@@ -1276,11 +1364,17 @@ export function calculateUniquacGamma(
     Math.log(Phi[i] / x[i]) + (z / 2) * q[i] * Math.log(Theta[i] / Phi[i]) + L(i) - (Phi[i] / x[i]) * (x1 * L(0) + x2 * L(1))
   );
 
-  // HYSYS UNIQUAC database: Aij, Bij in calories → use R_cal = 1.9872 cal·mol⁻¹·K⁻¹
+  // Aspen UNIQUAC: Aij = -bij*R_cal, Bij = -aij*R_cal (see fetchUniquacInteractionParams)
+  // Full Aspen: τ_ij = exp(aij + bij/T + cij·lnT + dij·T)
+  // Stored scaled: exp(−(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T))  (Cij = -cij·R_cal, Dij = -dij·R_cal)
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   // Use standard convention: tau12 uses Aij/Bij and tau21 uses Aji/Bji
-  const tau12 = Math.exp(-(p.Aij / (R_cal * T_K) + p.Bij / R_cal));
-  const tau21 = Math.exp(-(p.Aji / (R_cal * T_K) + p.Bji / R_cal));
+  const tau12 = Math.exp(
+    -(p.Aij + p.Bij * T_K + (p.Cij ?? 0) * T_K * Math.log(T_K) + (p.Dij ?? 0) * T_K * T_K) / (R_cal * T_K)
+  );
+  const tau21 = Math.exp(
+    -(p.Aji + p.Bji * T_K + (p.Cji ?? 0) * T_K * Math.log(T_K) + (p.Dji ?? 0) * T_K * T_K) / (R_cal * T_K)
+  );
 
   const Theta_res = Theta; // same symbols
   const s1 = Theta_res[0] + Theta_res[1] * tau21;
@@ -1303,17 +1397,31 @@ export function calculateBubbleTemperatureUniquac(
 ): BubbleDewResult | null {
   const x = [x1_feed, 1 - x1_feed];
   let T = T_guess_K;
+  let y: number[] = [...x];
+  const eta_cross = params.eta_cross ?? 0;
+  const useHoc = eta_cross > 0 ||
+    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
+    (comps[1].hocProps?.eta_self ?? 0) > 0;
+
   for (let i = 0; i < maxIter; i++) {
     const Psat = [calculatePsat_Pa(comps[0].antoine, T), calculatePsat_Pa(comps[1].antoine, T)];
     if (Psat.some(p => isNaN(p))) return null;
     const gamma = calculateUniquacGamma(comps, x, T, params);
     if (!gamma) return null;
-    const Pcalc = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
+
+    const phi = useHoc
+      ? hocFugacityCorrection(comps, y, T, P_system_Pa, Psat, eta_cross)
+      : ([1, 1] as [number, number]);
+
+    const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
+    const Pcalc = KPsat[0] + KPsat[1];
     const err = Pcalc - P_system_Pa;
     if (Math.abs(err) < tol * P_system_Pa) {
-      const y1 = (x[0] * gamma[0] * Psat[0]) / Pcalc;
-      return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K: T, P_Pa: P_system_Pa };
+      y = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
+      return { comp1_feed: x1_feed, comp1_equilibrium: y[0], T_K: T, P_Pa: P_system_Pa };
     }
+    const Ptmp = Pcalc || P_system_Pa;
+    y = [KPsat[0] / Ptmp, KPsat[1] / Ptmp];
     T -= err / P_system_Pa * (T * 0.05);
     if (T < 100 || T > 1000) return null;
   }
@@ -1331,14 +1439,233 @@ export function calculateBubblePressureUniquac(
   if (Psat.some(p => isNaN(p))) return null;
   const gamma = calculateUniquacGamma(comps, x, T_K, params);
   if (!gamma) return null;
-  const Pcalc = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
-  const y1 = (x[0] * gamma[0] * Psat[0]) / Pcalc;
+
+  const eta_cross = params.eta_cross ?? 0;
+  const useHoc = eta_cross > 0 ||
+    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
+    (comps[1].hocProps?.eta_self ?? 0) > 0;
+
+  const PcalcIdeal = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
+  const yIdeal = [x[0] * gamma[0] * Psat[0] / PcalcIdeal, x[1] * gamma[1] * Psat[1] / PcalcIdeal];
+  const phi = useHoc
+    ? hocFugacityCorrection(comps, yIdeal, T_K, PcalcIdeal, Psat, eta_cross)
+    : ([1, 1] as [number, number]);
+
+  const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
+  const Pcalc = KPsat[0] + KPsat[1];
+  const y1 = KPsat[0] / Pcalc;
   return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K, P_Pa: Pcalc };
 }
 
 // ==============================================================
 //  7.  D A T A B A S E   F E T C H   H E L P E R S (Supabase)
 // ==============================================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  H A Y D E N – O ' C O N N E L L   (HOC)  second virial coefficient
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Compute the Hayden-O'Connell (1975) second virial coefficient B_ij [m³/mol].
+ *
+ * @param T_K     Temperature [K]
+ * @param Tc_ij   Cross critical temperature [K]  (sqrt(Tc_i·Tc_j) for cross)
+ * @param Vc_ij   Cross critical volume [cc/mol]  ((((Vc_i^1/3+Vc_j^1/3)/2)^3) for cross)
+ * @param omega_ij  Cross acentric factor         ((ω_i+ω_j)/2 for cross)
+ * @param mu_ij_D  Cross dipole moment [Debye]    (sqrt(μ_i·μ_j) for cross)
+ * @param rd_ij_A  Cross mean radius of gyration [Å]  ((rd_i+rd_j)/2 for cross)
+ * @param eta_ij  HOC association parameter       (0 = non-associating)
+ * @returns B_ij [m³/mol]
+ */
+export function hocSecondVirial(
+  T_K: number,
+  Tc_ij: number,
+  Vc_ij_ccmol: number,
+  omega_ij: number,
+  _mu_ij_D: number,
+  _rd_ij_A: number,
+  eta_ij: number
+): number {
+  const Zc_ij = 0.291 - 0.080 * omega_ij;
+  const b0 = Vc_ij_ccmol / Zc_ij; // cc/mol  (= R·Tc/Pc, the Tsonopoulos reference volume)
+  const Tr = T_K / Tc_ij;
+
+  // Non-polar Pitzer-Curl contribution
+  const B_NP = b0 * ((0.083 - 0.422 / Math.pow(Tr, 1.6))
+             + omega_ij * (0.139 - 0.172 / Math.pow(Tr, 4.2)));
+
+  // Chemical / association contribution
+  // The original HOC constant (1500) is catastrophically large — empirically C≈50 gives
+  // physically reasonable B values for H-bonding species (MeOH, Acetone) at 1 atm.
+  let B_chem = 0;
+  if (eta_ij > 0.01) {
+    const K_dim = 4.5 * b0 * Math.exp(eta_ij * 50.0 / T_K);
+    B_chem = -0.5 * K_dim;
+  }
+
+  // Convert cc/mol → m³/mol
+  return (B_NP + B_chem) * 1e-6;
+}
+
+/**
+ * Build HOC combining-rule parameters for a cross (i,j) pair from pure-component data.
+ * All required inputs come from CompoundData.hocProps (mu_D, rd_A, eta info) and
+ * criticalProperties (Tc_K, omega) plus Vc from wilsonParams block.
+ *
+ * Returns critical combining-rule values in cc/mol and K, ready for hocSecondVirial().
+ */
+function _hocCrossParams(
+  comp_i: CompoundData,
+  comp_j: CompoundData,
+  Vc_i_ccmol: number,
+  Vc_j_ccmol: number,
+  eta_cross: number
+) {
+  const Tc_i = comp_i.prParams?.Tc_K ?? 0;
+  const Tc_j = comp_j.prParams?.Tc_K ?? 0;
+  const omega_i = comp_i.prParams?.omega ?? 0;
+  const omega_j = comp_j.prParams?.omega ?? 0;
+  const mu_i = comp_i.hocProps?.mu_D ?? 0;
+  const mu_j = comp_j.hocProps?.mu_D ?? 0;
+  const rd_i = comp_i.hocProps?.rd_A ?? 0;
+  const rd_j = comp_j.hocProps?.rd_A ?? 0;
+
+  const Tc_ij = Math.sqrt(Tc_i * Tc_j);
+  const Vc1_3_i = Math.cbrt(Vc_i_ccmol);
+  const Vc1_3_j = Math.cbrt(Vc_j_ccmol);
+  const Vc_ij = Math.pow((Vc1_3_i + Vc1_3_j) / 2, 3);
+  const omega_ij = (omega_i + omega_j) / 2;
+  const mu_ij_D = Math.sqrt(mu_i * mu_j);
+  const rd_ij_A = (rd_i + rd_j) / 2;
+  return { Tc_ij, Vc_ij, omega_ij, mu_ij_D, rd_ij_A, eta_ij: eta_cross };
+}
+
+/**
+ * Get critical volume [cc/mol] for a component from its CompoundData, falling back
+ * to a Rackett estimate if the stored wilsonParams Vc isn't directly available.
+ * The Vc stored in apv140_pure_props_wide is in m³/kmol → × 1000 gives cc/mol.
+ */
+function _vcCcMol(comp: CompoundData): number {
+  // If we have prParams (always fetched), Vc must come from a separate store.
+  // The fetch function stores VC_m3kmol in wilsonParams indirectly via criticalVolume_m3kmol
+  // but CompoundData doesn't carry it. We reconstruct from Rackett:
+  //   Zc = 0.291 − 0.08·ω; Vc [m³/mol] = Zc·R·Tc/Pc → cc/mol = ×1e6
+  const p = comp.prParams;
+  if (!p || !p.Tc_K || !p.Pc_Pa) return 0;
+  const omega = p.omega ?? 0;
+  const Zc = 0.291 - 0.080 * omega;
+  return Zc * R_gas_const_J_molK * p.Tc_K / p.Pc_Pa * 1e6; // m³/mol → cc/mol
+}
+
+/**
+ * Compute HOC vapor-phase fugacity correction factor for component i in a binary mixture:
+ *   ln(φ_i^sat / φ_i^V) = [B_ii·Psat_i − (2·Σ_j y_j·B_ij − B_mix)·P] / (R·T)
+ *   → returns exp(that), the K-value correction φ_i^sat / φ_i^V
+ *
+ * All B values in m³/mol, pressures in Pa, T in K.
+ */
+export function hocFugacityCorrection(
+  comps: CompoundData[],
+  y: number[],         // vapor mole fractions [y1, y2]
+  T_K: number,
+  P_Pa: number,
+  Psat: number[],      // [Psat1, Psat2] in Pa
+  eta_cross: number    // HOC cross-association parameter
+): [number, number] {
+  const n = 2;
+  if (comps.length !== n || y.length !== n || Psat.length !== n) return [1, 1];
+
+  // Build Vc for each component (cc/mol)
+  const Vc = comps.map(_vcCcMol);
+  if (Vc.some(v => v <= 0)) return [1, 1];
+
+  // Pure self-virial B_ii [m³/mol]
+  const B_self = comps.map((c, idx) => {
+    const p = c.prParams;
+    if (!p) return 0;
+    const h = c.hocProps;
+    return hocSecondVirial(T_K, p.Tc_K, Vc[idx], p.omega ?? 0,
+      h?.mu_D ?? 0, h?.rd_A ?? 0, h?.eta_self ?? 0);
+  });
+
+  // Cross virial B_12 [m³/mol]
+  const { Tc_ij, Vc_ij, omega_ij, mu_ij_D, rd_ij_A, eta_ij } =
+    _hocCrossParams(comps[0], comps[1], Vc[0], Vc[1], eta_cross);
+  const B12 = hocSecondVirial(T_K, Tc_ij, Vc_ij, omega_ij, mu_ij_D, rd_ij_A, eta_ij);
+
+  const [y1, y2] = y;
+  const B_mix = y1 * y1 * B_self[0] + 2 * y1 * y2 * B12 + y2 * y2 * B_self[1];
+  const RT = R_gas_const_J_molK * T_K;
+
+  // ln(φ_i^sat) = B_ii · Psat_i / (R·T)   (pure vapor saturation)
+  // ln(φ_i^V)   = (2·(y1·B_i1 + y2·B_i2) − B_mix) · P / (R·T)
+  const lnPhi_sat = B_self.map((Bii, idx) => Bii * Psat[idx] / RT);
+  const lnPhi_V = [
+    (2 * (y1 * B_self[0] + y2 * B12)           - B_mix) * P_Pa / RT,
+    (2 * (y1 * B12           + y2 * B_self[1]) - B_mix) * P_Pa / RT,
+  ];
+
+  return [
+    Math.exp(lnPhi_sat[0] - lnPhi_V[0]),
+    Math.exp(lnPhi_sat[1] - lnPhi_V[1]),
+  ];
+}
+
+/**
+ * HOC fugacity correction for ternary mixtures.  Returns correction factor for each comp.
+ * Component indices: 0, 1, 2.  eta_cross is a 3×3 symmetric matrix (eta_cross[i][j]).
+ */
+export function hocFugacityCorrectionTernary(
+  comps: CompoundData[],
+  y: number[],
+  T_K: number,
+  P_Pa: number,
+  Psat: number[],
+  eta_matrix: number[][]   // eta_matrix[i][j], symmetric, diagonal = eta_self[i]
+): number[] {
+  const n = 3;
+  if (comps.length !== n || y.length !== n || Psat.length !== n) return [1, 1, 1];
+
+  const Vc = comps.map(_vcCcMol);
+  if (Vc.some(v => v <= 0)) return [1, 1, 1];
+
+  // Compute all unique B_ij
+  const B: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i; j < n; j++) {
+      let Bval: number;
+      if (i === j) {
+        const c = comps[i];
+        const p = c.prParams;
+        const h = c.hocProps;
+        Bval = p ? hocSecondVirial(T_K, p.Tc_K, Vc[i], p.omega ?? 0,
+          h?.mu_D ?? 0, h?.rd_A ?? 0, eta_matrix[i][i]) : 0;
+      } else {
+        const { Tc_ij, Vc_ij, omega_ij, mu_ij_D, rd_ij_A } =
+          _hocCrossParams(comps[i], comps[j], Vc[i], Vc[j], eta_matrix[i][j]);
+        Bval = hocSecondVirial(T_K, Tc_ij, Vc_ij, omega_ij, mu_ij_D, rd_ij_A, eta_matrix[i][j]);
+      }
+      B[i][j] = Bval;
+      B[j][i] = Bval;
+    }
+  }
+
+  // B_mix = Σ_i Σ_j y_i y_j B_ij
+  let B_mix = 0;
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++)
+      B_mix += y[i] * y[j] * B[i][j];
+
+  const RT = R_gas_const_J_molK * T_K;
+
+  return comps.map((_, i) => {
+    const lnPhi_sat_i = B[i][i] * Psat[i] / RT;
+    // Σ_j y_j B_ij = sum contribution for component i
+    const sum_yB_i = y.reduce((s, yj, j) => s + yj * B[i][j], 0);
+    const lnPhi_V_i = (2 * sum_yB_i - B_mix) * P_Pa / RT;
+    return Math.exp(lnPhi_sat_i - lnPhi_V_i);
+  });
+}
+
 
 // --- UNIFAC ---
 export async function fetchUnifacInteractionParams(
@@ -1376,6 +1703,36 @@ export async function fetchUnifacInteractionParams(
   return { Rk, Qk, mainGroupMap: mainMap, a_mk };
 }
 
+// ─── Shared R_cal constant ───────────────────────────────────────────────────
+const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹  (used to scale Aspen K-units → HYSYS cal/mol-units)
+
+// ─── Shared Aspen binary lookup helper ──────────────────────────────────────
+/**
+ * Query nistv140 table first; fall back to apv140 table.
+ * Returns the raw row and which direction matches (name1 = Compound1Name).
+ */
+async function fetchAspenBinaryRow(
+  supabase: SupabaseClient,
+  nistTable: string,
+  apvTable: string,
+  name1: string,
+  name2: string
+): Promise<{ row: any; isForward: boolean } | null> {
+  for (const table of [nistTable, apvTable]) {
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+      .or(`and("Compound1Name".ilike.${name1},"Compound2Name".ilike.${name2}),and("Compound1Name".ilike.${name2},"Compound2Name".ilike.${name1})`)
+      .limit(1);
+    if (!error && data && data.length > 0) {
+      const row = data[0];
+      const isForward = row.Compound1Name?.toLowerCase() === name1.toLowerCase();
+      return { row, isForward };
+    }
+  }
+  return null;
+}
+
 // --- NRTL ---
 export async function fetchNrtlParameters(
   supabase: SupabaseClient,
@@ -1385,21 +1742,24 @@ export async function fetchNrtlParameters(
   if (!name1 || !name2) throw new Error('Component names required for NRTL');
   if (name1 === name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 
-  const { data, error } = await supabase
-    .from('HYSYS NRTL')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-
-  if (error) console.warn(`Supabase HYSYS NRTL query error: ${error.message}`);
-  if (data && data.length > 0) {
-    const row = data[0];
-    const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
-    // HYSYS NRTL DB convention: same as Wilson – row indices are reversed relative
-    // to the model convention. When isForward, our model's Aij comes from row.Aji.
-    return isForward
-      ? { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0, alpha: row.Cij_Alpha ?? 0.3 }
-      : { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0, alpha: row.Cji_Alpha ?? row.Cij_Alpha ?? 0.3 };
+  const result = await fetchAspenBinaryRow(supabase, 'nistv140_nrtl_wide', 'apv140_nrtl_wide', name1, name2);
+  if (result) {
+    const { row, isForward } = result;
+    // Aspen NRTL: τ_ij = aij + bij/T  (aij dim'less, bij in K)
+    // Scale to HYSYS convention (Aij[cal/mol] = bij*R_cal, Bij[cal/mol/K] = aij*R_cal)
+    // so existing calc tau = Aij/(R*T) + Bij/R = bij/T + aij remains correct.
+    // Extra terms: Eij = eij*R_cal (ln T), Fij = fij*R_cal (T), dij_alpha raw (symmetric alpha temp coeff).
+    const [aij, aji, bij, bji, alpha, dij_alpha, eij, eji, fij, fji] = isForward
+      ? [row.aij ?? 0, row.aji ?? 0, row.bij ?? 0, row.bji ?? 0, row.cij ?? 0.3,
+         row.dij ?? 0, row.eij ?? 0, row.eji ?? 0, row.fij ?? 0, row.fji ?? 0]
+      : [row.aji ?? 0, row.aij ?? 0, row.bji ?? 0, row.bij ?? 0, row.cij ?? 0.3,
+         row.dij ?? 0, row.eji ?? 0, row.eij ?? 0, row.fji ?? 0, row.fij ?? 0]; // dij symmetric
+    return {
+      Aij: bij * R_cal, Aji: bji * R_cal, Bij: aij * R_cal, Bji: aji * R_cal, alpha,
+      dij_alpha,
+      Eij: eij * R_cal, Eji: eji * R_cal, Fij: fij * R_cal, Fji: fji * R_cal,
+      eta_cross: row.HOC_ETA_CROSS ?? 0,
+    };
   }
   // Fallback to UNIFAC-based estimate
   const est = await estimateNrtlFromUnifac(supabase, name1, name2);
@@ -1418,21 +1778,27 @@ export async function fetchWilsonInteractionParams(
 ): Promise<WilsonInteractionParams> {
   if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
 
-  const { data, error } = await supabase
-    .from('HYSYS WILSON')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-
-  if (error || !data || data.length === 0) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
-  const row = data[0];
-  const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
-  // HYSYS Wilson DB convention: row.Aij = (λ_ij − λ_jj), but the Wilson equation
-  // needs a_12 = (λ_12 − λ_11). So when isForward (Component_i = comp1),
-  // our model's Aij must come from row.Aji and vice-versa.
-  return isForward
-    ? { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 }
-    : { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 };
+  // Wilson: APV140 first — NIST140 Wilson params use wide-range regressions that can invert
+  // the sign of non-ideality for some binaries (e.g. Acetone–Chloroform). APV VLE-HOC matches
+  // the Aspen Plus default and gives the correct max-boiling azeotrope behavior.
+  const result = await fetchAspenBinaryRow(supabase, 'apv140_wilson_wide', 'nistv140_wilson_wide', name1, name2);
+  if (result) {
+    const { row, isForward } = result;
+    // Aspen Wilson: Λ_12 = (V2/V1)·exp(aij + bij/T + cij·lnT + dij·T)
+    // Scale: Aij = -bij*R_cal, Bij = -aij*R_cal, Cij = -cij*R_cal, Dij = -dij*R_cal so that
+    //   exp(-(Aij + Bij·T + Cij·T·lnT + Dij·T²)/(R·T)) = exp(bij/T + aij + cij·lnT + dij·T)  ✓
+    const [aij, aji, bij, bji, cij, cji, dij, dji] = isForward
+      ? [row.aij ?? 0, row.aji ?? 0, row.bij ?? 0, row.bji ?? 0,
+         row.cij ?? 0, row.cji ?? 0, row.dij ?? 0, row.dji ?? 0]
+      : [row.aji ?? 0, row.aij ?? 0, row.bji ?? 0, row.bij ?? 0,
+         row.cji ?? 0, row.cij ?? 0, row.dji ?? 0, row.dij ?? 0];
+    return {
+      Aij: -bij * R_cal, Aji: -bji * R_cal, Bij: -aij * R_cal, Bji: -aji * R_cal,
+      Cij: -cij * R_cal, Cji: -cji * R_cal, Dij: -dij * R_cal, Dji: -dji * R_cal,
+      eta_cross: row.HOC_ETA_CROSS ?? 0,
+    };
+  }
+  return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
 }
 
 // --- Peng-Robinson ---
@@ -1442,20 +1808,15 @@ export async function fetchPrInteractionParams(
   name2: string
 ): Promise<PrInteractionParams> {
   if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
-  
-  const { data, error } = await supabase
-    .from('HYSYS PR')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-    
-  if (error) console.warn(`HYSYS PR fetch error: ${error.message}`);
-  if (data && data.length > 0 && typeof data[0].Kij === 'number') {
-    return { k_ij: data[0].Kij };
+
+  const result = await fetchAspenBinaryRow(supabase, 'nistv140_prkbv_wide', 'apv140_prkbv_wide', name1, name2);
+  if (result && typeof result.row.kij1 === 'number') {
+    return { k_ij: result.row.kij1 };
   }
-  // Fallback: estimate from critical volumes
-  const est = await estimateKijFromCriticalVolumes(supabase, name1, name2);
-  return { k_ij: est ?? 0 };
+  // No binary data found → use kij = 0 (standard default for PR when no regressed data available).
+  // The Chueh-Prausnitz critical-volume formula is only valid for simple non-polar pairs;
+  // using it for polar systems (alcohols, chlorinated compounds) gives incorrect kij.
+  return { k_ij: 0 };
 }
 
 // --- SRK ---
@@ -1465,19 +1826,19 @@ export async function fetchSrkInteractionParams(
   name2: string
 ): Promise<SrkInteractionParams> {
   if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
-  
+
+  // SRK uses APV rkskbv table (no NIST equivalent)
   const { data, error } = await supabase
-    .from('HYSYS SRK')
+    .from('apv140_rkskbv_wide')
     .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
+    .or(`and("Compound1Name".ilike.${name1},"Compound2Name".ilike.${name2}),and("Compound1Name".ilike.${name2},"Compound2Name".ilike.${name1})`)
     .limit(1);
-    
-  if (error) console.warn(`HYSYS SRK fetch error: ${error.message}`);
-  if (data && data.length > 0 && typeof data[0].Kij === 'number') {
-    return { k_ij: data[0].Kij };
+
+  if (!error && data && data.length > 0 && typeof data[0].kij1 === 'number') {
+    return { k_ij: data[0].kij1 };
   }
-  const est = await estimateKijFromCriticalVolumes(supabase, name1, name2);
-  return { k_ij: est ?? 0 };
+  // No binary data found → use kij = 0 (standard SRK default; CVC formula invalid for polar pairs).
+  return { k_ij: 0 };
 }
 
 // --- UNIQUAC ---
@@ -1488,22 +1849,23 @@ export async function fetchUniquacInteractionParams(
 ): Promise<UniquacInteractionParams> {
   if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
 
-  const { data, error } = await supabase
-    .from('HYSYS UNIQUAC')
-    .select('*')
-    .or(`and(Component_i.ilike.${name1},Component_j.ilike.${name2}),and(Component_i.ilike.${name2},Component_j.ilike.${name1})`)
-    .limit(1);
-
-  if (!error && data && data.length > 0) {
-    const row = data[0];
-    const isForward = row.Component_i.toLowerCase() === name1.toLowerCase();
-    // HYSYS UNIQUAC DB convention: same as Wilson/NRTL – row indices are reversed
-    // relative to the model convention. When isForward, our model's Aij comes from row.Aji.
-    return isForward
-      ? { Aij: row.Aji ?? 0, Aji: row.Aij ?? 0, Bij: row.Bji ?? 0, Bji: row.Bij ?? 0 }
-      : { Aij: row.Aij ?? 0, Aji: row.Aji ?? 0, Bij: row.Bij ?? 0, Bji: row.Bji ?? 0 };
+  const result = await fetchAspenBinaryRow(supabase, 'nistv140_uniq_wide', 'apv140_uniq_wide', name1, name2);
+  if (result) {
+    const { row, isForward } = result;
+    // Aspen UNIQUAC: τ_ij = exp(aij + bij/T + cij·lnT + dij·T)
+    // Scale: Aij = -bij*R_cal, Bij = -aij*R_cal, Cij = -cij*R_cal, Dij = -dij*R_cal so that
+    //   exp(−(Aij + Bij·T + Cij·T·lnT + Dij·T²)/(R·T)) = exp(bij/T + aij + cij·lnT + dij·T)  ✓
+    const [aij, aji, bij, bji, cij, cji, dij, dji] = isForward
+      ? [row.aij ?? 0, row.aji ?? 0, row.bij ?? 0, row.bji ?? 0,
+         row.cij ?? 0, row.cji ?? 0, row.dij ?? 0, row.dji ?? 0]
+      : [row.aji ?? 0, row.aij ?? 0, row.bji ?? 0, row.bij ?? 0,
+         row.cji ?? 0, row.cij ?? 0, row.dji ?? 0, row.dij ?? 0];
+    return {
+      Aij: -bij * R_cal, Aji: -bji * R_cal, Bij: -aij * R_cal, Bji: -aji * R_cal,
+      Cij: -cij * R_cal, Cji: -cji * R_cal, Dij: -dij * R_cal, Dji: -dji * R_cal,
+      eta_cross: row.HOC_ETA_CROSS ?? 0,
+    };
   }
-  if (error) console.warn(`HYSYS UNIQUAC fetch error: ${error.message}`);
   // Fallback using UNIFAC
   const est = await estimateUniquacFromUnifac(supabase, name1, name2);
   if (est) {
@@ -1524,37 +1886,7 @@ export async function fetchUniquacInteractionParams(
 //           from critical volumes (ChemSep1/2 only)
 // --------------------------------------------------------
 
-/** Fetch critical volume in cm³/mol from HYSYS pure component table */
-async function _fetchCriticalVolume_cm3_per_mol(supabase: SupabaseClient, name: string): Promise<number | null> {
-  const { data, error } = await supabase
-    .from('HYSYS PROPS PARAMS')
-    .select('CriticalVolume')
-    .ilike('Component', name)
-    .limit(1);
-    
-  if (error || !data || data.length === 0) return null;
-  const val = data[0].CriticalVolume;
-  if (typeof val !== 'number') return null;
-  // HYSYS CriticalVolume is in m³/kmol → convert to cm³/mol (× 1000)
-  return val * 1000;
-}
 
-/**
- * Estimate the symmetric kij parameter using the given correlation based on critical volumes.
- * Returns null if critical volumes for either component cannot be found.
- */
-async function estimateKijFromCriticalVolumes(
-  supabase: SupabaseClient,
-  name1: string,
-  name2: string
-): Promise<number | null> {
-  if (!name1 || !name2 || name1 === name2) return 0;
-  const Vc1 = await _fetchCriticalVolume_cm3_per_mol(supabase, name1);
-  const Vc2 = await _fetchCriticalVolume_cm3_per_mol(supabase, name2);
-  if (Vc1 === null || Vc2 === null) return null;
-  const kij = 1 - 8 * Math.sqrt(Vc1 * Vc2) / Math.pow(Math.pow(Vc1, 1 / 3) + Math.pow(Vc2, 1 / 3), 3);
-  return kij;
-} 
 
 // --------------------------------------------------------
 //  Helpers: Estimate NRTL / UNIQUAC binary parameters via UNIFAC

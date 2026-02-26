@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTheme } from "next-themes";
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Center } from '@react-three/drei';
 
@@ -31,7 +30,7 @@ echarts.use([
   CanvasRenderer
 ]);
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -53,12 +52,6 @@ type SimulationState = {
 // --- Constants ---
 const NODES = 21;
 const DR_REAL = 0.01;
-
-// Format time - show precision to the ones place (whole seconds)
-const formatTime = (seconds: number): string => {
-    // Legacy short formatter (keeps whole seconds); prefer formatDuration for human-friendly output
-    return Math.round(seconds).toString();
-};
 
 const formatDuration = (secondsRaw: number): string => {
     const total = Math.round(secondsRaw);

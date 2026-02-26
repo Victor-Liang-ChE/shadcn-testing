@@ -6,7 +6,7 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -379,23 +379,6 @@ export default function HeatTransferPage() {
         setVisualWidth(layersContainerRef.current.offsetWidth);
     }
   }, [layers, simulationResults.temps]);
-
-  const handleNumberChange = (setter: React.Dispatch<React.SetStateAction<number | string>>) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
-    if (value === "") {
-      setter("");
-    } else {
-      const numValue = Number(value);
-      const CLAMP_MAX_TEMP = 2000; // °C
-      // Clamp temperature inputs between absolute zero and 2000 °C
-      if (setter === setHotTemp || setter === setColdTemp) {
-        const clamped = Math.min(Math.max(numValue, -273.15), CLAMP_MAX_TEMP);
-        setter(clamped);
-      } else {
-        setter(numValue);
-      }
-    }
-  };
 
   // Helper function to get the number of decimal places from a string or number
   const getDecimalPlaces = (value: number | string): number => {

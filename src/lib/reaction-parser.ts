@@ -307,7 +307,7 @@ export const parseStoichiometry = (
 
 // Parse multiple parallel reactions
 export const parseParallelReactions = (
-  reactionString: string,
+  _reactionString: string,
   components: Component[],
   kinetics: Kinetics,
   reactions: ReactionData[],

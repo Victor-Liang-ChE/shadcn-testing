@@ -5,8 +5,9 @@ const convertTempToK = (value: number, unit: 'C' | 'K' | 'F'): number => {
   return value;
 };
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '@/lib/supabaseClient';
+import { type SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
 
 import ReactECharts from 'echarts-for-react';
@@ -34,7 +35,6 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import {
@@ -124,13 +124,6 @@ const getNiceAxisBounds = (dataMin: number, dataMax: number, tickCount: number =
     return { min, max };
 };
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-let supabase: SupabaseClient;
-if (supabaseUrl && supabaseAnonKey) {
-    try { supabase = createClient(supabaseUrl, supabaseAnonKey); } catch (error) { console.error("Error initializing Supabase client:", error); }
-} else { console.error("Supabase URL or Anon Key is missing."); }
-
 const formatNumber = (num: any, precision: number = 4): string => {
     if (typeof num !== 'number' || isNaN(num)) return String(num);
     return num.toPrecision(precision);
@@ -171,7 +164,7 @@ export default function PhaseDiagramPage() {
     switch (unit) { case 'Pa': return 1; case 'kPa': return 1 / 1000; case 'bar': return 1 / 100000; case 'atm': return 1 / 101325; default: return 1 / 100000; }
   }, []);
 
-  const findBestSpot = useCallback((regionName: string, searchBox: any, boundaries: any[], isPointInRegion: (x: number, y: number) => boolean, breakTiesByCentroid: boolean) => {
+  const findBestSpot = useCallback((_regionName: string, searchBox: any, boundaries: any[], isPointInRegion: (x: number, y: number) => boolean, breakTiesByCentroid: boolean) => {
     let bestPoints: number[][] = []; let maxMinDistSq = -1;
     const gridDensity = 100; 
     const normBox: NormalizationBox = { xMin: searchBox.xMin, xMax: searchBox.xMax, yMin: searchBox.yMin, yMax: searchBox.yMax, width: searchBox.xMax - searchBox.xMin, height: searchBox.yMax - searchBox.yMin };
@@ -381,7 +374,6 @@ export default function PhaseDiagramPage() {
   series.push({ name: 'Supercritical Boundary', type: 'line', markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { type: 'dashed', color: isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)', width: 1.5 }, data: [[{ coord: [T_c, P_c] }, { yAxis: axisYMax, xAxis: T_c }], [{ coord: [T_c, P_c] }, { xAxis: axisXMax, yAxis: P_c }]], z: 1 }, });
   series.push({ name: 'Triple Point', type: 'scatter', data: [{ value: [T_t, P_t], itemStyle: { color: 'red' } }], symbolSize: 10, z: 10 });
     
-  const normBox: NormalizationBox = { xMin: axisXMin, xMax: axisXMax, yMin: axisYMin, yMax: axisYMax, width: axisXMax - axisXMin, height: axisYMax - axisYMin };
   const annotationPoints = [];
   const verticalCritLine = [[T_c, P_c], [T_c, axisYMax]];
   const horizontalCritLine = [[T_c, P_c], [axisXMax, P_c]];

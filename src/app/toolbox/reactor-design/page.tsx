@@ -1,8 +1,6 @@
 
 "use client"
 
-let concentrations: { [key: string]: number } = {};
-
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { EChartsOption } from 'echarts'
@@ -28,7 +26,7 @@ import {
     TooltipTrigger,
 } from '@/components/ui/tooltip'
 
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
 import type { CompoundData } from '@/lib/vle-types';
 
 // Import BDF solver from reactor-solver (aliased to avoid name conflict)
@@ -54,28 +52,10 @@ import {
     WilsonInteractionParams,
     PrSrkInteractionParams, // Combined type for PR and SRK
     UniquacInteractionParams,
-    NrtlParameterMatrix,
-    WilsonParameterMatrix,
-    UniquacParameterMatrix,
-    PrSrkParameterMatrix,
 } from '@/lib/vle-calculations-multicomponent';
 
 // The generic InteractionParams type needs to be redefined here
 type InteractionParams = NrtlInteractionParams | WilsonInteractionParams | PrSrkInteractionParams | UniquacInteractionParams;
-
-// --- Supabase Client Initialization ---
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-let supabase: SupabaseClient;
-if (supabaseUrl && supabaseAnonKey) {
-    try {
-        supabase = createClient(supabaseUrl, supabaseAnonKey);
-    } catch (error) {
-        console.error('Error initializing Supabase client:', error);
-    }
-} else {
-    console.error('Supabase URL or Anon Key is missing.');
-}
 
 // --- Property Calculation Utilities ---
 // NOTE: Please replace this placeholder with your actual function from '@/lib/property-equations'.
@@ -221,7 +201,6 @@ interface ComponentSetup {
 // --- NEW: Define types for the fluid package and parameters ---
 type VleFluidPackage = 'Ideal' | 'NRTL' | 'Wilson' | 'UNIQUAC' | 'Peng-Robinson' | 'SRK';
 
-type ReactorType = 'PFR' | 'CSTR'
 type GraphType = 'selectivity' | 'volume' | 'conversion' | 'flowrates' | 'composition' | 'selectivityVsConversion';
 
 // Default Data (now used as initial state for the editable form)
@@ -392,12 +371,6 @@ const calculateCstrData = (
 
     if (!limitingReactant || !desiredProduct) return { selectivityData: [], volumeData: [] };
 
-    // --- START: ADD THIS SECTION ---
-    const primaryReactionId = reactions[0].id;
-    const stoichCoeffStr = limitingReactant.reactionData[primaryReactionId]?.stoichiometry;
-    const stoichFactor = Math.abs(parseFloat(stoichCoeffStr || '0'));
-    // --- END: ADD THIS SECTION ---
-
     const rawSelectivityData: { x: number; y: number }[] = [];
     const rawVolumeData: { x: number; y: number }[] = [];
 
@@ -445,6 +418,7 @@ const calculateCstrData = (
         }
     }
     components.forEach(c => { if (F_in_basis[c.name] === undefined) F_in_basis[c.name] = 0; });
+    const primaryReactionId = reactions[0]?.id;
     
     // --- Iterate across a logarithmic range of basis volumes ---
     const logV_min = -8; // from 1e-8 Liters
@@ -521,109 +495,7 @@ const calculateCstrData = (
     const volumeData = commonConversionGrid.map(conv => ({x: conv, y: interpolateFromData(conv, rawVolumeData)})).filter(p => !isNaN(p.y));
 
     return { selectivityData, volumeData };
-}// --- Update calculatePfrData to return outletFlowsAtV ---
-const calculatePfrData = (
-    reactions: ReactionSetup[],
-    components: ComponentSetup[],
-    V_max: number, // This will now be the dynamically calculated max volume
-    initialFlowRates: { [key: string]: number },
-    tempK: number,
-    simBasis: { limitingReactantId: string; desiredProductId: string }
-) => {
-    // 1. Parse reactions into a generic structure the solver can use
-    const allInvolvedComponents = components.filter(c => Object.values(c.reactionData).some(d => d.stoichiometry && parseFloat(d.stoichiometry) !== 0));
-    const allComponentNames = allInvolvedComponents.map(c => c.name);
-    const parsedReactions = {
-        reactions: reactions.map(reactionInfo => {
-            const reactants: any[] = [];
-            const products: any[] = [];
-            allInvolvedComponents.forEach(comp => {
-                const reactionData = comp.reactionData?.[reactionInfo.id];
-                if (reactionData?.stoichiometry && parseFloat(reactionData.stoichiometry) !== 0) {
-                    const parsedComp = {
-                        name: comp.name,
-                        stoichiometricCoefficient: Math.abs(parseFloat(reactionData.stoichiometry)),
-                        reactionOrderNum: parseFloat(reactionData.order || '0')
-                    };
-                    if (parseFloat(reactionData.stoichiometry) < 0) reactants.push(parsedComp);
-                    else products.push(parsedComp);
-                }
-            });
-            const A = parseFloat(reactionInfo.AValue);
-            const Ea = parseFloat(reactionInfo.EaValue);
-            return { reactants, products, rateConstantAtT: A * Math.exp(-Ea / (R * tempK)) };
-        }),
-    };
-
-    // 2. Define the PFR differential equations (dF/dV = r)
-    const dFdV = (V: number, F: number[]): number[] => {
-        const concentrations: { [key: string]: number } = {};
-        const F_dict = allComponentNames.reduce((acc, name, i) => { acc[name] = F[i]; return acc; }, {} as {[key:string]:number});
-        
-        const v0 = 1.0; // Assuming constant liquid volumetric flow rate for rate calc
-        allComponentNames.forEach(name => concentrations[name] = (F_dict[name] > 0 ? F_dict[name] : 0) / v0);
-
-        const reactionRates = parsedReactions.reactions.map((reaction:any) => {
-            let rate = reaction.rateConstantAtT || 0;
-            reaction.reactants.forEach((reactant:any) => {
-                rate *= Math.pow(concentrations[reactant.name], reactant.reactionOrderNum || 0);
-            });
-            return rate;
-        });
-
-        return allComponentNames.map(name => {
-            let netRateOfFormation = 0; // This is r_j
-            parsedReactions.reactions.forEach((reaction:any, j:number) => {
-                const reactantInfo = reaction.reactants.find((r:any) => r.name === name);
-                const productInfo = reaction.products.find((p:any) => p.name === name);
-                if (reactantInfo) netRateOfFormation -= (reactantInfo.stoichiometricCoefficient || 0) * reactionRates[j];
-                if (productInfo) netRateOfFormation += (productInfo.stoichiometricCoefficient || 0) * reactionRates[j];
-            });
-            return netRateOfFormation; // dFj/dV = r_j
-        });
-    };
-
-    // MODIFICATION: Use a logarithmic scale for the volume span
-    // The BDF solver will choose its own steps
-    const V_span: [number, number] = [0, V_max];
-    
-    const F0 = allComponentNames.map(name => initialFlowRates[name] || 0);
-    const componentNames = allComponentNames;
-    const results = solveODE_BDF_imported(dFdV, F0, V_span, componentNames);
-
-    const selectivityData: { x: number; y: number }[] = [];
-    const volumeData: { x: number; y: number }[] = [];
-    let outletFlowsAtV: { [key: string]: number } = {};
-    
-    const limitingReactant = components.find(c => c.id === simBasis.limitingReactantId);
-    const desiredProduct = components.find(c => c.id === simBasis.desiredProductId);
-    if (!limitingReactant || !desiredProduct || !results.y) return { selectivityData, volumeData, outletFlowsAtV: {} };
-
-    const F_A0 = initialFlowRates[limitingReactant.name] || 0;
-    if (F_A0 <= 1e-9) return { selectivityData, volumeData, outletFlowsAtV: {} };
-
-    results.t.forEach((v, i) => {
-        const currentFlowRates = allComponentNames.reduce((acc, name, j) => {
-            acc[name] = results.y[j][i];
-            return acc;
-        }, {} as { [key: string]: number });
-        
-        const F_A_current = currentFlowRates[limitingReactant.name] || 0;
-        const conversion = (F_A0 - F_A_current) / F_A0;
-
-        const molesReactantConsumed = F_A0 - F_A_current;
-        const molesProductFormed = (currentFlowRates[desiredProduct.name] || 0) - (initialFlowRates[desiredProduct.name] || 0);
-        
-        const selectivity = molesReactantConsumed > 1e-9 ? molesProductFormed / molesReactantConsumed : 0;
-        
-        if (conversion >= 0.001 && conversion <= 0.999) {
-            selectivityData.push({ x: conversion, y: Math.max(0, selectivity) });
-            volumeData.push({ x: conversion, y: v });
-        }
-    });
-
-    return { selectivityData, volumeData, outletFlowsAtV };
-};
+}
 
 // Local linear solver and BDF solver removed — using shared implementations from '@/lib/reactor-solver'
 
@@ -640,7 +512,7 @@ const solveCSTR_Robust = (
     fluidPackage?: VleFluidPackage,
     vleComponentData?: Map<string, CompoundData>,
     interactionParameters?: Map<string, InteractionParams | null>,
-    henryTemperatures?: { id: string; temp: string }[]
+    _henryTemperatures?: { id: string; temp: string }[]
 ): { [key: string]: number } => {
     const componentNames = parsedReactions.allInvolvedComponents.map((c: any) => c.name);
     let F = initialGuess ? [...initialGuess] : componentNames.map((name: string) => initialFlowRates[name] || 0);
@@ -932,7 +804,7 @@ const calculatePfrData_Optimized = (
     targetProduction_kta: number,
     reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
     fluidPackage?: VleFluidPackage,
-    vleComponentData?: Map<string, CompoundData>,
+    _vleComponentData?: Map<string, CompoundData>,
     interactionParameters?: Map<string, InteractionParams | null>,
     henryTemperatures?: { id: string; temp: string }[],
     henryUnit?: 'Pa' | 'kPa' | 'bar'
@@ -993,7 +865,7 @@ const calculatePfrData_Optimized = (
     });
 
     // 3. Define a ROBUST Rate Law Function (dF/dV = r)
-    const dFdV = (V: number, F_vec: number[]): number[] => {
+    const dFdV = (_V: number, F_vec: number[]): number[] => {
         const F_total = F_vec.reduce((sum, f) => sum + Math.max(0, f), 0);
         if (F_total < 1e-12) return Array(allComponentNames.length).fill(0);
 
@@ -1160,68 +1032,6 @@ const calculatePfrData_Optimized = (
     })).filter(p => !isNaN(p.y) && p.y >= 0);
 
     return { selectivityData, volumeData };
-};const calculateNetFormationRates = (
-    current_F: { [key: string]: number },
-    reactions: ReactionSetup[],
-    components: ComponentSetup[],
-    tempK: number,
-    reactionPhase: 'Liquid' | 'Gas' | 'Mixed',
-    pressure_bar: number
-): { [key: string]: number } => {
-    let concentrations: { [key: string]: number } = {};
-    const R = 8.314;
-
-    if (reactionPhase === 'Liquid') {
-        let v_Liters = 0;
-        components.forEach(comp => {
-            const molarMass = parseFloat(comp.molarMass || '1');
-            const density = parseFloat(comp.density || '1000');
-            if (density > 0 && current_F[comp.name]) {
-                v_Liters += (current_F[comp.name] * molarMass) / density;
-            }
-        });
-        if (v_Liters < 1e-9) v_Liters = 1e-9;
-        const v_m3 = v_Liters / 1000;
-        components.forEach(comp => {
-            concentrations[comp.name] = Math.max(0, current_F[comp.name] || 0) / v_m3;
-        });
-    } else { // Gas Phase
-        const F_total = Object.values(current_F).reduce((sum, f) => sum + (f || 0), 0);
-        if (F_total < 1e-9) return components.reduce((acc, c) => ({...acc, [c.name]: 0}), {});
-        const P_Pa = pressure_bar * 1e5;
-        components.forEach(comp => {
-            concentrations[comp.name] = Math.max(0, current_F[comp.name] || 0) / F_total * P_Pa / (R * tempK);
-        });
-    }
-
-    const reactionNetRates = reactions.map(reactionInfo => {
-        const Ea_J_per_mol = convertUnit.energy.convertEaToJules(
-            parseFloat(reactionInfo.EaValue), 
-            reactionInfo.EaUnit
-        );
-        const k_f = parseFloat(reactionInfo.AValue) * Math.exp(-Ea_J_per_mol / (R * tempK));
-        let rate_f = k_f;
-        components.forEach(comp => {
-            const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
-            const order = parseFloat(comp.reactionData[reactionInfo.id]?.order || '0');
-            if (stoich < 0 && order > 0) {
-                rate_f *= Math.pow(Math.max(0, concentrations[comp.name]), order);
-            }
-        });
-        return rate_f;
-    });
-
-    const componentRates: { [key: string]: number } = {};
-    components.forEach(comp => {
-        let netRateOfFormation = 0;
-        reactions.forEach((reactionInfo, j) => {
-            const stoich = parseFloat(comp.reactionData[reactionInfo.id]?.stoichiometry || '0');
-            netRateOfFormation += stoich * reactionNetRates[j];
-        });
-        componentRates[comp.name] = netRateOfFormation;
-    });
-
-    return componentRates;
 };
 
 // --- React Components ---
@@ -1244,7 +1054,6 @@ const KineticsInput = ({
     setReactorTypes,
     // ▲▲▲ ADD THIS PROP ▲▲▲
   fetchComponentProperties,
-  isFetching,
     fluidPackage,
     setFluidPackage,
     // Henry props passed from parent
@@ -1283,8 +1092,6 @@ const KineticsInput = ({
     setHenryUnit: React.Dispatch<React.SetStateAction<'Pa' | 'kPa' | 'bar'>>;
     // interaction parameters are managed at the parent level now
 }) => {
-  const { resolvedTheme } = useTheme()
-
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [activeInputId, setActiveInputId] = useState<string | null>(null)
@@ -1372,16 +1179,6 @@ const KineticsInput = ({
     }
 
         // --- NEW: Generate unique component pairs for the new card ---
-        const componentPairs = useMemo(() => {
-            const pairs: [ComponentSetup, ComponentSetup][] = [];
-            for (let i = 0; i < componentsSetup.length; i++) {
-                for (let j = i + 1; j < componentsSetup.length; j++) {
-                    pairs.push([componentsSetup[i], componentsSetup[j]]);
-                }
-            }
-            return pairs;
-        }, [componentsSetup]);
-
     // Interaction parameter fetching is handled at the parent level now.
 
   // ... (rest of the component logic for adding/removing reactions, presets, etc.)
@@ -3227,8 +3024,8 @@ export default function Home() {
   const [pressure, setPressure] = useState(25);       // State lifted here 
   const [isFetching, setIsFetching] = useState(false) // Add loading state
     // Loading and error states for VLE preparation
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [, setLoading] = useState(false);
+    const [, setError] = useState<string | null>(null);
 
     // --- ADD THIS NEW STATE FOR HENRY'S LAW TABLE ---
     const [henryTemperatures, setHenryTemperatures] = useState<

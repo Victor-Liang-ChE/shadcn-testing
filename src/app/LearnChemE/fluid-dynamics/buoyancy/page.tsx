@@ -1,7 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Button } from "@/components/ui/button";
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
@@ -13,7 +12,7 @@ const GRAVITY = 9.81; // m/s^2
 const DENSITY_WATER = 1000; // kg/m³
 const L_FIXED = 0.1; // Fixed actual side length of the cube in meters
 
-const OutputDisplay = ({ label, unit, value, texLabel, className }: { label: string; unit: string; value: string | number; texLabel?: string; className?: string }) => {
+const OutputDisplay = ({ label, unit, value, texLabel }: { label: string; unit: string; value: string | number; texLabel?: string; className?: string }) => {
   const spanRef = useRef<HTMLSpanElement>(null);
   const [inputWidth, setInputWidth] = useState<number>(0);
 
@@ -86,16 +85,10 @@ export default function BuoyancyPage() {
 
   }, [objectSG, liquidSG]);
 
-  const instructionalVideoUrl = "https://learncheme.github.io/website_resources/youtube_iframe.html?id=7qQimrfB5Fk";
-  const openInstructionalVideo = () => {
-    window.open(instructionalVideoUrl, 'Instructional Video', 'location=no,toolbar=no,menubar=no,resizable=yes,height=420,width=580,scrollbars=no,directories=no,status=no');
-  };
-
   const svgWidth = 300;
   const svgHeight = 350;
   const fluidHeightRatio = 0.7;
   const fluidLevelY = svgHeight * (1 - fluidHeightRatio);
-  const fluidVisualHeight = svgHeight * fluidHeightRatio;
 
   const CUBE_VISUAL_SIDE_SVG = 80; // Fixed visual size of the cube in SVG pixels
 

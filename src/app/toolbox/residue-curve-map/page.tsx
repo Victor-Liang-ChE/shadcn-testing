@@ -7,15 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { createClient } from '@supabase/supabase-js';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabaseClient';
+import type { SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { 
     CompoundData, 
     WilsonPureComponentParams as WilsonPureParams, 
-    UnifacGroupComposition,
     PrPureComponentParams, 
     SrkPureComponentParams, 
-    UniquacPureComponentParams,
     AntoineParams, 
 } from '@/lib/vle-types';
 import { 
@@ -43,7 +41,6 @@ import {
 import {
   calculatePsat_Pa,
   calculateSaturationTemperaturePurePr,
-  calculateSaturationTemperaturePureSrk,
   fetchWilsonInteractionParams,
   fetchUnifacInteractionParams,
   fetchNrtlParameters,
@@ -51,17 +48,12 @@ import {
   fetchSrkInteractionParams,
   fetchUniquacInteractionParams,
   type UnifacParameters,
-  type NrtlInteractionParams,
-  type PrInteractionParams,
-  type SrkInteractionParams,
-  type UniquacInteractionParams,
 } from '@/lib/vle-calculations';
 
 import { fetchAndConvertThermData, FetchedCompoundThermData, fetchCompoundSuggestions, resolveSimName, formatCompoundName } from '@/lib/antoine-utils'; 
 import type { CompoundAlias } from '@/lib/antoine-utils';
 import type { Data, Layout } from 'plotly.js'; 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"; 
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 
 // Dynamically import Plotly to avoid SSR issues
@@ -72,18 +64,6 @@ const Plot = dynamic(
     loading: () => <div className="flex justify-center items-center h-[600px]"><p>Loading plot...</p></div>
   }
 );
-
-// Initialize Supabase client (replace with your actual URL and anon key)
-// Ensure these are environment variables in a real application
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "your_supabase_url";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "your_supabase_anon_key";
-
-let supabase: SupabaseClient | null = null;
-if (SUPABASE_URL !== "your_supabase_url" && SUPABASE_ANON_KEY !== "your_supabase_anon_key") {
-    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-} else {
-    console.warn("Supabase client not initialized. Please provide NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY environment variables.");
-}
 
 // Debounce function removed for instantaneous suggestions
 
@@ -101,11 +81,6 @@ interface ProcessedComponentData {
     isSCF?: boolean;
 }
 
-const initialComponentState = (): ComponentInputState => ({
-    name: '',
-    displayName: '',
-});
-
 // Default average boiling point for initial guess if NBP is missing
 const DEFAULT_INITIAL_T_K = 350; // Kelvin, e.g., around 77°C
 
@@ -118,7 +93,6 @@ const convertTernaryToPaperCoordinates = (
 
     const x_light = p_x_array[plotSortedCompDefs[0].originalIndex];
     const x_intermediate = p_x_array[plotSortedCompDefs[1].originalIndex];
-    const x_heavy = p_x_array[plotSortedCompDefs[2].originalIndex];
 
     const x_paper = x_light * 1 + x_intermediate * 0.5; // More direct: x_paper = x_c_axis_data + x_a_axis_data * 0.5
     const y_paper = x_intermediate * (Math.sqrt(3) / 2);   // y_paper = x_a_axis_data * Math.sqrt(3)/2
@@ -173,7 +147,6 @@ function findApproximateAzeotropesFromCurves(
   }
 
   // --- REVISED DE-DUPLICATION LOGIC ---
-  const uniqueAzeotropes: number[][] = [];
   const binaryAzeotropes: number[][] = [];
   const ternaryAzeotropes: number[][] = [];
   
@@ -857,10 +830,7 @@ function refineSerafimovClass(
 }
 
 // Map per-model azeotrope result names to unified interface
-type NrtlAzeotropeResult = AzeotropeResult;
-type PrAzeotropeResult = AzeotropeResult;
 type SrkAzeotropeResult = AzeotropeResult & { y: number[] };
-type UniquacAzeotropeResult = AzeotropeResult;
 
 export default function TernaryResidueMapPage() {
     // NOTE: A previously used compound-data cache has been removed to prevent
@@ -975,9 +945,6 @@ export default function TernaryResidueMapPage() {
 
     // ... other useState/useRef hooks
     const isSwapping = useRef(false);
-
-    // Removed debounced version for direct calls
-    const setHighlightedAzeoIdxDirect = setHighlightedAzeoIdx;
 
     // Trigger re-generation automatically when the fluid-package selection changes
     const didMountFluidPkg = useRef(false);
@@ -1337,12 +1304,6 @@ export default function TernaryResidueMapPage() {
                 if (!thermData) {
                     throw new Error(`Failed to fetch thermodynamic data for ${input.name}`);
                 }
-                if (thermData.criticalProperties) {
-                    const { Tc_K, Pc_Pa, omega } = thermData.criticalProperties;
-                    // console.log(`EOS BP attempt → ${input.name}: Tc=${Tc_K.toFixed(2)} K, Pc=${(Pc_Pa/1e5).toFixed(2)} bar, ω=${omega.toFixed(3)}`);
-                } else {
-                    // console.log(`EOS BP attempt → ${input.name}: critical properties NOT found`);
-                }
                 let bp_at_Psys_K_val: number | null = null;
 
                 // Attempt EOS-based boiling point first if critical properties are available
@@ -1408,7 +1369,7 @@ export default function TernaryResidueMapPage() {
             }
 
             // Log calculated BPs for components before sorting
-            processedComponents.forEach(pc=>{
+            processedComponents.forEach(_pc=>{
                 // console.log('[BP] Component', pc.name, 'bp_at_Psys_K=', pc.bp_at_Psys_K?.toFixed(2), 'nbp_K=', pc.thermData.nbp_K?.toFixed(2));
             });
 
@@ -1478,21 +1439,34 @@ export default function TernaryResidueMapPage() {
                 .map(pc => ({
                     name: pc.name,
                     antoine: pc.thermData.antoine!,
-                    wilsonParams: fluidPackage === 'wilson' ? { V_L_m3mol: pc.thermData.V_L_m3mol! } as WilsonPureParams : undefined,
+                    wilsonParams: fluidPackage === 'wilson' ? (() => {
+                        const cp = pc.thermData.criticalProperties;
+                        const rawPc = cp?.Pc_Pa;
+                        const Pc_Pa = rawPc != null && rawPc < 1e6 ? rawPc * 1000 : rawPc; // treat <1e6 as kPa
+                        return {
+                            V_L_m3mol: pc.thermData.V_L_m3mol!,
+                            // Pass critical properties so _vl() uses T-dependent Rackett VL (matches Aspen)
+                            Tc_K:   cp?.Tc_K   ?? undefined,
+                            Pc_Pa:  Pc_Pa      ?? undefined,
+                            omega:  cp?.omega  ?? undefined,
+                            RKTZRA: pc.thermData.RKTZRA ?? undefined,
+                        } as WilsonPureParams;
+                    })() : undefined,
                     unifacGroups: fluidPackage === 'unifac' ? pc.thermData.unifacGroups! : undefined,
                     prParams: ((): PrPureComponentParams | undefined => {
-                        if (fluidPackage !== 'pr' || !pc.thermData.criticalProperties) return undefined;
+                        if (!pc.thermData.criticalProperties) return undefined;
                         const rawPc = pc.thermData.criticalProperties.Pc_Pa;
                         const Pc_Pa = (rawPc && rawPc < 1e6) ? rawPc * 1000 : rawPc; // treat <1e6 as kPa
                         return { ...pc.thermData.criticalProperties!, Pc_Pa } as PrPureComponentParams;
                     })(),
                     srkParams: ((): SrkPureComponentParams | undefined => {
-                        if (fluidPackage !== 'srk' || !pc.thermData.criticalProperties) return undefined;
+                        if (!pc.thermData.criticalProperties) return undefined;
                         const rawPc = pc.thermData.criticalProperties.Pc_Pa;
                         const Pc_Pa = (rawPc && rawPc < 1e6) ? rawPc * 1000 : rawPc; // treat <1e6 as kPa
                         return { ...pc.thermData.criticalProperties!, Pc_Pa } as SrkPureComponentParams;
                     })(),
                     uniquacParams: fluidPackage === 'uniquac' ? pc.thermData.uniquacParams! : undefined,
+                    hocProps: pc.thermData.hocProps ?? null,
             }));
 
 
@@ -1500,6 +1474,7 @@ export default function TernaryResidueMapPage() {
             const names = compoundsForBackend.map(c => c.name);
             console.log(`[RCM] Compounds for backend:`, compoundsForBackend.map(c => ({
                 name: c.name,
+                hocProps: c.hocProps,
                 antoine: c.antoine,
                 prParams: c.prParams,
                 srkParams: c.srkParams,
@@ -1516,10 +1491,19 @@ export default function TernaryResidueMapPage() {
                 activityModelParams = {
                     A01: params01.Aij ?? 0, B01: params01.Bij ?? 0,
                     A10: params01.Aji ?? 0, B10: params01.Bji ?? 0,
+                    C01: params01.Cij ?? 0, D01: params01.Dij ?? 0,
+                    C10: params01.Cji ?? 0, D10: params01.Dji ?? 0,
                     A02: params02.Aij ?? 0, B02: params02.Bij ?? 0,
                     A20: params02.Aji ?? 0, B20: params02.Bji ?? 0,
+                    C02: params02.Cij ?? 0, D02: params02.Dij ?? 0,
+                    C20: params02.Cji ?? 0, D20: params02.Dji ?? 0,
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0,
                     A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
+                    C12: params12.Cij ?? 0, D12: params12.Dij ?? 0,
+                    C21: params12.Cji ?? 0, D21: params12.Dji ?? 0,
+                    eta_01: params01.eta_cross ?? 0,
+                    eta_02: params02.eta_cross ?? 0,
+                    eta_12: params12.eta_cross ?? 0,
                 } as TernaryWilsonParams;
                 console.log(`[RCM] Wilson params:`, activityModelParams);
 
@@ -1555,8 +1539,14 @@ export default function TernaryResidueMapPage() {
                 }
                 activityModelParams = {
                     A01: params01.Aij ?? 0, B01: params01.Bij ?? 0, A10: params01.Aji ?? 0, B10: params01.Bji ?? 0, alpha01: params01.alpha ?? 0.3,
+                    E01: params01.Eij ?? 0, E10: params01.Eji ?? 0, F01: params01.Fij ?? 0, F10: params01.Fji ?? 0, d01: params01.dij_alpha ?? 0,
                     A02: params02.Aij ?? 0, B02: params02.Bij ?? 0, A20: params02.Aji ?? 0, B20: params02.Bji ?? 0, alpha02: params02.alpha ?? 0.3,
+                    E02: params02.Eij ?? 0, E20: params02.Eji ?? 0, F02: params02.Fij ?? 0, F20: params02.Fji ?? 0, d02: params02.dij_alpha ?? 0,
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0, A21: params12.Aji ?? 0, B21: params12.Bji ?? 0, alpha12: params12.alpha ?? 0.3,
+                    E12: params12.Eij ?? 0, E21: params12.Eji ?? 0, F12: params12.Fij ?? 0, F21: params12.Fji ?? 0, d12: params12.dij_alpha ?? 0,
+                    eta_01: params01.eta_cross ?? 0,
+                    eta_02: params02.eta_cross ?? 0,
+                    eta_12: params12.eta_cross ?? 0,
                 } as TernaryNrtlParams;
                 console.log(`[RCM] NRTL params:`, activityModelParams);
 
@@ -1602,8 +1592,14 @@ export default function TernaryResidueMapPage() {
                 }
                 activityModelParams = {
                     A01: params01.Aij ?? 0, B01: params01.Bij ?? 0, A10: params01.Aji ?? 0, B10: params01.Bji ?? 0,
+                    C01: params01.Cij ?? 0, D01: params01.Dij ?? 0, C10: params01.Cji ?? 0, D10: params01.Dji ?? 0,
                     A02: params02.Aij ?? 0, B02: params02.Bij ?? 0, A20: params02.Aji ?? 0, B20: params02.Bji ?? 0,
+                    C02: params02.Cij ?? 0, D02: params02.Dij ?? 0, C20: params02.Cji ?? 0, D20: params02.Dji ?? 0,
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0, A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
+                    C12: params12.Cij ?? 0, D12: params12.Dij ?? 0, C21: params12.Cji ?? 0, D21: params12.Dji ?? 0,
+                    eta_01: params01.eta_cross ?? 0,
+                    eta_02: params02.eta_cross ?? 0,
+                    eta_12: params12.eta_cross ?? 0,
                 } as TernaryUniquacParams;
                 console.log(`[RCM] UNIQUAC params:`, activityModelParams);
 
@@ -1718,7 +1714,7 @@ export default function TernaryResidueMapPage() {
                   // independent of user input order, then map compositions back to
                   // the original order with `toInputOrder`.
                   const compsForBinary = [...sortedComponents]
-                        .map((sc, idx) => {
+                        .map((sc, _idx) => {
                             const found = compoundsForBackend.find(c => c.name === sc.name)!;
                             return found;
                         }) as CompoundData[];
@@ -1753,12 +1749,24 @@ export default function TernaryResidueMapPage() {
                           default: return 0;
                         }
                       };
+                      const getEta = (i:number,j:number) => {
+                        const pair = `${Math.min(i,j)}${Math.max(i,j)}`;
+                        switch(pair){
+                          case '01': return (activityModelParams as any).eta_01 ?? 0;
+                          case '02': return (activityModelParams as any).eta_02 ?? 0;
+                          case '12': return (activityModelParams as any).eta_12 ?? 0;
+                          default: return 0;
+                        }
+                      };
                       const aLM = (i:number,j:number)=> getA(perm[i],perm[j]);
                       const bLM = (i:number,j:number)=> getB(perm[i],perm[j]);
                       const reordered: any = {
                         A01: aLM(0,1), B01: bLM(0,1), A10: aLM(1,0), B10: bLM(1,0),
                         A02: aLM(0,2), B02: bLM(0,2), A20: aLM(2,0), B20: bLM(2,0),
-                        A12: aLM(1,2), B12: bLM(1,2), A21: aLM(2,1), B21: bLM(2,1)
+                        A12: aLM(1,2), B12: bLM(1,2), A21: aLM(2,1), B21: bLM(2,1),
+                        eta_01: getEta(perm[0], perm[1]),
+                        eta_02: getEta(perm[0], perm[2]),
+                        eta_12: getEta(perm[1], perm[2])
                       };
                       // NRTL also has alpha parameters that need reordering
                       if (fluidPackage === 'nrtl') {
@@ -1776,6 +1784,11 @@ export default function TernaryResidueMapPage() {
                         reordered.alpha12 = getAlpha(perm[1], perm[2]);
                       }
                       paramsForBinary = reordered;
+                  }
+
+                  console.log(`[RCM] compsForBinary order:`, compsForBinary.map(c => c.name));
+                  if (['wilson', 'nrtl', 'uniquac'].includes(fluidPackage)) {
+                    console.log(`[RCM] paramsForBinary (reordered):`, paramsForBinary);
                   }
 
                   const binaryHitsSorted = systematicBinaryAzeotropeSearch(
@@ -1940,7 +1953,7 @@ export default function TernaryResidueMapPage() {
                     }
 
                     // --- NEW: Filter out azeotropes too close to a pure component corner ---
-                    const PURE_COMPONENT_CORNER_THRESHOLD = 0.98;
+                    const PURE_COMPONENT_CORNER_THRESHOLD = 0.995;
                     if (res.x.some(xi => xi > PURE_COMPONENT_CORNER_THRESHOLD)) {
                         // console.log(`[Azeotrope Filter] Rejecting azeotrope near corner: x=[${res.x.map(v=>v.toFixed(3)).join(',')}]`);
                         continue; // Skip this result as it's essentially a pure component
@@ -2427,15 +2440,9 @@ export default function TernaryResidueMapPage() {
             text: [] as string[], 
         };
         // --- Globals for arrow placement ---
-        const allPlacedArrowIdealCoords: { x: number; y: number }[] = [];
-        // ADJUST THESE:
-        const minSqDistBetweenPlacedArrows_ideal = (0.03) * (0.03); // Increased spacing slightly
         const maxTotalArrowsOnPlot = 500;
         let placedArrowCountOverall = 0;
 
-
-        let firstArrowLogged = false; 
-        const targetArrowPixelSize = 8; // Reduced size for better visual fit on curves
         const arrowMarkerColor = currentTheme === 'dark' ? '#FFFFFF' : '#333333';
 
         const plotAreaPxWidth = containerWidthPx - (baseLayout.margin?.l ?? 70) - (baseLayout.margin?.r ?? 70);
@@ -2767,7 +2774,7 @@ export default function TernaryResidueMapPage() {
     }, [cleanedResidueCurves, displayedPressure, plotSortedComponents, isLoading, currentTheme, displayedFluidPackage, directAzeotropes, plotAxisTitles, plotContainerRef, backendComps, backendPkgParams, backendPressurePa, classifyAzeotrope]);
 
     useEffect(() => {
-        const { baseTraces, baseLayout, minAz, maxAz, sadAz } = memoizedPlotData;
+        const { baseTraces, baseLayout, minAz, maxAz, sadAz: _sadAz } = memoizedPlotData;
 
         const finalTraces = [...baseTraces];
 
@@ -2960,22 +2967,6 @@ export default function TernaryResidueMapPage() {
                     xanchor: 'left' as const, yanchor: 'bottom' as const,
                     xshift: 2, yshift: 2,
                 });
-            }
-
-            // Read ternary triangle paper metrics (if available) so the cartesian
-            // right-triangle occupies the exact same rendered width/height.
-            const trianglePaper: any = (baseLayout as any)?._trianglePaper;
-            let xDomain: [number, number] | undefined = undefined;
-            let yDomain: [number, number] | undefined = undefined;
-            if (trianglePaper && trianglePaper.basePaper > 0 && trianglePaper.heightPaper > 0) {
-                const xStart = Math.max(0, Math.min(1, trianglePaper.originX));
-                const xEnd = Math.max(0, Math.min(1, trianglePaper.originX + trianglePaper.basePaper));
-                const yStart = Math.max(0, Math.min(1, trianglePaper.originY));
-                const yEnd = Math.max(0, Math.min(1, trianglePaper.originY + trianglePaper.heightPaper));
-                if (xEnd > xStart && yEnd > yStart) {
-                    xDomain = [xStart, xEnd];
-                    yDomain = [yStart, yEnd];
-                }
             }
 
             const cartLayout: Partial<Layout> = {
@@ -3228,24 +3219,43 @@ export default function TernaryResidueMapPage() {
             const waitForFont = async (family: string, timeout = 2000) => {
                 try {
                     if (typeof document === 'undefined' || !('fonts' in document)) return;
-                    // quick check
-                    if ((document as any).fonts.check(`12px "${family}"`)) return;
-                    const p = (document as any).fonts.load(`12px "${family}"`);
-                    const t = new Promise(res => setTimeout(res, timeout));
-                    await Promise.race([p, t]);
+                    // Explicitly load the font to ensure it is ready for the canvas snapshot
+                    const fontLoadPromise = (document as any).fonts.load(`14px "${family}"`);
+                    const timeoutPromise = new Promise(resolve => setTimeout(resolve, timeout));
+                    await Promise.race([fontLoadPromise, timeoutPromise]);
+                    if (!(document as any).fonts.check(`14px "${family}"`)) {
+                        console.warn(`Font "${family}" might not be fully loaded for export.`);
+                    }
                 } catch (e) {
-                    /* ignore */
+                    console.warn(`Font loading check failed for ${family}`, e);
                 }
             };
 
-            await waitForFont('Merriweather Sans', 2500);
-            await waitForFont('Merriweather', 2500);
+            // Explicitly wait for Merriweather Sans (primary) and Merriweather (fallback)
+            await waitForFont('Merriweather Sans', 3000);
+            await waitForFont('Merriweather', 1000);
 
             // Prefer the Plotly instance that react-plotly.js loads on the client (attached to window)
             const plotly = (typeof window !== 'undefined' && (window as any).Plotly) ? (window as any).Plotly : null;
             if (plotly && typeof plotly.downloadImage === 'function') {
+                // Generate a descriptive filename: residue-map-comp1-comp2-comp3-model
+                const sanitize = (s: string) => (s || '').toString().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-]/g, '').toLowerCase();
+                const compNames = [
+                    displayedComponentNames[0] || 'Comp1',
+                    displayedComponentNames[1] || 'Comp2',
+                    displayedComponentNames[2] || 'Comp3'
+                ].map(sanitize).join('-');
+                const pkgLabel = sanitize(fluidPackage || 'pkg');
+                const filename = `residue-map-${compNames}-${pkgLabel}`;
+
                 // Ensure layout explicitly requests Merriweather Sans for all text elements (already set elsewhere), then export.
-                await plotly.downloadImage(plotDiv, { format: 'png', filename: `residue-curve-map-${Date.now()}`, width: 1200, height: 800, scale: 2 });
+                await plotly.downloadImage(plotDiv, { 
+                    format: 'png', 
+                    filename: filename, 
+                    width: 1200, 
+                    height: 800, 
+                    scale: 2 
+                });
             } else {
                 // Plotly not available on window yet — fallback to a DOM snapshot download
                 alert('Export not available: plotting library not loaded yet.');
@@ -3255,7 +3265,7 @@ export default function TernaryResidueMapPage() {
             // fallback: show user a message
             alert('Unable to export plot — make sure the plot is rendered.');
         }
-    }, [plotContainerRef]);
+    }, [plotContainerRef, displayedComponentNames, fluidPackage]);
 
     // Export azeotrope table as CSV
     const exportAzeotropesCSV = useCallback(() => {
@@ -3407,25 +3417,25 @@ export default function TernaryResidueMapPage() {
                                                 }
                                             }}
                                             placeholder="1.0"
-                                            className="w-20 pr-12 text-center font-mono overflow-hidden whitespace-nowrap"
+                                            className="w-20 pr-8 text-center font-mono overflow-hidden whitespace-nowrap"
                                         />
-                                        <span className="absolute right-3 inset-y-0 flex items-center text-base md:text-sm font-mono text-muted-foreground pointer-events-none">bar</span> {/* Unit inside input */}
+                                        <span className="absolute right-2 inset-y-0 flex items-center text-base md:text-sm font-mono text-muted-foreground pointer-events-none">bar</span> {/* Unit inside input */}
                                     </div>
                                 </div>
                                 {/* Fluid package dropdown */}
-                                <div className="col-span-2 flex items-center space-x-4 pl-2">
+                                <div className="col-span-2 flex items-center space-x-2 justify-end">
                                     <Label htmlFor="fluidPackage" className="whitespace-nowrap mr-1">
                                         Fluid Package:
                                     </Label>
-                                    <div className="flex-1">
+                                    <div className="sm:w-40 w-auto">
                                         <Select
                                             value={fluidPackage}
                                             onValueChange={v => {
                                                 setFluidPackage(v as FluidPackageTypeResidue);
                                             }}
                                         >
-                                            <SelectTrigger id="fluidPackage" className="w-full">
-                                                <SelectValue placeholder="Select model" />
+                                            <SelectTrigger id="fluidPackage" className="w-40">
+                                                <SelectValue className="justify-center text-center" placeholder="Select model" />
                                             </SelectTrigger>
                                             <SelectContent>
                                                 <SelectItem value="wilson">Wilson</SelectItem>
