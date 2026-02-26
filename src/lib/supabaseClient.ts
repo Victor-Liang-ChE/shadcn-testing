@@ -49,6 +49,11 @@ export const supabase = new Proxy(realSupabase, {
             queryParams.limit = n;
             return builder;
           },
+          single: () => {
+            // Mark query to unwrap first element (like Supabase .single())
+            queryParams.single = true;
+            return builder;
+          },
           // The terminal "then" allows this to be awaited like a real query
           then: async (onfulfilled: any, onrejected: any) => {
             try {
@@ -58,9 +63,10 @@ export const supabase = new Proxy(realSupabase, {
                 body: JSON.stringify(queryParams)
               });
               const json = await res.json();
+              const rawData = json.data || null;
               // Mirror the Supabase return object { data, error }
               const result = {
-                  data: json.data || null,
+                  data: queryParams.single ? (Array.isArray(rawData) ? (rawData[0] ?? null) : rawData) : rawData,
                   error: json.error ? { message: json.error } : null,
                   status: res.status,
                   statusText: res.statusText
