@@ -95,7 +95,7 @@
   "overrides": {
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
-    "tar": "7.5.7",
+    "tar": "7.5.8",
     "fast-xml-parser": "5.3.6",
     "undici": "7.18.2"
   },
@@ -103,7 +103,7 @@
     "overrides": {
       "@types/react": "19.2.7",
       "@types/react-dom": "19.2.3",
-      "tar": "7.5.7",
+      "tar": "7.5.8",
       "fast-xml-parser": "5.3.6"
     }
   }
