@@ -7,7 +7,7 @@ settings:
 overrides:
   '@types/react': 19.2.7
   '@types/react-dom': 19.2.3
-  tar: 7.5.7
+  tar: 7.5.8
   fast-xml-parser: 5.3.6
 
 importers:
@@ -3839,8 +3839,8 @@ packages:
     resolution: {integrity: sha512-ZL6DDuAlRlLGghwcfmSn9sK3Hr6ArtyudlSAiCqQ6IfE+b+HHbydbYDIG15IfS5do+7XQQBdBiubF/cV2dnDzg==}
     engines: {node: '>=6'}
 
-  tar@7.5.7:
-    resolution: {integrity: sha512-fov56fJiRuThVFXD6o6/Q354S7pnWMJIVlDBYijsTNx6jKSE4pvrDTs6lUnmGvNyfJwFQQwWy3owKz1ucIhveQ==}
+  tar@7.5.8:
+    resolution: {integrity: sha512-SYkBtK99u0yXa+IWL0JRzzcl7RxNpvX/U08Z+8DKnysfno7M+uExnTZH8K+VGgShf2qFPKtbNr9QBl8n7WBP6Q==}
     engines: {node: '>=18'}
 
   three-mesh-bvh@0.8.3:
@@ -6344,7 +6344,7 @@ snapshots:
   '@tailwindcss/oxide@4.1.13':
     dependencies:
       detect-libc: 2.1.0
-      tar: 7.5.7
+      tar: 7.5.8
     optionalDependencies:
       '@tailwindcss/oxide-android-arm64': 4.1.13
       '@tailwindcss/oxide-darwin-arm64': 4.1.13
@@ -8318,7 +8318,7 @@ snapshots:
 
   tapable@2.2.3: {}
 
-  tar@7.5.7:
+  tar@7.5.8:
     dependencies:
       '@isaacs/fs-minipass': 4.0.1
       chownr: 3.0.0
