@@ -276,8 +276,12 @@ export function calculateWilsonGammaMulticomponent(
 // ==================================================================
 //  4. P E N G – R O B I N S O N   E O S (Multicomponent)
 // ==================================================================
-export interface PrSrkInteractionParams { k_ij: number; }
+export interface PrSrkInteractionParams { k_ij1: number; k_ij2: number; k_ij3: number; }
 export type PrSrkParameterMatrix = Map<string, PrSrkInteractionParams>; // Key: "i-j"
+function _getKij(p: PrSrkInteractionParams | undefined, T_K: number): number {
+  if (!p) return 0;
+  return (p.k_ij1 ?? 0) + (p.k_ij2 ?? 0) * T_K + (p.k_ij3 ?? 0) / T_K;
+}
 
 /**
  * Calculates multicomponent Peng-Robinson fugacity coefficients (phi).
@@ -317,7 +321,7 @@ export function calculatePrFugacityCoefficientsMulticomponent(
   let a_mix = 0;
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      const k_ij = interactionParams.get(`${i}-${j}`)?.k_ij || interactionParams.get(`${j}-${i}`)?.k_ij || 0;
+      const k_ij = _getKij(interactionParams.get(`${i}-${j}`) ?? interactionParams.get(`${j}-${i}`), T_K);
       const a_ij = Math.sqrt(pureParams[i]!.ac * pureParams[j]!.ac) * (1 - k_ij);
       a_mix += x_or_y[i] * x_or_y[j] * a_ij;
     }
@@ -338,7 +342,7 @@ export function calculatePrFugacityCoefficientsMulticomponent(
     const b_i = pureParams[i]!.b;
     let sum_a_ij = 0;
     for (let j = 0; j < n; j++) {
-        const k_ij = interactionParams.get(`${i}-${j}`)?.k_ij || interactionParams.get(`${j}-${i}`)?.k_ij || 0;
+        const k_ij = _getKij(interactionParams.get(`${i}-${j}`) ?? interactionParams.get(`${j}-${i}`), T_K);
         sum_a_ij += x_or_y[j] * Math.sqrt(pureParams[i]!.ac * pureParams[j]!.ac) * (1 - k_ij);
     }
     const term1 = (b_i / b_mix) * (Z - 1) - Math.log(Z - B);
@@ -387,7 +391,7 @@ export function calculateSrkFugacityCoefficientsMulticomponent(
   let a_mix = 0;
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      const k_ij = interactionParams.get(`${i}-${j}`)?.k_ij || interactionParams.get(`${j}-${i}`)?.k_ij || 0;
+      const k_ij = _getKij(interactionParams.get(`${i}-${j}`) ?? interactionParams.get(`${j}-${i}`), T_K);
       const a_ij = Math.sqrt(pureParams[i]!.ac * pureParams[j]!.ac) * (1 - k_ij);
       a_mix += x_or_y[i] * x_or_y[j] * a_ij;
     }
@@ -408,7 +412,7 @@ export function calculateSrkFugacityCoefficientsMulticomponent(
     const b_i = pureParams[i]!.b;
     let sum_a_ij = 0;
     for (let j = 0; j < n; j++) {
-        const k_ij = interactionParams.get(`${i}-${j}`)?.k_ij || interactionParams.get(`${j}-${i}`)?.k_ij || 0;
+        const k_ij = _getKij(interactionParams.get(`${i}-${j}`) ?? interactionParams.get(`${j}-${i}`), T_K);
         sum_a_ij += x_or_y[j] * Math.sqrt(pureParams[i]!.ac * pureParams[j]!.ac) * (1 - k_ij);
     }
     const term1 = (b_i / b_mix) * (Z - 1) - Math.log(Z - B);
