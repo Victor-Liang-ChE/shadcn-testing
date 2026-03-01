@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeftRight } from 'lucide-react';
+import { ArrowLeftRight, Download } from 'lucide-react';
 import { Slider } from "@/components/ui/slider";
 
 import {
@@ -640,6 +640,35 @@ export default function VleDiagramPage() {
         }
     };
 
+    const exportData = () => {
+        if (!chartData) return;
+
+        const headers = ['x1', 'y1'];
+        if (diagramType === 'txy') headers.push('T_K', 'T_C');
+        else if (diagramType === 'pxy') headers.push('P_Pa', 'P_bar');
+
+        const rows = chartData.x.map((x: number, i: number) => {
+            const row = [x.toFixed(6), chartData.y[i].toFixed(6)];
+            if (diagramType === 'txy' && chartData.t) {
+                row.push(chartData.t[i].toFixed(4), (chartData.t[i] - 273.15).toFixed(4));
+            } else if (diagramType === 'pxy' && chartData.p) {
+                row.push(chartData.p[i].toFixed(2), (chartData.p[i] / 1e5).toFixed(6));
+            }
+            return row.join(',');
+        });
+
+        const csvContent = [headers.join(','), ...rows].join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `${comp1Name}_${comp2Name}_${diagramType}_equilibrium_data.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     const renderConditionalInput = () => {
         switch (diagramType) {
             case 'txy':
@@ -1076,7 +1105,17 @@ export default function VleDiagramPage() {
                                     </div>
                                 </div>
                             </div>
-                            <Button onClick={() => generateDiagram()} disabled={loading} className="w-full">{loading ? 'Calculating...' : 'Generate Diagram'}</Button>
+                            <div className="space-y-2">
+                                <Button onClick={() => generateDiagram()} disabled={loading} className="w-full">
+                                    {loading ? 'Calculating...' : 'Generate Diagram'}
+                                </Button>
+                                {chartData && (
+                                    <Button onClick={exportData} variant="outline" className="w-full flex items-center gap-2">
+                                        <Download className="h-4 w-4" />
+                                        Export CSV Data
+                                    </Button>
+                                )}
+                            </div>
                             {error && <p className="text-sm text-red-500 mt-2">{error}</p>}
                         </CardContent>
                     </Card>
