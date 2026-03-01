@@ -39,6 +39,8 @@ interface TernaryWilsonParams {
   C01?: number; C10?: number; C02?: number; C20?: number; C12?: number; C21?: number;
   /** Aspen dij·(−R_cal): T coefficients for Λ. Default 0. */
   D01?: number; D10?: number; D02?: number; D20?: number; D12?: number; D21?: number;
+  /** Aspen eij/T² parameters (mapped to raw eij in DB). Default 0. */
+  E01?: number; E10?: number; E02?: number; E20?: number; E12?: number; E21?: number;
   /** Hayden-O'Connell cross-association parameters. Default 0 (ideal vapor). */
   eta_01?: number; eta_02?: number; eta_12?: number;
 }
@@ -48,58 +50,29 @@ function normX(x:number[]):number[]{
   const mx = 1-MIN_X*(x.length-1);
   return x.map(v=>Math.max(MIN_X,Math.min(mx,v/s)));
 }
-function lambdasWilson(V:number[],T:number,p:TernaryWilsonParams){
+function lambdasWilson(T:number,p:TernaryWilsonParams){
   // Full Aspen Wilson: ln Λ_ij = ln(Vj/Vi) + aij + bij/T + cij·lnT + dij·T
-  // Stored scaled: −(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T)
-  //   where Cij = −cij·R_cal, Dij = −dij·R_cal
+  // The aij term already includes the volume ratio ln(Vj/Vi) in our APV data.
+  // Stored scaled: −(Aij + Bij·T + Cij·T·lnT + Dij·T² + Eij) / (R_cal·T)
+  //   where Cij = −cij·R_cal, Dij = −dij·R_cal, Eij = -eij·R_cal
   const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
   const lT = Math.log(T);
+  const _tau = (A:number,B:number,C:number,D:number,E:number) => 
+    Math.exp(-(A + B*T + C*T*lT + D*T*T + E) / (R_cal * T));
+
   return {
-    L01: (V[1]/V[0]) * Math.exp(-(p.A01 + p.B01*T + (p.C01??0)*T*lT + (p.D01??0)*T*T) / (R_cal * T)),
-    L10: (V[0]/V[1]) * Math.exp(-(p.A10 + p.B10*T + (p.C10??0)*T*lT + (p.D10??0)*T*T) / (R_cal * T)),
-    L02: (V[2]/V[0]) * Math.exp(-(p.A02 + p.B02*T + (p.C02??0)*T*lT + (p.D02??0)*T*T) / (R_cal * T)),
-    L20: (V[0]/V[2]) * Math.exp(-(p.A20 + p.B20*T + (p.C20??0)*T*lT + (p.D20??0)*T*T) / (R_cal * T)),
-    L12: (V[2]/V[1]) * Math.exp(-(p.A12 + p.B12*T + (p.C12??0)*T*lT + (p.D12??0)*T*T) / (R_cal * T)),
-    L21: (V[1]/V[2]) * Math.exp(-(p.A21 + p.B21*T + (p.C21??0)*T*lT + (p.D21??0)*T*T) / (R_cal * T)),
+    L01: _tau(p.A01, p.B01, p.C01??0, p.D01??0, p.E01??0),
+    L10: _tau(p.A10, p.B10, p.C10??0, p.D10??0, p.E10??0),
+    L02: _tau(p.A02, p.B02, p.C02??0, p.D02??0, p.E02??0),
+    L20: _tau(p.A20, p.B20, p.C20??0, p.D20??0, p.E20??0),
+    L12: _tau(p.A12, p.B12, p.C12??0, p.D12??0, p.E12??0),
+    L21: _tau(p.A21, p.B21, p.C21??0, p.D21??0, p.E21??0),
   };
 }
-function gammaWilson(x:number[],T:number,comps:CompoundData[],p:TernaryWilsonParams):number[]{
-  // FORMULA NOTE – this implementation is algebraically correct vs Aspen APV140/NIST140:
-  //   ln Λ_ij = ln(Vj/Vi) + a_ij + b_ij/T + c_ij·lnT + d_ij·T
-  //   All DB params (a,b,c,d) are stored R_cal-scaled internally (Aij=-bij·R_cal etc.)
-  //   and round-trip verified to match native Aspen values.
-  //   VL(T) computed via Rackett equation with RKTZRA, matching Aspen's regression basis.
-  //
-  // KNOWN LIMITATION vs ASPEN "WILS-HOC":
-  //   This uses modified Raoult's law (ideal vapor):  K_i = γ_i · Psat_i / P
-  //   Aspen WILS-HOC additionally applies Hayden-O'Connell (HOC) second-virial vapor
-  //   fugacity corrections:  K_i = γ_i · Psat_i · φ_i^sat / (φ_i^V · P)
-  //   For polar/associating molecules (MeOH, CHCl3) this shifts azeotrope compositions
-  //   significantly. Impact on this system (P=1 atm, APV140 params):
-  //     • ACE/CHCl3:  calculated ~x_ACE≈0.35, T≈63.9°C  vs Aspen 0.343, 64.1°C  ✓ good
-  //     • CHCl3/MeOH: calculated ~x_CHCl3≈0.57, T≈52.3°C vs Aspen 0.660, 53.8°C  (HOC shift)
-  //     • ACE/MeOH:   no azeotrope found here (K_ACE > K_MeOH everywhere);
-  //                   Aspen WILS-HOC finds one at x_ACE≈0.779 via HOC correction.
-  //
-  // T-dependent Rackett VL (Aspen convention): use critical props when available.
-  const R_SI = 8.314462618;
-  const _vl = (c: CompoundData): number => {
-    const wp = c.wilsonParams;
-    if (wp?.Tc_K && wp.Pc_Pa) {
-      const ZRA = wp.RKTZRA ?? (wp.omega != null ? 0.29056 - 0.08775 * wp.omega : null);
-      if (ZRA != null) {
-        const Tr = T / wp.Tc_K;
-        return (R_SI * wp.Tc_K / wp.Pc_Pa) * Math.pow(ZRA, 1 + Math.pow(1 - Tr, 2 / 7));
-      }
-    }
-    return wp?.V_L_m3mol ?? 0;
-  };
-  const V=comps.map(_vl);
-  if (V.some(v => v == null || v <= 0)) {
-    console.error(`[gammaWilson] FAILED: Component is missing required Wilson parameter 'V_L_m3mol'.`);
-    return []; // Return empty array to signal critical failure
-  }
-  const L=lambdasWilson(V,T,p);const [x0,x1,x2]=x;
+function gammaWilson(x:number[],T:number,_comps:CompoundData[],p:TernaryWilsonParams):number[]{
+  // Removed Rackett liquid volume logic -- the Aspen Wilson aij parameter 
+  // already incorporates the volume ratio Vj/Vi.
+  const L=lambdasWilson(T,p);const [x0,x1,x2]=x;
   const S0=x0+x1*L.L01+x2*L.L02, S1=x0*L.L10+x1+x2*L.L12, S2=x0*L.L20+x1*L.L21+x2;
   
   // Check for non-positive or very small denominators before log/division
@@ -418,24 +391,20 @@ async function simulateODE_Unifac(initX:number[],P:number,comps:CompoundData[],p
 // =========================================================================
 //  P R  (Peng–Robinson)  -- trimmed
 // =========================================================================
-interface TernaryPrParams {k01:number;k10?:number;k02:number;k20?:number;k12:number;k21?:number;}
+interface TernaryPrParams {
+  k01_1: number; k01_2: number; k01_3: number;
+  k02_1: number; k02_2: number; k02_3: number;
+  k12_1: number; k12_2: number; k12_3: number;
+}
 const MIN_X_PR=1e-9;
 function normX_pr(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_PR*(x.length-1);return x.map(v=>Math.max(MIN_X_PR,Math.min(mx,v/s)));}
-function getKijPr(i:number,j:number,p:TernaryPrParams):number{
-    // Handle asymmetric kij values first (explicitly provided opposites)
-    if (i === 1 && j === 0 && p.k10 !== undefined) return p.k10;
-    if (i === 2 && j === 0 && p.k20 !== undefined) return p.k20;
-    if (i === 2 && j === 1 && p.k21 !== undefined) return p.k21;
-
-    const key = `${Math.min(i,j)}${Math.max(i,j)}`;
-    if (i === j) return 0;
-
-    switch(key){
-        case '01': return p.k01;
-        case '02': return p.k02;
-        case '12': return p.k12;
-    }
-    return 0;
+function getKijPr(i:number,j:number,T:number,p:TernaryPrParams):number{
+  if (i === j) return 0;
+  let k1=0, k2=0, k3=0;
+  if((i===0&&j===1)||(i===1&&j===0)) { k1=p.k01_1; k2=p.k01_2; k3=p.k01_3; }
+  else if((i===0&&j===2)||(i===2&&j===0)) { k1=p.k02_1; k2=p.k02_2; k3=p.k02_3; }
+  else if((i===1&&j===2)||(i===2&&j===1)) { k1=p.k12_1; k2=p.k12_2; k3=p.k12_3; }
+  return k1 + k2*T + k3/T;
 }
 export function calcPurePR(T:number,pr:{Tc_K:number;Pc_Pa:number;omega:number}){
     // Normalize units defensively: if Pc looks like kPa convert → Pa; if so, assume Tc was provided in °C and convert to K.
@@ -459,8 +428,8 @@ export function calcPurePR(T:number,pr:{Tc_K:number;Pc_Pa:number;omega:number}){
     const b = 0.07796 * R * actualTc_K / actualPc_Pa;
     return { a, b };
 }
-function calcMixturePR(x:number[],T:number,comps:CompoundData[],p:TernaryPrParams){const a_i=comps.map(c=>calcPurePR(T,c.prParams!).a);const b_i=comps.map(c=>calcPurePR(T,c.prParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijPr(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
-function prFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernaryPrParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijPr(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(2*Math.sqrt(2)*B)*((2*sum/a_mix)-b_i[k]/b_mix)*Math.log((Z+(1+Math.sqrt(2))*B)/(Z+(1-Math.sqrt(2))*B));phi.push(Math.exp(term1+term2-term3));}return phi;}
+function calcMixturePR(x:number[],T:number,comps:CompoundData[],p:TernaryPrParams){const a_i=comps.map(c=>calcPurePR(T,c.prParams!).a);const b_i=comps.map(c=>calcPurePR(T,c.prParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijPr(i,j,T,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
+function prFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernaryPrParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijPr(k,i,T,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(2*Math.sqrt(2)*B)*((2*sum/a_mix)-b_i[k]/b_mix)*Math.log((Z+(1+Math.sqrt(2))*B)/(Z+(1-Math.sqrt(2))*B));phi.push(Math.exp(term1+term2-term3));}return phi;}
 function solvePRBubbleT(x:number[],P:number,comps:CompoundData[],p:TernaryPrParams,Ti:number){
   // Abort if operating essentially super-critical for any component
   if (comps.some(c => P > 0.95 * c.prParams!.Pc_Pa)) return null;
@@ -579,24 +548,20 @@ async function simulateODE_Pr(initX:number[],P:number,comps:CompoundData[],p:Ter
 // =========================================================================
 //  S R K  (Soave–Redlich–Kwong)      – trimmed maths
 // =========================================================================
-interface TernarySrkParams { k01:number;k10?:number;k02:number;k20?:number;k12:number;k21?:number; }
+interface TernarySrkParams {
+  k01_1: number; k01_2: number; k01_3: number;
+  k02_1: number; k02_2: number; k02_3: number;
+  k12_1: number; k12_2: number; k12_3: number;
+}
 const MIN_X_SRK = 1e-9;
 function normX_srk(x:number[]):number[]{const s=x.reduce((a,b)=>a+b,0)||1;const mx=1-MIN_X_SRK*(x.length-1);return x.map(v=>Math.max(MIN_X_SRK,Math.min(mx,v/s)));}
-function getKijSrk(i:number,j:number,p:TernarySrkParams):number{
-    // Handle asymmetric kij values first
-    if (i === 1 && j === 0 && p.k10 !== undefined) return p.k10;
-    if (i === 2 && j === 0 && p.k20 !== undefined) return p.k20;
-    if (i === 2 && j === 1 && p.k21 !== undefined) return p.k21;
-
-    const key = `${Math.min(i,j)}${Math.max(i,j)}`;
-    if (i === j) return 0;
-
-    switch(key){
-        case '01': return p.k01;
-        case '02': return p.k02;
-        case '12': return p.k12;
-    }
-    return 0;
+function getKijSrk(i:number,j:number,T:number,p:TernarySrkParams):number{
+  if (i === j) return 0;
+  let k1=0, k2=0, k3=0;
+  if((i===0&&j===1)||(i===1&&j===0)) { k1=p.k01_1; k2=p.k01_2; k3=p.k01_3; }
+  else if((i===0&&j===2)||(i===2&&j===0)) { k1=p.k02_1; k2=p.k02_2; k3=p.k02_3; }
+  else if((i===1&&j===2)||(i===2&&j===1)) { k1=p.k12_1; k2=p.k12_2; k3=p.k12_3; }
+  return k1 + k2*T + k3/T;
 }
 export function calcPureSRK(T:number,srk:{Tc_K:number;Pc_Pa:number;omega:number}){
     // Defensive unit normalization (handle kPa/°C source values):
@@ -612,8 +577,8 @@ export function calcPureSRK(T:number,srk:{Tc_K:number;Pc_Pa:number;omega:number}
     const b = 0.08664 * R * actualTc_K / actualPc_Pa;
     return { a, b };
 }
-function mixSRK(x:number[],T:number,comps:CompoundData[],p:TernarySrkParams){const a_i=comps.map(c=>calcPureSRK(T,c.srkParams!).a);const b_i=comps.map(c=>calcPureSRK(T,c.srkParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijSrk(i,j,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
-function srkFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernarySrkParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijSrk(k,i,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(B)*(b_i[k]/b_mix - (2*sum/a_mix) )*Math.log(1+B/Z);phi.push(Math.exp(term1+term2+term3));}return phi;}
+function mixSRK(x:number[],T:number,comps:CompoundData[],p:TernarySrkParams){const a_i=comps.map(c=>calcPureSRK(T,c.srkParams!).a);const b_i=comps.map(c=>calcPureSRK(T,c.srkParams!).b);let a_mix=0;for(let i=0;i<3;i++){for(let j=0;j<3;j++){a_mix+=x[i]*x[j]*Math.sqrt(a_i[i]*a_i[j])*(1-getKijSrk(i,j,T,p));}}const b_mix=x.reduce((sum,xi,idx)=>sum+xi*b_i[idx],0);return{a_mix,b_mix,a_i,b_i};}
+function srkFugacity(x:number[],T:number,P:number,Z:number,a_mix:number,b_mix:number,a_i:number[],b_i:number[],p:TernarySrkParams){const A=a_mix*P/(R*R*T*T);const B=b_mix*P/(R*T);const phi=[] as number[];for(let k=0;k<3;k++){let sum=0;for(let i=0;i<3;i++){sum+=x[i]*Math.sqrt(a_i[k]*a_i[i])*(1-getKijSrk(k,i,T,p));}const term1=b_i[k]/b_mix*(Z-1);const term2=-Math.log(Z-B);const term3=A/(B)*(b_i[k]/b_mix - (2*sum/a_mix) )*Math.log(1+B/Z);phi.push(Math.exp(term1+term2+term3));}return phi;}
 function solveSRKBubbleT(x:number[],P:number,comps:CompoundData[],p:TernarySrkParams,Ti:number){
   if (comps.some(c => P > 0.95 * c.srkParams!.Pc_Pa)) return null;
 
@@ -1229,13 +1194,13 @@ export function findAzeotropeNRTL(P:number, comps:CompoundData[], params:Ternary
   return result;
 }
 export function findAzeotropePr(P:number, comps:CompoundData[], params:TernaryPrParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  console.log(`[findAzeotropePr] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}, kij={k01:${params.k01},k02:${params.k02},k12:${params.k12}}`);
+  console.log(`[findAzeotropePr] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}, k01_1=${params.k01_1}`);
   const result = azeotropePrSolver(P,comps,params,xGuess,Tguess);
   console.log(`[findAzeotropePr] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
   return result;
 }
 export function findAzeotropeSrk(P:number, comps:CompoundData[], params:TernarySrkParams, xGuess:number[], Tguess:number):AzeotropeResult|null{
-  console.log(`[findAzeotropeSrk] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}, kij={k01:${params.k01},k02:${params.k02},k12:${params.k12}}`);
+  console.log(`[findAzeotropeSrk] xGuess=[${xGuess.map(v=>v.toFixed(4))}], Tguess=${Tguess.toFixed(2)}, P=${P.toFixed(0)}, k01_1=${params.k01_1}`);
   const result = azeotropeSrkSolver(P,comps,params,xGuess,Tguess);
   console.log(`[findAzeotropeSrk] result: ${result ? `x=[${result.x.map(v=>v.toFixed(4))}], T=${result.T_K.toFixed(2)}K, conv=${result.converged}, err=${result.errorNorm?.toExponential(3)}` : 'null'}`);
   return result;

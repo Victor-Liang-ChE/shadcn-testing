@@ -212,22 +212,6 @@ export function calculateWilsonGammaMulticomponent(
   const n = comps.length;
   if (x.length !== n || n === 0) return null;
 
-  // Use temperature-dependent Rackett VL when critical props are available (Yamada-Gunn ZRA).
-  const R_SI = 8.314_462_618; // J·mol⁻¹·K⁻¹
-  const _raccVL = (c: (typeof comps)[0]): number => {
-    const wp = c.wilsonParams;
-    if (wp?.Tc_K && wp.Pc_Pa) {
-      const ZRA = wp.RKTZRA ?? (wp.omega != null ? 0.29056 - 0.08775 * wp.omega : null);
-      if (ZRA != null) {
-        const Tr = T_K / wp.Tc_K;
-        return (R_SI * wp.Tc_K / wp.Pc_Pa) * Math.pow(ZRA, 1 + Math.pow(1 - Tr, 2 / 7));
-      }
-    }
-    return wp?.V_L_m3mol ?? NaN;
-  };
-  const V_L = comps.map(c => _raccVL(c));
-  if (V_L.some(v => v === undefined || isNaN(v as number))) return null;
-  // Aspen Wilson params are R_cal-scaled (see fetchWilsonInteractionParams).
   const R_wilson_cal = 1.9872; // cal·mol⁻¹·K⁻¹
 
   const Lambda = Array(n).fill(0).map(() => Array(n).fill(0));
@@ -250,14 +234,15 @@ export function calculateWilsonGammaMulticomponent(
         return null;
       }
 
-      const p = params.has(`${i}-${j}`)
-        ? pairParams
-        : { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij,
+      let p = pairParams;
+      if (!params.has(`${i}-${j}`)) {
+        p = { Aij: pairParams.Aji, Aji: pairParams.Aij, Bij: pairParams.Bji, Bji: pairParams.Bij,
             Cij: pairParams.Cji, Cji: pairParams.Cij, Dij: pairParams.Dji, Dji: pairParams.Dij };
-      // Full Aspen Wilson: ln Λ_ij = ln(Vj/Vi) + aij + bij/T + cij·lnT + dij·T
-      // Stored scaled: −(A + B·T + C·T·lnT + D·T²) / (R·T)
+      }
+      
       const lT = Math.log(T_K);
-      Lambda[i][j] = (V_L[j]! / V_L[i]!) * Math.exp(
+      // The Aspen aij parameter already contains the volume ratio, so we remove the explicit multiplier.
+      Lambda[i][j] = Math.exp(
         -(p.Aji + p.Bji * T_K + (p.Cji ?? 0) * T_K * lT + (p.Dji ?? 0) * T_K * T_K) / (R_wilson_cal * T_K)
       );
     }
@@ -273,13 +258,12 @@ export function calculateWilsonGammaMulticomponent(
 
     let term2 = 0;
     for (let k = 0; k < n; k++) {
-      let term2_num = 0;
       let term2_den = 0;
       for (let j = 0; j < n; j++) {
         term2_den += x[j] * Lambda[k][j];
       }
       if (term2_den === 0) continue;
-      term2_num = x[k] * Lambda[k][i];
+      const term2_num = x[k] * Lambda[k][i];
       term2 += term2_num / term2_den;
     }
     lnGamma[i] = term1 + (1 - term2);

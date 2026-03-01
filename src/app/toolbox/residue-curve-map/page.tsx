@@ -1493,14 +1493,17 @@ export default function TernaryResidueMapPage() {
                     A10: params01.Aji ?? 0, B10: params01.Bji ?? 0,
                     C01: params01.Cij ?? 0, D01: params01.Dij ?? 0,
                     C10: params01.Cji ?? 0, D10: params01.Dji ?? 0,
+                    E01: params01.Eij ?? 0, E10: params01.Eji ?? 0,
                     A02: params02.Aij ?? 0, B02: params02.Bij ?? 0,
                     A20: params02.Aji ?? 0, B20: params02.Bji ?? 0,
                     C02: params02.Cij ?? 0, D02: params02.Dij ?? 0,
                     C20: params02.Cji ?? 0, D20: params02.Dji ?? 0,
+                    E02: params02.Eij ?? 0, E20: params02.Eji ?? 0,
                     A12: params12.Aij ?? 0, B12: params12.Bij ?? 0,
                     A21: params12.Aji ?? 0, B21: params12.Bji ?? 0,
                     C12: params12.Cij ?? 0, D12: params12.Dij ?? 0,
                     C21: params12.Cji ?? 0, D21: params12.Dji ?? 0,
+                    E12: params12.Eij ?? 0, E21: params12.Eji ?? 0,
                     eta_01: params01.eta_cross ?? 0,
                     eta_02: params02.eta_cross ?? 0,
                     eta_12: params12.eta_cross ?? 0,
@@ -1556,9 +1559,9 @@ export default function TernaryResidueMapPage() {
                 const params12 = await fetchPrInteractionParams(supabase, names[1], names[2]);
 
                 activityModelParams = {
-                    k01: params01.k_ij ?? 0, k10: params01.k_ij ?? 0,
-                    k02: params02.k_ij ?? 0, k20: params02.k_ij ?? 0,
-                    k12: params12.k_ij ?? 0, k21: params12.k_ij ?? 0,
+                    k01_1: params01.k_ij1 ?? 0, k01_2: params01.k_ij2 ?? 0, k01_3: params01.k_ij3 ?? 0,
+                    k02_1: params02.k_ij1 ?? 0, k02_2: params02.k_ij2 ?? 0, k02_3: params02.k_ij3 ?? 0,
+                    k12_1: params12.k_ij1 ?? 0, k12_2: params12.k_ij2 ?? 0, k12_3: params12.k_ij3 ?? 0,
                 } as TernaryPrParams;
                 console.log(`[RCM] PR kij params:`, activityModelParams);
                 console.log(`[RCM] PR raw fetch: 01=${JSON.stringify(params01)}, 02=${JSON.stringify(params02)}, 12=${JSON.stringify(params12)}`);
@@ -1569,9 +1572,9 @@ export default function TernaryResidueMapPage() {
                 const params12 = await fetchSrkInteractionParams(supabase, names[1], names[2]);
 
                 activityModelParams = {
-                    k01: params01.k_ij ?? 0, k10: params01.k_ij ?? 0,
-                    k02: params02.k_ij ?? 0, k20: params02.k_ij ?? 0,
-                    k12: params12.k_ij ?? 0, k21: params12.k_ij ?? 0,
+                    k01_1: params01.k_ij1 ?? 0, k01_2: params01.k_ij2 ?? 0, k01_3: params01.k_ij3 ?? 0,
+                    k02_1: params02.k_ij1 ?? 0, k02_2: params02.k_ij2 ?? 0, k02_3: params02.k_ij3 ?? 0,
+                    k12_1: params12.k_ij1 ?? 0, k12_2: params12.k_ij2 ?? 0, k12_3: params12.k_ij3 ?? 0,
                 } as TernarySrkParams;
                 console.log(`[RCM] SRK kij params:`, activityModelParams);
                 console.log(`[RCM] SRK raw fetch: 01=${JSON.stringify(params01)}, 02=${JSON.stringify(params02)}, 12=${JSON.stringify(params12)}`);

@@ -239,6 +239,10 @@ export interface WilsonInteractionParams {
   Dij?: number;
   /** Aspen dji·(−R_cal): T coefficient of ln Λ_ji. Default 0. */
   Dji?: number;
+  /** Aspen eij/T² parameters (mapped to raw eij in DB). Default 0. */
+  Eij?: number;
+  /** Aspen eji/T² parameters (mapped to raw eji in DB). Default 0. */
+  Eji?: number;
   /** Hayden-O'Connell cross-association parameter (η_ij). Default 0 (ideal vapor). */
   eta_cross?: number;
 }
@@ -249,44 +253,37 @@ export function calculateWilsonGamma(
   T_K: number,
   p: WilsonInteractionParams
 ): [number, number] | null {
-  if (x.length !== 2 || comps.length !== 2) return null;
-  if (!comps[0].wilsonParams || !comps[1].wilsonParams) return null;
+  if (x.length !== 2 || comps.length !== 2) {
+    return null
+  }
+  
+  if (!comps[0].wilsonParams || !comps[1].wilsonParams) {
+    return null
+  }
 
-  // Use temperature-dependent Rackett liquid molar volume when critical props are available.
-  // VL(T) = (R·Tc/Pc)·ZRA^[1+(1-Tr)^(2/7)], ZRA = 0.29056 - 0.08775·ω (Yamada-Gunn)
-  // This is consistent with how APV Wilson params were regressed in Aspen Plus.
-  const _rackett = (wp: typeof comps[0]['wilsonParams'], T: number): number => {
-    if (wp!.Tc_K && wp!.Pc_Pa) {
-      const ZRA = wp!.RKTZRA ?? (wp!.omega != null ? 0.29056 - 0.08775 * wp!.omega! : null);
-      if (ZRA != null) {
-        const Tr = T / wp!.Tc_K!;
-        return (R_gas_const_J_molK * wp!.Tc_K! / wp!.Pc_Pa!) * Math.pow(ZRA, 1 + Math.pow(1 - Tr, 2 / 7));
-      }
-    }
-    return wp!.V_L_m3mol; // fallback to stored reference value
-  };
-  const V1 = _rackett(comps[0].wilsonParams, T_K);
-  const V2 = _rackett(comps[1].wilsonParams, T_K);
-  // Standard convention: Lambda12 uses Aij/Bij (i=1,j=2), Lambda21 uses Aji/Bji
-  const R_cal = 1.9872; // cal·mol⁻¹·K⁻¹
-  // Scale Bij by R_cal
-  // Full Aspen Wilson: ln Λ_ij = ln(Vj/Vi) + aij + bij/T + cij·lnT + dij·T
-  // Stored scaled: -(Aij + Bij·T + Cij·T·lnT + Dij·T²) / (R_cal·T)
-  //   = bij/T + aij + cij·lnT + dij·T  ✓  (Cij = -cij·R_cal, Dij = -dij·R_cal)
-  const Lambda12 = (V2 / V1) * Math.exp(
+  const R_cal = 1.9872
+
+  // The Aspen aij parameter already contains the volume ratio
+  // so we remove the explicit (V2/V1) multiplier here
+  const Lambda12 = Math.exp(
     -(p.Aij + p.Bij * T_K + (p.Cij ?? 0) * T_K * Math.log(T_K) + (p.Dij ?? 0) * T_K * T_K) / (R_cal * T_K)
-  );
-  const Lambda21 = (V1 / V2) * Math.exp(
+  )
+  
+  const Lambda21 = Math.exp(
     -(p.Aji + p.Bji * T_K + (p.Cji ?? 0) * T_K * Math.log(T_K) + (p.Dji ?? 0) * T_K * T_K) / (R_cal * T_K)
-  );
+  )
 
-  const [x1, x2] = x;
-  const denom1 = x1 + Lambda12 * x2;
-  const denom2 = x2 + Lambda21 * x1;
-  if (denom1 === 0 || denom2 === 0) return null;
+  const [x1, x2] = x
+  const denom1 = x1 + Lambda12 * x2
+  const denom2 = x2 + Lambda21 * x1
+  
+  if (denom1 === 0 || denom2 === 0) {
+    return null
+  }
 
-  const lnGamma1 = -Math.log(denom1) + x2 * (Lambda12 / denom1 - Lambda21 / denom2);
-  const lnGamma2 = -Math.log(denom2) - x1 * (Lambda12 / denom1 - Lambda21 / denom2);
+  const lnGamma1 = -Math.log(denom1) + x2 * (Lambda12 / denom1 - Lambda21 / denom2)
+  const lnGamma2 = -Math.log(denom2) - x1 * (Lambda12 / denom1 - Lambda21 / denom2)
+  
   return [Math.exp(lnGamma1), Math.exp(lnGamma2)];
 }
 
@@ -604,7 +601,7 @@ export function calculateDewPressureUnifac(
 //  5. P E N G – R O B I N S O N   E O S   (binary – vapor/liquid)
 // ===============================================================
 
-export interface PrInteractionParams { k_ij: number; }
+export interface PrInteractionParams { k_ij1: number; k_ij2: number; k_ij3: number; }
 
 export function solveCubicEOS(a: number, b: number, c: number, d: number): number[] | null {
   // General cubic a·Z³ + b·Z² + c·Z + d = 0  (Cardano) – returns only positive real roots
@@ -656,7 +653,7 @@ export function calculatePrFugacityCoefficients(
   if (!components[0].prParams || !components[1].prParams) return null;
 
   const [x1, x2] = x_or_y;
-  const { k_ij } = interactionParams;
+  const k_ij = interactionParams.k_ij1 + (interactionParams.k_ij2 * T_K) + (interactionParams.k_ij3 / T_K);
 
   const pure = components.map(c => {
     const { Tc_K, Pc_Pa, omega } = c.prParams!;
@@ -971,7 +968,7 @@ export function calculateDewPressurePr(
 //    (Simplified binary implementation, parallels PR helpers)
 // ===============================================================
 
-export interface SrkInteractionParams { k_ij: number; }
+export interface SrkInteractionParams { k_ij1: number; k_ij2: number; k_ij3: number; }
 
 // (interface already declared above)
 
@@ -990,7 +987,7 @@ export function calculateSrkFugacityCoefficients(
 
   const x1 = x_or_y[0];
   const x2 = x_or_y[1];
-  const { k_ij } = interactionParams;
+  const k_ij = interactionParams.k_ij1 + (interactionParams.k_ij2 * T_K) + (interactionParams.k_ij3 / T_K);
 
   const srkPure = components.map(c => {
     const { Tc_K, Pc_Pa, omega } = c.srkParams!;
@@ -1787,14 +1784,17 @@ export async function fetchWilsonInteractionParams(
     // Aspen Wilson: Λ_12 = (V2/V1)·exp(aij + bij/T + cij·lnT + dij·T)
     // Scale: Aij = -bij*R_cal, Bij = -aij*R_cal, Cij = -cij*R_cal, Dij = -dij*R_cal so that
     //   exp(-(Aij + Bij·T + Cij·T·lnT + Dij·T²)/(R·T)) = exp(bij/T + aij + cij·lnT + dij·T)  ✓
-    const [aij, aji, bij, bji, cij, cji, dij, dji] = isForward
+    const [aij, aji, bij, bji, cij, cji, dij, dji, eij, eji] = isForward
       ? [row.aij ?? 0, row.aji ?? 0, row.bij ?? 0, row.bji ?? 0,
-         row.cij ?? 0, row.cji ?? 0, row.dij ?? 0, row.dji ?? 0]
+         row.cij ?? 0, row.cji ?? 0, row.dij ?? 0, row.dji ?? 0,
+         row.eij ?? 0, row.eji ?? 0]
       : [row.aji ?? 0, row.aij ?? 0, row.bji ?? 0, row.bij ?? 0,
-         row.cji ?? 0, row.cij ?? 0, row.dji ?? 0, row.dij ?? 0];
+         row.cji ?? 0, row.cij ?? 0, row.dji ?? 0, row.dij ?? 0,
+         row.eji ?? 0, row.eij ?? 0];
     return {
       Aij: -bij * R_cal, Aji: -bji * R_cal, Bij: -aij * R_cal, Bji: -aji * R_cal,
       Cij: -cij * R_cal, Cji: -cji * R_cal, Dij: -dij * R_cal, Dji: -dji * R_cal,
+      Eij: -eij * R_cal, Eji: -eji * R_cal,
       eta_cross: row.HOC_ETA_CROSS ?? 0,
     };
   }
@@ -1807,16 +1807,17 @@ export async function fetchPrInteractionParams(
   name1: string,
   name2: string
 ): Promise<PrInteractionParams> {
-  if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
+  if (!name1 || !name2 || name1 === name2) return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
 
   const result = await fetchAspenBinaryRow(supabase, 'nistv140_prkbv_wide', 'apv140_prkbv_wide', name1, name2);
   if (result && typeof result.row.kij1 === 'number') {
-    return { k_ij: result.row.kij1 };
+    return {
+      k_ij1: result.row.kij1,
+      k_ij2: result.row.kij2 || 0,
+      k_ij3: result.row.kij3 || 0,
+    };
   }
-  // No binary data found → use kij = 0 (standard default for PR when no regressed data available).
-  // The Chueh-Prausnitz critical-volume formula is only valid for simple non-polar pairs;
-  // using it for polar systems (alcohols, chlorinated compounds) gives incorrect kij.
-  return { k_ij: 0 };
+  return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
 }
 
 // --- SRK ---
@@ -1825,20 +1826,17 @@ export async function fetchSrkInteractionParams(
   name1: string,
   name2: string
 ): Promise<SrkInteractionParams> {
-  if (!name1 || !name2 || name1 === name2) return { k_ij: 0 };
+  if (!name1 || !name2 || name1 === name2) return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
 
-  // SRK uses APV rkskbv table (no NIST equivalent)
-  const { data, error } = await supabase
-    .from('apv140_rkskbv_wide')
-    .select('*')
-    .or(`and("Compound1Name".ilike.${name1},"Compound2Name".ilike.${name2}),and("Compound1Name".ilike.${name2},"Compound2Name".ilike.${name1})`)
-    .limit(1);
-
-  if (!error && data && data.length > 0 && typeof data[0].kij1 === 'number') {
-    return { k_ij: data[0].kij1 };
+  const result = await fetchAspenBinaryRow(supabase, 'nistv140_rkskbv_wide', 'apv140_rkskbv_wide', name1, name2);
+  if (result && typeof result.row.kij1 === 'number') {
+    return {
+      k_ij1: result.row.kij1,
+      k_ij2: result.row.kij2 || 0,
+      k_ij3: result.row.kij3 || 0,
+    };
   }
-  // No binary data found → use kij = 0 (standard SRK default; CVC formula invalid for polar pairs).
-  return { k_ij: 0 };
+  return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
 }
 
 // --- UNIQUAC ---
