@@ -168,12 +168,12 @@ function Navbar() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="center" className="bg-popover border-border">
             <DropdownMenuItem asChild>
-              <Link href="/toolbox" className="text-lg w-full cursor-pointer">
+              <Link href="/toolbox?category=cheme" className="text-lg w-full cursor-pointer">
                 Chemical Engineering
               </Link>
             </DropdownMenuItem>
             <DropdownMenuItem asChild>
-              <Link href="/matsci-toolbox" className="text-lg w-full cursor-pointer">
+              <Link href="/toolbox?category=matsci" className="text-lg w-full cursor-pointer">
                 Materials Science
               </Link>
             </DropdownMenuItem>
@@ -199,14 +199,14 @@ function Navbar() {
         <div className="p-4 flex flex-col space-y-2"> {/* Reduced space-y */}
           <div className="font-semibold px-3 py-1 text-sm text-muted-foreground uppercase tracking-wider">Toolbox</div>
           <Link 
-            href="/toolbox" 
+            href="/toolbox?category=cheme" 
             className={`block text-lg font-medium pl-6 ${linkHoverStyle}`}
             onClick={() => setIsMenuOpen(false)}
           >
             Chemical Engineering
           </Link>
           <Link 
-            href="/matsci-toolbox" 
+            href="/toolbox?category=matsci" 
             className={`block text-lg font-medium pl-6 ${linkHoverStyle}`}
             onClick={() => setIsMenuOpen(false)}
           >
