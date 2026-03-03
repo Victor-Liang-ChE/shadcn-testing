@@ -32,7 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { TooltipProvider } from "@/components/ui/tooltip"; // Assuming you might use Shadcn tooltips
-import { ArrowLeftRight, Terminal } from 'lucide-react';
+import { ArrowLeftRight, Terminal, Download } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"; // Added Tabs
 
 // VLE Calculation Library – consolidated
@@ -633,6 +633,15 @@ export default function AzeotropeFinderPage() {
     generateAzeotropeEChartsOptions();
   }, [azeotropeScanData, generateAzeotropeEChartsOptions]);
 
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
 
   // --- JSX Structure ---
   return (
@@ -750,6 +759,7 @@ export default function AzeotropeFinderPage() {
                   {!loading && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />
                   )}
+                  {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
                  <p className="text-xs text-muted-foreground mt-2 text-center">
                     Note: Accuracy depends on database parameters and model limitations. Results are from a wide scan range.

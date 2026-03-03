@@ -26,7 +26,7 @@ echarts.use([
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Trash2, PlusCircle } from 'lucide-react'; 
+import { Trash2, PlusCircle, Download } from 'lucide-react'; 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Label } from "@/components/ui/label"; 
 
@@ -1618,6 +1618,15 @@ export default function CompoundPropertiesPage() {
     }
   };
 
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
 
   return (
     <TooltipProvider>
@@ -1901,6 +1910,7 @@ export default function CompoundPropertiesPage() {
                   {!loading && Object.keys(echartsOptions).length > 0 && compounds.some(c=>c.data) && !overallError && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />
                   )}
+                  {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
 
               </CardContent>

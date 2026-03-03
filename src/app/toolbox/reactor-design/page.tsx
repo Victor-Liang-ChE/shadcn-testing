@@ -4,7 +4,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import ReactECharts from 'echarts-for-react'
 import { EChartsOption } from 'echarts'
-import { PlusCircle, Trash2, ArrowLeft, ArrowRight, Unlink2, Info } from 'lucide-react'
+import { PlusCircle, Trash2, ArrowLeft, ArrowRight, Unlink2, Info, Download } from 'lucide-react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -2521,6 +2521,17 @@ const ReactorSimulator = ({
   const cardFg = 'text-card-foreground';
   const mainBg = 'bg-background';
   const mainFg = 'text-foreground';
+  const echartsRef = useRef<ReactECharts | null>(null);
+
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
 
   // reactorTypes/state are passed in from parent; use prop-based handler
   const handleReactorTypeChange = (type: 'pfr' | 'cstr') => {
@@ -2893,7 +2904,7 @@ const ReactorSimulator = ({
             </div>
 
             {/* Graph Card */}
-            <div className={`lg:col-span-2 p-4 rounded-lg shadow-lg aspect-square ${cardBg} ${cardFg}`}> 
+            <div className={`lg:col-span-2 p-4 rounded-lg shadow-lg aspect-square relative ${cardBg} ${cardFg}`}> 
               {/* Chart section is unchanged */}
             <div className="relative mb-2">
                 <div className="absolute top-0 left-0 z-10">
@@ -2930,11 +2941,13 @@ const ReactorSimulator = ({
                 </div>
             </div>
           <ReactECharts
+            ref={echartsRef}
             key={`${resolvedTheme}-${reactorTypes.pfr ? 'pfr' : 'cstr'}`}
             option={chartOptions}
             style={{ height: '100%', width: '100%', minHeight: '450px' }}
             notMerge={true}
           />
+          {graphData.series.length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
             </div>
             
         </div>

@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
+import { Download } from 'lucide-react';
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -342,6 +343,16 @@ export default function ProcessControlPage() {
     // --- Render ---
     const metrics = simulationResult?.metrics;
 
+    const handleDownloadChart = () => {
+      const chart = echartsRef.current?.getEchartsInstance();
+      if (!chart) return;
+      const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'chart.png';
+      a.click();
+    };
+
     return (
         <div className="container mx-auto p-4 md:p-8 px-8 md:px-16">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -526,6 +537,7 @@ export default function ProcessControlPage() {
                                         {isLoading ? 'Loading...' : 'Configure parameters to view simulation.'}
                                     </div>
                                 )}
+                                {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                             </div>
                         </CardContent>
                     </Card>

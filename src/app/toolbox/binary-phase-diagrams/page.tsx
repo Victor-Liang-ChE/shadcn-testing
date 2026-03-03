@@ -54,18 +54,6 @@ export type DiagramType = 'txy' | 'pxy' | 'xy';
 
 echarts.use([TitleComponent, TooltipComponent, GridComponent, LegendComponent, MarkPointComponent, ToolboxComponent, LineChart, ScatterChart, CanvasRenderer]);
 
-function debounce<F extends (...args: any[]) => any>(func: F, waitFor: number) {
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    const debounced = (...args: Parameters<F>) => {
-        if (timeout !== null) {
-            clearTimeout(timeout);
-            timeout = null;
-        }
-        timeout = setTimeout(() => func(...args), waitFor);
-    };
-    return debounced as (...args: Parameters<F>) => void;
-}
-
 // Utility to compute a 'nice' slider step given the maximum value
 function computeStep(maxVal: number): number {
     const desiredSteps = 100;
@@ -86,7 +74,7 @@ export default function VleDiagramPage() {
     const [comp1Name, setComp1Name] = useState('Methanol');
     const [comp2Name, setComp2Name] = useState('H2O');
     const [diagramType, setDiagramType] = useState<DiagramType>('txy');
-    const [temperatureC, setTemperatureC] = useState<number | null>(null);
+    const [temperatureC, setTemperatureC] = useState<number | null>(60);
     const [pressureBar, setPressureBar] = useState<number | null>(1);
     const [fluidPackage, setFluidPackage] = useState<FluidPackageType>('uniquac');
     const [_temperatureInput, _setTemperatureInput] = useState<string>(String(temperatureC));
@@ -104,6 +92,10 @@ export default function VleDiagramPage() {
     const [comp1Data, setComp1Data] = useState<CompoundData | null>(null);
     const [comp2Data, setComp2Data] = useState<CompoundData | null>(null);
     const [interactionParams, setInteractionParams] = useState<any>(null);
+    // Track the exact input names+package that produced the current cached data.
+    // Comparing against this ref — instead of d1.name (DB-resolved, uppercase) vs comp1Name
+    // (user-typed) — prevents spurious refetches on every slider move.
+    const lastFetchKeyRef = useRef<string | null>(null);
 
     const [comp1Suggestions, setComp1Suggestions] = useState<CompoundAlias[]>([]);
     const [comp2Suggestions, setComp2Suggestions] = useState<CompoundAlias[]>([]);
@@ -470,7 +462,8 @@ export default function VleDiagramPage() {
 
         try {
             let d1 = comp1Data, d2 = comp2Data, params = interactionParams;
-            const needsFetching = !d1 || !d2 || !params || d1.name !== comp1Name || d2.name !== comp2Name || displayedParams.package !== fluidPackage;
+            const currentFetchKey = `${comp1Name}|${comp2Name}|${fluidPackage}`;
+            const needsFetching = !d1 || !d2 || !params || lastFetchKeyRef.current !== currentFetchKey;
             
             if (needsFetching) {
                 console.log("Cache miss or inputs changed. Fetching new data...");
@@ -506,9 +499,17 @@ export default function VleDiagramPage() {
                 }
                 
                 setComp1Data(fetched1); setComp2Data(fetched2); setInteractionParams(fetchedParams);
+                lastFetchKeyRef.current = currentFetchKey;
                 d1 = fetched1; d2 = fetched2; params = fetchedParams;
             }
             if (!d1 || !d2 || !params) { throw new Error("Component data or parameters not available."); }
+
+            // Antoine/vapor pressure data is required by every bubble-point solver in this implementation
+            if (!d1.antoine || !d2.antoine) {
+                const missingName = !d1.antoine ? d1.name : d2.name;
+                throw new Error(`Vapor pressure (Antoine) parameters not found for "${missingName}". All VLE calculations require this data.`);
+            }
+
             const components: [CompoundData, CompoundData] = [d1, d2];
             
             const pointsCount = 101; // 101 points => 0.01 spacing for x
@@ -574,6 +575,13 @@ export default function VleDiagramPage() {
                 }
             }
             
+            // Guard: if almost no interior points were computed, the calculation silently failed
+            // (e.g. Antoine returned NaN mid-iteration, or a solver diverged for all compositions).
+            const interiorCount = results.x.filter(x => x > 0 && x < 1).length;
+            if (interiorCount < 3) {
+                throw new Error(`VLE calculation produced too few valid points (${interiorCount}). Check that both compounds have complete thermodynamic data for the selected fluid package and conditions.`);
+            }
+
             setChartData(results);
             const newParams = {
                 comp1: comp1DisplayName || d1.name, comp2: comp2DisplayName || d2.name,
@@ -605,14 +613,12 @@ export default function VleDiagramPage() {
         }
     }, [resolvedTheme, chartData, displayedParams, generateEchartsOptions]);
 
-    const debouncedSliderUpdate = useCallback(debounce(() => generateDiagram(false), 200), [generateDiagram]);
-
     useEffect(() => {
-        if (diagramType === 'txy' || (diagramType === 'xy' && !useTemperatureForXY)) debouncedSliderUpdate();
+        if (diagramType === 'txy' || (diagramType === 'xy' && !useTemperatureForXY)) generateDiagram(false);
     }, [pressureBar]);
 
     useEffect(() => {
-        if (diagramType === 'pxy' || (diagramType === 'xy' && useTemperatureForXY)) debouncedSliderUpdate();
+        if (diagramType === 'pxy' || (diagramType === 'xy' && useTemperatureForXY)) generateDiagram(false);
     }, [temperatureC]);
     
     // Auto-generate when diagram type or fluid package changes
@@ -732,7 +738,9 @@ export default function VleDiagramPage() {
                             <div className="flex items-center gap-2">
                                 <Tabs value={useTemperatureForXY ? "temperature" : "pressure"} onValueChange={v => {
                                     setUseTemperatureForXY(v === "temperature");
-                                    generateDiagram();
+                                    // Do NOT call generateDiagram() here — it would use a stale closure
+                                    // (old useTemperatureForXY). The useEffect on useTemperatureForXY
+                                    // fires after the state settles and calls generateDiagram correctly.
                                 }}>
                                     <TabsList><TabsTrigger value="temperature">T</TabsTrigger><TabsTrigger value="pressure">P</TabsTrigger></TabsList>
                                 </Tabs>
@@ -1026,6 +1034,16 @@ export default function VleDiagramPage() {
         'mouseout': handleChartMouseOut,
     }), [handleAxisPointerUpdate, handleChartMouseOut]);
 
+    const handleDownloadChart = () => {
+        const chart = echartsRef.current?.getEchartsInstance();
+        if (!chart) return;
+        const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'chart.png';
+        a.click();
+    };
+
     return (
         <div className="container mx-auto p-4 md:p-8">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1171,6 +1189,7 @@ export default function VleDiagramPage() {
                                 onEvents={onEvents}
                             />
                            )}
+                           {!!chartData && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                         </div>
                     </CardContent></Card>
                 </div>

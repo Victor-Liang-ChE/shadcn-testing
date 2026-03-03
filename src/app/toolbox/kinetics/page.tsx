@@ -32,6 +32,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Download } from 'lucide-react';
 import { Slider } from "@/components/ui/slider";
 import { Tooltip as _Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 
@@ -456,6 +457,15 @@ export default function KineticsPage() {
       return species.replace(/(\d+)/g, '<sub>$1</sub>');
   };
 
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
 
   return (
     <TooltipProvider>
@@ -468,7 +478,7 @@ export default function KineticsPage() {
             <Card>
               <CardContent className="space-y-8 pt-6 pb-3">
                 {reactionInputs.map((input, index) => (
-                  <div key={index} className="space-y-6 border-b pb-6 last:border-b-0 last:pb-0">
+                  <div key={index} className="space-y-6">
                     <div className="flex items-center gap-2">
                       <Input value={input.reactants} onChange={(e) => handleReactionChange(index, 'reactants', e.target.value)} onKeyDown={handleReactionKeyDown} placeholder="e.g., 2H2 + O2" className="flex-1"/>
                       <span className="font-bold text-lg">→</span>
@@ -568,6 +578,7 @@ export default function KineticsPage() {
                   ) : (
                     <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"> {species.length > 0 ? "Adjust parameters..." : "Enter reactions..."} </div>
                   )}
+                  {showGraph && Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
               </CardContent>
             </Card>

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
-import { ChevronsUpDown, Check } from 'lucide-react';
+import { ChevronsUpDown, Check, Download } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -869,6 +869,7 @@ export default function TernaryResidueMapPage() {
     const [serafimovClass, setSerafimovClass] = useState<string | null>(null);
     // Generation counter to identify the latest generate-map request
     const generationIdRef = useRef(0);
+    const lastFetchKeyRef = useRef<string | null>(null);
     const [displayedPressure, setDisplayedPressure] = useState<string>(systemPressure);
 
     // Track whether the user has performed a zoom-in (used to allow double-click reset only after zoom-in)
@@ -1276,6 +1277,10 @@ export default function TernaryResidueMapPage() {
         // Bump generation counter and capture this run's ID.
         const myGenerationId = ++generationIdRef.current;
         const generatingFluidPackage = fluidPackage; // Capture fluid package for this generation run
+        // Deduplicate: skip refetch if inputs are identical to the last successful fetch.
+        const currentFetchKey = `${componentsInput.map(c => c.name).join('|')}|${systemPressure}|${fluidPackage}`;
+        if (lastFetchKeyRef.current === currentFetchKey) { return; }
+        lastFetchKeyRef.current = currentFetchKey;
         // Don't clear visual data during generation - let previous plot stay visible
         // for seamless transition. Data will be replaced when new calculation completes.
         setIsLoading(true);
@@ -2119,6 +2124,7 @@ export default function TernaryResidueMapPage() {
         } catch (err: any) {
             console.error("Error generating map:", err);
             setError(err.message || "An unknown error occurred.");
+            lastFetchKeyRef.current = null; // Allow retry after error
         } finally {
             // Only commit results if this run is still the latest.
             if (myGenerationId === generationIdRef.current) {
@@ -3210,64 +3216,17 @@ export default function TernaryResidueMapPage() {
         }
     };
 
-    // Export current Plotly plot as PNG
-    const exportPlot = useCallback(async () => {
-        try {
-            const container = plotContainerRef;
-            if (!container) throw new Error('Plot not ready');
-            const plotDiv = container.querySelector('.js-plotly-plot') as any || container.querySelector('[data-plotly]') as any;
-            if (!plotDiv) throw new Error('Plot DOM not found');
-
-            // Wait for Merriweather Sans to be available in the document (so canvas/svg rasterization uses it)
-            const waitForFont = async (family: string, timeout = 2000) => {
-                try {
-                    if (typeof document === 'undefined' || !('fonts' in document)) return;
-                    // Explicitly load the font to ensure it is ready for the canvas snapshot
-                    const fontLoadPromise = (document as any).fonts.load(`14px "${family}"`);
-                    const timeoutPromise = new Promise(resolve => setTimeout(resolve, timeout));
-                    await Promise.race([fontLoadPromise, timeoutPromise]);
-                    if (!(document as any).fonts.check(`14px "${family}"`)) {
-                        console.warn(`Font "${family}" might not be fully loaded for export.`);
-                    }
-                } catch (e) {
-                    console.warn(`Font loading check failed for ${family}`, e);
-                }
-            };
-
-            // Explicitly wait for Merriweather Sans (primary) and Merriweather (fallback)
-            await waitForFont('Merriweather Sans', 3000);
-            await waitForFont('Merriweather', 1000);
-
-            // Prefer the Plotly instance that react-plotly.js loads on the client (attached to window)
-            const plotly = (typeof window !== 'undefined' && (window as any).Plotly) ? (window as any).Plotly : null;
-            if (plotly && typeof plotly.downloadImage === 'function') {
-                // Generate a descriptive filename: residue-map-comp1-comp2-comp3-model
-                const sanitize = (s: string) => (s || '').toString().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-]/g, '').toLowerCase();
-                const compNames = [
-                    displayedComponentNames[0] || 'Comp1',
-                    displayedComponentNames[1] || 'Comp2',
-                    displayedComponentNames[2] || 'Comp3'
-                ].map(sanitize).join('-');
-                const pkgLabel = sanitize(fluidPackage || 'pkg');
-                const filename = `residue-map-${compNames}-${pkgLabel}`;
-
-                // Ensure layout explicitly requests Merriweather Sans for all text elements (already set elsewhere), then export.
-                await plotly.downloadImage(plotDiv, { 
-                    format: 'png', 
-                    filename: filename, 
-                    width: 1200, 
-                    height: 800, 
-                    scale: 2 
-                });
-            } else {
-                // Plotly not available on window yet — fallback to a DOM snapshot download
-                alert('Export not available: plotting library not loaded yet.');
-            }
-        } catch (err) {
-            console.error('Export plot failed', err);
-            // fallback: show user a message
-            alert('Unable to export plot — make sure the plot is rendered.');
-        }
+    // Download current Plotly plot as PNG
+    const handleDownloadChart = useCallback(async () => {
+        const container = plotContainerRef;
+        if (!container) return;
+        const plotDiv = container.querySelector('.js-plotly-plot') as any;
+        if (!plotDiv) return;
+        const plotly = (typeof window !== 'undefined' && (window as any).Plotly) ? (window as any).Plotly : null;
+        if (!plotly) return;
+        const sanitize = (s: string) => (s || '').toString().replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-]/g, '').toLowerCase();
+        const compNames = [displayedComponentNames[0] || 'Comp1', displayedComponentNames[1] || 'Comp2', displayedComponentNames[2] || 'Comp3'].map(sanitize).join('-');
+        await plotly.downloadImage(plotDiv, { format: 'png', filename: `residue-map-${compNames}-${sanitize(fluidPackage || 'pkg')}`, width: 1200, height: 800, scale: 2 });
     }, [plotContainerRef, displayedComponentNames, fluidPackage]);
 
     // Export azeotrope table as CSV
@@ -3640,14 +3599,6 @@ export default function TernaryResidueMapPage() {
                                         >
                                           {showGrid ? 'Hide Grid' : 'Show Grid'}
                                         </Button>
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={exportPlot}
-                                          className="h-8 px-1 w-32 text-center whitespace-nowrap"
-                                        >
-                                          Export Plot
-                                        </Button>
                                       </div>
 
                                       <div className="absolute top-1 right-4 z-20">
@@ -3678,6 +3629,11 @@ export default function TernaryResidueMapPage() {
                                         config={{ displayModeBar: false }}
                                         useResizeHandler
                                       />
+                                      {plotlyData.length > 0 && !isLoading && (
+                                        <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG">
+                                          <Download className="h-4 w-4" />
+                                        </button>
+                                      )}
                                     </>
                                 )}
                             </div>

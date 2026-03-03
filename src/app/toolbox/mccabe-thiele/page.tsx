@@ -44,7 +44,7 @@ import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip as ShadTooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeftRight } from 'lucide-react'; // Import swap icon
+import { ArrowLeftRight, Download } from 'lucide-react'; // Import swap icon
 
 // Import VLE calculation logic and types
 import {
@@ -134,6 +134,9 @@ export default function McCabeThielePage() {
   const [comp1Data, setComp1Data] = useState<CompoundData | null>(null);
   const [comp2Data, setComp2Data] = useState<CompoundData | null>(null);
   const [interactionParams, setInteractionParams] = useState<any>(null);
+  // Track the exact input names+package that produced the current cached data.
+  // Prevents API refetches on every temperature/pressure slider move.
+  const lastFetchKeyRef = useRef<string | null>(null);
 
   // Result States
   const [stages, setStages] = useState<number | null>(null);
@@ -316,7 +319,8 @@ export default function McCabeThielePage() {
         let activityParameters = interactionParams;
 
         // Check if we need to re-fetch data
-        const needsFetching = !data1 || !data2 || !activityParameters || data1.name !== comp1Name || data2.name !== comp2Name || displayedFluidPackage !== fluidPackage;
+        const currentFetchKey = `${comp1Name}|${comp2Name}|${fluidPackage}`;
+        const needsFetching = !data1 || !data2 || !activityParameters || lastFetchKeyRef.current !== currentFetchKey;
 
         if (needsFetching) {
             // Resolve display names to SimNames (handles case where user typed a FullName without selecting a suggestion)
@@ -365,6 +369,7 @@ export default function McCabeThielePage() {
             setComp1Data(fetchedData1);
             setComp2Data(fetchedData2);
             setInteractionParams(fetchedActivityParameters);
+            lastFetchKeyRef.current = currentFetchKey;
             data1 = fetchedData1;
             data2 = fetchedData2;
             activityParameters = fetchedActivityParameters;
@@ -570,7 +575,16 @@ export default function McCabeThielePage() {
         const isFinalStage = intersectX <= xb + buffer;
         if (isFinalStage) {
             stageLineData.push([intersectX, currentY]);
-            stageLineData.push([intersectX, intersectX]);
+            // Drop to the operating line (not y=x) to avoid visually crossing the drawn operating line
+            let finalOpY: number;
+            if (intersectX >= xIntersect) {
+                finalOpY = rectifyingSlope * intersectX + rectifyingIntercept;
+            } else if (intersectX >= xb) {
+                finalOpY = (strippingSlope === Infinity) ? xb : strippingSlope * intersectX + strippingIntercept;
+            } else {
+                finalOpY = intersectX; // past xb: draw to diagonal
+            }
+            stageLineData.push([intersectX, finalOpY]);
             stageLineData.push([null, null]);
             break;
         } else {
@@ -696,8 +710,8 @@ export default function McCabeThielePage() {
     const dispComp1Cap = capitalizeFirst(displayedComp1);
     const dispComp2Cap = capitalizeFirst(displayedComp2);
     const titleCondition = displayedUseTemp ? 
-        (displayedTemp !== null ? `${displayedTemp.toFixed(1)} °C` : 'N/A Temp') : 
-        (displayedPressure !== null ? `${displayedPressure.toFixed(2)} bar` : 'N/A Pressure');
+        (displayedTemp !== null ? `${Number(displayedTemp.toFixed(1))} °C` : 'N/A Temp') : 
+        (displayedPressure !== null ? `${Number(displayedPressure.toFixed(2))} bar` : 'N/A Pressure');
     const titleText = displayedComp1 && displayedComp2 ?
         `McCabe-Thiele: ${dispComp1Cap}/${dispComp2Cap} at ${titleCondition}` :
         'McCabe-Thiele Diagram';
@@ -981,6 +995,16 @@ export default function McCabeThielePage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [comp1Name, comp2Name, useTemperature, fluidPackage, autoGeneratePending]);
+
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
 
   return (
     <TooltipProvider>
@@ -1278,6 +1302,7 @@ export default function McCabeThielePage() {
                   lazyUpdate={false} 
                 />
                   )}
+                  {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
               </CardContent>
             </Card>

@@ -171,7 +171,7 @@ export async function fetchAndConvertThermData(
 
     if (pureError || !pureRows || pureRows.length === 0) {
         console.error(`Error fetching Aspen pure comp data for "${compoundName}":`, pureError?.message);
-        throw new Error(`Compound "${compoundName}" not found in apv140_pure_props_wide.`);
+        throw new Error(`Compound "${compoundName}" not found in the database.`);
     }
     const pureData = pureRows[0];
 

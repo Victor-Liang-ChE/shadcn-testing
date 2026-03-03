@@ -36,6 +36,7 @@ import { Slider } from "@/components/ui/slider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Download } from 'lucide-react';
 // Function to format numbers to avoid long decimals - moved outside component
 const formatNumberToPrecision = (num: any, precision: number = 3): string => {
   if (typeof num === 'number') {
@@ -309,6 +310,16 @@ export default function LangmuirIsothermPage() {
     }
   }, [isothermData, selectedIsotherm, langmuirK, independentVar, freundlichKf, freundlichNf, temkinAt, temkinBt, resolvedTheme]);
 
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
+
   return (
     <TooltipProvider>
       <div className="container mx-auto p-4 md:p-8 px-8 md:px-32">
@@ -486,6 +497,7 @@ export default function LangmuirIsothermPage() {
                       lazyUpdate={true}
                     />
                   )}
+                  {!!isothermData && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
               </CardContent>
             </Card>

@@ -38,6 +38,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Download } from 'lucide-react';
 import { Slider } from "@/components/ui/slider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -176,6 +177,7 @@ export default function PidTuningPage() {
   const [currentSetpoint, setCurrentSetpoint] = useState<number>(1);
   const [_simulationTime, setSimulationTime] = useState<number>(0);
   const [isSimulationRunning, setIsSimulationRunning] = useState<boolean>(false);
+  const [isSimulationPaused, setIsSimulationPaused] = useState<boolean>(false);
   const [_currentPV, setCurrentPV] = useState<number>(0);
   const [_controlError, setControlError] = useState<number>(0);
   const [divergenceWarning, setDivergenceWarning] = useState<boolean>(false);
@@ -976,7 +978,7 @@ export default function PidTuningPage() {
   };
 
   // Start simulation automatically and provide reset functionality
-  const startSimulation = (forceStart = false) => {
+  const startSimulation = (forceStart = false, resume = false) => {
     if (isSimulationRunning && !forceStart) return; // Already running, unless forced
     
     const dt = 0.1;
@@ -984,22 +986,29 @@ export default function PidTuningPage() {
     // If theta is very small, use minimal delay buffer to reduce startup delay
     const delaySteps = numTheta < 0.1 ? 0 : Math.floor(numTheta / dt);
 
-    simulationStateRef.current = {
-      pv: 0,
-      prev_pv: 0,
-      integral_error: 0,
-      filtered_derivative: 0,
-      y1: 0,
-      y2: 0,
-      delayBuffer: new Array(delaySteps).fill(0),
-    };
-    
-    // Reset data array using the current ref value
-    simulationDataRef.current = [{ time: 0, pv: 0, sp: currentSetpointRef.current, output: 0 }];
-    setSimulationTime(0);
+    if (!resume) {
+      simulationStateRef.current = {
+        pv: 0,
+        prev_pv: 0,
+        integral_error: 0,
+        filtered_derivative: 0,
+        y1: 0,
+        y2: 0,
+        delayBuffer: new Array(delaySteps).fill(0),
+      };
+      
+      // Reset data array using the current ref value
+      simulationDataRef.current = [{ time: 0, pv: 0, sp: currentSetpointRef.current, output: 0 }];
+      setSimulationTime(0);
+    }
+
     setIsSimulationRunning(true);
-    
-    const startTime = Date.now();
+    setIsSimulationPaused(false);
+
+    const lastTime = resume && simulationDataRef.current.length > 0
+      ? simulationDataRef.current[simulationDataRef.current.length - 1].time
+      : 0;
+    const startTime = Date.now() - lastTime * 1000;
     
     simulationIntervalRef.current = setInterval(() => {
         if (!resultRef.current) {
@@ -1188,6 +1197,7 @@ export default function PidTuningPage() {
     setIsSimulationRunning(false);
     setDivergenceWarning(false);
     setResetCountdown(0);
+    setIsSimulationPaused(false);
     
     // Force start simulation immediately
     startSimulation(true);
@@ -2600,6 +2610,18 @@ export default function PidTuningPage() {
     }
   }, [frequencyResponseData, graphMode, resolvedTheme]);
 
+  const pauseSimulation = () => {
+    if (simulationIntervalRef.current) {
+      clearInterval(simulationIntervalRef.current);
+      simulationIntervalRef.current = null;
+    }
+    setIsSimulationPaused(true);
+  };
+
+  const resumeSimulation = () => {
+    startSimulation(true, true);
+  };
+
   // Cleanup simulation on component unmount
   useEffect(() => {
     return () => {
@@ -2608,6 +2630,16 @@ export default function PidTuningPage() {
       }
     };
   }, []);
+
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
 
   return (
     <TooltipProvider>
@@ -2806,9 +2838,14 @@ export default function PidTuningPage() {
                   <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                       <CardTitle>Simulation Control</CardTitle>
-                      <Button variant="outline" size="sm" onClick={resetSimulation} disabled={!result || loading || divergenceWarning}>
-                        Reset
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={isSimulationPaused ? resumeSimulation : pauseSimulation} disabled={!result || loading || divergenceWarning || !isSimulationRunning}>
+                          {isSimulationPaused ? 'Resume' : 'Pause'}
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={resetSimulation} disabled={!result || loading || divergenceWarning}>
+                          Reset
+                        </Button>
+                      </div>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="space-y-3">
@@ -2911,14 +2948,24 @@ export default function PidTuningPage() {
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <CardTitle>Simulation Control</CardTitle>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={resetSimulation}
-                      disabled={!result || loading || divergenceWarning}
-                    >
-                      Reset
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={isSimulationPaused ? resumeSimulation : pauseSimulation}
+                        disabled={!result || loading || divergenceWarning || !isSimulationRunning}
+                      >
+                        {isSimulationPaused ? 'Resume' : 'Pause'}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={resetSimulation}
+                        disabled={!result || loading || divergenceWarning}
+                      >
+                        Reset
+                      </Button>
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="space-y-3">
@@ -3092,9 +3139,14 @@ export default function PidTuningPage() {
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <CardTitle>Simulation Control</CardTitle>
-                    <Button variant="outline" size="sm" onClick={resetSimulation} disabled={!result || loading || divergenceWarning}>
-                      Reset
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={isSimulationPaused ? resumeSimulation : pauseSimulation} disabled={!result || loading || divergenceWarning || !isSimulationRunning}>
+                        {isSimulationPaused ? 'Resume' : 'Pause'}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={resetSimulation} disabled={!result || loading || divergenceWarning}>
+                        Reset
+                      </Button>
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="space-y-3">
@@ -3159,6 +3211,7 @@ export default function PidTuningPage() {
                         option={graphOptions}
                         style={{ height: '100%', width: '100%' }}
                       />
+                      {!!result && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                     </div>
                   </CardContent>
                 </Card>

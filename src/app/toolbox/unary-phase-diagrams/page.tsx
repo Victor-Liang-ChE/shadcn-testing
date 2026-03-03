@@ -36,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { Download } from 'lucide-react';
 
 import {
     calculatePropertyByEquation,
@@ -156,6 +157,7 @@ export default function PhaseDiagramPage() {
   const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const activeComponentRef = useRef<HTMLDivElement>(null);
+  const echartsRef = useRef<ReactECharts | null>(null);
   const [tempUnit, setTempUnit] = useState<'C' | 'K' | 'F'>('C');
   const [pressureUnit, setPressureUnit] = useState<'Pa' | 'kPa' | 'bar' | 'atm'>('bar');
   const [logScaleY, setLogScaleY] = useState<boolean>(false);
@@ -452,6 +454,16 @@ export default function PhaseDiagramPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const handleDownloadChart = () => {
+    const chart = echartsRef.current?.getEchartsInstance();
+    if (!chart) return;
+    const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'chart.png';
+    a.click();
+  };
+
   return (
     <TooltipProvider>
       <div className="container mx-auto p-4 md:p-8">
@@ -600,8 +612,9 @@ export default function PhaseDiagramPage() {
                 <div className="relative aspect-square rounded-md">
                     {loading && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Loading Diagram...</div>)}
                     {error && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400 px-4 text-center">Error: {error}</div>)}
-                    {!loading && !error && Object.keys(echartsOptions).length > 0 && (<ReactECharts echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />)}
+                    {!loading && !error && Object.keys(echartsOptions).length > 0 && (<ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />)}
                     {!loading && !error && Object.keys(echartsOptions).length === 0 && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Enter a compound to generate its phase diagram.</div>)}
+                    {!loading && !error && Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
               </CardContent>
             </Card>
