@@ -8,7 +8,6 @@ import SearchBar from "@/components/SearchBar"
 import FeedbackDialog from "@/components/FeedbackDialog"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import CSTRVisualization from "@/components/CSTRVisualization";
-import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
 
 // Define the paths for the thumbnails
 const mccabeThumbnailPath = "/thumbnails/mccabe-thiele-thumbnail.png";
@@ -35,8 +34,6 @@ const heatTransferThumbnailPath = "/thumbnails/1d-heat-transfer-thumbnail.png";
 const heatTransferThumbnailLightPath = "/thumbnails/1d-heat-transfer-thumbnail-light.png";
 const unaryPhaseThumbnailPath = "/thumbnails/unary-phase-diagrams-thumbnail.png";
 const unaryPhaseThumbnailLightPath = "/thumbnails/unary-phase-diagrams-thumbnail-light.png";
-const molecularDynamicsThumbnailPath = "/thumbnails/molecular-dynamics-thumbnail.png";
-const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thumbnail-light.png";
 const fugThumbnailPath = "/thumbnails/FUG-thumbnail.png";
 const fugThumbnailLightPath = "/thumbnails/FUG-thumbnail-light.png";
 
@@ -79,13 +76,6 @@ export default function Page() {
       description: "Select components and specify operating conditions to visualize distillation processes with accurate equilibrium diagrams.",
       thumbnailPath: mccabeThumbnailPath,
       thumbnailLightPath: mccabeThumbnailLightPath
-    },
-    {
-      name: "Molecular Dynamics",
-      path: "/toolbox/molecular-dynamics",
-      description: "Interactive molecular dynamics simulator for studying particle interactions, energy evolution, and radial distribution functions.",
-      thumbnailPath: molecularDynamicsThumbnailPath,
-      thumbnailLightPath: molecularDynamicsThumbnailLightPath
     },
     {
       name: "Unary Phase Diagram",
@@ -213,11 +203,6 @@ export default function Page() {
                       <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
                         {simulation.name === "Reactor Design" ? (
                           <CSTRVisualization className="w-full h-full" showLabel={true} />
-                        ) : simulation.name === "Molecular Dynamics" ? (
-                          <MolecularDynamicsThumbnail
-                            className="w-full h-full"
-                            isDark={mounted ? resolvedTheme !== 'light' : true}
-                          />
                         ) : (
                           <Image
                             src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}

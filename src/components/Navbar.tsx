@@ -5,7 +5,13 @@ import { usePathname } from "next/navigation";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
-import { Menu, X } from "lucide-react";
+import { Menu, X, ChevronDown } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 function Navbar() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -30,6 +36,9 @@ function Navbar() {
       
       case "/toolbox":
         return "Chemical Engineering Toolbox";
+
+      case "/matsci-toolbox":
+        return "Materials Science Toolbox";
 
       case "/toolbox/mccabe-thiele":
         return "McCabe-Thiele Graphical Method";
@@ -104,6 +113,7 @@ function Navbar() {
         // Check for base paths if no specific match
         if (pathname === "/LearnChemE") return "LearnChemE 2.0";
         if (pathname === "/toolbox") return "Chemical Engineering Toolbox";
+        if (pathname === "/matsci-toolbox") return "Materials Science Toolbox";
         if (pathname === "/misc") return "Miscellaneous Projects";
         return ""; // Default empty title
     }
@@ -150,10 +160,26 @@ function Navbar() {
       </div>
       {/* Desktop Menu */}
       <div className="hidden md:flex items-center space-x-1"> {/* Reduced space for tighter fit with padding */}
-        {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
-        <Link href="/toolbox" className={`text-xl font-semibold ${linkHoverStyle}`}>
-          Toolbox
-        </Link>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className={`text-xl font-semibold flex items-center gap-1 ${linkHoverStyle}`}>
+              Toolbox <ChevronDown size={16} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center" className="bg-popover border-border">
+            <DropdownMenuItem asChild>
+              <Link href="/toolbox" className="text-lg w-full cursor-pointer">
+                Chemical Engineering
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/matsci-toolbox" className="text-lg w-full cursor-pointer">
+                Materials Science
+              </Link>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
         {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
         <Link href="/misc" className={`text-xl font-semibold ${linkHoverStyle}`}>
           Misc
@@ -165,20 +191,37 @@ function Navbar() {
       </div>
       {/* Mobile Menu Dropdown */}
       <div
-        className={`absolute top-16 right-0 w-48 z-50 md:hidden border-border overflow-hidden transition-all duration-200 ease-in-out ${
+        className={`absolute top-16 right-0 w-56 z-50 md:hidden border-border overflow-hidden transition-all duration-200 ease-in-out ${
           isMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-2 pointer-events-none'
         }`}
         style={{ backgroundColor: 'var(--navbar-background)' }}
       >
         <div className="p-4 flex flex-col space-y-2"> {/* Reduced space-y */}
-           {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
-           <Link href="/toolbox" className={`block text-xl font-semibold ${linkHoverStyle}`}>
-             Toolbox
-           </Link>
-           {/* Remove legacyBehavior, passHref, and nested <a>. Apply styles directly to Link. */}
-           <Link href="/misc" className={`block text-xl font-semibold ${linkHoverStyle}`}>
-             Misc
-           </Link>
+          <div className="font-semibold px-3 py-1 text-sm text-muted-foreground uppercase tracking-wider">Toolbox</div>
+          <Link 
+            href="/toolbox" 
+            className={`block text-lg font-medium pl-6 ${linkHoverStyle}`}
+            onClick={() => setIsMenuOpen(false)}
+          >
+            Chemical Engineering
+          </Link>
+          <Link 
+            href="/matsci-toolbox" 
+            className={`block text-lg font-medium pl-6 ${linkHoverStyle}`}
+            onClick={() => setIsMenuOpen(false)}
+          >
+            Materials Science
+          </Link>
+
+          <div className="border-t border-border/50 my-1"></div>
+
+          <Link 
+            href="/misc" 
+            className={`block text-xl font-semibold ${linkHoverStyle}`}
+            onClick={() => setIsMenuOpen(false)}
+          >
+            Misc
+          </Link>
           {/* Center the toggle button and apply linkHoverStyle to the wrapper */}
           <div className={`flex justify-center pt-2 ${linkHoverStyle}`}> {/* Added padding top and hover style */}
             <ThemeToggle />
