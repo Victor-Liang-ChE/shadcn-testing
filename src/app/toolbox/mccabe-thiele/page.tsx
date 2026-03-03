@@ -123,7 +123,7 @@ export default function McCabeThielePage() {
   const [q, setQ] = useState(1.0);
   const [r, setR] = useState(1.5);
 
-  const buffer = 0.01;
+  const buffer = 1e-4;
 
   // Data & Control States
   const [equilibriumData, setEquilibriumData] = useState<{ x: number[], y: number[] } | null>(null);
@@ -569,12 +569,11 @@ export default function McCabeThielePage() {
         stageCount++;
 
         stageLineData.push([currentX, currentY]);
-        stageLineData.push([intersectX, currentY]);
-        stageLineData.push([null, null]);
+        // Remove the extra horizontal push here since the blocks handle it
 
         const isFinalStage = intersectX <= xb + buffer;
         if (isFinalStage) {
-            stageLineData.push([intersectX, currentY]);
+            stageLineData.push([intersectX, currentY]); // Final horizontal
             // Drop to the operating line (not y=x) to avoid visually crossing the drawn operating line
             let finalOpY: number;
             if (intersectX >= xIntersect) {
@@ -584,7 +583,7 @@ export default function McCabeThielePage() {
             } else {
                 finalOpY = intersectX; // past xb: draw to diagonal
             }
-            stageLineData.push([intersectX, finalOpY]);
+            stageLineData.push([intersectX, finalOpY]); // Final vertical
             stageLineData.push([null, null]);
             break;
         } else {
@@ -597,8 +596,8 @@ export default function McCabeThielePage() {
             }
             nextY = Math.max(0, Math.min(1, nextY));
 
-            stageLineData.push([intersectX, currentY]);
-            stageLineData.push([intersectX, nextY]);
+            stageLineData.push([intersectX, currentY]); // Horizontal to equilibrium
+            stageLineData.push([intersectX, nextY]);   // Vertical to operating line
             stageLineData.push([null, null]);
             
             if (feedStageCount === 0 && currentSectionIsRectifying !== previousSectionIsRectifying) {
