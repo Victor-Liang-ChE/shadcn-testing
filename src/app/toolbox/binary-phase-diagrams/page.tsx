@@ -116,6 +116,102 @@ export default function VleDiagramPage() {
     const leverRuleDataRef = useRef<{ liquid: number | null, vapor: number | null }>({ liquid: null, vapor: null });
     const yMinRef = useRef<number | undefined>(undefined);
 
+    // Derive valid pressure / temperature bounds from Antoine Tmin/Tmax AND critical properties
+    // of both loaded compounds. These cap the sliders so the user can't drag into unphysical
+    // territory (above Tc, above Pc, or outside the Antoine validity range).
+    const antoineLimits = useMemo(() => {
+        if (!comp1Data?.antoine || !comp2Data?.antoine) return null;
+        const a1 = comp1Data.antoine, a2 = comp2Data.antoine;
+
+        // Critical properties (top-level fields set by fetchCompoundDataFromHysys, fall back to prParams)
+        const Tc1 = comp1Data.Tc_K ?? comp1Data.prParams?.Tc_K ?? null;
+        const Tc2 = comp2Data.Tc_K ?? comp2Data.prParams?.Tc_K ?? null;
+        const Pc1 = comp1Data.Pc_Pa ?? comp1Data.prParams?.Pc_Pa ?? null;
+        const Pc2 = comp2Data.Pc_Pa ?? comp2Data.prParams?.Pc_Pa ?? null;
+
+        // Temperature ceiling: most restrictive of Antoine Tmax and each compound's Tc
+        const antoineTmaxK = Math.min(a1.Tmax_K, a2.Tmax_K);
+        const critTmaxK    = (Tc1 != null && Tc2 != null) ? Math.min(Tc1, Tc2)
+                           : (Tc1 ?? Tc2 ?? Infinity);
+        const maxTK = Math.min(antoineTmaxK, critTmaxK);
+
+        // Pressure ceiling: most restrictive of Antoine Psat(Tmax) and each compound's Pc
+        const pMaxPa_antoine = Math.min(
+            libCalculatePsat_Pa(a1, a1.Tmax_K),
+            libCalculatePsat_Pa(a2, a2.Tmax_K)
+        );
+        const critPmaxPa = (Pc1 != null && Pc2 != null) ? Math.min(Pc1, Pc2)
+                         : (Pc1 ?? Pc2 ?? Infinity);
+        const maxPPa = Math.min(
+            isFinite(pMaxPa_antoine) && pMaxPa_antoine > 0 ? pMaxPa_antoine : Infinity,
+            critPmaxPa
+        );
+
+        const pMinPa = Math.max(libCalculatePsat_Pa(a1, a1.Tmin_K), libCalculatePsat_Pa(a2, a2.Tmin_K));
+        return {
+            maxPBar: isFinite(maxPPa) && maxPPa > 0 ? maxPPa / 1e5 : null,
+            minPBar: isFinite(pMinPa) && pMinPa > 0 ? Math.max(0.001, pMinPa / 1e5) : 0.001,
+            maxTC:   isFinite(maxTK) ? maxTK - 273.15 : null,
+            minTC:   isFinite(Math.max(a1.Tmin_K, a2.Tmin_K)) ? Math.max(a1.Tmin_K, a2.Tmin_K) - 273.15 : null,
+        };
+    }, [comp1Data, comp2Data]);
+
+    // When compound limits change, pull the Max-input boxes (and current slider values)
+    // back into the valid range so they don't sit below Tmin / Pmin of the Antoine equation.
+    useEffect(() => {
+        if (!antoineLimits) return;
+        // Only clamp to the MINIMUM (Antoine Tmin/Pmin). The maximum is intentionally not
+        // clamped — users may explore supercritical or high-pressure conditions beyond the
+        // Antoine regressed range (e.g. with EOS models or exploratory UNIQUAC runs).
+        if (antoineLimits.minPBar !== null) {
+            setPressureBar(prev => (prev !== null && prev < antoineLimits.minPBar!) ? antoineLimits.minPBar! : prev);
+        }
+        if (antoineLimits.minTC !== null) {
+            setTemperatureC(prev => (prev !== null && prev < antoineLimits.minTC!) ? antoineLimits.minTC! : prev);
+        }
+    }, [antoineLimits]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Fugacity-deviation diagnostic for activity-coefficient models (NRTL/Wilson/UNIQUAC/UNIFAC).
+    // These models assume φᵢ = 1. The true correction is estimated via the Pitzer-Tsonopoulos
+    // second-virial correlation (Tsonopoulos 1974, AIChE J. 20:263):
+    //   B·Pc/(R·Tc) = B⁰(Tr) + ω·B¹(Tr)
+    //   B⁰ = 0.083 − 0.422/Tr^1.6
+    //   B¹ = 0.139 − 0.172/Tr^4.2
+    //   ln φ ≈ B·P/(R·T)  →  |φ−1| ≈ |exp(B·P/RT)−1|
+    // Especially important for associating/polar molecules (alcohols, water) because their B
+    // values are large and negative even at low pressures.
+    const modelPressureWarning = useMemo(() => {
+        const activityModels: FluidPackageType[] = ['nrtl', 'wilson', 'uniquac', 'unifac'];
+        if (!activityModels.includes(fluidPackage)) return null;
+        if (diagramType === 'pxy') return null;
+        if (diagramType === 'xy' && useTemperatureForXY) return null;
+        if (!pressureBar || !comp1Data || !comp2Data) return null;
+        const P_Pa = pressureBar * 1e5;
+        const pitzDev = (comp: typeof comp1Data): number | null => {
+            const Tc = comp.Tc_K ?? comp.prParams?.Tc_K ?? null;
+            const Pc = comp.Pc_Pa ?? comp.prParams?.Pc_Pa ?? null;
+            const omega = comp.prParams?.omega ?? comp.srkParams?.omega ?? null;
+            if (!Tc || !Pc || omega == null || Tc <= 0 || Pc <= 0) return null;
+            // Estimate T at system conditions: boiling point at P, else fall back to 0.65·Tc
+            const Tbp = (comp.antoine ? antoineBoilingPointSolverLocal(comp.antoine, P_Pa) : null) ?? (Tc * 0.65);
+            const Tr = Tbp / Tc;
+            if (Tr <= 0 || !isFinite(Tr)) return null;
+            const B0 = 0.083 - 0.422 / Math.pow(Tr, 1.6);
+            const B1 = 0.139 - 0.172 / Math.pow(Tr, 4.2);
+            const B_m3mol = (B0 + omega * B1) * (8.314 * Tc / Pc);
+            const lnPhi = B_m3mol * P_Pa / (8.314 * Tbp);
+            return Math.abs(Math.exp(lnPhi) - 1);
+        };
+        const dev1 = pitzDev(comp1Data) ?? 0;
+        const dev2 = pitzDev(comp2Data) ?? 0;
+        const maxDev = Math.max(dev1, dev2);
+        if (maxDev === 0) return null;
+        const pct = maxDev * 100;
+        if (pct > 15) return { level: 'error' as const, pct };
+        if (pct > 5)  return { level: 'warn'  as const, pct };
+        return null;
+    }, [fluidPackage, pressureBar, comp1Data, comp2Data, diagramType, useTemperatureForXY]);
+
     const generateEchartsOptions = useCallback((data: any, params = displayedParams, themeOverride?: string) => {
         if (!data || data.x.length === 0) return;
         // Reset plot data on each generation
@@ -519,13 +615,22 @@ export default function VleDiagramPage() {
             const results: { x: number[], y: number[], t?: number[], p?: number[] } = { x: [], y: [] };
             if (diagramType === 'txy') results.t = []; else if (diagramType === 'pxy') results.p = [];
 
+            // Pre-compute boiling points once (invariant across composition loop)
+            const Tbp1_sys = diagramType === 'txy' ? antoineBoilingPointSolverLocal(d1.antoine, pressureBar! * 1e5) : null;
+            const Tbp2_sys = diagramType === 'txy' ? antoineBoilingPointSolverLocal(d2.antoine, pressureBar! * 1e5) : null;
+            const _xyFixedP = (!useTemperatureForXY && diagramType === 'xy') ? pressureBar! * 1e5 : null;
+            const Tbp1_xyfix = _xyFixedP ? antoineBoilingPointSolverLocal(d1.antoine, _xyFixedP) : null;
+            const Tbp2_xyfix = _xyFixedP ? antoineBoilingPointSolverLocal(d2.antoine, _xyFixedP) : null;
+            // Sequential continuation: seed each composition solver from the previous successful result
+            let prevBubbleT: number | null = null;
+
             for (const x1 of x_feed) {
                 let resultPoint: BubbleDewResult | null = null;
                 if (x1 === 0 || x1 === 1) {
                     const pureComp = x1 === 0 ? components[1] : components[0];
                     if (diagramType === 'txy') {
-                        const Tbub = antoineBoilingPointSolverLocal(pureComp.antoine, pressureBar! * 1e5);
-                        if (Tbub) { resultPoint = { comp1_feed: x1, comp1_equilibrium: x1, T_K: Tbub }; }
+                        const Tbub = x1 === 0 ? Tbp2_sys : Tbp1_sys;
+                        if (Tbub) { resultPoint = { comp1_feed: x1, comp1_equilibrium: x1, T_K: Tbub }; prevBubbleT = Tbub; }
                     } else if (diagramType === 'pxy') {
                         const Pbub = libCalculatePsat_Pa(pureComp.antoine!, temperatureC! + 273.15);
                         if (Pbub) { resultPoint = { comp1_feed: x1, comp1_equilibrium: x1, P_Pa: Pbub }; }
@@ -534,15 +639,15 @@ export default function VleDiagramPage() {
                     }
                 } else {
                      if (diagramType === 'txy') {
-                        const Tbp1 = antoineBoilingPointSolverLocal(d1.antoine, pressureBar! * 1e5);
-                        const Tbp2 = antoineBoilingPointSolverLocal(d2.antoine, pressureBar! * 1e5);
-                        const initialTempGuess = Tbp1 && Tbp2 ? (x1 * Tbp1 + (1 - x1) * Tbp2) : 373.15;
+                        const defaultTGuess = Tbp1_sys && Tbp2_sys ? (x1 * Tbp1_sys + (1 - x1) * Tbp2_sys) : 373.15;
+                        const initialTempGuess = prevBubbleT ?? defaultTGuess;
                         if(fluidPackage==='unifac') resultPoint=calculateBubbleTemperatureUnifac(components,x1,pressureBar!*1e5,params,initialTempGuess);
                         else if(fluidPackage==='nrtl') resultPoint=calculateBubbleTemperatureNrtl(components,x1,pressureBar!*1e5,params,initialTempGuess);
                         else if(fluidPackage==='pr') resultPoint=calculateBubbleTemperaturePr(components,x1,pressureBar!*1e5,params,initialTempGuess);
                         else if(fluidPackage==='srk') resultPoint=calculateBubbleTemperatureSrk(components,x1,pressureBar!*1e5,params,initialTempGuess);
                         else if(fluidPackage==='uniquac') resultPoint=calculateBubbleTemperatureUniquac(components,x1,pressureBar!*1e5,params,initialTempGuess);
                         else if(fluidPackage==='wilson') resultPoint=calculateBubbleTemperatureWilson(components,x1,pressureBar!*1e5,params,initialTempGuess);
+                        if (resultPoint?.T_K) prevBubbleT = resultPoint.T_K;
                     } else { // pxy or xy
                         const fixedTempK = useTemperatureForXY || diagramType === 'pxy' ? temperatureC! + 273.15 : null;
                         const fixedPressPa = !useTemperatureForXY && diagramType === 'xy' ? pressureBar! * 1e5 : null;
@@ -555,15 +660,15 @@ export default function VleDiagramPage() {
                             else if(fluidPackage==='uniquac') resultPoint=calculateBubblePressureUniquac(components,x1,fixedTempK,params);
                             else if(fluidPackage==='wilson') resultPoint=calculateBubblePressureWilson(components,x1,fixedTempK,params);
                         } else if (fixedPressPa) {
-                            const Tbp1 = antoineBoilingPointSolverLocal(d1.antoine, fixedPressPa);
-                            const Tbp2 = antoineBoilingPointSolverLocal(d2.antoine, fixedPressPa);
-                            const initialTempGuess = Tbp1 && Tbp2 ? (x1 * Tbp1 + (1 - x1) * Tbp2) : 373.15;
+                            const defaultTGuess_xy = Tbp1_xyfix && Tbp2_xyfix ? (x1 * Tbp1_xyfix + (1 - x1) * Tbp2_xyfix) : 373.15;
+                            const initialTempGuess = prevBubbleT ?? defaultTGuess_xy;
                             if(fluidPackage==='unifac') resultPoint=calculateBubbleTemperatureUnifac(components,x1,fixedPressPa,params,initialTempGuess);
                             else if(fluidPackage==='nrtl') resultPoint=calculateBubbleTemperatureNrtl(components,x1,fixedPressPa,params,initialTempGuess);
                             else if(fluidPackage==='pr') resultPoint=calculateBubbleTemperaturePr(components,x1,fixedPressPa,params,initialTempGuess);
                             else if(fluidPackage==='srk') resultPoint=calculateBubbleTemperatureSrk(components,x1,fixedPressPa,params,initialTempGuess);
                             else if(fluidPackage==='uniquac') resultPoint=calculateBubbleTemperatureUniquac(components,x1,fixedPressPa,params,initialTempGuess);
                             else if(fluidPackage==='wilson') resultPoint=calculateBubbleTemperatureWilson(components,x1,fixedPressPa,params,initialTempGuess);
+                            if (resultPoint?.T_K) prevBubbleT = resultPoint.T_K;
                         }
                     }
                 }
@@ -574,7 +679,51 @@ export default function VleDiagramPage() {
                     else if (diagramType === 'pxy' && results.p && resultPoint.P_Pa) results.p.push(resultPoint.P_Pa);
                 }
             }
-            
+
+            // Post-process: remove numerical kinks/spikes where the solver converged to a
+            // spurious root. Uses an adaptive curvature test — each point's second difference
+            // (discrete d²y/dx²) is compared to the MEDIAN second difference of the whole
+            // array. The median is a robust scale estimate: if most of the curve is smooth,
+            // any genuine artefact will be many multiples of the median. This avoids fixed
+            // absolute thresholds (which are system-dependent) and handles both nearly-linear
+            // and highly-curved systems correctly.
+            if (results.x.length >= 5) {
+                const nPts = results.x.length;
+                // Compute raw second differences for y (and T if available)
+                const d2y = new Array(nPts).fill(0);
+                const d2t = results.t ? new Array(nPts).fill(0) : null;
+                for (let si = 1; si < nPts - 1; si++) {
+                    d2y[si] = Math.abs(results.y[si + 1] - 2 * results.y[si] + results.y[si - 1]);
+                    if (d2t && results.t) d2t[si] = Math.abs(results.t[si + 1] - 2 * results.t[si] + results.t[si - 1]);
+                }
+                // Median of interior second differences (robust scale)
+                const interior = d2y.slice(1, nPts - 1);
+                const sorted = [...interior].sort((a, b) => a - b);
+                const medD2y = sorted[Math.floor(sorted.length / 2)];
+                // Threshold: 8× median, floored at 0.01 (so a featureless flat line
+                // with median≈0 still catches large deviations)
+                const thrY = Math.max(medD2y * 8, 0.01);
+                let thrT = 0;
+                if (d2t && results.t) {
+                    const interiorT = d2t.slice(1, nPts - 1);
+                    const sortedT = [...interiorT].sort((a, b) => a - b);
+                    const medD2t = sortedT[Math.floor(sortedT.length / 2)];
+                    thrT = Math.max(medD2t * 8, 1.5); // K units
+                }
+                const keep: boolean[] = new Array(nPts).fill(true);
+                for (let si = 1; si < nPts - 1; si++) {
+                    if (d2y[si] > thrY) { keep[si] = false; continue; }
+                    if (d2t && d2t[si] > thrT) keep[si] = false;
+                }
+                const keptCount = keep.filter(Boolean).length;
+                if (keptCount >= Math.max(5, Math.floor(nPts * 0.7))) {
+                    results.x = results.x.filter((_, i) => keep[i]);
+                    results.y = results.y.filter((_, i) => keep[i]);
+                    if (results.t) results.t = results.t.filter((_, i) => keep[i]);
+                    if (results.p) results.p = results.p.filter((_, i) => keep[i]);
+                }
+            }
+
             // Guard: if almost no interior points were computed, the calculation silently failed
             // (e.g. Antoine returned NaN mid-iteration, or a solver diverged for all compositions).
             const interiorCount = results.x.filter(x => x > 0 && x < 1).length;
@@ -690,18 +839,26 @@ export default function VleDiagramPage() {
                                     onChange={(e) => {
                                         const raw = e.target.value;
                                         const num = parseFloat(raw);
-                                        const CLAMP_MAX = 2000;
                                         if (raw === "" || isNaN(num)) {
                                             setPressureMax(raw);
                                         } else {
-                                            setPressureMax(String(Math.min(num, CLAMP_MAX)));
+                                            setPressureMax(String(num));
                                         }
                                     }}
                                     className="w-16 h-8 text-xs"
                                 />
                             </div>
                         </div>
-                        <Slider id="pressure-slider" min={0.1} max={parseFloat(pressureMax) || 10} step={computeStep(parseFloat(pressureMax) || 10)} value={[pressureBar || 1]} onValueChange={([v]) => setPressureBar(v)} className="w-full"/>
+                        <Slider id="pressure-slider"
+                            min={antoineLimits?.minPBar ?? 0.001}
+                            max={parseFloat(pressureMax) || 10}
+                            step={computeStep(parseFloat(pressureMax) || 10)}
+                            value={[pressureBar || 1]} onValueChange={([v]) => setPressureBar(v)} className="w-full"/>
+                        {modelPressureWarning && (
+                            <p className={`text-xs ${modelPressureWarning.level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
+                                ⚠ ~{modelPressureWarning.pct.toFixed(0)}% fugacity correction ignored by {fluidPackage.toUpperCase()} — consider PR or SRK.
+                            </p>
+                        )}
                     </div>
                 );
             case 'pxy':
@@ -717,7 +874,7 @@ export default function VleDiagramPage() {
                                     onChange={(e) => {
                                         const raw = e.target.value;
                                         const num = parseFloat(raw);
-                                        const CLAMP_MAX = 2000;
+                                        const CLAMP_MAX = antoineLimits?.maxTC ?? 2000;
                                         if (raw === "" || isNaN(num)) {
                                             setTempMax(raw);
                                         } else {
@@ -728,7 +885,11 @@ export default function VleDiagramPage() {
                                 />
                             </div>
                         </div>
-                        <Slider id="temperature-slider" min={-50} max={parseFloat(tempMax) || 200} step={computeStep(parseFloat(tempMax) || 200)} value={[temperatureC || 60]} onValueChange={([v]) => setTemperatureC(v)} className="w-full"/>
+                        <Slider id="temperature-slider"
+                            min={antoineLimits?.minTC ?? -50}
+                            max={Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)}
+                            step={computeStep(Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity))}
+                            value={[temperatureC || 60]} onValueChange={([v]) => setTemperatureC(v)} className="w-full"/>
                     </div>
                 );
             case 'xy':
@@ -758,13 +919,12 @@ export default function VleDiagramPage() {
                                     onChange={(e) => {
                                         const raw = e.target.value;
                                         const num = parseFloat(raw);
-                                        const CLAMP_MAX = 2000;
                                         if (useTemperatureForXY) {
                                             if (raw === "" || isNaN(num)) setTempMax(raw);
-                                            else setTempMax(String(Math.min(num, CLAMP_MAX)));
+                                            else setTempMax(String(Math.min(num, antoineLimits?.maxTC ?? 2000)));
                                         } else {
                                             if (raw === "" || isNaN(num)) setPressureMax(raw);
-                                            else setPressureMax(String(Math.min(num, CLAMP_MAX)));
+                                            else setPressureMax(String(Math.min(num, antoineLimits?.maxPBar ?? 2000)));
                                         }
                                     }}
                                     className="w-16 h-8 text-xs"
@@ -773,13 +933,22 @@ export default function VleDiagramPage() {
                         </div>
                         <Slider
                             id="xy-slider"
-                            min={useTemperatureForXY ? -50 : 0.1}
-                            max={useTemperatureForXY ? parseFloat(tempMax) || 200 : parseFloat(pressureMax) || 10}
-                            step={computeStep(useTemperatureForXY ? parseFloat(tempMax) || 200 : parseFloat(pressureMax) || 10)}
+                            min={useTemperatureForXY ? (antoineLimits?.minTC ?? -50) : (antoineLimits?.minPBar ?? 0.001)}
+                            max={useTemperatureForXY
+                                ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
+                                : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity)}
+                            step={computeStep(useTemperatureForXY
+                                ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
+                                : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity))}
                             value={[useTemperatureForXY ? temperatureC ?? 60 : pressureBar ?? 1]}
                             onValueChange={([v]) => useTemperatureForXY ? setTemperatureC(v) : setPressureBar(v)}
                             className="w-full"
                         />
+                        {!useTemperatureForXY && modelPressureWarning && (
+                            <p className={`text-xs ${modelPressureWarning.level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
+                                ⚠ ~{modelPressureWarning.pct.toFixed(0)}% fugacity correction ignored by {fluidPackage.toUpperCase()} — consider PR or SRK.
+                            </p>
+                        )}
                     </div>
                 );
             default: return null;
@@ -1143,11 +1312,11 @@ export default function VleDiagramPage() {
                         <CardContent>
                                                                                 <div className="grid grid-cols-2 gap-4 text-center">
                                                                                     <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
-                                                            <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
+                                                            <p className="text-sm font-medium">{comp1DisplayName}</p>
                                                             <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.t[chartData.x.indexOf(1)] - 273.15, 3)} °C</p>
                                                                                     </div>
                                                                                     <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
-                                                            <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
+                                                            <p className="text-sm font-medium">{comp2DisplayName}</p>
                                                             <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.t[chartData.x.indexOf(0)] - 273.15, 3)} °C</p>
                                                                                     </div>
                                                     </div>
@@ -1160,11 +1329,11 @@ export default function VleDiagramPage() {
                         <CardContent>
                                                                                 <div className="grid grid-cols-2 gap-4 text-center">
                                                                                     <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
-                                                            <p className="text-sm font-medium">{comp1Name.charAt(0).toUpperCase() + comp1Name.slice(1)}</p>
+                                                            <p className="text-sm font-medium">{comp1DisplayName}</p>
                                                             <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.p[chartData.x.indexOf(1)] / 1e5, 3)} bar</p>
                                                                                     </div>
                                                                                     <div className="p-4 bg-muted rounded-md responsive-text-container text-center">
-                                                            <p className="text-sm font-medium">{comp2Name.charAt(0).toUpperCase() + comp2Name.slice(1)}</p>
+                                                            <p className="text-sm font-medium">{comp2DisplayName}</p>
                                                             <p className="font-bold whitespace-nowrap shrinkable-text">{formatNumberToPrecision(chartData.p[chartData.x.indexOf(0)] / 1e5, 3)} bar</p>
                                                                                     </div>
                                                     </div>

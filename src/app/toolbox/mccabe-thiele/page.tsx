@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { type SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
@@ -172,6 +172,85 @@ export default function McCabeThielePage() {
 
   // Flag to trigger automatic graph regeneration after UI actions like swap, toggle, or fluid-package change
   const [autoGeneratePending, setAutoGeneratePending] = useState(false);
+
+  // Derive valid pressure/temperature bounds from Antoine Tmin/Tmax AND critical properties.
+  // Same logic as binary-phase-diagrams so sliders can't reach unphysical conditions.
+  const antoineLimits = useMemo(() => {
+      if (!comp1Data?.antoine || !comp2Data?.antoine) return null;
+      const a1 = comp1Data.antoine, a2 = comp2Data.antoine;
+      const Tc1 = comp1Data.Tc_K ?? comp1Data.prParams?.Tc_K ?? null;
+      const Tc2 = comp2Data.Tc_K ?? comp2Data.prParams?.Tc_K ?? null;
+      const Pc1 = comp1Data.Pc_Pa ?? comp1Data.prParams?.Pc_Pa ?? null;
+      const Pc2 = comp2Data.Pc_Pa ?? comp2Data.prParams?.Pc_Pa ?? null;
+      const antoineTmaxK = Math.min(a1.Tmax_K, a2.Tmax_K);
+      const critTmaxK    = (Tc1 != null && Tc2 != null) ? Math.min(Tc1, Tc2) : (Tc1 ?? Tc2 ?? Infinity);
+      const maxTK = Math.min(antoineTmaxK, critTmaxK);
+      const pMaxPa_antoine = Math.min(
+          libCalculatePsat_Pa(a1, a1.Tmax_K), libCalculatePsat_Pa(a2, a2.Tmax_K)
+      );
+      const critPmaxPa = (Pc1 != null && Pc2 != null) ? Math.min(Pc1, Pc2) : (Pc1 ?? Pc2 ?? Infinity);
+      const maxPPa = Math.min(
+          isFinite(pMaxPa_antoine) && pMaxPa_antoine > 0 ? pMaxPa_antoine : Infinity, critPmaxPa
+      );
+      const pMinPa = Math.max(libCalculatePsat_Pa(a1, a1.Tmin_K), libCalculatePsat_Pa(a2, a2.Tmin_K));
+      return {
+          maxPBar: isFinite(maxPPa)  && maxPPa  > 0 ? maxPPa  / 1e5 : null,
+          minPBar: isFinite(pMinPa)  && pMinPa  > 0 ? Math.max(0.1, pMinPa / 1e5) : 0.1,
+          maxTC:   isFinite(maxTK) ? maxTK - 273.15 : null,
+          minTC:   isFinite(Math.max(a1.Tmin_K, a2.Tmin_K)) ? Math.max(a1.Tmin_K, a2.Tmin_K) - 273.15 : null,
+      };
+  }, [comp1Data, comp2Data]);
+
+  // When compound limits change, clamp the Max-input boxes and current slider values.
+  useEffect(() => {
+      if (!antoineLimits) return;
+      if (antoineLimits.maxPBar !== null) {
+          const cur = parseFloat(pressureMax);
+          if (isFinite(cur) && cur > antoineLimits.maxPBar)
+              setPressureMax(String(Math.round(antoineLimits.maxPBar * 10) / 10));
+      }
+      if (antoineLimits.maxTC !== null) {
+          const cur = parseFloat(tempMax);
+          if (isFinite(cur) && cur > antoineLimits.maxTC)
+              setTempMax(String(Math.floor(antoineLimits.maxTC)));
+      }
+      if (antoineLimits.minPBar !== null)
+          setPressureBar(prev => (prev !== null && prev < antoineLimits.minPBar!) ? antoineLimits.minPBar! : prev);
+      if (antoineLimits.minTC !== null)
+          setTemperatureC(prev => (prev !== null && prev < antoineLimits.minTC!) ? antoineLimits.minTC! : prev);
+  }, [antoineLimits]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fugacity-deviation diagnostic using the Pitzer-Tsonopoulos second-virial correlation
+  // (Tsonopoulos 1974, AIChE J. 20:263). Computes |φ−1| per compound at its estimated
+  // boiling-point temperature under the system pressure, then reports the worst case.
+  // Activity-coefficient models ignore this correction entirely (φᵢ = 1 assumed).
+  const modelPressureWarning = useMemo(() => {
+      if (useTemperature) return null;
+      const activityModels: FluidPackageTypeMcCabe[] = ['nrtl', 'wilson', 'uniquac', 'unifac'];
+      if (!activityModels.includes(fluidPackage)) return null;
+      if (!pressureBar || !comp1Data || !comp2Data) return null;
+      const P_Pa = pressureBar * 1e5;
+      const pitzDev = (comp: typeof comp1Data): number | null => {
+          const Tc = comp.Tc_K ?? comp.prParams?.Tc_K ?? null;
+          const Pc = comp.Pc_Pa ?? comp.prParams?.Pc_Pa ?? null;
+          const omega = comp.prParams?.omega ?? comp.srkParams?.omega ?? null;
+          if (!Tc || !Pc || omega == null || Tc <= 0 || Pc <= 0) return null;
+          const Tbp = (comp.antoine ? antoineBoilingPointSolverLocal(comp.antoine, P_Pa) : null) ?? (Tc * 0.65);
+          const Tr = Tbp / Tc;
+          if (Tr <= 0 || !isFinite(Tr)) return null;
+          const B0 = 0.083 - 0.422 / Math.pow(Tr, 1.6);
+          const B1 = 0.139 - 0.172 / Math.pow(Tr, 4.2);
+          const B_m3mol = (B0 + omega * B1) * (8.314 * Tc / Pc);
+          const lnPhi = B_m3mol * P_Pa / (8.314 * Tbp);
+          return Math.abs(Math.exp(lnPhi) - 1);
+      };
+      const maxDev = Math.max(pitzDev(comp1Data) ?? 0, pitzDev(comp2Data) ?? 0);
+      if (maxDev === 0) return null;
+      const pct = maxDev * 100;
+      if (pct > 15) return { level: 'error' as const, pct };
+      if (pct > 5)  return { level: 'warn'  as const, pct };
+      return null;
+  }, [useTemperature, fluidPackage, pressureBar, comp1Data, comp2Data]);
 
   // --- useEffect for initial graph load ---
   useEffect(() => {
@@ -388,6 +467,12 @@ export default function McCabeThielePage() {
         const calculated_x_values: number[] = [0.0];
         const calculated_y_values: number[] = [0.0];
 
+        // Pre-compute boiling points for pressure mode (computed once, not per-composition)
+        const mcTbp1: number | null = !useTemperature ? antoineBoilingPointSolverLocal(data1.antoine, pressureBar! * 1e5) : null;
+        const mcTbp2: number | null = !useTemperature ? antoineBoilingPointSolverLocal(data2.antoine, pressureBar! * 1e5) : null;
+        // Sequential continuation: seed each composition's bubble-T solver from the previous result
+        let mcPrevBubbleT: number | null = null;
+
         // Loop over interior points only to avoid issues at pure component conditions
         for (const x1_val of x_feed_values.slice(1, -1)) {
             let resultPoint: BubbleDewResult | null = null;
@@ -404,20 +489,17 @@ export default function McCabeThielePage() {
             } else {
                 const currentFixedPressurePa = pressureBar! * 1e5;
 
-                const Tbp1 = antoineBoilingPointSolverLocal(data1.antoine, currentFixedPressurePa);
-                const Tbp2 = antoineBoilingPointSolverLocal(data2.antoine, currentFixedPressurePa);
-                
-                let initialTempGuess: number;
-                if (Tbp1 !== null && Tbp2 !== null) {
-                    initialTempGuess = x1_val * Tbp1 + (1 - x1_val) * Tbp2;
-                } else if (Tbp1 !== null) {
-                    initialTempGuess = Tbp1;
-                } else if (Tbp2 !== null) {
-                    initialTempGuess = Tbp2;
+                let defaultTGuess: number;
+                if (mcTbp1 !== null && mcTbp2 !== null) {
+                    defaultTGuess = x1_val * mcTbp1 + (1 - x1_val) * mcTbp2;
+                } else if (mcTbp1 !== null) {
+                    defaultTGuess = mcTbp1;
+                } else if (mcTbp2 !== null) {
+                    defaultTGuess = mcTbp2;
                 } else {
-                    initialTempGuess = 373.15;
+                    defaultTGuess = 373.15;
                 }
-                initialTempGuess = Math.max(150, Math.min(initialTempGuess, 700));
+                const initialTempGuess = Math.max(150, Math.min(mcPrevBubbleT ?? defaultTGuess, 1000));
 
                 if (fluidPackage === 'unifac') resultPoint = calculateBubbleTemperatureUnifac(components, x1_val, currentFixedPressurePa, activityParameters as UnifacParameters, initialTempGuess);
                 else if (fluidPackage === 'nrtl') resultPoint = calculateBubbleTemperatureNrtl(components, x1_val, currentFixedPressurePa, activityParameters as NrtlInteractionParams, initialTempGuess);
@@ -425,6 +507,8 @@ export default function McCabeThielePage() {
                 else if (fluidPackage === 'srk') resultPoint = calculateBubbleTemperatureSrk(components, x1_val, currentFixedPressurePa, activityParameters as SrkInteractionParams, initialTempGuess);
                 else if (fluidPackage === 'uniquac') resultPoint = calculateBubbleTemperatureUniquac(components, x1_val, currentFixedPressurePa, activityParameters as LibUniquacInteractionParams, initialTempGuess);
                 else if (fluidPackage === 'wilson') resultPoint = calculateBubbleTemperatureWilson(components, x1_val, currentFixedPressurePa, activityParameters as LibWilsonInteractionParams, initialTempGuess);
+
+                if (resultPoint?.T_K) mcPrevBubbleT = resultPoint.T_K;
             }
 
             if (resultPoint && resultPoint.error === undefined && typeof resultPoint.comp1_equilibrium === 'number' && !isNaN(resultPoint.comp1_equilibrium)) {
@@ -1135,19 +1219,14 @@ export default function McCabeThielePage() {
                         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                           const raw = e.target.value;
                           const num = parseFloat(raw);
-                          const CLAMP_MAX = 2000;
                           if (useTemperature) {
-                            if (raw === "" || isNaN(num)) {
-                              setTempMax(raw);
-                            } else {
-                              setTempMax(String(Math.min(num, CLAMP_MAX)));
-                            }
+                            const CLAMP_MAX = antoineLimits?.maxTC ?? 2000;
+                            if (raw === "" || isNaN(num)) setTempMax(raw);
+                            else setTempMax(String(Math.min(num, CLAMP_MAX)));
                           } else {
-                            if (raw === "" || isNaN(num)) {
-                              setPressureMax(raw);
-                            } else {
-                              setPressureMax(String(Math.min(num, CLAMP_MAX)));
-                            }
+                            const CLAMP_MAX = antoineLimits?.maxPBar ?? 2000;
+                            if (raw === "" || isNaN(num)) setPressureMax(raw);
+                            else setPressureMax(String(Math.min(num, CLAMP_MAX)));
                           }
                         }}
                         className="w-16 h-8 text-xs"
@@ -1156,9 +1235,13 @@ export default function McCabeThielePage() {
                   </div>
                   <Slider
                     id="fixedCondition"
-                    min={useTemperature ? 0 : 0.1}
-                    max={useTemperature ? parseFloat(tempMax) : parseFloat(pressureMax)}
-                    step={computeStep(useTemperature ? parseFloat(tempMax) : parseFloat(pressureMax))}
+                    min={useTemperature ? (antoineLimits?.minTC ?? 0) : (antoineLimits?.minPBar ?? 0.1)}
+                    max={useTemperature
+                        ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
+                        : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity)}
+                    step={computeStep(useTemperature
+                        ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
+                        : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity))}
                     value={[useTemperature ? (temperatureC || 0) : (pressureBar || 0)]}
                     onValueChange={([v]: number[]) => {
                       if (useTemperature) setTemperatureC(v);
@@ -1166,6 +1249,11 @@ export default function McCabeThielePage() {
                     }}
                     className="w-full"
                   />
+                  {modelPressureWarning && (
+                      <p className={`text-xs ${modelPressureWarning.level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
+                          ⚠ ~{modelPressureWarning.pct.toFixed(0)}% fugacity correction ignored by {fluidPackage.toUpperCase()} — consider PR or SRK.
+                      </p>
+                  )}
                 </div>
                  {/* xd Slider */}
                  <div className="space-y-3">

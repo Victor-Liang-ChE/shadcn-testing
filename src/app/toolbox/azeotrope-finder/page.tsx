@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { type SupabaseClient as _SupabaseClient } from '@supabase/supabase-js';
 import { useTheme } from "next-themes";
@@ -103,7 +103,7 @@ export default function AzeotropeFinderPage() {
   // const scanSteps = 50; // Always use 50 scan points, no UI to change this // REMOVED
 
   // Data & Control States
-  const [azeotropeScanData, setAzeotropeScanData] = useState<{ scanVal: number, x_az: number, dependentVal: number }[]>([]);
+  const [azeotropeScanData, setAzeotropeScanData] = useState<{ scanVal: number, x_az: number, dependentVal: number, branchIndex: number }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // const [logMessages, setLogMessages] = useState<string[]>([]); // Removed logMessages
@@ -133,6 +133,10 @@ export default function AzeotropeFinderPage() {
   const [displayedScanType, setDisplayedScanType] = useState<AzeotropeScanType | ''>('');
   // Concurrency guard so stale scans don't overwrite newer results
   const scanGenerationRef = useRef(0);
+  // Pre-fetched compound data used to determine which fluid packages have the
+  // required parameters for the current compound pair.
+  const [comp1PreData, setComp1PreData] = useState<CompoundData | null>(null);
+  const [comp2PreData, setComp2PreData] = useState<CompoundData | null>(null);
 
   // This new useEffect will handle re-scanning when the fluid package changes.
   const didMountFluidPkg = useRef(false);
@@ -157,14 +161,42 @@ export default function AzeotropeFinderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [azeotropeScanType]);
 
+  // Derive which fluid packages have the necessary parameters for the loaded pair.
+  // Only packages whose required data is present in both compounds are shown.
+  const availablePackages = useMemo((): Set<FluidPackageTypeAzeotrope> => {
+    const d1 = comp1PreData, d2 = comp2PreData;
+    // Before either compound is resolved, allow everything so the UI isn't blank.
+    if (!d1 || !d2) return new Set(['unifac', 'nrtl', 'wilson', 'uniquac', 'pr', 'srk']);
+    const pkgs = new Set<FluidPackageTypeAzeotrope>();
+    pkgs.add('nrtl'); // NRTL always falls back to UNIFAC estimate
+    if (d1.unifacGroups && d2.unifacGroups) pkgs.add('unifac');
+    if (d1.uniquacParams && d2.uniquacParams) pkgs.add('uniquac');
+    if (d1.wilsonParams && d2.wilsonParams) pkgs.add('wilson');
+    if (d1.prParams && d2.prParams) pkgs.add('pr');
+    if (d1.srkParams && d2.srkParams) pkgs.add('srk');
+    return pkgs;
+  }, [comp1PreData, comp2PreData]);
+
+  // Auto-switch to the best available fluid package when the current one becomes unsupported.
+  useEffect(() => {
+    if (comp1PreData && comp2PreData && !availablePackages.has(fluidPackage)) {
+      const preference: FluidPackageTypeAzeotrope[] = ['uniquac', 'nrtl', 'wilson', 'unifac', 'pr', 'srk'];
+      const fallback = preference.find(p => availablePackages.has(p));
+      if (fallback) setFluidPackage(fallback);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availablePackages]);
+
   // --- Logging Hook (copy from test/page.tsx or mccabe-thiele) ---
   // Removed logging useEffect and related state
 
   // --- useEffect for initial graph load ---
   useEffect(() => {
-    if (supabase && comp1Name && comp2Name) { // Ensure supabase is initialized and default components are set
-        // console.log("AzeoFinder: Initial load effect triggered for acetone/water."); // Logging removed
+    if (supabase && comp1Name && comp2Name) {
         handleAzeotropeScan();
+        // Pre-fetch compound data so the fluid-package dropdown can be filtered immediately.
+        fetchCompoundDataFromHysys(supabase, comp1Name).then(setComp1PreData).catch(() => {});
+        fetchCompoundDataFromHysys(supabase, comp2Name).then(setComp2PreData).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]); // Run once when supabase client is ready
@@ -220,8 +252,10 @@ export default function AzeotropeFinderPage() {
   const handleSuggestionClick = (alias: CompoundAlias, inputTarget: 'comp1' | 'comp2') => {
     if (inputTarget === 'comp1') {
       setComp1Name(alias.simName); setComp1DisplayName(formatCompoundName(alias.fullName)); setShowComp1Suggestions(false); setComp1Suggestions([]);
+      if (supabase) fetchCompoundDataFromHysys(supabase, alias.simName).then(setComp1PreData).catch(() => {});
     } else {
       setComp2Name(alias.simName); setComp2DisplayName(formatCompoundName(alias.fullName)); setShowComp2Suggestions(false); setComp2Suggestions([]);
+      if (supabase) fetchCompoundDataFromHysys(supabase, alias.simName).then(setComp2PreData).catch(() => {});
     }
   };
 
@@ -267,21 +301,21 @@ export default function AzeotropeFinderPage() {
       scanValHeader = "Pressure (bar)";
       dependentValHeader = "Azeotropic Temperature (°C)";
     } else { // vs_T_find_P
-      scanValHeader = "Temperature (K)";
+      scanValHeader = "Temperature (°C)";
       dependentValHeader = "Azeotropic Pressure (bar)";
     }
 
-    const headers = [scanValHeader, xAzHeader, dependentValHeader];
+    const headers = [scanValHeader, xAzHeader, dependentValHeader, "Branch"];
     csvContent += headers.join(",") + "\r\n";
 
     azeotropeScanData.forEach(row => {
       const scanValFormatted = formatNumberToPrecision(row.scanVal, 4);
-      const xAzFormatted = formatNumberToPrecision(row.x_az, 4); // Increased precision for CSV
+      const xAzFormatted = formatNumberToPrecision(row.x_az, 4);
       const dependentValFormatted = (displayedScanType === 'vs_P_find_T')
-        ? formatNumberToPrecision(row.dependentVal, 2) // Temp to 2 decimal places
-        : formatNumberToPrecision(row.dependentVal, 4); // Pressure to 4 sig figs
+        ? formatNumberToPrecision(row.dependentVal, 2)
+        : formatNumberToPrecision(row.dependentVal, 4);
 
-      const csvRow = [scanValFormatted, xAzFormatted, dependentValFormatted].join(",");
+      const csvRow = [scanValFormatted, xAzFormatted, dependentValFormatted, String(row.branchIndex + 1)].join(",");
       csvContent += csvRow + "\r\n";
     });
 
@@ -325,7 +359,7 @@ export default function AzeotropeFinderPage() {
   // --- Main Azeotrope Scan Logic ---
   const handleAzeotropeScan = useCallback(async () => {
     const myScanId = ++scanGenerationRef.current;
-    setLoading(true); setError(null); setAzeotropeScanData([]);
+    setLoading(true); setError(null);
 
     if (!comp1Name || !comp2Name) { setError("Please enter compound names."); setLoading(false); return; }
     if (!supabase) { setError("Supabase not initialized."); setLoading(false); return; }
@@ -381,7 +415,7 @@ export default function AzeotropeFinderPage() {
             throw new Error(`Unsupported fluid package: ${fluidPackage}`);
         }
 
-        const scanResultsArray: { scanVal: number, x_az: number, dependentVal: number }[] = [];
+        const scanResultsArray: { scanVal: number, x_az: number, dependentVal: number, branchIndex: number }[] = [];
         
         let currentScanStartValue: number, currentScanEndValue: number, stepValue: number;
         if (azeotropeScanType === 'vs_P_find_T') {
@@ -398,8 +432,6 @@ export default function AzeotropeFinderPage() {
         for (let currentScanVal = currentScanStartValue; currentScanVal <= currentScanEndValue + (stepValue * 0.5); currentScanVal += stepValue) {
             // The `+ (stepValue * 0.5)` is to handle potential floating point inaccuracies for the loop's end condition
             // const currentScanVal = currentScanStartValue + i * stepValue; // REPLACED by loop variable
-            let x_az_found: number | null = null;
-            let dependent_val_found: number | null = null;
 
             const objectiveFunction = (x1_guess: number): number | null => {
                 if (x1_guess <= 1e-5 || x1_guess >= 1.0 - 1e-5) return 1.0; // Avoid edges for stability
@@ -441,22 +473,35 @@ export default function AzeotropeFinderPage() {
                 return null; // Indicate failure to solver
             };
 
-            x_az_found = bisectionSolve(objectiveFunction, 0.0001, 0.9999, 1e-4, 30);
+            // Sample across composition space to find ALL sign changes (multiple azeotropes)
+            const NUM_GRID = 100;
+            const xGrid = Array.from({ length: NUM_GRID }, (_, k) => 0.0001 + k * (0.9998 / (NUM_GRID - 1)));
+            const fGrid = xGrid.map(x => objectiveFunction(x));
 
-            if (x_az_found !== null) {
-                // NEW: Filter out solutions that are too close to pure components to be azeotropes.
-                const PURE_COMP_THRESHOLD = 0.001; // Corresponds to 0.1% mole fraction
-                if (x_az_found < PURE_COMP_THRESHOLD || x_az_found > (1.0 - PURE_COMP_THRESHOLD)) {
-                    // This is not a true azeotrope, but a numerical artifact near the boundary.
-                    x_az_found = null;
+            const foundRoots: number[] = [];
+            for (let k = 0; k < NUM_GRID - 1; k++) {
+                const fa = fGrid[k];
+                const fb = fGrid[k + 1];
+                if (fa === null || fb === null) continue;
+                if (fa * fb < 0) {
+                    const root = bisectionSolve(objectiveFunction, xGrid[k], xGrid[k + 1], 1e-5, 50);
+                    if (root !== null && root > 0.001 && root < 0.999) {
+                        // Deduplicate roots that are numerically identical
+                        if (!foundRoots.some(r => Math.abs(r - root) < 0.005)) {
+                            foundRoots.push(root);
+                        }
+                    }
                 }
             }
+            foundRoots.sort((a, b) => a - b);
 
-            if (x_az_found !== null) {
-                // Recalculate the dependent variable at the found x_az
+            for (let branchIdx = 0; branchIdx < foundRoots.length; branchIdx++) {
+                const x_az_found = foundRoots[branchIdx];
+                let dependent_val_found: number | null = null;
                 let finalBubbleResult: BubbleDewResult | null = null;
-                 if (azeotropeScanType === 'vs_P_find_T') {
-                    const P_system_Pa = currentScanVal * 100000; // Convert bar to Pa
+
+                if (azeotropeScanType === 'vs_P_find_T') {
+                    const P_system_Pa = currentScanVal * 100000;
                     const T_bp1_est = antoineBoilingPointSolverLocal(data1.antoine, P_system_Pa) || 350;
                     const T_bp2_est = antoineBoilingPointSolverLocal(data2.antoine, P_system_Pa) || 350;
                     const initialTempGuess = x_az_found * T_bp1_est + (1 - x_az_found) * T_bp2_est;
@@ -467,11 +512,11 @@ export default function AzeotropeFinderPage() {
                     else if (fluidPackage === 'srk') finalBubbleResult = calculateBubbleTemperatureSrk(components, x_az_found, P_system_Pa, activityParameters, initialTempGuess);
                     else if (fluidPackage === 'uniquac') finalBubbleResult = calculateBubbleTemperatureUniquac(components, x_az_found, P_system_Pa, activityParameters, initialTempGuess);
                     else if (fluidPackage === 'wilson') finalBubbleResult = calculateBubbleTemperatureWilson(components, x_az_found, P_system_Pa, activityParameters, initialTempGuess);
-                    
+
                     if (finalBubbleResult && finalBubbleResult.T_K) {
-                        dependent_val_found = finalBubbleResult.T_K - 273.15; // Convert to Celsius
+                        dependent_val_found = finalBubbleResult.T_K - 273.15;
                     }
-                } else { // vs_T_find_P
+                } else {
                     const T_system_K = currentScanVal;
                     const P_sat1_est = libCalculatePsat_Pa(data1.antoine!, T_system_K);
                     const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
@@ -484,14 +529,12 @@ export default function AzeotropeFinderPage() {
                     else if (fluidPackage === 'uniquac') finalBubbleResult = calculateBubblePressureUniquac(components, x_az_found, T_system_K, activityParameters);
                     else if (fluidPackage === 'wilson') finalBubbleResult = calculateBubblePressureWilson(components, x_az_found, T_system_K, activityParameters);
 
-                    if (finalBubbleResult && finalBubbleResult.P_Pa) dependent_val_found = finalBubbleResult.P_Pa / 100000; // Convert to bar
+                    if (finalBubbleResult && finalBubbleResult.P_Pa) dependent_val_found = finalBubbleResult.P_Pa / 100000;
                 }
-            }
-            
-            if (x_az_found !== null && dependent_val_found !== null) {
-                scanResultsArray.push({ scanVal: currentScanVal, x_az: x_az_found, dependentVal: dependent_val_found });
 
-                // console.log(`Azeotrope found: ScanVal=${currentScanVal.toFixed(2)}, x_az=${x_az_found.toFixed(4)}, DependentVal=${dependentValFormatted} ${dependentUnit}`); // Logging removed
+                if (dependent_val_found !== null) {
+                    scanResultsArray.push({ scanVal: azeotropeScanType === 'vs_T_find_P' ? currentScanVal - 273.15 : currentScanVal, x_az: x_az_found, dependentVal: dependent_val_found, branchIndex: branchIdx });
+                }
             }
         }
         if (myScanId === scanGenerationRef.current) {
@@ -516,25 +559,46 @@ export default function AzeotropeFinderPage() {
   // --- ECharts Plotting ---
   const generateAzeotropeEChartsOptions = useCallback(() => {
     if (azeotropeScanData.length === 0) {
-      setEchartsOptions({
-        title: { show: false }, // Hide ECharts title when no data; JSX placeholders will be used
-        grid: { show: false }, 
-        xAxis: { show: false }, 
-        yAxis: { show: false }
-      });
+      setEchartsOptions({});
       return;
     }
 
     const comp1DisplayCap = displayedComp1 ? displayedComp1.charAt(0).toUpperCase() + displayedComp1.slice(1) : "Comp1";
-    const scanParamName = displayedScanType === 'vs_P_find_T' ? "Azeotropic Pressure (bar)" : "Azeotropic Temperature (K)"; // Changed kPa to bar
+    const scanParamName = displayedScanType === 'vs_P_find_T' ? "Azeotropic Pressure (bar)" : "Azeotropic Temperature (°C)";
     const dependentParamName = displayedScanType === 'vs_P_find_T' ? `Azeotropic Temperature (°C)` : `Azeotropic Pressure (bar)`;
     const compositionLegendName = `Azeotropic ${comp1DisplayCap} Comp. (x₁)`;
     const compositionAxisName = `Azeotropic ${comp1DisplayCap} Composition (x₁)`;
     const titleText = displayedComp1 && displayedComp2 ? `Azeotrope Locus: ${displayedComp1}/${displayedComp2}` : 'Azeotrope Locus';
 
 
-    const x_az_data = azeotropeScanData.map(d => [d.scanVal, d.x_az]);
-    const dependent_val_data = azeotropeScanData.map(d => [d.scanVal, d.dependentVal]);
+    // Group data by branch index for separate series per azeotrope locus
+    const branchIndices = [...new Set(azeotropeScanData.map(d => d.branchIndex))].sort((a, b) => a - b);
+    const BRANCH_COLORS: [string, string][] = [
+        ['#22c55e', '#f59e0b'], // branch 0: green / amber
+        ['#3b82f6', '#ef4444'], // branch 1: blue / red
+        ['#a855f7', '#f97316'], // branch 2: purple / orange
+        ['#06b6d4', '#ec4899'], // branch 3: cyan / pink
+    ];
+    const chartSeries: any[] = [];
+    for (const branchIdx of branchIndices) {
+        const branchData = azeotropeScanData
+            .filter(d => d.branchIndex === branchIdx)
+            .sort((a, b) => a.scanVal - b.scanVal);
+        const [compColor, depColor] = BRANCH_COLORS[branchIdx % BRANCH_COLORS.length];
+        const branchLabel = branchIndices.length > 1 ? ` (Branch ${branchIdx + 1})` : '';
+        chartSeries.push({
+            name: compositionLegendName + branchLabel,
+            type: 'line', yAxisIndex: 0,
+            data: branchData.map(d => [d.scanVal, d.x_az]),
+            smooth: true, lineStyle: { color: compColor, width: 2.5 }, itemStyle: { color: compColor }, symbol: 'none'
+        });
+        chartSeries.push({
+            name: dependentParamName + branchLabel,
+            type: 'line', yAxisIndex: 1,
+            data: branchData.map(d => [d.scanVal, d.dependentVal]),
+            smooth: true, lineStyle: { color: depColor, width: 2.5 }, itemStyle: { color: depColor }, symbol: 'none'
+        });
+    }
 
     // Theme-dependent colors
     const isDark = resolvedTheme === 'dark';
@@ -582,7 +646,12 @@ export default function AzeotropeFinderPage() {
             return tooltipHtml;
         }
       },
-      legend: { show: false }, // Explicitly hide the legend
+      legend: {
+        show: branchIndices.length > 1,
+        orient: 'vertical', right: '2%', top: 'center',
+        textStyle: { color: textColor, fontSize: 11, fontFamily: 'Merriweather Sans' },
+        itemWidth: 20, itemHeight: 2,
+      },
       grid: { left: '8%', right: '10%', bottom: '8%', top: '8%', containLabel: true }, // Adjusted grid.bottom from 15% to 8%
       xAxis: {
         show: true, 
@@ -617,10 +686,7 @@ export default function AzeotropeFinderPage() {
           scale: true,
         }
       ],
-      series: [
-        { name: compositionLegendName, type: 'line', yAxisIndex: 0, data: x_az_data, smooth: true, lineStyle: { color: '#22c55e', width: 2.5 }, itemStyle: { color: '#22c55e' }, symbolSize: 6, symbol: 'none' }, // Changed color to green, added symbol: 'none'
-        { name: dependentParamName, type: 'line', yAxisIndex: 1, data: dependent_val_data, smooth: true, lineStyle: { color: '#f59e0b', width: 2.5 }, itemStyle: { color: '#f59e0b' }, symbolSize: 6, symbol: 'none' } // Added symbol: 'none'
-      ],
+      series: chartSeries,
       // dataZoom removed
       toolbox: {
             show: false
@@ -697,11 +763,11 @@ export default function AzeotropeFinderPage() {
                   }}>
                     <SelectTrigger id="fluidPackageAzeo" className="flex-1"><SelectValue /></SelectTrigger>
                                               <SelectContent>
-                              <SelectItem value="wilson">Wilson</SelectItem>
-                              <SelectItem value="uniquac">UNIQUAC</SelectItem>
-                              <SelectItem value="nrtl">NRTL</SelectItem>
-                              <SelectItem value="pr">Peng-Robinson</SelectItem>
-                              <SelectItem value="srk">SRK</SelectItem>
+                              {availablePackages.has('wilson') && <SelectItem value="wilson">Wilson</SelectItem>}
+                              {availablePackages.has('uniquac') && <SelectItem value="uniquac">UNIQUAC</SelectItem>}
+                              {availablePackages.has('nrtl') && <SelectItem value="nrtl">NRTL</SelectItem>}
+                              {availablePackages.has('pr') && <SelectItem value="pr">Peng-Robinson</SelectItem>}
+                              {availablePackages.has('srk') && <SelectItem value="srk">SRK</SelectItem>}
                           </SelectContent>
                   </Select>
                 </div>
@@ -756,7 +822,12 @@ export default function AzeotropeFinderPage() {
                   {loading && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Scanning for Azeotropes...</div><div className="text-sm text-muted-foreground/70">Using {fluidPackage.toUpperCase()} model.</div></div></div>)}
                   {!loading && !displayedComp1 && !error && (<div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and find azeotropes.</div>)}
                   {error && !loading && (<div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div>)}
-                  {!loading && Object.keys(echartsOptions).length > 0 && (
+                  {!loading && displayedComp1 && !error && azeotropeScanData.length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-center px-8">
+                      No azeotrope detected in the scanned range for these conditions.
+                    </div>
+                  )}
+                  {!loading && azeotropeScanData.length > 0 && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts ref={echartsRef} echarts={echarts} option={echartsOptions} style={{ height: '100%', width: '100%' }} notMerge={true} lazyUpdate={true} />
                   )}
                   {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}

@@ -142,6 +142,8 @@ export interface FetchedCompoundThermData {
     criticalVolume_m3kmol?: number | null;
     RKTZRA?: number | null; // Aspen Rackett compressibility factor (from RKTZRA column)
     hocProps?: import('./vle-types').HocPureComponentParams | null; // HOC vapor-phase association params
+    Tc_K?: number | null;   // Critical temperature (K) — from pure_props or tc_wide fallback
+    Pc_Pa?: number | null;  // Critical pressure (Pa) — from pure_props or pc_wide fallback
 }
 
 /**
@@ -175,12 +177,16 @@ export async function fetchAndConvertThermData(
     }
     const pureData = pureRows[0];
 
-    // 2. Fetch Antoine parameters from Aspen PLXANT table
-    const { data: antoineRows, error: antoineError } = await supabase
-        .from('apv140_plxant_wide')
-        .select('*')
-        .ilike('CompoundName', compoundName)
-        .limit(1);
+    // 2. Fetch Antoine, Tc, and Pc in parallel (using dedicated wide tables as authoritative fallback)
+    const [
+        { data: antoineRows, error: antoineError },
+        { data: tcRows },
+        { data: pcRows },
+    ] = await Promise.all([
+        supabase.from('apv140_plxant_wide').select('*').ilike('CompoundName', compoundName).limit(1),
+        supabase.from('apv140_tc_wide').select('e1').ilike('CompoundName', compoundName).limit(1),
+        supabase.from('apv140_pc_wide').select('e1').ilike('CompoundName', compoundName).limit(1),
+    ]);
 
     const antoineData = antoineRows?.[0] ?? null;
     let antoineParams: AntoineParams | null = null;
@@ -205,8 +211,10 @@ export async function fetchAndConvertThermData(
         console.warn(`Antoine data not found for "${compoundName}":`, antoineError?.message);
     }
 
-    const Tc_K   = pureData['TC']     ?? null;
-    const Pc_Pa  = pureData['PC']     ?? null;
+    // Prefer apv140_pure_props_wide values; fall back to dedicated per-property wide tables
+    // which have broader compound coverage.
+    const Tc_K   = (pureData['TC']  != null && isFinite(pureData['TC']))  ? pureData['TC']  : (tcRows?.[0]?.e1 ?? null);
+    const Pc_Pa  = (pureData['PC']  != null && isFinite(pureData['PC']))  ? pureData['PC']  : (pcRows?.[0]?.e1 ?? null);
     const omega  = pureData['OMEGA']  ?? null;
     const RKTZRA = pureData['RKTZRA'] ?? null; // Aspen Rackett compressibility factor
     const VC_m3kmol = pureData['VC']  ?? null;  // m³/kmol
@@ -292,6 +300,8 @@ export async function fetchAndConvertThermData(
         antoine: antoineParams,
         nbp_K: null, // Not directly available; can be estimated from Psat if needed
         molecularWeight: null, // Not available in Aspen pure_props_wide
+        Tc_K: Tc_K ?? null,
+        Pc_Pa: Pc_Pa ?? null,
         V_L_m3mol,
         unifacGroups,
         criticalProperties,
@@ -323,6 +333,8 @@ export async function fetchCompoundDataFromHysys(
         molecularWeight: therm.molecularWeight,
         antoine: therm.antoine,
         unifacGroups: therm.unifacGroups,
+        Tc_K: therm.Tc_K ?? null,
+        Pc_Pa: therm.Pc_Pa ?? null,
         prParams: therm.criticalProperties ? {
             Tc_K: therm.criticalProperties.Tc_K,
             Pc_Pa: therm.criticalProperties.Pc_Pa,

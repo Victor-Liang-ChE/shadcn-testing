@@ -126,6 +126,9 @@ export interface CompoundData {
     uniquacParams?: UniquacPureComponentParams | null;
     wilsonParams?: WilsonPureComponentParams | null;
     hocProps?: HocPureComponentParams | null;   // HOC vapor-phase association params
+    // Critical properties (always populated when available, used for slider clamping)
+    Tc_K?: number | null;
+    Pc_Pa?: number | null;
     // For UNIFAC pre-calculation, can be added dynamically
     r_i?: number; // Sum of Rk for the molecule
     q_i?: number; // Sum of Qk for the molecule

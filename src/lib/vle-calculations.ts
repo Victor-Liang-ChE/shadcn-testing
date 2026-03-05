@@ -24,25 +24,50 @@ export const SRK_DEBUG = process.env.NEXT_PUBLIC_SRK_DEBUG === 'true' || false;
  * T in Kelvin, P_target in Pa.
  */
 export function antoineBoilingPointSolverLocal(antoineParams: AntoineParams | null, P_target: number): number | null {
-  if (!antoineParams) return null;
+  if (!antoineParams || P_target <= 0) return null;
   try {
-    const targetLnP = Math.log(P_target); // target is already in Pa
-    // Start guess: invert the dominant C1 + C2/T term
-    let T = antoineParams.C2 / (targetLnP - antoineParams.C1);
+    const { C1, C2, C3, C4, C5, C6, C7, Tmin_K, Tmax_K } = antoineParams;
+    const targetLnP = Math.log(P_target);
+
+    const lnPat = (T: number) =>
+      C1 + C2 / (T + C3) + C4 * T + C5 * Math.log(T) + C6 * Math.pow(T, C7);
+
+    // Newton-Raphson with a reasonable starting guess
+    let T = C2 / (targetLnP - C1);
     if (!isFinite(T) || T <= 0 || T > 2000) T = 350;
 
-    const { C1, C2, C3, C4, C5, C6, C7 } = antoineParams;
     for (let i = 0; i < 30; i++) {
-      const lnP = C1 + C2 / (T + C3) + C4 * T + C5 * Math.log(T) + C6 * Math.pow(T, C7);
+      const lnP = lnPat(T);
       const err = lnP - targetLnP;
-      if (Math.abs(err) < 1e-6) return T;
-      // d(lnP)/dT = -C2/(T+C3)^2 + C4 + C5/T + C6·C7·T^(C7-1)
+      if (Math.abs(err) < 1e-6) {
+        // Accept result anywhere in the physically reachable range, including above Antoine
+        // Tmax for supercritical extrapolation (e.g. P >> Pc).
+        if (T >= Tmin_K - 5 && T <= 2000) return T;
+        break; // out of range — fall through to bisection
+      }
       const dlnPdT = -C2 / (T + C3) ** 2 + C4 + C5 / T + C6 * C7 * Math.pow(T, C7 - 1);
       if (Math.abs(dlnPdT) < 1e-15) break;
       T -= err / dlnPdT;
       if (T <= 0 || T > 2000) break;
     }
-    return (T > 0 && T < 2000) ? T : null;
+
+    // Bisection fallback over an extended range — handles both sub-atmospheric cases and
+    // supercritical / high-pressure extrapolation well above Antoine Tmax.
+    const lo_T = Math.max(Tmin_K, 50);
+    const hi_T = Math.max(Tmax_K, 2000); // intentionally above Tmax_K for P >> Pc
+    if (lo_T >= hi_T) return null;
+    const pLo = lnPat(lo_T);
+    const pHi = lnPat(hi_T);
+    // Check that the target lies within the bracket
+    if (targetLnP < pLo || targetLnP > pHi) return null;
+    let lo = lo_T, hi = hi_T;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (lnPat(mid) < targetLnP) lo = mid; else hi = mid;
+      if (hi - lo < 1e-4) break;
+    }
+    const result = (lo + hi) / 2;
+    return result > 0 && result < 5000 ? result : null;
   } catch {
     return null;
   }
@@ -136,49 +161,76 @@ export function calculateBubbleTemperatureNrtl(
   x1_feed: number,
   P_Pa: number,
   params: NrtlInteractionParams,
-  T_init_K = 350,
-  maxIter = 50,
-  tol = 1e-4
+  _T_init_K = 350,
+  maxIter = 100,
+  tol = 1e-6
 ): BubbleDewResult | null {
-  let T = T_init_K;
   const x = [x1_feed, 1 - x1_feed];
-  let y: number[] = [...x];
   const eta_cross = (params as any).eta_cross ?? 0;
-  const useHoc = eta_cross > 0 ||
-    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
-    (comps[1].hocProps?.eta_self ?? 0) > 0;
+  // NRTL/Wilson/UNIQUAC assume ideal vapour phase (φ=1). The APV VLE-HOC parameters are
+  // regressed against data using Aspen's own HOC implementation, which gives <1% K-correction
+  // at 1 bar for H-bonding species (e.g. methanol). Our HOC formula over-corrects by ~20%,
+  // so disabling it here gives results closest to Aspen Plus with APV parameters.
+  const useHoc = false;
 
-  for (let i = 0; i < maxIter; i++) {
+  // Objective: sum(xi*gammai*Psati)*phi_i / P - 1 = 0  (monotone in T)
+  let y_inner = [...x];
+  const objective = (T: number): number => {
     const Psat = [calculatePsat_Pa(comps[0].antoine, T), calculatePsat_Pa(comps[1].antoine, T)];
-    if (Psat.some(v => isNaN(v))) return null;
+    if (Psat.some(v => !isFinite(v) || v <= 0)) return NaN;
     const gamma = calculateNrtlGamma(comps, x, T, params);
-    if (!gamma) return null;
-
+    if (!gamma) return NaN;
     const phi = useHoc
-      ? hocFugacityCorrection(comps, y, T, P_Pa, Psat, eta_cross)
+      ? hocFugacityCorrection(comps, y_inner, T, P_Pa, Psat, eta_cross)
       : ([1, 1] as [number, number]);
-
     const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
     const Pcalc = KPsat[0] + KPsat[1];
-    const err = Pcalc - P_Pa;
-    if (Math.abs(err) < tol * P_Pa) {
-      y = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
-      return {
-        comp1_feed: x1_feed,
-        comp1_equilibrium: y[0],
-        T_K: T,
-        P_Pa,
-        iterations: i + 1,
-        calculationType: 'bubbleT',
-      };
-    }
-    const Ptmp = Pcalc || P_Pa;
-    y = [KPsat[0] / Ptmp, KPsat[1] / Ptmp];
-    // simple secant-like adjustment
-    const dT = -err / P_Pa * T * 0.02;
-    T = Math.max(100, T + (Math.abs(dT) > 5 ? Math.sign(dT) * 5 : dT));
+    if (Pcalc > 0) y_inner = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
+    return Pcalc / P_Pa - 1.0;
+  };
+
+  // Build bracket from pure-component boiling points
+  const T1 = antoineBoilingPointSolverLocal(comps[0].antoine, P_Pa);
+  const T2 = antoineBoilingPointSolverLocal(comps[1].antoine, P_Pa);
+  if (!T1 || !T2) return null;
+  // Use MIN of the two Antoine Tmin values so that methanol-rich compositions whose bubble
+  // temperature falls below the higher-Tmin component's range (e.g. water Tmin ~310 K at 0.12 bar)
+  // are still solved correctly.  calculatePsat_Pa has no range guard and extrapolates the
+  // PLXANT polynomial smoothly, keeping errors small near the lower bound.
+  const Tmin_N = Math.min(comps[0].antoine?.Tmin_K ?? 100, comps[1].antoine?.Tmin_K ?? 100);
+  // Extend bracket ceiling to 30% above the pure-component BPs so supercritical pressures
+  // (where BP > Antoine Tmax) are still solved. T1/T2 already use the extended bisection.
+  const Tmax_N = Math.max(comps[0].antoine?.Tmax_K ?? 1500, comps[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3);
+  if (Tmin_N >= Tmax_N) return null;
+  let T_low = Math.max(Tmin_N, Math.min(T1, T2) - 50);
+  let T_high = Math.min(Tmax_N, Math.max(T1, T2) + 50);
+  if (T_low >= T_high) { T_low = Tmin_N; T_high = Tmax_N; }
+  for (let expand = 0; expand < 20; expand++) {
+    const flo = objective(T_low), fhi = objective(T_high);
+    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+    if (T_low <= Tmin_N && T_high >= Tmax_N) return null;
+    T_low = Math.max(Tmin_N, T_low - 25);
+    T_high = Math.min(Tmax_N, T_high + 25);
   }
-  return null;
+  // Scan for first sign change to avoid converging on a spurious root
+  const SCAN_STEP_NRTL = 5;
+  let Tlo_b = T_low, Thi_b = T_high;
+  for (let T = T_low; T < T_high - SCAN_STEP_NRTL / 2; T += SCAN_STEP_NRTL) {
+    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_NRTL, T_high));
+    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b = T; Thi_b = Math.min(T + SCAN_STEP_NRTL, T_high); break; }
+  }
+
+  const T_bubble = _brentRoot(objective, Tlo_b, Thi_b, tol, maxIter);
+  if (T_bubble === null) return null;
+
+  // Final y at converged T
+  const Psat_f = [calculatePsat_Pa(comps[0].antoine, T_bubble), calculatePsat_Pa(comps[1].antoine, T_bubble)];
+  const gamma_f = calculateNrtlGamma(comps, x, T_bubble, params);
+  if (!gamma_f) return null;
+  const phi_f = useHoc ? hocFugacityCorrection(comps, y_inner, T_bubble, P_Pa, Psat_f, eta_cross) : ([1,1] as [number,number]);
+  const kp = [x[0]*gamma_f[0]*Psat_f[0]*phi_f[0], x[1]*gamma_f[1]*Psat_f[1]*phi_f[1]];
+  const sum_kp = kp[0] + kp[1];
+  return { comp1_feed: x1_feed, comp1_equilibrium: sum_kp > 0 ? kp[0]/sum_kp : x[0], T_K: T_bubble, P_Pa, calculationType: 'bubbleT' };
 }
 
 export function calculateBubblePressureNrtl(
@@ -193,20 +245,10 @@ export function calculateBubblePressureNrtl(
   const gamma = calculateNrtlGamma(comps, x, T_K, params);
   if (!gamma) return null;
 
-  const eta_cross = (params as any).eta_cross ?? 0;
-  const useHoc = eta_cross > 0 ||
-    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
-    (comps[1].hocProps?.eta_self ?? 0) > 0;
-
+  // APV VLE-HOC params already embed Aspen's HOC correction; our HOC over-corrects → disable.
   const PcalcIdeal = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
-  const yIdeal = [x[0] * gamma[0] * Psat[0] / PcalcIdeal, x[1] * gamma[1] * Psat[1] / PcalcIdeal];
-  const phi = useHoc
-    ? hocFugacityCorrection(comps, yIdeal, T_K, PcalcIdeal, Psat, eta_cross)
-    : ([1, 1] as [number, number]);
-
-  const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
-  const Pcalc = KPsat[0] + KPsat[1];
-  const y1 = KPsat[0] / Pcalc;
+  const Pcalc = PcalcIdeal;
+  const y1 = x[0] * gamma[0] * Psat[0] / Pcalc;
   return {
     comp1_feed: x1_feed,
     comp1_equilibrium: y1,
@@ -292,51 +334,57 @@ export function calculateBubbleTemperatureWilson(
   x1_feed: number,
   P_Pa: number,
   params: WilsonInteractionParams,
-  T_init_K: number,
-  maxIter = 50,
-  tol = 1e-5
+  _T_init_K: number = 350,
+  maxIter = 100,
+  tol = 1e-6
 ): BubbleDewResult | null {
-  let T = T_init_K;
   const x = [x1_feed, 1 - x1_feed];
-  let y: number[] = [...x]; // initial estimate
-  const eta_cross = params.eta_cross ?? 0;
-  const useHoc = eta_cross > 0 ||
-    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
-    (comps[1].hocProps?.eta_self ?? 0) > 0;
+  // Wilson assumes ideal vapour phase; disable HOC (same reason as NRTL).
 
-  for (let i = 0; i < maxIter; i++) {
+  let y_inner = [...x];
+  const objective = (T: number): number => {
     const gammas = calculateWilsonGamma(comps, x, T, params);
-    if (!gammas) return null;
+    if (!gammas) return NaN;
     const Psat = [calculatePsat_Pa(comps[0].antoine, T), calculatePsat_Pa(comps[1].antoine, T)];
-    if (Psat.some(v => isNaN(v))) return null;
-
-    // HOC vapor-phase fugacity correction (φ_i^sat / φ_i^V)
-    const phi = useHoc
-      ? hocFugacityCorrection(comps, y, T, P_Pa, Psat, eta_cross)
-      : ([1, 1] as [number, number]);
-
-    // Modified Raoult's law: K_i = γ_i · Psat_i · φ_i^sat / (φ_i^V · P)
-    const KPsat = [x[0] * gammas[0] * Psat[0] * phi[0], x[1] * gammas[1] * Psat[1] * phi[1]];
+    if (Psat.some(v => !isFinite(v) || v <= 0)) return NaN;
+    const KPsat = [x[0] * gammas[0] * Psat[0], x[1] * gammas[1] * Psat[1]];
     const Pcalc = KPsat[0] + KPsat[1];
-    const err = Pcalc - P_Pa;
-    if (Math.abs(err) < tol * P_Pa) {
-      y = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
-      return {
-        comp1_feed: x1_feed,
-        comp1_equilibrium: y[0],
-        T_K: T,
-        P_Pa,
-        iterations: i + 1,
-        calculationType: 'bubbleT',
-      };
-    }
-    // update y estimate before next iteration (for HOC correction)
-    const Ptmp = Pcalc || P_Pa;
-    y = [KPsat[0] / Ptmp, KPsat[1] / Ptmp];
-    const dT = -err / P_Pa * (T * 0.05);
-    T = Math.min(800, Math.max(150, T + (Math.abs(dT) > 5 ? Math.sign(dT) * 5 : dT)));
+    if (Pcalc > 0) y_inner = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
+    return Pcalc / P_Pa - 1.0;
+  };
+
+  const T1 = antoineBoilingPointSolverLocal(comps[0].antoine, P_Pa);
+  const T2 = antoineBoilingPointSolverLocal(comps[1].antoine, P_Pa);
+  if (!T1 || !T2) return null;
+  const Tmin_W = Math.min(comps[0].antoine?.Tmin_K ?? 100, comps[1].antoine?.Tmin_K ?? 100); // MIN: see NRTL comment
+  const Tmax_W = Math.max(comps[0].antoine?.Tmax_K ?? 1500, comps[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3); // extend for supercritical
+  if (Tmin_W >= Tmax_W) return null;
+  let T_low = Math.max(Tmin_W, Math.min(T1, T2) - 50);
+  let T_high = Math.min(Tmax_W, Math.max(T1, T2) + 50);
+  if (T_low >= T_high) { T_low = Tmin_W; T_high = Tmax_W; }
+  for (let expand = 0; expand < 20; expand++) {
+    const flo = objective(T_low), fhi = objective(T_high);
+    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+    if (T_low <= Tmin_W && T_high >= Tmax_W) return null;
+    T_low = Math.max(Tmin_W, T_low - 25);
+    T_high = Math.min(Tmax_W, T_high + 25);
   }
-  return null;
+  const SCAN_STEP_W = 5;
+  let Tlo_b_W = T_low, Thi_b_W = T_high;
+  for (let T = T_low; T < T_high - SCAN_STEP_W / 2; T += SCAN_STEP_W) {
+    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_W, T_high));
+    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b_W = T; Thi_b_W = Math.min(T + SCAN_STEP_W, T_high); break; }
+  }
+
+  const T_bubble = _brentRoot(objective, Tlo_b_W, Thi_b_W, tol, maxIter);
+  if (T_bubble === null) return null;
+
+  const Psat_f = [calculatePsat_Pa(comps[0].antoine, T_bubble), calculatePsat_Pa(comps[1].antoine, T_bubble)];
+  const gammas_f = calculateWilsonGamma(comps, x, T_bubble, params);
+  if (!gammas_f) return null;
+  const kp = [x[0]*gammas_f[0]*Psat_f[0], x[1]*gammas_f[1]*Psat_f[1]];
+  const sum_kp = kp[0] + kp[1];
+  return { comp1_feed: x1_feed, comp1_equilibrium: sum_kp > 0 ? kp[0]/sum_kp : x[0], T_K: T_bubble, P_Pa, calculationType: 'bubbleT' };
 }
 
 export function calculateBubblePressureWilson(
@@ -351,22 +399,9 @@ export function calculateBubblePressureWilson(
   const Psat = [calculatePsat_Pa(comps[0].antoine, T_K), calculatePsat_Pa(comps[1].antoine, T_K)];
   if (Psat.some(v => isNaN(v))) return null;
 
-  const eta_cross = params.eta_cross ?? 0;
-  const useHoc = eta_cross > 0 ||
-    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
-    (comps[1].hocProps?.eta_self ?? 0) > 0;
-
-  // Initial ideal estimate for y (needed for HOC correction)
-  const PcalcIdeal = x[0] * gammas[0] * Psat[0] + x[1] * gammas[1] * Psat[1];
-  let y = [x[0] * gammas[0] * Psat[0] / PcalcIdeal, x[1] * gammas[1] * Psat[1] / PcalcIdeal];
-
-  const phi = useHoc
-    ? hocFugacityCorrection(comps, y, T_K, PcalcIdeal, Psat, eta_cross)
-    : ([1, 1] as [number, number]);
-
-  const KPsat = [x[0] * gammas[0] * Psat[0] * phi[0], x[1] * gammas[1] * Psat[1] * phi[1]];
-  const Pcalc = KPsat[0] + KPsat[1];
-  const y1 = KPsat[0] / Pcalc;
+  // Wilson assumes ideal vapour phase; disable HOC.
+  const Pcalc = x[0] * gammas[0] * Psat[0] + x[1] * gammas[1] * Psat[1];
+  const y1 = x[0] * gammas[0] * Psat[0] / Pcalc;
   return {
     comp1_feed: x1_feed,
     comp1_equilibrium: y1,
@@ -501,27 +536,53 @@ export function calculateBubbleTemperatureUnifac(
   x1_feed: number,
   P_system_Pa: number,
   unifacParams: UnifacParameters,
-  initialTempGuess_K: number = 350,
-  maxIter: number = 50,
-  tolerance: number = 1e-4
+  _initialTempGuess_K: number = 350,
+  maxIter: number = 100,
+  tolerance: number = 1e-6
 ): BubbleDewResult | null {
   const x = [x1_feed, 1 - x1_feed];
-  let T = initialTempGuess_K;
-  for (let i = 0; i < maxIter; i++) {
+
+  const objective = (T: number): number => {
     const P_sat = [calculatePsat_Pa(components[0].antoine, T), calculatePsat_Pa(components[1].antoine, T)];
-    if (P_sat.some(p => isNaN(p))) return null;
+    if (P_sat.some(p => !isFinite(p) || p <= 0)) return NaN;
     const gamma = calculateUnifacGamma(components, x, T, unifacParams);
-    if (!gamma) return null;
+    if (!gamma || gamma.some(g => !isFinite(g))) return NaN;
     const P_calc = x[0] * gamma[0] * P_sat[0] + x[1] * gamma[1] * P_sat[1];
-    const err = P_calc - P_system_Pa;
-    if (Math.abs(err) < tolerance * P_system_Pa) {
-      const y1 = (x[0] * gamma[0] * P_sat[0]) / P_calc;
-      return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K: T, P_Pa: P_system_Pa };
-    }
-    const dT = -err / P_system_Pa * (T * 0.05);
-    T = Math.max(150, Math.min(800, T + dT));
+    return P_calc / P_system_Pa - 1.0;
+  };
+
+  const T1 = antoineBoilingPointSolverLocal(components[0].antoine, P_system_Pa);
+  const T2 = antoineBoilingPointSolverLocal(components[1].antoine, P_system_Pa);
+  if (!T1 || !T2) return null;
+  const Tmin_UF = Math.min(components[0].antoine?.Tmin_K ?? 100, components[1].antoine?.Tmin_K ?? 100); // MIN: see NRTL comment
+  const Tmax_UF = Math.max(components[0].antoine?.Tmax_K ?? 1500, components[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3); // extend for supercritical
+  if (Tmin_UF >= Tmax_UF) return null;
+  let T_low = Math.max(Tmin_UF, Math.min(T1, T2) - 50);
+  let T_high = Math.min(Tmax_UF, Math.max(T1, T2) + 50);
+  if (T_low >= T_high) { T_low = Tmin_UF; T_high = Tmax_UF; }
+  for (let expand = 0; expand < 20; expand++) {
+    const flo = objective(T_low), fhi = objective(T_high);
+    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+    if (T_low <= Tmin_UF && T_high >= Tmax_UF) return null;
+    T_low = Math.max(Tmin_UF, T_low - 25);
+    T_high = Math.min(Tmax_UF, T_high + 25);
   }
-  return null;
+  const SCAN_STEP_UF = 5;
+  let Tlo_b_UF = T_low, Thi_b_UF = T_high;
+  for (let T = T_low; T < T_high - SCAN_STEP_UF / 2; T += SCAN_STEP_UF) {
+    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_UF, T_high));
+    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b_UF = T; Thi_b_UF = Math.min(T + SCAN_STEP_UF, T_high); break; }
+  }
+
+  const T_bubble = _brentRoot(objective, Tlo_b_UF, Thi_b_UF, tolerance, maxIter);
+  if (T_bubble === null) return null;
+
+  const P_sat_f = [calculatePsat_Pa(components[0].antoine, T_bubble), calculatePsat_Pa(components[1].antoine, T_bubble)];
+  const gamma_f = calculateUnifacGamma(components, x, T_bubble, unifacParams);
+  if (!gamma_f) return null;
+  const P_calc_f = x[0] * gamma_f[0] * P_sat_f[0] + x[1] * gamma_f[1] * P_sat_f[1];
+  const y1 = P_calc_f > 0 ? (x[0] * gamma_f[0] * P_sat_f[0]) / P_calc_f : x[0];
+  return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K: T_bubble, P_Pa: P_system_Pa };
 }
 
 export function calculateBubblePressureUnifac(
@@ -1388,41 +1449,57 @@ export function calculateBubbleTemperatureUniquac(
   x1_feed: number,
   P_system_Pa: number,
   params: UniquacInteractionParams,
-  T_guess_K: number = 350,
-  maxIter = 60,
-  tol = 1e-5
+  _T_guess_K: number = 350,
+  maxIter = 100,
+  tol = 1e-6
 ): BubbleDewResult | null {
   const x = [x1_feed, 1 - x1_feed];
-  let T = T_guess_K;
-  let y: number[] = [...x];
-  const eta_cross = params.eta_cross ?? 0;
-  const useHoc = eta_cross > 0 ||
-    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
-    (comps[1].hocProps?.eta_self ?? 0) > 0;
+  // UNIQUAC assumes ideal vapour phase; disable HOC (same reason as NRTL/Wilson).
 
-  for (let i = 0; i < maxIter; i++) {
+  let y_inner = [...x];
+  const objective = (T: number): number => {
     const Psat = [calculatePsat_Pa(comps[0].antoine, T), calculatePsat_Pa(comps[1].antoine, T)];
-    if (Psat.some(p => isNaN(p))) return null;
+    if (Psat.some(p => !isFinite(p) || p <= 0)) return NaN;
     const gamma = calculateUniquacGamma(comps, x, T, params);
-    if (!gamma) return null;
-
-    const phi = useHoc
-      ? hocFugacityCorrection(comps, y, T, P_system_Pa, Psat, eta_cross)
-      : ([1, 1] as [number, number]);
-
-    const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
+    if (!gamma) return NaN;
+    const KPsat = [x[0] * gamma[0] * Psat[0], x[1] * gamma[1] * Psat[1]];
     const Pcalc = KPsat[0] + KPsat[1];
-    const err = Pcalc - P_system_Pa;
-    if (Math.abs(err) < tol * P_system_Pa) {
-      y = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
-      return { comp1_feed: x1_feed, comp1_equilibrium: y[0], T_K: T, P_Pa: P_system_Pa };
-    }
-    const Ptmp = Pcalc || P_system_Pa;
-    y = [KPsat[0] / Ptmp, KPsat[1] / Ptmp];
-    T -= err / P_system_Pa * (T * 0.05);
-    if (T < 100 || T > 1000) return null;
+    if (Pcalc > 0) y_inner = [KPsat[0] / Pcalc, KPsat[1] / Pcalc];
+    return Pcalc / P_system_Pa - 1.0;
+  };
+
+  const T1 = antoineBoilingPointSolverLocal(comps[0].antoine, P_system_Pa);
+  const T2 = antoineBoilingPointSolverLocal(comps[1].antoine, P_system_Pa);
+  if (!T1 || !T2) return null;
+  const Tmin_UQ = Math.min(comps[0].antoine?.Tmin_K ?? 100, comps[1].antoine?.Tmin_K ?? 100); // MIN: see NRTL comment
+  const Tmax_UQ = Math.max(comps[0].antoine?.Tmax_K ?? 1500, comps[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3); // extend for supercritical
+  if (Tmin_UQ >= Tmax_UQ) return null;
+  let T_low = Math.max(Tmin_UQ, Math.min(T1, T2) - 50);
+  let T_high = Math.min(Tmax_UQ, Math.max(T1, T2) + 50);
+  if (T_low >= T_high) { T_low = Tmin_UQ; T_high = Tmax_UQ; }
+  for (let expand = 0; expand < 20; expand++) {
+    const flo = objective(T_low), fhi = objective(T_high);
+    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+    if (T_low <= Tmin_UQ && T_high >= Tmax_UQ) return null;
+    T_low = Math.max(Tmin_UQ, T_low - 25);
+    T_high = Math.min(Tmax_UQ, T_high + 25);
   }
-  return null;
+  const SCAN_STEP_UQ = 5;
+  let Tlo_b_UQ = T_low, Thi_b_UQ = T_high;
+  for (let T = T_low; T < T_high - SCAN_STEP_UQ / 2; T += SCAN_STEP_UQ) {
+    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_UQ, T_high));
+    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b_UQ = T; Thi_b_UQ = Math.min(T + SCAN_STEP_UQ, T_high); break; }
+  }
+
+  const T_bubble = _brentRoot(objective, Tlo_b_UQ, Thi_b_UQ, tol, maxIter);
+  if (T_bubble === null) return null;
+
+  const Psat_f = [calculatePsat_Pa(comps[0].antoine, T_bubble), calculatePsat_Pa(comps[1].antoine, T_bubble)];
+  const gamma_f = calculateUniquacGamma(comps, x, T_bubble, params);
+  if (!gamma_f) return null;
+  const kp = [x[0]*gamma_f[0]*Psat_f[0], x[1]*gamma_f[1]*Psat_f[1]];
+  const sum_kp = kp[0] + kp[1];
+  return { comp1_feed: x1_feed, comp1_equilibrium: sum_kp > 0 ? kp[0]/sum_kp : x[0], T_K: T_bubble, P_Pa: P_system_Pa };
 }
 
 export function calculateBubblePressureUniquac(
@@ -1437,21 +1514,10 @@ export function calculateBubblePressureUniquac(
   const gamma = calculateUniquacGamma(comps, x, T_K, params);
   if (!gamma) return null;
 
-  const eta_cross = params.eta_cross ?? 0;
-  const useHoc = eta_cross > 0 ||
-    (comps[0].hocProps?.eta_self ?? 0) > 0 ||
-    (comps[1].hocProps?.eta_self ?? 0) > 0;
-
+  // UNIQUAC assumes ideal vapour phase; disable HOC.
   const PcalcIdeal = x[0] * gamma[0] * Psat[0] + x[1] * gamma[1] * Psat[1];
-  const yIdeal = [x[0] * gamma[0] * Psat[0] / PcalcIdeal, x[1] * gamma[1] * Psat[1] / PcalcIdeal];
-  const phi = useHoc
-    ? hocFugacityCorrection(comps, yIdeal, T_K, PcalcIdeal, Psat, eta_cross)
-    : ([1, 1] as [number, number]);
-
-  const KPsat = [x[0] * gamma[0] * Psat[0] * phi[0], x[1] * gamma[1] * Psat[1] * phi[1]];
-  const Pcalc = KPsat[0] + KPsat[1];
-  const y1 = KPsat[0] / Pcalc;
-  return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K, P_Pa: Pcalc };
+  const y1 = x[0] * gamma[0] * Psat[0] / PcalcIdeal;
+  return { comp1_feed: x1_feed, comp1_equilibrium: y1, T_K, P_Pa: PcalcIdeal };
 }
 
 // ==============================================================
@@ -1739,7 +1805,10 @@ export async function fetchNrtlParameters(
   if (!name1 || !name2) throw new Error('Component names required for NRTL');
   if (name1 === name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 
-  const result = await fetchAspenBinaryRow(supabase, 'nistv140_nrtl_wide', 'apv140_nrtl_wide', name1, name2);
+  // APV VLE-HOC first — NIST NRTL params use alpha=0.1 (non-standard) and were not regressed with
+  // the same HOC vapour-phase model. APV VLE-HOC matches Aspen Plus default and gives the most
+  // accurate combined liquid-γ + vapour-phase results (same rationale as Wilson, see below).
+  const result = await fetchAspenBinaryRow(supabase, 'apv140_nrtl_wide', 'nistv140_nrtl_wide', name1, name2);
   if (result) {
     const { row, isForward } = result;
     // Aspen NRTL: τ_ij = aij + bij/T  (aij dim'less, bij in K)
@@ -1847,7 +1916,8 @@ export async function fetchUniquacInteractionParams(
 ): Promise<UniquacInteractionParams> {
   if (!name1 || !name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0 };
 
-  const result = await fetchAspenBinaryRow(supabase, 'nistv140_uniq_wide', 'apv140_uniq_wide', name1, name2);
+  // APV first — same rationale as NRTL: APV VLE-HOC gives self-consistent Aspen-default results.
+  const result = await fetchAspenBinaryRow(supabase, 'apv140_uniq_wide', 'nistv140_uniq_wide', name1, name2);
   if (result) {
     const { row, isForward } = result;
     // Aspen UNIQUAC: τ_ij = exp(aij + bij/T + cij·lnT + dij·T)
