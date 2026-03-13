@@ -54,6 +54,19 @@ export type DiagramType = 'txy' | 'pxy' | 'xy';
 
 echarts.use([TitleComponent, TooltipComponent, GridComponent, LegendComponent, MarkPointComponent, ToolboxComponent, LineChart, ScatterChart, CanvasRenderer]);
 
+// Round a slider minimum to 3 significant figures to avoid displaying ugly
+// floating-point artifacts like 0.14473300000000222 in the slider label.
+function niceMin(v: number): number {
+    if (!isFinite(v) || v === 0) return v;
+    if (v < 0) {
+        const absV = Math.abs(v);
+        const mag = Math.pow(10, Math.floor(Math.log10(absV)) - 2);
+        return -Math.floor(absV / mag) * mag; // round toward zero (less negative = more restrictive)
+    }
+    const mag = Math.pow(10, Math.floor(Math.log10(v)) - 2);
+    return Math.ceil(v / mag) * mag; // round away from zero (larger = more restrictive)
+}
+
 // Utility to compute a 'nice' slider step given the maximum value
 function computeStep(maxVal: number): number {
     const desiredSteps = 100;
@@ -72,7 +85,7 @@ function computeStep(maxVal: number): number {
 export default function VleDiagramPage() {
     const { resolvedTheme } = useTheme();
     const [comp1Name, setComp1Name] = useState('Methanol');
-    const [comp2Name, setComp2Name] = useState('H2O');
+    const [comp2Name, setComp2Name] = useState('WATER');
     const [diagramType, setDiagramType] = useState<DiagramType>('txy');
     const [temperatureC, setTemperatureC] = useState<number | null>(60);
     const [pressureBar, setPressureBar] = useState<number | null>(1);
@@ -86,6 +99,9 @@ export default function VleDiagramPage() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [echartsOptions, setEchartsOptions] = useState<EChartsOption>({});
+    const [alphaData, setAlphaData] = useState<{ x: number[], alpha: number[] } | null>(null);
+    const [alphaEchartsOptions, setAlphaEchartsOptions] = useState<EChartsOption>({});
+    const [activeTab, setActiveTab] = useState<DiagramType | 'alpha'>('txy');
     const [displayedParams, setDisplayedParams] = useState({ comp1: '', comp2: '', temp: null as number | null, pressure: null as number | null, package: '', type: '' });
     
     // Caching states
@@ -112,6 +128,7 @@ export default function VleDiagramPage() {
     const input2Ref = useRef<HTMLInputElement>(null);
     const activeComponentRef = useRef<HTMLDivElement>(null);
     const echartsRef = useRef<ReactECharts | null>(null);
+    const alphaEchartsRef = useRef<ReactECharts | null>(null);
     const plotDataRef = useRef<{ bubble: [number, number][], dew: [number, number][] }>({ bubble: [], dew: [] });
     const leverRuleDataRef = useRef<{ liquid: number | null, vapor: number | null }>({ liquid: null, vapor: null });
     const yMinRef = useRef<number | undefined>(undefined);
@@ -149,10 +166,10 @@ export default function VleDiagramPage() {
 
         const pMinPa = Math.max(libCalculatePsat_Pa(a1, a1.Tmin_K), libCalculatePsat_Pa(a2, a2.Tmin_K));
         return {
-            maxPBar: isFinite(maxPPa) && maxPPa > 0 ? maxPPa / 1e5 : null,
-            minPBar: isFinite(pMinPa) && pMinPa > 0 ? Math.max(0.001, pMinPa / 1e5) : 0.001,
-            maxTC:   isFinite(maxTK) ? maxTK - 273.15 : null,
-            minTC:   isFinite(Math.max(a1.Tmin_K, a2.Tmin_K)) ? Math.max(a1.Tmin_K, a2.Tmin_K) - 273.15 : null,
+            maxPBar: isFinite(maxPPa) && maxPPa > 0 ? Number((maxPPa / 1e5).toFixed(4)) : null,
+            minPBar: isFinite(pMinPa) && pMinPa > 0 ? Number(Math.max(0.1, pMinPa / 1e5).toFixed(4)) : 0.1,
+            maxTC:   isFinite(maxTK) ? Number((maxTK - 273.15).toFixed(2)) : null,
+            minTC:   isFinite(Math.max(a1.Tmin_K, a2.Tmin_K)) ? Number((Math.max(a1.Tmin_K, a2.Tmin_K) - 273.15).toFixed(2)) : -50,
         };
     }, [comp1Data, comp2Data]);
 
@@ -506,6 +523,13 @@ export default function VleDiagramPage() {
                         }
                     }
 
+                    // Relative volatility α₁₂ — valid for all diagram types since sortedX=x₁ and sortedY=y₁
+                    const yEquil = interp(xVal, sortedX, sortedY);
+                    if (yEquil !== null && xVal > 1e-6 && xVal < 1 - 1e-6 && yEquil > 1e-6 && yEquil < 1 - 1e-6) {
+                        const alpha12 = (yEquil / xVal) / ((1 - yEquil) / (1 - xVal));
+                        html += `<span style="color: #6366f1; font-family: 'Merriweather Sans';">\u03b1\u2081\u2082 = ${formatNumberToPrecision(alpha12, 3)}</span><br/>`;
+                    }
+
                     // Add Lever Rule Info
                     const leverData = leverRuleDataRef.current;
                     if (leverData && leverData.liquid !== null) {
@@ -526,6 +550,90 @@ export default function VleDiagramPage() {
             },
         });
     }, [diagramType, useTemperatureForXY, displayedParams, resolvedTheme]);
+
+    const generateAlphaEchartsOptions = useCallback((data: { x: number[], alpha: number[] }, params = displayedParams, themeOverride?: string) => {
+        const themeToUse = themeOverride ?? resolvedTheme;
+        const isDark = themeToUse === 'dark';
+        const textColor = isDark ? 'white' : '#000000';
+        const tooltipBg = isDark ? '#1a1a2e' : '#ffffff';
+        const tooltipBorder = isDark ? '#55aaff' : '#d1d5db';
+        const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+        const comp1Label = capitalize(params.comp1);
+        const comp2Label = capitalize(params.comp2);
+        const validAlphas = data.alpha.filter(a => isFinite(a) && a > 0);
+        if (validAlphas.length === 0) return;
+        const alphaMin = Math.min(...validAlphas);
+        const alphaMax = Math.max(...validAlphas);
+        const pad = (alphaMax - alphaMin) * 0.1 || 0.5;
+        const yMin = Math.max(0, alphaMin - pad);
+        const yMax = alphaMax + pad;
+        setAlphaEchartsOptions({
+            backgroundColor: 'transparent',
+            title: {
+                text: `Relative Volatility \u2014 ${comp1Label}\u2009/\u2009${comp2Label}`,
+                left: 'center',
+                textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }
+            },
+            grid: { top: '12%', bottom: '15%', left: '15%', right: '5%', containLabel: false },
+            xAxis: {
+                type: 'value', min: 0, max: 1, interval: 0.1,
+                name: `Liquid Mole Fraction ${comp1Label} (x\u2081)`,
+                nameLocation: 'middle', nameGap: 40,
+                nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+                axisLine: { lineStyle: { color: textColor } },
+                axisTick: { lineStyle: { color: textColor } },
+                axisLabel: { color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans' },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                name: '\u03b1\u2081\u2082',
+                min: yMin, max: yMax,
+                nameLocation: 'middle', nameGap: 60,
+                nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+                axisLine: { lineStyle: { color: textColor } },
+                axisTick: { lineStyle: { color: textColor } },
+                axisLabel: {
+                    color: textColor, fontSize: 14, fontFamily: 'Merriweather Sans',
+                    formatter: (value: number) => {
+                        if (value >= yMax - (yMax - yMin) * 0.001) return '';
+                        if (value <= yMin + (yMax - yMin) * 0.001) return '';
+                        return formatNumberToPrecision(value, 4);
+                    }
+                },
+                splitLine: { show: false }
+            },
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: tooltipBg, borderColor: tooltipBorder, borderWidth: 1,
+                padding: [8, 12],
+                textStyle: { color: textColor, fontFamily: 'Merriweather Sans' },
+                axisPointer: {
+                    type: 'line',
+                    lineStyle: { color: isDark ? '#55aaff' : '#999', type: 'dashed', width: 1 }
+                },
+                formatter: (params: any) => {
+                    if (!Array.isArray(params) || params.length === 0) return '';
+                    const x = params[0].value[0];
+                    const alpha = params[0].value[1];
+                    return `<span style="font-weight:600;font-family:'Merriweather Sans';">x\u2081 = ${formatNumberToPrecision(x, 4)}</span><br/>`
+                         + `<span style="color:#6366f1;font-family:'Merriweather Sans';">\u03b1\u2081\u2082 = ${formatNumberToPrecision(alpha, 4)}</span>`;
+                }
+            },
+            series: [
+                {
+                    name: '\u03b1\u2081\u2082',
+                    type: 'line',
+                    data: data.x.map((x, i) => [x, data.alpha[i]]),
+                    symbol: 'none',
+                    color: '#6366f1',
+                    lineStyle: { width: 2.5 }
+                }
+            ],
+            animation: false,
+            toolbox: { show: false }
+        });
+    }, [displayedParams, resolvedTheme]);
 
     // ...existing code... (event handlers replaced by memoized versions below)
 
@@ -741,12 +849,25 @@ export default function VleDiagramPage() {
             setDisplayedParams(newParams);
             generateEchartsOptions(results, newParams, resolvedTheme);
 
+            // Compute relative volatility α₁₂ = (y₁/x₁) / ((1−y₁)/(1−x₁))
+            const avX: number[] = [], avAlpha: number[] = [];
+            (results.x as number[]).forEach((x1: number, i: number) => {
+                const y1 = results.y[i];
+                if (x1 > 1e-6 && x1 < 1 - 1e-6 && y1 > 1e-6 && y1 < 1 - 1e-6) {
+                    avX.push(x1);
+                    avAlpha.push((y1 / x1) / ((1 - y1) / (1 - x1)));
+                }
+            });
+            const newAlphaData = { x: avX, alpha: avAlpha };
+            setAlphaData(newAlphaData);
+            if (avX.length > 0) generateAlphaEchartsOptions(newAlphaData, newParams, resolvedTheme);
+
         } catch (err: any) {
             setError(`Calculation failed: ${err.message}`);
         } finally {
             if (showLoading) setLoading(false);
         }
-    }, [comp1Name, comp2Name, diagramType, fluidPackage, pressureBar, temperatureC, useTemperatureForXY, resolvedTheme, comp1Data, comp2Data, interactionParams, displayedParams.package, generateEchartsOptions]);
+    }, [comp1Name, comp2Name, diagramType, fluidPackage, pressureBar, temperatureC, useTemperatureForXY, resolvedTheme, comp1Data, comp2Data, interactionParams, displayedParams.package, generateEchartsOptions, generateAlphaEchartsOptions]);
 
     useEffect(() => {
         if (supabase && autoGenerateOnCompChange) {
@@ -763,15 +884,24 @@ export default function VleDiagramPage() {
     }, [resolvedTheme, chartData, displayedParams, generateEchartsOptions]);
 
     useEffect(() => {
+        if (alphaData && alphaData.x.length > 0) {
+            generateAlphaEchartsOptions(alphaData, displayedParams, resolvedTheme);
+        }
+    }, [resolvedTheme, alphaData, displayedParams, generateAlphaEchartsOptions]);
+
+    useEffect(() => {
+        if (autoGenerateOnCompChange) return;
         if (diagramType === 'txy' || (diagramType === 'xy' && !useTemperatureForXY)) generateDiagram(false);
     }, [pressureBar]);
 
     useEffect(() => {
+        if (autoGenerateOnCompChange) return;
         if (diagramType === 'pxy' || (diagramType === 'xy' && useTemperatureForXY)) generateDiagram(false);
     }, [temperatureC]);
     
     // Auto-generate when diagram type or fluid package changes
     useEffect(() => {
+        if (autoGenerateOnCompChange) return;
         generateDiagram();
     }, [diagramType, fluidPackage, useTemperatureForXY]);
 
@@ -825,7 +955,11 @@ export default function VleDiagramPage() {
     };
 
     const renderConditionalInput = () => {
-        switch (diagramType) {
+        // When viewing the Relative Volatility (alpha) chart, we use the same T/P choice 
+        // as the XY diagram so the user can see how alpha changes with either variable.
+        const effectiveType = activeTab === 'alpha' ? 'xy' : diagramType;
+
+        switch (effectiveType) {
             case 'txy':
                 return (
                     <div className="space-y-2">
@@ -850,15 +984,10 @@ export default function VleDiagramPage() {
                             </div>
                         </div>
                         <Slider id="pressure-slider"
-                            min={antoineLimits?.minPBar ?? 0.001}
+                            min={0.1}
                             max={parseFloat(pressureMax) || 10}
                             step={computeStep(parseFloat(pressureMax) || 10)}
                             value={[pressureBar || 1]} onValueChange={([v]) => setPressureBar(v)} className="w-full"/>
-                        {modelPressureWarning && (
-                            <p className={`text-xs ${modelPressureWarning.level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
-                                ⚠ ~{modelPressureWarning.pct.toFixed(0)}% fugacity correction ignored by {fluidPackage.toUpperCase()} — consider PR or SRK.
-                            </p>
-                        )}
                     </div>
                 );
             case 'pxy':
@@ -886,9 +1015,9 @@ export default function VleDiagramPage() {
                             </div>
                         </div>
                         <Slider id="temperature-slider"
-                            min={antoineLimits?.minTC ?? -50}
-                            max={Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)}
-                            step={computeStep(Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity))}
+                            min={-100}
+                            max={parseFloat(tempMax) || 200}
+                            step={computeStep(parseFloat(tempMax) || 200)}
                             value={[temperatureC || 60]} onValueChange={([v]) => setTemperatureC(v)} className="w-full"/>
                     </div>
                 );
@@ -924,7 +1053,7 @@ export default function VleDiagramPage() {
                                             else setTempMax(String(Math.min(num, antoineLimits?.maxTC ?? 2000)));
                                         } else {
                                             if (raw === "" || isNaN(num)) setPressureMax(raw);
-                                            else setPressureMax(String(Math.min(num, antoineLimits?.maxPBar ?? 2000)));
+                                            else setPressureMax(String(num));
                                         }
                                     }}
                                     className="w-16 h-8 text-xs"
@@ -933,22 +1062,13 @@ export default function VleDiagramPage() {
                         </div>
                         <Slider
                             id="xy-slider"
-                            min={useTemperatureForXY ? (antoineLimits?.minTC ?? -50) : (antoineLimits?.minPBar ?? 0.001)}
-                            max={useTemperatureForXY
-                                ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
-                                : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity)}
-                            step={computeStep(useTemperatureForXY
-                                ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
-                                : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity))}
+                            min={useTemperatureForXY ? -100 : 0.1}
+                            max={useTemperatureForXY ? (parseFloat(tempMax) || 200) : (parseFloat(pressureMax) || 10)}
+                            step={computeStep(useTemperatureForXY ? (parseFloat(tempMax) || 200) : (parseFloat(pressureMax) || 10))}
                             value={[useTemperatureForXY ? temperatureC ?? 60 : pressureBar ?? 1]}
                             onValueChange={([v]) => useTemperatureForXY ? setTemperatureC(v) : setPressureBar(v)}
                             className="w-full"
                         />
-                        {!useTemperatureForXY && modelPressureWarning && (
-                            <p className={`text-xs ${modelPressureWarning.level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
-                                ⚠ ~{modelPressureWarning.pct.toFixed(0)}% fugacity correction ignored by {fluidPackage.toUpperCase()} — consider PR or SRK.
-                            </p>
-                        )}
                     </div>
                 );
             default: return null;
@@ -1036,29 +1156,106 @@ export default function VleDiagramPage() {
                 return
             }
 
-            const interpInverse = (yTarget: number, data: [number, number][]): number | null => {
+            // Find ALL x-positions where a curve crosses the horizontal yTarget (handles azeotropes).
+            const interpInverseAll = (yTarget: number, data: [number, number][]): number[] => {
+                const results: number[] = []
                 for (let i = 0; i < data.length - 1; i++) {
                     const [x1, y1] = data[i]
                     const [x2, y2] = data[i + 1]
                     if ((y1 <= yTarget && yTarget <= y2) || (y2 <= yTarget && yTarget <= y1)) {
-                        if (Math.abs(y2 - y1) < 1e-9) return x1
-                        const t = (yTarget - y1) / (y2 - y1)
-                        return x1 + t * (x2 - x1)
+                        if (Math.abs(y2 - y1) < 1e-9) results.push(x1)
+                        else results.push(x1 + (yTarget - y1) / (y2 - y1) * (x2 - x1))
+                    }
+                }
+                return results
+            }
+
+            // Interpolate a curve in the forward direction: given cursorX, return the y-value
+            // on the curve (using the curve's x-axis as the independent variable).
+            // Returns null if cursorX is outside the curve's domain.
+            const interpForward = (xTarget: number, data: [number, number][]): number | null => {
+                for (let i = 0; i < data.length - 1; i++) {
+                    const [x1, y1] = data[i]
+                    const [x2, y2] = data[i + 1]
+                    const lo = Math.min(x1, x2), hi = Math.max(x1, x2)
+                    if (xTarget >= lo - 1e-9 && xTarget <= hi + 1e-9) {
+                        if (Math.abs(x2 - x1) < 1e-12) return (y1 + y2) / 2
+                        return y1 + (y2 - y1) * (xTarget - x1) / (x2 - x1)
                     }
                 }
                 return null
             }
 
-            const bubbleX = interpInverse(cursorY, bubble)
-            const dewX = interpInverse(cursorY, dew)
+            const bubbleCrossings = interpInverseAll(cursorY, bubble)
+            const dewCrossings = interpInverseAll(cursorY, dew)
+
+            // Merge and sort all crossing x-values so we can apply the noInterleavedCrossings rule.
+            // A valid physical tie-line is a (bubble, dew) pair with NO other crossing strictly
+            // between its two endpoints. For an azeotrope, cross-pairs (x_b1, x_d2) and (x_b2, x_d1)
+            // always have another crossing between them, so they are correctly rejected here.
+            const allCrossingsSorted: { x: number }[] = [
+                ...bubbleCrossings.map(x => ({ x })),
+                ...dewCrossings.map(x => ({ x })),
+            ].sort((a, b) => a.x - b.x)
+
+            const validPairs: { bubbleX: number; dewX: number }[] = []
+            for (const bx of bubbleCrossings) {
+                for (const dx of dewCrossings) {
+                    const lo = Math.min(bx, dx)
+                    const hi = Math.max(bx, dx)
+                    const hasInterleaved = allCrossingsSorted.some(c =>
+                        c.x > lo + 1e-9 && c.x < hi - 1e-9 &&
+                        Math.abs(c.x - bx) > 1e-9 && Math.abs(c.x - dx) > 1e-9
+                    )
+                    if (!hasInterleaved) validPairs.push({ bubbleX: bx, dewX: dx })
+                }
+            }
+
+            // The active pair is the unique valid pair whose span brackets cursorX.
+            let activePair = validPairs.find(p =>
+                cursorX >= Math.min(p.bubbleX, p.dewX) && cursorX <= Math.max(p.bubbleX, p.dewX)
+            )
+
+            // Guard against false positives when curves have hump shapes (e.g. benzene-water
+            // heterogeneous azeotrope). Even if the horizontal scan found a (bubble, dew) pair
+            // that brackets cursorX, the cursor may be in the pure-liquid or pure-vapor region.
+            //
+            // Strategy: forward-interpolate BOTH curves at cursorX to get the local phase
+            // boundaries. The two-phase region is always the interval between the two curves,
+            // i.e. [min(bub,dew), max(bub,dew)]. We use min/max rather than assuming a fixed
+            // ordering, because on the benzene-rich side of benzene-water the dew curve dips
+            // BELOW the bubble curve (inverted/retrograde topology), yet the two-phase region
+            // is still perfectly physical between them.
+            //   Outside envelope: cursorY < min(bub,dew)  OR  cursorY > max(bub,dew)
+            // The same logic applies to both Txy and Pxy — only the axis meaning differs.
+            if (activePair !== undefined) {
+                const bubbleCurveY = interpForward(cursorX, bubble)
+                const dewCurveY    = interpForward(cursorX, dew)
+                if (bubbleCurveY !== null && dewCurveY !== null) {
+                    const envLo = Math.min(bubbleCurveY, dewCurveY)
+                    const envHi = Math.max(bubbleCurveY, dewCurveY)
+                    const outsideEnvelope = cursorY < envLo - 1e-9 || cursorY > envHi + 1e-9
+                    if (outsideEnvelope) activePair = undefined
+                } else if (bubbleCurveY !== null) {
+                    // Fallback: only bubble curve available — use original single-curve heuristic
+                    const outsideEnvelope =
+                        diagramType === 'pxy'
+                            ? cursorY > bubbleCurveY + 1e-9   // above bubble → pure liquid
+                            : cursorY < bubbleCurveY - 1e-9   // below bubble → pure liquid (Txy)
+                    if (outsideEnvelope) activePair = undefined
+                }
+            }
+
+            const bubbleX = activePair?.bubbleX ?? null
+            const dewX = activePair?.dewX ?? null
             const yAxisMin = yMinRef.current ?? 0
 
-            const inRegion = bubbleX !== null && dewX !== null && cursorX >= Math.min(bubbleX, dewX) && cursorX <= Math.max(bubbleX, dewX)
+            const inRegion = activePair !== undefined
 
             // *** UNCOMMENT THE LINE BELOW TO DEBUG IN YOUR BROWSER'S CONSOLE ***
-            // console.log(`Cursor: (${cursorX.toFixed(3)}, ${cursorY.toFixed(3)}), BubbleX: ${bubbleX?.toFixed(3)}, DewX: ${dewX?.toFixed(3)}, InRegion: ${inRegion}`)
+            // console.log(`Cursor: (${cursorX.toFixed(3)}, ${cursorY.toFixed(3)}), BubbleCrossings: [${bubbleCrossings.map(x=>x.toFixed(3))}], DewCrossings: [${dewCrossings.map(x=>x.toFixed(3))}], ValidPairs: ${validPairs.length}, InRegion: ${inRegion}`)
 
-            if (inRegion) {
+            if (inRegion && bubbleX !== null && dewX !== null) {
                 // Added Math.abs for robustness in lever rule calculation
                 leverRuleDataRef.current = {
                     liquid: Math.abs((dewX - cursorX) / (dewX - bubbleX)),
@@ -1204,8 +1401,24 @@ export default function VleDiagramPage() {
     }), [handleAxisPointerUpdate, handleChartMouseOut]);
 
     const handleDownloadChart = () => {
+        if (activeTab === 'alpha') {
+            const chart = alphaEchartsRef.current?.getEchartsInstance();
+            if (!chart) return;
+            const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'alpha_chart.png';
+            a.click();
+            return;
+        }
         const chart = echartsRef.current?.getEchartsInstance();
         if (!chart) return;
+        // Clear interactive overlays (cursor dot, tie lines) so they don't appear in the export
+        const clearSeries: any[] = [{ id: 'cursor-dot', data: [] }];
+        if (diagramType === 'txy' || diagramType === 'pxy') {
+            clearSeries.push({ id: 'tie-line', markLine: { data: [] }, markPoint: { data: [] } });
+        }
+        chart.setOption({ series: clearSeries });
         const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: resolvedTheme === 'dark' ? '#0f172a' : '#ffffff' });
         const a = document.createElement('a');
         a.href = url;
@@ -1220,8 +1433,16 @@ export default function VleDiagramPage() {
                     <Card>
                         <CardHeader><CardTitle>VLE Diagram Generator</CardTitle></CardHeader>
                         <CardContent className="space-y-6">
-                            <Tabs value={diagramType} onValueChange={(v) => setDiagramType(v as DiagramType)} className="w-full">
-                                <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="txy">Txy</TabsTrigger><TabsTrigger value="pxy">Pxy</TabsTrigger><TabsTrigger value="xy">xy</TabsTrigger></TabsList>
+                            <Tabs value={activeTab} onValueChange={(v) => {
+                                if (v !== 'alpha') setDiagramType(v as DiagramType);
+                                setActiveTab(v as DiagramType | 'alpha');
+                            }} className="w-full">
+                                <TabsList className="grid w-full grid-cols-4">
+                                    <TabsTrigger value="txy">Txy</TabsTrigger>
+                                    <TabsTrigger value="pxy">Pxy</TabsTrigger>
+                                    <TabsTrigger value="xy">xy</TabsTrigger>
+                                    <TabsTrigger value="alpha" disabled={!alphaData || alphaData.x.length === 0}>α₁₂</TabsTrigger>
+                                </TabsList>
                             </Tabs>
                             <div className="space-y-4">
                                 <div className="flex items-center gap-2">
@@ -1341,13 +1562,13 @@ export default function VleDiagramPage() {
                       </Card>
                     )}
                 </div>
-                <div className="lg:col-span-2">
-                    <Card className="h-full"><CardContent className="py-2 h-full">
-                                <div className="relative aspect-square rounded-md h-full z-10">
+                <div className="lg:col-span-2 flex flex-col gap-4">
+                    <Card><CardContent className="py-2">
+                        <div className="relative aspect-square rounded-md z-10">
                            {loading && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground"><div className="text-center"><div className="mb-2">Loading & Calculating...</div><div className="text-sm text-muted-foreground/70">Using { fluidPackage.toUpperCase()} model.</div></div></div> )}
                            {!loading && !chartData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Provide inputs and generate a diagram.</div> )}
                            {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center text-red-400">Error: {error}</div> )}
-                           {!loading && chartData && Object.keys(echartsOptions).length > 0 && (
+                           {!loading && chartData && Object.keys(echartsOptions).length > 0 && activeTab !== 'alpha' && (
                             <ReactECharts 
                                 ref={echartsRef}
                                 echarts={echarts} 
@@ -1356,6 +1577,16 @@ export default function VleDiagramPage() {
                                 notMerge={false} 
                                 lazyUpdate={true}
                                 onEvents={onEvents}
+                            />
+                           )}
+                           {activeTab === 'alpha' && alphaData && alphaData.x.length > 0 && Object.keys(alphaEchartsOptions).length > 0 && (
+                            <ReactECharts
+                                ref={alphaEchartsRef}
+                                echarts={echarts}
+                                style={{ height: '100%', width: '100%' }}
+                                option={alphaEchartsOptions}
+                                notMerge={true}
+                                lazyUpdate={true}
                             />
                            )}
                            {!!chartData && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}

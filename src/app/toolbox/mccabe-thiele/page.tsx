@@ -93,6 +93,147 @@ import type { CompoundAlias } from '@/lib/antoine-utils';
 
 type EChartsPoint = [number, number] | [number | null, number | null];
 type FluidPackageTypeMcCabe = 'unifac' | 'nrtl' | 'pr' | 'srk' | 'uniquac' | 'wilson';
+type SensitivityVar = 'tc_or_p' | 'xd' | 'xf' | 'xb' | 'q' | 'r' | 'murphree';
+
+// Round a slider minimum UP to the nearest step increment so the min tick aligns
+// with the rest of the slider's grid.  Falls back to 3-sig-fig rounding when
+// no step is provided (e.g. when used outside slider context).
+function niceMin(v: number, step?: number): number {
+    if (!isFinite(v)) return v;
+    if (step && step > 0) {
+        return Math.ceil(v / step) * step;
+    }
+    if (v === 0) return 0;
+    if (v < 0) {
+        const absV = Math.abs(v);
+        const mag = Math.pow(10, Math.floor(Math.log10(absV)) - 2);
+        return -Math.floor(absV / mag) * mag;
+    }
+    const mag = Math.pow(10, Math.floor(Math.log10(v)) - 2);
+    return Math.ceil(v / mag) * mag;
+}
+
+// Pure stage-counting function used by sensitivity sweep (no state side-effects).
+function countStagesForSweep(
+    xValues: number[], yValues: number[],
+    params: { xd: number; xb: number; xf: number; q: number; r: number; murphreeEfficiency: number; buffer: number }
+): { stages: number; feedStage: number } {
+    const { xd, xb, xf, q, r, murphreeEfficiency, buffer } = params;
+    const rectifyingSlope = r / (r + 1);
+    const rectifyingIntercept = xd / (r + 1);
+    const feedSlope = Math.abs(q - 1) < 1e-6 ? Infinity : q / (q - 1);
+    const feedIntercept = feedSlope === Infinity ? NaN : xf - feedSlope * xf;
+    let xIntersect: number, yIntersect: number;
+    if (feedSlope === Infinity) {
+        xIntersect = xf;
+        yIntersect = rectifyingSlope * xf + rectifyingIntercept;
+    } else {
+        xIntersect = (feedIntercept - rectifyingIntercept) / (rectifyingSlope - feedSlope);
+        yIntersect = rectifyingSlope * xIntersect + rectifyingIntercept;
+    }
+    xIntersect = Math.max(0, Math.min(1, xIntersect));
+    yIntersect = Math.max(0, Math.min(1, yIntersect));
+    const strippingSlope = (xIntersect === xb) ? Infinity : (yIntersect - xb) / (xIntersect - xb);
+    const strippingIntercept = strippingSlope === Infinity ? NaN : xb - strippingSlope * xb;
+    let yDataForStepping = yValues;
+    if (murphreeEfficiency < 1.0) {
+        yDataForStepping = xValues.map((x, i) => {
+            const y_eq = yValues[i];
+            const y_op = x >= xIntersect
+                ? rectifyingSlope * x + rectifyingIntercept
+                : (strippingSlope === Infinity ? xb : strippingSlope * x + strippingIntercept);
+            return y_op + murphreeEfficiency * (y_eq - y_op);
+        });
+    }
+    let stageCount = 0, feedStageCount = 0;
+    let currentX = xd, currentY = xd;
+    let previousSectionIsRectifying = true;
+    const MAX_STAGES = 300;
+    for (let i = 0; i < MAX_STAGES; i++) {
+        if (currentX <= xb + buffer) break;
+        let intersectX = NaN;
+        for (let j = 0; j < xValues.length - 1; j++) {
+            if ((yDataForStepping[j] <= currentY && yDataForStepping[j + 1] >= currentY) ||
+                (yDataForStepping[j] >= currentY && yDataForStepping[j + 1] <= currentY)) {
+                intersectX = Math.abs(yDataForStepping[j + 1] - yDataForStepping[j]) < 1e-9
+                    ? (yDataForStepping[j] === currentY ? xValues[j] : xValues[j + 1])
+                    : xValues[j] + ((currentY - yDataForStepping[j]) / (yDataForStepping[j + 1] - yDataForStepping[j])) * (xValues[j + 1] - xValues[j]);
+                break;
+            }
+        }
+        if (isNaN(intersectX)) break;
+        // Detect near-pinch / azeotrope — stepping is making no progress toward xb
+        if (i > 0 && Math.abs(intersectX - currentX) < 1e-5) break;
+        stageCount++;
+        if (intersectX <= xb + buffer) break;
+        const currentSectionIsRectifying = intersectX >= xIntersect;
+        let nextY = currentSectionIsRectifying
+            ? rectifyingSlope * intersectX + rectifyingIntercept
+            : (strippingSlope === Infinity ? xb : strippingSlope * intersectX + strippingIntercept);
+        nextY = Math.max(0, Math.min(1, nextY));
+        if (feedStageCount === 0 && currentSectionIsRectifying !== previousSectionIsRectifying) feedStageCount = stageCount;
+        previousSectionIsRectifying = currentSectionIsRectifying;
+        currentX = intersectX;
+        currentY = nextY;
+    }
+    // If we exhausted MAX_STAGES without converging, treat as infeasible (null)
+    const converged = currentX <= xb + buffer * 10 || stageCount < MAX_STAGES;
+    if (!converged) return { stages: 0, feedStage: 0 };
+    return { stages: stageCount, feedStage: (feedStageCount === 0 && stageCount > 0) ? stageCount : feedStageCount };
+}
+
+// Pure synchronous VLE computation used by T/P sensitivity sweep.
+function computeEquilibriumPointsSync(
+    data1: CompoundData, data2: CompoundData,
+    fluidPackage: FluidPackageTypeMcCabe,
+    activityParams: any,
+    useTemperature: boolean,
+    value: number, // tempC when useTemperature, pressureBar when !useTemperature
+    N: number = 80
+): { x: number[]; y: number[] } | null {
+    try {
+        const components: CompoundData[] = [data1, data2];
+        const stepSize = 1 / (N - 1);
+        const xFeedValues = Array.from({ length: N }, (_, i) => parseFloat((i * stepSize).toFixed(4)));
+        const xOut: number[] = [0.0], yOut: number[] = [0.0];
+        const pressurePa = !useTemperature ? value * 1e5 : null;
+        const Tbp1 = (!useTemperature && data1.antoine) ? antoineBoilingPointSolverLocal(data1.antoine, pressurePa!) : null;
+        const Tbp2 = (!useTemperature && data2.antoine) ? antoineBoilingPointSolverLocal(data2.antoine, pressurePa!) : null;
+        let prevBubbleT: number | null = null;
+        for (const x1 of xFeedValues.slice(1, -1)) {
+            let result: any = null;
+            if (useTemperature) {
+                const Tk = value + 273.15;
+                const pGuess = (data1.antoine && data2.antoine)
+                    ? (libCalculatePsat_Pa(data1.antoine, Tk) + libCalculatePsat_Pa(data2.antoine, Tk)) / 2
+                    : 101325;
+                if (fluidPackage === 'unifac') result = calculateBubblePressureUnifac(components, x1, Tk, activityParams as UnifacParameters);
+                else if (fluidPackage === 'nrtl') result = calculateBubblePressureNrtl(components, x1, Tk, activityParams as NrtlInteractionParams);
+                else if (fluidPackage === 'pr') result = calculateBubblePressurePr(components, x1, Tk, activityParams as PrInteractionParams, pGuess);
+                else if (fluidPackage === 'srk') result = calculateBubblePressureSrk(components, x1, Tk, activityParams as SrkInteractionParams, pGuess);
+                else if (fluidPackage === 'uniquac') result = calculateBubblePressureUniquac(components, x1, Tk, activityParams as LibUniquacInteractionParams);
+                else if (fluidPackage === 'wilson') result = calculateBubblePressureWilson(components, x1, Tk, activityParams as LibWilsonInteractionParams);
+            } else {
+                let tGuessDefault = (Tbp1 !== null && Tbp2 !== null) ? x1 * Tbp1 + (1 - x1) * Tbp2
+                    : (Tbp1 ?? Tbp2 ?? 373.15);
+                const tGuess = Math.max(150, Math.min(prevBubbleT ?? tGuessDefault, 1000));
+                if (fluidPackage === 'unifac') result = calculateBubbleTemperatureUnifac(components, x1, pressurePa!, activityParams as UnifacParameters, tGuess);
+                else if (fluidPackage === 'nrtl') result = calculateBubbleTemperatureNrtl(components, x1, pressurePa!, activityParams as NrtlInteractionParams, tGuess);
+                else if (fluidPackage === 'pr') result = calculateBubbleTemperaturePr(components, x1, pressurePa!, activityParams as PrInteractionParams, tGuess);
+                else if (fluidPackage === 'srk') result = calculateBubbleTemperatureSrk(components, x1, pressurePa!, activityParams as SrkInteractionParams, tGuess);
+                else if (fluidPackage === 'uniquac') result = calculateBubbleTemperatureUniquac(components, x1, pressurePa!, activityParams as LibUniquacInteractionParams, tGuess);
+                else if (fluidPackage === 'wilson') result = calculateBubbleTemperatureWilson(components, x1, pressurePa!, activityParams as LibWilsonInteractionParams, tGuess);
+                if (result?.T_K) prevBubbleT = result.T_K;
+            }
+            if (result && result.error === undefined && typeof result.comp1_equilibrium === 'number' && !isNaN(result.comp1_equilibrium)) {
+                xOut.push(x1);
+                yOut.push(result.comp1_equilibrium);
+            }
+        }
+        xOut.push(1.0); yOut.push(1.0);
+        return { x: xOut, y: yOut };
+    } catch { return null; }
+}
 
 export default function McCabeThielePage() {
   const { resolvedTheme } = useTheme(); // Get the resolved theme ('light' or 'dark')
@@ -172,6 +313,14 @@ export default function McCabeThielePage() {
 
   // Flag to trigger automatic graph regeneration after UI actions like swap, toggle, or fluid-package change
   const [autoGeneratePending, setAutoGeneratePending] = useState(false);
+  const [autoGenerateOnCompChange, setAutoGenerateOnCompChange] = useState(true);
+
+  // Sensitivity analysis state
+  const [sensitivityMode, setSensitivityMode] = useState(false);
+  const [activeSensVar, setActiveSensVar] = useState<SensitivityVar | null>(null);
+  const [sensitivityRunning, setSensitivityRunning] = useState(false);
+  const [sensitivityEchartsOptions, setSensitivityEchartsOptions] = useState<EChartsOption | null>(null);
+  const sensitivityDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Derive valid pressure/temperature bounds from Antoine Tmin/Tmax AND critical properties.
   // Same logic as binary-phase-diagrams so sliders can't reach unphysical conditions.
@@ -204,11 +353,7 @@ export default function McCabeThielePage() {
   // When compound limits change, clamp the Max-input boxes and current slider values.
   useEffect(() => {
       if (!antoineLimits) return;
-      if (antoineLimits.maxPBar !== null) {
-          const cur = parseFloat(pressureMax);
-          if (isFinite(cur) && cur > antoineLimits.maxPBar)
-              setPressureMax(String(Math.round(antoineLimits.maxPBar * 10) / 10));
-      }
+      // maxPBar clamping removed — users may explore supercritical/high-pressure conditions.
       if (antoineLimits.maxTC !== null) {
           const cur = parseFloat(tempMax);
           if (isFinite(cur) && cur > antoineLimits.maxTC)
@@ -246,21 +391,35 @@ export default function McCabeThielePage() {
       };
       const maxDev = Math.max(pitzDev(comp1Data) ?? 0, pitzDev(comp2Data) ?? 0);
       if (maxDev === 0) return null;
-      const pct = maxDev * 100;
-      if (pct > 15) return { level: 'error' as const, pct };
-      if (pct > 5)  return { level: 'warn'  as const, pct };
-      return null;
+      return null; // Force-disable all UI warnings for fugacity.
+      // const pct = maxDev * 100;
+      // if (pct > 15) return { level: 'error' as const, pct };
+      // if (pct > 5)  return { level: 'warn'  as const, pct };
+      // return null;
   }, [useTemperature, fluidPackage, pressureBar, comp1Data, comp2Data]);
 
   // --- useEffect for initial graph load ---
   useEffect(() => {
     // Automatically calculate and display the graph on initial component mount
     // with the default states (Methanol/Water, 60C, UNIQUAC).
-    if (supabase) { // Ensure supabase is initialized before first calculation
+    if (supabase && autoGenerateOnCompChange) { // Ensure supabase is initialized before first calculation
         calculateEquilibriumCurve();
+        setAutoGenerateOnCompChange(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]); // Add supabase as a dependency if it can be initially undefined
+
+  useEffect(() => {
+    if (autoGeneratePending) {
+        calculateEquilibriumCurve();
+        setAutoGeneratePending(false);
+    }
+  }, [autoGeneratePending]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (autoGenerateOnCompChange) return;
+    calculateEquilibriumCurve();
+  }, [temperatureC, pressureBar, fluidPackage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Data Fetching (Updated to use HYSYS tables) ---
   async function fetchCompoundDataLocal(compoundName: string): Promise<CompoundData | null> {
@@ -522,8 +681,8 @@ export default function McCabeThielePage() {
         calculated_x_values.push(1.0);
         calculated_y_values.push(1.0);
 
-        const sortedPairs = calculated_x_values.map((x_val, i) => ({x: x_val, y: calculated_y_values[i]}))
-            .sort((a,b) => a.x - b.x);
+        const sortedPairs = calculated_x_values.map((x_val, i) => ({ x: x_val, y: calculated_y_values[i] }))
+            .sort((a, b) => a.x - b.x);
 
         setEquilibriumData({ x: sortedPairs.map(p => p.x), y: sortedPairs.map(p => p.y) });
 
@@ -631,7 +790,7 @@ export default function McCabeThielePage() {
     const stageLineData: EChartsPoint[] = [];
     let previousSectionIsRectifying = true;
 
-    for(let i = 0; i < 50; i++) {
+    for(let i = 0; i < 300; i++) {
         if (currentX <= xb + buffer) break;
 
         let intersectX = NaN;
@@ -648,6 +807,8 @@ export default function McCabeThielePage() {
             }
         }
         if (isNaN(intersectX)) break;
+        // Near-pinch / azeotrope detection: stepping has stalled
+        if (i > 0 && Math.abs(intersectX - currentX) < 1e-5) break;
 
         finalStageX = intersectX;
         stageCount++;
@@ -840,102 +1001,54 @@ export default function McCabeThielePage() {
             show: true,
             trigger: 'axis',
             triggerOn: 'mousemove',
-            backgroundColor: isDark ? '#08306b' : '#ffffff',
-            borderColor: isDark ? '#55aaff' : '#333333',
+            backgroundColor: isDark ? '#1a1a2e' : '#ffffff',
+            borderColor: isDark ? '#55aaff' : '#d1d5db',
             borderWidth: 1,
+            padding: [8, 12],
             textStyle: {
                 color: textColor,
                 fontSize: 12,
                 fontFamily: 'Merriweather Sans'
             },
             axisPointer: {
-                type: 'cross',
-                snap: true,
-                label: {
-                    show: true,
-                    backgroundColor: isDark ? '#08306b' : '#ffffff',
-                    color: isDark ? 'white' : 'black',
-                    borderColor: isDark ? '#55aaff' : '#333333',
-                    borderWidth: 1,
-                    shadowBlur: 0,
-                    shadowColor: 'transparent',
-                    fontFamily: 'Merriweather Sans',
-                    precision: 2,
-                    formatter: function (params: any) {
-                        if (params.axisDimension === 'x') {
-                            return `x: ${formatNumberToPrecision(params.value, 3)}`;
-                        }
-                        if (params.axisDimension === 'y') {
-                            return `y: ${formatNumberToPrecision(params.value, 3)}`;
-                        }
-                        return formatNumberToPrecision(params.value, 3);
-                    }
-                },
-                crossStyle: {
-                    color: isDark ? '#999' : '#666'
+                type: 'line',
+                lineStyle: {
+                    color: isDark ? '#55aaff' : '#999',
+                    type: 'dashed',
+                    width: 1,
                 }
             },
             formatter: function (params: any) {
-                let tooltipHtml = '';
-                if (Array.isArray(params) && params.length > 0) {
-                    const xAxisValue = params[0].axisValue;
-                    if (xAxisValue !== undefined) {
-                         tooltipHtml += `x: ${formatNumberToPrecision(xAxisValue, 3)}<br/>`;
-                    }
+                if (!Array.isArray(params) || params.length === 0) return '';
+                const xVal = params[0].axisValue;
+                if (xVal === undefined) return '';
 
-                    if (xAxisValue !== undefined) {
-                        const operatingLineInfo = [];
-                        
-                        if (xAxisValue >= xIntersect && xAxisValue <= xd) {
-                            operatingLineInfo.push('<span style="color: orange;">Rectifying Section</span>');
-                        }
-                        
-                        if (xAxisValue >= xb && xAxisValue <= xIntersect) {
-                            operatingLineInfo.push('<span style="color: green;">Stripping Section</span>');
-                        }
-                        
-                        if (operatingLineInfo.length > 0) {
-                            tooltipHtml += operatingLineInfo.join(' & ') + '<br/>';
-                        }
-                        
-                        if (stages !== null && stages > 0) {
-                            const isOnVerticalStageLine = params.some((param: any) => {
-                                return param.seriesName === 'Stages' && param.value && 
-                                       Array.isArray(param.value) && param.value.length >= 2 &&
-                                       Math.abs(param.value[0] - xAxisValue) < 0.001;
-                            });
-                            
-                            if (!isOnVerticalStageLine) {
-                                const stageWidth = (xd - xb) / stages;
-                                const stageNumber = Math.ceil((xd - xAxisValue) / stageWidth);
-                                if (stageNumber >= 1 && stageNumber <= stages) {
-                                    tooltipHtml += `<span style="color: purple;">Stage ${stageNumber}</span><br/>`;
-                                }
-                            }
-                        }
-                    }
+                const lines: string[] = [];
+                lines.push(`<span style="font-weight:600;">x = ${formatNumberToPrecision(xVal, 4)}</span>`);
 
-                    params.forEach((param: any, _index: number) => {
-                        const seriesName = param.seriesName;
-                        if (seriesName === 'Key Points') {
-                            if (param.data && param.data.name) {
-                                tooltipHtml += `<span style="color: ${param.color};">${param.data.name}: (${formatNumberToPrecision(param.value[0], 3)}, ${formatNumberToPrecision(param.value[1], 3)})</span><br/>`;
-                            }
-                        } else if (seriesName === 'Stages') {
-                            const isVerticalLine = param.value && Array.isArray(param.value) && param.value.length >= 2 &&
-                                                  Math.abs(param.value[0] - xAxisValue) < 0.001;
-                            if (!isVerticalLine) {
-                                tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
-                            }
-                        } else if (seriesName && param.value && Array.isArray(param.value) && param.value.length >= 2) {
-                            tooltipHtml += `<span style="color: ${param.color};">${seriesName}: ${formatNumberToPrecision(param.value[1], 3)}</span><br/>`;
-                        }
-                    });
-                }
-                return tooltipHtml;
+                // Series to show: VLE curve, operating lines only (not Stages, not y=x)
+                const SHOW_SERIES = new Set(['VLE Curve', 'Rectifying Line', 'Stripping Line', 'Feed Line (q-line)']);
+
+                // Key points (scatter) — only if exactly on them
+                params.forEach((param: any) => {
+                    if (param.seriesName === 'Key Points' && param.data?.name) {
+                        lines.push(`<span style="color:${param.color};">● ${param.data.name}: (${formatNumberToPrecision(param.value[0], 3)}, ${formatNumberToPrecision(param.value[1], 3)})</span>`);
+                    }
+                });
+
+                // Curve/line y-values
+                params.forEach((param: any) => {
+                    if (!SHOW_SERIES.has(param.seriesName)) return;
+                    if (!param.value || !Array.isArray(param.value) || param.value.length < 2) return;
+                    const y = param.value[1];
+                    if (y === null || y === undefined || isNaN(y)) return;
+                    lines.push(`<span style="color:${param.color};">● ${param.seriesName}: ${formatNumberToPrecision(y, 4)}</span>`);
+                });
+
+                return lines.join('<br/>');
             }
         }, 
-        animationDuration: 300, animationEasing: 'cubicInOut',
+        animation: false,
         toolbox: {
             show: false
         },
@@ -1037,6 +1150,26 @@ export default function McCabeThielePage() {
     // This avoids complex cascading updates and relies on the user not being able to move sliders past the calculated boundaries.
   };
 
+  // Fluid packages available for the currently-loaded compound pair.
+  // Packages whose pure-component params are missing are hidden from the dropdown.
+  const availablePackages = useMemo(() => {
+    if (!comp1Data || !comp2Data) return ['wilson', 'uniquac', 'nrtl', 'pr', 'srk'];
+    const pkgs: FluidPackageTypeMcCabe[] = [];
+    if (comp1Data.wilsonParams && comp2Data.wilsonParams) pkgs.push('wilson');
+    if (comp1Data.uniquacParams && comp2Data.uniquacParams) pkgs.push('uniquac');
+    pkgs.push('nrtl'); // always available (UNIFAC fallback)
+    if (comp1Data.prParams && comp2Data.prParams) pkgs.push('pr');
+    if (comp1Data.srkParams && comp2Data.srkParams) pkgs.push('srk');
+    return pkgs;
+  }, [comp1Data, comp2Data]);
+
+  // Auto-switch away from an unavailable package (e.g. compound changed).
+  useEffect(() => {
+    if (!availablePackages.includes(fluidPackage as FluidPackageTypeMcCabe)) {
+      setFluidPackage('nrtl');
+    }
+  }, [availablePackages]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Helper to compute a 'nice' slider step given the maximum value
   const computeStep = (maxVal: number): number => {
     const desiredSteps = 100;
@@ -1088,6 +1221,101 @@ export default function McCabeThielePage() {
     a.download = 'chart.png';
     a.click();
   };
+
+  // Build and display a sensitivity chart for the given variable.
+  const runSensitivity = useCallback(async (varName: SensitivityVar) => {
+    setActiveSensVar(varName);
+    setSensitivityRunning(true);
+    // Yield so React paints the "running" state before the heavy synchronous computation.
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const isDark = resolvedTheme === 'dark';
+    const textColor = isDark ? 'white' : '#000000';
+    const stageParams = { xd, xb, xf, q, r, murphreeEfficiency, buffer };
+
+    let minVal: number, maxVal: number, xLabel: string;
+    if (varName === 'tc_or_p') {
+      if (useTemperature) { minVal = niceMin(antoineLimits?.minTC ?? 0); maxVal = parseFloat(tempMax) || 200; xLabel = 'Temperature (°C)'; }
+      else { minVal = niceMin(antoineLimits?.minPBar ?? 0.1); maxVal = parseFloat(pressureMax) || 10; xLabel = 'Pressure (bar)'; }
+    } else if (varName === 'xd') { minVal = 0.01; maxVal = 0.99; xLabel = 'Distillate (xD)'; }
+    else if (varName === 'xf') { minVal = 0.01; maxVal = 0.99; xLabel = 'Feed (xF)'; }
+    else if (varName === 'xb') { minVal = 0.01; maxVal = 0.99; xLabel = 'Bottoms (xB)'; }
+    else if (varName === 'q') { minVal = parseFloat(qMinSlider) || -1; maxVal = parseFloat(qMaxSlider) || 2; xLabel = 'Feed Quality (q)'; }
+    else if (varName === 'r') { minVal = parseFloat(rMinSlider) || 0.1; maxVal = parseFloat(rMaxSlider) || 10; xLabel = 'Reflux Ratio (R)'; }
+    else { minVal = 1; maxVal = 100; xLabel = 'Murphree Efficiency (%)'; }
+
+    // Compute a nice round step size targeting ~200 points across the range.
+    const TARGET_POINTS = 200;
+    const rawStep = (maxVal - minVal) / (TARGET_POINTS - 1);
+    const stepExp = Math.floor(Math.log10(rawStep));
+    const stepPow = Math.pow(10, stepExp);
+    const stepMant = rawStep / stepPow;
+    let niceStep: number;
+    if (stepMant <= 1) niceStep = 1 * stepPow;
+    else if (stepMant <= 2) niceStep = 2 * stepPow;
+    else if (stepMant <= 5) niceStep = 5 * stepPow;
+    else niceStep = 10 * stepPow;
+    // Build x list: always include minVal, then every niceStep from the snapped start.
+    const snappedStart = Math.ceil((minVal + niceStep * 0.0001) / niceStep) * niceStep;
+    const xAxisValues: number[] = [parseFloat(minVal.toPrecision(8))];
+    for (let v = snappedStart; v <= maxVal + niceStep * 0.0001; v = parseFloat((v + niceStep).toPrecision(14))) {
+      xAxisValues.push(parseFloat(v.toPrecision(8)));
+    }
+    if (xAxisValues[xAxisValues.length - 1] < maxVal - niceStep * 0.001) {
+      xAxisValues.push(parseFloat(maxVal.toPrecision(8)));
+    }
+
+    const stagesArr: (number | null)[] = [];
+    const feedStagesArr: (number | null)[] = [];
+
+    for (const v of xAxisValues) {
+      let eqX: number[], eqY: number[];
+      if (varName === 'tc_or_p') {
+        if (!comp1Data || !comp2Data || !interactionParams) { stagesArr.push(null); feedStagesArr.push(null); continue; }
+        const pts = computeEquilibriumPointsSync(comp1Data, comp2Data, fluidPackage, interactionParams, useTemperature, v, 80);
+        if (!pts) { stagesArr.push(null); feedStagesArr.push(null); continue; }
+        eqX = pts.x; eqY = pts.y;
+      } else {
+        if (!equilibriumData) { stagesArr.push(null); feedStagesArr.push(null); continue; }
+        eqX = equilibriumData.x; eqY = equilibriumData.y;
+      }
+      const overrideParams = { ...stageParams };
+      if (varName === 'xd') overrideParams.xd = v;
+      else if (varName === 'xf') overrideParams.xf = v;
+      else if (varName === 'xb') overrideParams.xb = v;
+      else if (varName === 'q') overrideParams.q = v;
+      else if (varName === 'r') overrideParams.r = v;
+      else if (varName === 'murphree') overrideParams.murphreeEfficiency = v / 100;
+      const result = countStagesForSweep(eqX, eqY, overrideParams);
+      stagesArr.push(result.stages > 0 ? result.stages : null);
+      feedStagesArr.push(result.feedStage > 0 ? result.feedStage : null);
+    }
+
+    const sensOptions: EChartsOption = {
+      backgroundColor: 'transparent',
+      animation: false,
+      title: { text: `Sensitivity: Stages vs ${xLabel}`, left: 'center', textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' } },
+      legend: { bottom: 5, data: ['Stages', 'Feed Stage'], textStyle: { color: textColor, fontFamily: 'Merriweather Sans' } },
+      grid: { left: '5%', right: '5%', bottom: '10%', top: '12%', containLabel: true },
+      xAxis: { type: 'value' as const, name: xLabel, nameLocation: 'middle' as const, nameGap: 30, nameTextStyle: { color: textColor, fontFamily: 'Merriweather Sans' }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans' }, axisLine: { lineStyle: { color: textColor } }, splitLine: { show: false } },
+      yAxis: { type: 'value' as const, name: 'Stages / Feed Stage', nameLocation: 'middle' as const, nameGap: 40, minInterval: 1, nameTextStyle: { color: textColor, fontFamily: 'Merriweather Sans' }, axisLabel: { color: textColor, fontFamily: 'Merriweather Sans' }, axisLine: { lineStyle: { color: textColor } }, splitLine: { show: false } },
+      series: [
+        { name: 'Stages', type: 'line' as const, data: xAxisValues.map((v, i) => [v, stagesArr[i]]), color: 'cyan', symbol: 'circle', symbolSize: 4, lineStyle: { width: 3 }, connectNulls: false },
+        { name: 'Feed Stage', type: 'line' as const, data: xAxisValues.map((v, i) => [v, feedStagesArr[i]]), color: 'orange', symbol: 'circle', symbolSize: 4, lineStyle: { width: 3 }, connectNulls: false },
+      ],
+      tooltip: { trigger: 'axis' as const, backgroundColor: isDark ? '#08306b' : '#ffffff', borderColor: isDark ? '#55aaff' : '#333333', textStyle: { color: textColor, fontFamily: 'Merriweather Sans' } },
+    };
+    setSensitivityEchartsOptions(sensOptions);
+    setSensitivityRunning(false);
+  }, [equilibriumData, comp1Data, comp2Data, interactionParams, fluidPackage, useTemperature,
+      xd, xb, xf, q, r, murphreeEfficiency, buffer, antoineLimits, tempMax, pressureMax,
+      qMinSlider, qMaxSlider, rMinSlider, rMaxSlider, resolvedTheme]);
+
+  // Auto-rerun sensitivity when sliders change while a sweep is active.
+  useEffect(() => {
+    if (activeSensVar === null) return;
+    runSensitivity(activeSensVar);
+  }, [activeSensVar, xd, xb, xf, q, r, murphreeEfficiency, equilibriumData]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <TooltipProvider>
@@ -1187,11 +1415,11 @@ export default function McCabeThielePage() {
                       }}>
                           <SelectTrigger id="fluidPackageMcCabe" className="flex-1"><SelectValue placeholder="Select fluid package" /></SelectTrigger>
                           <SelectContent>
-                              <SelectItem value="wilson">Wilson</SelectItem>
-                              <SelectItem value="uniquac">UNIQUAC</SelectItem>
+                              {availablePackages.includes('wilson') && <SelectItem value="wilson">Wilson</SelectItem>}
+                              {availablePackages.includes('uniquac') && <SelectItem value="uniquac">UNIQUAC</SelectItem>}
                               <SelectItem value="nrtl">NRTL</SelectItem>
-                              <SelectItem value="pr">Peng-Robinson</SelectItem>
-                              <SelectItem value="srk">SRK</SelectItem>
+                              {availablePackages.includes('pr') && <SelectItem value="pr">Peng-Robinson</SelectItem>}
+                              {availablePackages.includes('srk') && <SelectItem value="srk">SRK</SelectItem>}
                           </SelectContent>
                       </Select>
                   </div>
@@ -1205,11 +1433,30 @@ export default function McCabeThielePage() {
             {/* Slider Card */}
             <Card>
                <CardContent className="space-y-8 pt-2 pb-2">
+                {/* Sensitivity Analysis Toggle */}
+                <Button
+                  variant={sensitivityMode ? 'default' : 'outline'}
+                  className="w-full"
+                  onClick={() => {
+                    if (sensitivityMode) {
+                      setSensitivityMode(false);
+                      setActiveSensVar(null);
+                      setSensitivityEchartsOptions(null);
+                    } else {
+                      setSensitivityMode(true);
+                      setActiveSensVar(null);
+                    }
+                  }}
+                >
+                  {sensitivityMode ? 'Exit Sensitivity Analysis' : 'Run Sensitivity Analysis'}
+                </Button>
                 {/* Fixed condition slider */}
-                <div className="space-y-2">
+                {activeSensVar === 'tc_or_p' ? null : (
+                <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                  <div className={`space-y-2${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                   <div className="flex items-center justify-between">
                     <Label htmlFor="fixedCondition">
-                      {useTemperature ? `Temperature (°C): ${temperatureC}` : `Pressure (bar): ${pressureBar}`}
+                      {useTemperature ? `Temperature (°C): ${formatNumberToPrecision(temperatureC ?? 0, 4)}` : `Pressure (bar): ${formatNumberToPrecision(pressureBar ?? 0, 4)}`}
                     </Label>
                     <div className="flex items-center gap-1">
                       <Label className="text-xs text-muted-foreground">Max:</Label>
@@ -1235,13 +1482,9 @@ export default function McCabeThielePage() {
                   </div>
                   <Slider
                     id="fixedCondition"
-                    min={useTemperature ? (antoineLimits?.minTC ?? 0) : (antoineLimits?.minPBar ?? 0.1)}
-                    max={useTemperature
-                        ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
-                        : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity)}
-                    step={computeStep(useTemperature
-                        ? Math.min(parseFloat(tempMax) || 200, antoineLimits?.maxTC ?? Infinity)
-                        : Math.min(parseFloat(pressureMax) || 10, antoineLimits?.maxPBar ?? Infinity))}
+                    min={useTemperature ? -100 : 0.1}
+                    max={useTemperature ? (parseFloat(tempMax) || 200) : (parseFloat(pressureMax) || 10)}
+                    step={computeStep(useTemperature ? (parseFloat(tempMax) || 200) : (parseFloat(pressureMax) || 10))}
                     value={[useTemperature ? (temperatureC || 0) : (pressureBar || 0)]}
                     onValueChange={([v]: number[]) => {
                       if (useTemperature) setTemperatureC(v);
@@ -1249,35 +1492,74 @@ export default function McCabeThielePage() {
                     }}
                     className="w-full"
                   />
-                  {modelPressureWarning && (
-                      <p className={`text-xs ${modelPressureWarning.level === 'error' ? 'text-red-500 dark:text-red-400' : 'text-yellow-600 dark:text-yellow-400'}`}>
-                          ⚠ ~{modelPressureWarning.pct.toFixed(0)}% fugacity correction ignored by {fluidPackage.toUpperCase()} — consider PR or SRK.
-                      </p>
+                  </div>
+                  {sensitivityMode && activeSensVar === null && (
+                    <div className="absolute inset-0 flex">
+                      <Button variant="outline" className="w-full" onClick={() => runSensitivity('tc_or_p')} disabled={sensitivityRunning}>
+                        {`Sweep ${useTemperature ? 'Temperature' : 'Pressure'}`}
+                      </Button>
+                    </div>
                   )}
                 </div>
+                )}
                  {/* xd Slider */}
-                 <div className="space-y-3">
+                 {activeSensVar === 'xd' ? null : (
+                 <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                   <div className={`space-y-3${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                    <Label htmlFor="xd">
                      <span dangerouslySetInnerHTML={{ __html: `Distillate Composition (x<sub>D</sub>): ${xd.toFixed(2)}` }} />
                    </Label>
                    <Slider id="xd" min={0.01} max={0.99} step={0.01} value={[xd]} onValueChange={(value) => updateCompositions('xd', value[0])} style={{ '--primary': 'hsl(38 92% 50%)' } as React.CSSProperties}/>
+                   </div>
+                   {sensitivityMode && activeSensVar === null && (
+                     <div className="absolute inset-0 flex">
+                       <Button variant="outline" className="w-full" onClick={() => runSensitivity('xd')} disabled={sensitivityRunning}>
+                         Sweep Distillate (xD)
+                       </Button>
+                     </div>
+                   )}
                  </div>
+                 )}
                  {/* xf Slider */}
-                 <div className="space-y-3">
+                 {activeSensVar === 'xf' ? null : (
+                 <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                   <div className={`space-y-3${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                    <Label htmlFor="xf">
                      <span dangerouslySetInnerHTML={{ __html: `Feed Composition (x<sub>F</sub>): ${xf.toFixed(2)}` }} />
                    </Label>
                    <Slider id="xf" min={0.01} max={0.99} step={0.01} value={[xf]} onValueChange={(value) => updateCompositions('xf', value[0])} style={{ '--primary': 'hsl(0 84% 60%)' } as React.CSSProperties}/>
+                   </div>
+                   {sensitivityMode && activeSensVar === null && (
+                     <div className="absolute inset-0 flex">
+                       <Button variant="outline" className="w-full" onClick={() => runSensitivity('xf')} disabled={sensitivityRunning}>
+                         Sweep Feed (xF)
+                       </Button>
+                     </div>
+                   )}
                  </div>
+                 )}
                  {/* xb Slider */}
-                 <div className="space-y-3">
+                 {activeSensVar === 'xb' ? null : (
+                 <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                   <div className={`space-y-3${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                    <Label htmlFor="xb">
                      <span dangerouslySetInnerHTML={{ __html: `Bottoms Composition (x<sub>B</sub>): ${xb.toFixed(2)}` }} />
                    </Label>
                    <Slider id="xb" min={0.01} max={0.99} step={0.01} value={[xb]} onValueChange={(value) => updateCompositions('xb', value[0])} style={{ '--primary': 'hsl(142 71% 45%)' } as React.CSSProperties}/>
+                   </div>
+                   {sensitivityMode && activeSensVar === null && (
+                     <div className="absolute inset-0 flex">
+                       <Button variant="outline" className="w-full" onClick={() => runSensitivity('xb')} disabled={sensitivityRunning}>
+                         Sweep Bottoms (xB)
+                       </Button>
+                     </div>
+                   )}
                  </div>
+                 )}
                  {/* q Slider */}
-                 <div className="space-y-3">
+                 {activeSensVar === 'q' ? null : (
+                 <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                   <div className={`space-y-3${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                    <div className="flex items-center justify-between">
                      <Label htmlFor="q" className="flex items-center">Feed Quality (q): {q.toFixed(2)}
                          <ShadTooltip><TooltipTrigger asChild><Button variant="ghost" size="icon" className="h-5 w-5 rounded-full"><span className="text-xs">ⓘ</span></Button></TooltipTrigger><TooltipContent><p>{getFeedQualityState()}</p></TooltipContent></ShadTooltip>
@@ -1300,9 +1582,20 @@ export default function McCabeThielePage() {
                      </div>
                    </div>
                    <Slider id="q" min={parseFloat(qMinSlider)} max={parseFloat(qMaxSlider)} step={0.05} value={[q]} onValueChange={(value) => setQ(value[0])} style={{ '--primary': 'hsl(60 100% 50%)' } as React.CSSProperties}/>
+                   </div>
+                   {sensitivityMode && activeSensVar === null && (
+                     <div className="absolute inset-0 flex">
+                       <Button variant="outline" className="w-full" onClick={() => runSensitivity('q')} disabled={sensitivityRunning}>
+                         Sweep Feed Quality (q)
+                       </Button>
+                     </div>
+                   )}
                  </div>
+                 )}
                  {/* r Slider */}
-                 <div className="space-y-3">
+                 {activeSensVar === 'r' ? null : (
+                 <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                   <div className={`space-y-3${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                    <div className="flex justify-between items-center">
                      <Label htmlFor="r" className="flex justify-between items-center">
                        <span>Reflux Ratio (R): {r.toFixed(2)}</span>
@@ -1330,9 +1623,20 @@ export default function McCabeThielePage() {
                      </div>
                    </div>
                    <Slider id="r" min={parseFloat(rMinSlider)} max={parseFloat(rMaxSlider)} step={0.05} value={[r]} onValueChange={(value) => setR(value[0])} style={{ '--primary': 'hsl(262 84% 58%)' } as React.CSSProperties}/>
+                   </div>
+                   {sensitivityMode && activeSensVar === null && (
+                     <div className="absolute inset-0 flex">
+                       <Button variant="outline" className="w-full" onClick={() => runSensitivity('r')} disabled={sensitivityRunning}>
+                         Sweep Reflux Ratio (R)
+                       </Button>
+                     </div>
+                   )}
                  </div>
+                 )}
                  {/* Murphree Efficiency Slider */}
-                 <div className="space-y-3">
+                 {activeSensVar === 'murphree' ? null : (
+                 <div className={`relative${sensitivityMode && activeSensVar === null ? ' h-10 overflow-hidden' : ''}`}>
+                   <div className={`space-y-3${sensitivityMode && activeSensVar === null ? ' invisible' : ''}`}>
                    <Label htmlFor="murphree" className="flex justify-between items-center">
                      <span dangerouslySetInnerHTML={{ __html: `Murphree Efficiency (E<sub>M</sub>): ${(murphreeEfficiency * 100).toFixed(0)}%` }} />
                    </Label>
@@ -1345,10 +1649,19 @@ export default function McCabeThielePage() {
                      onValueChange={(value) => setMurphreeEfficiency(value[0])}
                      style={{ '--primary': 'hsl(180 100% 50%)' } as React.CSSProperties}
                    />
+                   </div>
+                   {sensitivityMode && activeSensVar === null && (
+                     <div className="absolute inset-0 flex">
+                       <Button variant="outline" className="w-full" onClick={() => runSensitivity('murphree')} disabled={sensitivityRunning}>
+                         Sweep Murphree Efficiency
+                       </Button>
+                     </div>
+                   )}
                  </div>
+                 )}
                </CardContent>
             </Card>
-            {stages !== null && feedStage !== null && (
+            {stages !== null && feedStage !== null && !sensitivityMode && (
               <Card>
                 <CardContent>
                   <div className="grid grid-cols-2 gap-4 text-center">
@@ -1370,14 +1683,22 @@ export default function McCabeThielePage() {
             <Card>
               <CardContent className="py-2">
                 <div className="relative aspect-square rounded-md">
-                   {/* The loading overlay has been removed. The button shows "Calculating..." instead. */}
-
+                   {/* Sensitivity Analysis Chart */}
+                   {activeSensVar !== null && sensitivityEchartsOptions && (
+                     <ReactECharts
+                       ref={echartsRef}
+                       echarts={echarts}
+                       option={sensitivityEchartsOptions}
+                       style={{ height: '100%', width: '100%', borderRadius: '0.375rem', overflow: 'hidden' }}
+                       notMerge={true}
+                       lazyUpdate={false}
+                     />
+                   )}
+                   {/* Normal McCabe-Thiele Chart */}
+                   {activeSensVar === null && (
+                     <>
                    {!equilibriumData && !error && ( <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">Please provide inputs and update graph.</div> )}
-                   
-                   {/* The error message will now overlay the graph if a calculation fails. */}
                    {error && !loading && ( <div className="absolute inset-0 flex items-center justify-center bg-background/80 text-red-400 p-4 text-center rounded-md">{error}</div> )}
-
-                  {/* The graph is shown as long as equilibriumData exists, even during reloads. */}
                   {equilibriumData && Object.keys(echartsOptions).length > 0 && (
                     <ReactECharts 
                   key={`echarts-${murphreeEfficiency === 1.0 ? 'no-eff' : 'with-eff'}`}
@@ -1389,7 +1710,11 @@ export default function McCabeThielePage() {
                   lazyUpdate={false} 
                 />
                   )}
-                  {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
+                     </>
+                   )}
+                  {(activeSensVar !== null ? (sensitivityEchartsOptions !== null) : (Object.keys(echartsOptions).length > 0)) && (
+                    <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>
+                  )}
                 </div>
               </CardContent>
             </Card>

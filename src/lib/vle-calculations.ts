@@ -12,6 +12,21 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchCompoundDataFromHysys } from './antoine-utils';
 
 // =============================
+//  0. CACHING LAYER
+// =============================
+const nrtlCache = new Map<string, NrtlInteractionParams>();
+const wilsonCache = new Map<string, WilsonInteractionParams>();
+const prCache = new Map<string, PrInteractionParams>();
+const srkCache = new Map<string, SrkInteractionParams>();
+const uniquacCache = new Map<string, UniquacInteractionParams>();
+const unifacParamsCache = new Map<string, UnifacParameters>();
+
+function getBinaryKey(name1: string, name2: string): string {
+  const [a, b] = [name1.toUpperCase(), name2.toUpperCase()].sort();
+  return `${a}|${b}`;
+}
+
+// =============================
 //  1. SHARED CONSTANTS/UTILS
 // =============================
 export const R_gas_const_J_molK = 8.314_462_618_153_24; // J·mol⁻¹·K⁻¹
@@ -161,7 +176,7 @@ export function calculateBubbleTemperatureNrtl(
   x1_feed: number,
   P_Pa: number,
   params: NrtlInteractionParams,
-  _T_init_K = 350,
+  T_init_K = 350,
   maxIter = 100,
   tol = 1e-6
 ): BubbleDewResult | null {
@@ -193,6 +208,7 @@ export function calculateBubbleTemperatureNrtl(
   const T1 = antoineBoilingPointSolverLocal(comps[0].antoine, P_Pa);
   const T2 = antoineBoilingPointSolverLocal(comps[1].antoine, P_Pa);
   if (!T1 || !T2) return null;
+  const T_bp_max = Math.max(T1, T2);
   // Use MIN of the two Antoine Tmin values so that methanol-rich compositions whose bubble
   // temperature falls below the higher-Tmin component's range (e.g. water Tmin ~310 K at 0.12 bar)
   // are still solved correctly.  calculatePsat_Pa has no range guard and extrapolates the
@@ -202,26 +218,45 @@ export function calculateBubbleTemperatureNrtl(
   // (where BP > Antoine Tmax) are still solved. T1/T2 already use the extended bisection.
   const Tmax_N = Math.max(comps[0].antoine?.Tmax_K ?? 1500, comps[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3);
   if (Tmin_N >= Tmax_N) return null;
-  let T_low = Math.max(Tmin_N, Math.min(T1, T2) - 50);
-  let T_high = Math.min(Tmax_N, Math.max(T1, T2) + 50);
-  if (T_low >= T_high) { T_low = Tmin_N; T_high = Tmax_N; }
-  for (let expand = 0; expand < 20; expand++) {
-    const flo = objective(T_low), fhi = objective(T_high);
-    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
-    if (T_low <= Tmin_N && T_high >= Tmax_N) return null;
-    T_low = Math.max(Tmin_N, T_low - 25);
-    T_high = Math.min(Tmax_N, T_high + 25);
-  }
-  // Scan for first sign change to avoid converging on a spurious root
-  const SCAN_STEP_NRTL = 5;
-  let Tlo_b = T_low, Thi_b = T_high;
-  for (let T = T_low; T < T_high - SCAN_STEP_NRTL / 2; T += SCAN_STEP_NRTL) {
-    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_NRTL, T_high));
-    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b = T; Thi_b = Math.min(T + SCAN_STEP_NRTL, T_high); break; }
+
+  // Helper: scan [lo..hi] at 1 K step for the FIRST sign change, skipping NaN regions.
+  const findFirstBracket = (lo: number, hi: number): [number, number] | null => {
+    let prev = objective(lo);
+    for (let T = lo + 1; T <= hi + 0.5; T += 1) {
+      const cur = objective(Math.min(T, hi));
+      if (isFinite(prev) && isFinite(cur) && prev * cur <= 0) return [T - 1, Math.min(T, hi)];
+      if (isFinite(cur)) prev = cur;
+    }
+    return null;
+  };
+
+  // 1. Try a tight bracket around the continuation hint first (cheap, avoids spurious roots)
+  let Tlo_b: number, Thi_b: number;
+  const tightLo = Math.max(Tmin_N, T_init_K - 30);
+  const tightHi = Math.min(Tmax_N, T_init_K + 30);
+  const tightBracket = tightLo < tightHi ? findFirstBracket(tightLo, tightHi) : null;
+  if (tightBracket) {
+    [Tlo_b, Thi_b] = tightBracket;
+  } else {
+    // 2. Fallback: wide bracket anchored at pure-component BPs
+    let T_low = Math.max(Tmin_N, Math.min(T1, T2) - 50);
+    let T_high = Math.min(Tmax_N, Math.max(T1, T2) + 50);
+    if (T_low >= T_high) { T_low = Tmin_N; T_high = Tmax_N; }
+    for (let expand = 0; expand < 20; expand++) {
+      const flo = objective(T_low), fhi = objective(T_high);
+      if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+      if (T_low <= Tmin_N && T_high >= Tmax_N) return null;
+      T_low = Math.max(Tmin_N, T_low - 25);
+      T_high = Math.min(Tmax_N, T_high + 25);
+    }
+    const wideBracket = findFirstBracket(T_low, T_high);
+    if (!wideBracket) return null;
+    [Tlo_b, Thi_b] = wideBracket;
   }
 
   const T_bubble = _brentRoot(objective, Tlo_b, Thi_b, tol, maxIter);
-  if (T_bubble === null) return null;
+  // Reject physically impossible root (bubble T must lie between the two pure BPs)
+  if (T_bubble === null || T_bubble > T_bp_max + 10) return null;
 
   // Final y at converged T
   const Psat_f = [calculatePsat_Pa(comps[0].antoine, T_bubble), calculatePsat_Pa(comps[1].antoine, T_bubble)];
@@ -334,7 +369,7 @@ export function calculateBubbleTemperatureWilson(
   x1_feed: number,
   P_Pa: number,
   params: WilsonInteractionParams,
-  _T_init_K: number = 350,
+  T_init_K: number = 350,
   maxIter = 100,
   tol = 1e-6
 ): BubbleDewResult | null {
@@ -356,28 +391,45 @@ export function calculateBubbleTemperatureWilson(
   const T1 = antoineBoilingPointSolverLocal(comps[0].antoine, P_Pa);
   const T2 = antoineBoilingPointSolverLocal(comps[1].antoine, P_Pa);
   if (!T1 || !T2) return null;
+  const T_bp_max_W = Math.max(T1, T2);
   const Tmin_W = Math.min(comps[0].antoine?.Tmin_K ?? 100, comps[1].antoine?.Tmin_K ?? 100); // MIN: see NRTL comment
   const Tmax_W = Math.max(comps[0].antoine?.Tmax_K ?? 1500, comps[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3); // extend for supercritical
   if (Tmin_W >= Tmax_W) return null;
-  let T_low = Math.max(Tmin_W, Math.min(T1, T2) - 50);
-  let T_high = Math.min(Tmax_W, Math.max(T1, T2) + 50);
-  if (T_low >= T_high) { T_low = Tmin_W; T_high = Tmax_W; }
-  for (let expand = 0; expand < 20; expand++) {
-    const flo = objective(T_low), fhi = objective(T_high);
-    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
-    if (T_low <= Tmin_W && T_high >= Tmax_W) return null;
-    T_low = Math.max(Tmin_W, T_low - 25);
-    T_high = Math.min(Tmax_W, T_high + 25);
-  }
-  const SCAN_STEP_W = 5;
-  let Tlo_b_W = T_low, Thi_b_W = T_high;
-  for (let T = T_low; T < T_high - SCAN_STEP_W / 2; T += SCAN_STEP_W) {
-    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_W, T_high));
-    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b_W = T; Thi_b_W = Math.min(T + SCAN_STEP_W, T_high); break; }
+
+  const findFirstBracket_W = (lo: number, hi: number): [number, number] | null => {
+    let prev = objective(lo);
+    for (let T = lo + 1; T <= hi + 0.5; T += 1) {
+      const cur = objective(Math.min(T, hi));
+      if (isFinite(prev) && isFinite(cur) && prev * cur <= 0) return [T - 1, Math.min(T, hi)];
+      if (isFinite(cur)) prev = cur;
+    }
+    return null;
+  };
+
+  let Tlo_b_W: number, Thi_b_W: number;
+  const tightLo_W = Math.max(Tmin_W, T_init_K - 30);
+  const tightHi_W = Math.min(Tmax_W, T_init_K + 30);
+  const tightBracket_W = tightLo_W < tightHi_W ? findFirstBracket_W(tightLo_W, tightHi_W) : null;
+  if (tightBracket_W) {
+    [Tlo_b_W, Thi_b_W] = tightBracket_W;
+  } else {
+    let T_low = Math.max(Tmin_W, Math.min(T1, T2) - 50);
+    let T_high = Math.min(Tmax_W, Math.max(T1, T2) + 50);
+    if (T_low >= T_high) { T_low = Tmin_W; T_high = Tmax_W; }
+    for (let expand = 0; expand < 20; expand++) {
+      const flo = objective(T_low), fhi = objective(T_high);
+      if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+      if (T_low <= Tmin_W && T_high >= Tmax_W) return null;
+      T_low = Math.max(Tmin_W, T_low - 25);
+      T_high = Math.min(Tmax_W, T_high + 25);
+    }
+    const wideBracket_W = findFirstBracket_W(T_low, T_high);
+    if (!wideBracket_W) return null;
+    [Tlo_b_W, Thi_b_W] = wideBracket_W;
   }
 
   const T_bubble = _brentRoot(objective, Tlo_b_W, Thi_b_W, tol, maxIter);
-  if (T_bubble === null) return null;
+  if (T_bubble === null || T_bubble > T_bp_max_W + 10) return null;
 
   const Psat_f = [calculatePsat_Pa(comps[0].antoine, T_bubble), calculatePsat_Pa(comps[1].antoine, T_bubble)];
   const gammas_f = calculateWilsonGamma(comps, x, T_bubble, params);
@@ -536,7 +588,7 @@ export function calculateBubbleTemperatureUnifac(
   x1_feed: number,
   P_system_Pa: number,
   unifacParams: UnifacParameters,
-  _initialTempGuess_K: number = 350,
+  T_init_K: number = 350,
   maxIter: number = 100,
   tolerance: number = 1e-6
 ): BubbleDewResult | null {
@@ -554,28 +606,45 @@ export function calculateBubbleTemperatureUnifac(
   const T1 = antoineBoilingPointSolverLocal(components[0].antoine, P_system_Pa);
   const T2 = antoineBoilingPointSolverLocal(components[1].antoine, P_system_Pa);
   if (!T1 || !T2) return null;
+  const T_bp_max_UF = Math.max(T1, T2);
   const Tmin_UF = Math.min(components[0].antoine?.Tmin_K ?? 100, components[1].antoine?.Tmin_K ?? 100); // MIN: see NRTL comment
   const Tmax_UF = Math.max(components[0].antoine?.Tmax_K ?? 1500, components[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3); // extend for supercritical
   if (Tmin_UF >= Tmax_UF) return null;
-  let T_low = Math.max(Tmin_UF, Math.min(T1, T2) - 50);
-  let T_high = Math.min(Tmax_UF, Math.max(T1, T2) + 50);
-  if (T_low >= T_high) { T_low = Tmin_UF; T_high = Tmax_UF; }
-  for (let expand = 0; expand < 20; expand++) {
-    const flo = objective(T_low), fhi = objective(T_high);
-    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
-    if (T_low <= Tmin_UF && T_high >= Tmax_UF) return null;
-    T_low = Math.max(Tmin_UF, T_low - 25);
-    T_high = Math.min(Tmax_UF, T_high + 25);
-  }
-  const SCAN_STEP_UF = 5;
-  let Tlo_b_UF = T_low, Thi_b_UF = T_high;
-  for (let T = T_low; T < T_high - SCAN_STEP_UF / 2; T += SCAN_STEP_UF) {
-    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_UF, T_high));
-    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b_UF = T; Thi_b_UF = Math.min(T + SCAN_STEP_UF, T_high); break; }
+
+  const findFirstBracket_UF = (lo: number, hi: number): [number, number] | null => {
+    let prev = objective(lo);
+    for (let T = lo + 1; T <= hi + 0.5; T += 1) {
+      const cur = objective(Math.min(T, hi));
+      if (isFinite(prev) && isFinite(cur) && prev * cur <= 0) return [T - 1, Math.min(T, hi)];
+      if (isFinite(cur)) prev = cur;
+    }
+    return null;
+  };
+
+  let Tlo_b_UF: number, Thi_b_UF: number;
+  const tightLo_UF = Math.max(Tmin_UF, T_init_K - 30);
+  const tightHi_UF = Math.min(Tmax_UF, T_init_K + 30);
+  const tightBracket_UF = tightLo_UF < tightHi_UF ? findFirstBracket_UF(tightLo_UF, tightHi_UF) : null;
+  if (tightBracket_UF) {
+    [Tlo_b_UF, Thi_b_UF] = tightBracket_UF;
+  } else {
+    let T_low = Math.max(Tmin_UF, Math.min(T1, T2) - 50);
+    let T_high = Math.min(Tmax_UF, Math.max(T1, T2) + 50);
+    if (T_low >= T_high) { T_low = Tmin_UF; T_high = Tmax_UF; }
+    for (let expand = 0; expand < 20; expand++) {
+      const flo = objective(T_low), fhi = objective(T_high);
+      if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+      if (T_low <= Tmin_UF && T_high >= Tmax_UF) return null;
+      T_low = Math.max(Tmin_UF, T_low - 25);
+      T_high = Math.min(Tmax_UF, T_high + 25);
+    }
+    const wideBracket_UF = findFirstBracket_UF(T_low, T_high);
+    if (!wideBracket_UF) return null;
+    [Tlo_b_UF, Thi_b_UF] = wideBracket_UF;
   }
 
   const T_bubble = _brentRoot(objective, Tlo_b_UF, Thi_b_UF, tolerance, maxIter);
-  if (T_bubble === null) return null;
+  if (T_bubble === null || T_bubble > T_bp_max_UF + 10) return null;
 
   const P_sat_f = [calculatePsat_Pa(components[0].antoine, T_bubble), calculatePsat_Pa(components[1].antoine, T_bubble)];
   const gamma_f = calculateUnifacGamma(components, x, T_bubble, unifacParams);
@@ -1449,7 +1518,7 @@ export function calculateBubbleTemperatureUniquac(
   x1_feed: number,
   P_system_Pa: number,
   params: UniquacInteractionParams,
-  _T_guess_K: number = 350,
+  T_guess_K: number = 350,
   maxIter = 100,
   tol = 1e-6
 ): BubbleDewResult | null {
@@ -1471,28 +1540,45 @@ export function calculateBubbleTemperatureUniquac(
   const T1 = antoineBoilingPointSolverLocal(comps[0].antoine, P_system_Pa);
   const T2 = antoineBoilingPointSolverLocal(comps[1].antoine, P_system_Pa);
   if (!T1 || !T2) return null;
+  const T_bp_max_UQ = Math.max(T1, T2);
   const Tmin_UQ = Math.min(comps[0].antoine?.Tmin_K ?? 100, comps[1].antoine?.Tmin_K ?? 100); // MIN: see NRTL comment
   const Tmax_UQ = Math.max(comps[0].antoine?.Tmax_K ?? 1500, comps[1].antoine?.Tmax_K ?? 1500, T1 * 1.3, T2 * 1.3); // extend for supercritical
   if (Tmin_UQ >= Tmax_UQ) return null;
-  let T_low = Math.max(Tmin_UQ, Math.min(T1, T2) - 50);
-  let T_high = Math.min(Tmax_UQ, Math.max(T1, T2) + 50);
-  if (T_low >= T_high) { T_low = Tmin_UQ; T_high = Tmax_UQ; }
-  for (let expand = 0; expand < 20; expand++) {
-    const flo = objective(T_low), fhi = objective(T_high);
-    if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
-    if (T_low <= Tmin_UQ && T_high >= Tmax_UQ) return null;
-    T_low = Math.max(Tmin_UQ, T_low - 25);
-    T_high = Math.min(Tmax_UQ, T_high + 25);
-  }
-  const SCAN_STEP_UQ = 5;
-  let Tlo_b_UQ = T_low, Thi_b_UQ = T_high;
-  for (let T = T_low; T < T_high - SCAN_STEP_UQ / 2; T += SCAN_STEP_UQ) {
-    const fA = objective(T), fB = objective(Math.min(T + SCAN_STEP_UQ, T_high));
-    if (isFinite(fA) && isFinite(fB) && fA * fB <= 0) { Tlo_b_UQ = T; Thi_b_UQ = Math.min(T + SCAN_STEP_UQ, T_high); break; }
+
+  const findFirstBracket_UQ = (lo: number, hi: number): [number, number] | null => {
+    let prev = objective(lo);
+    for (let T = lo + 1; T <= hi + 0.5; T += 1) {
+      const cur = objective(Math.min(T, hi));
+      if (isFinite(prev) && isFinite(cur) && prev * cur <= 0) return [T - 1, Math.min(T, hi)];
+      if (isFinite(cur)) prev = cur;
+    }
+    return null;
+  };
+
+  let Tlo_b_UQ: number, Thi_b_UQ: number;
+  const tightLo_UQ = Math.max(Tmin_UQ, T_guess_K - 30);
+  const tightHi_UQ = Math.min(Tmax_UQ, T_guess_K + 30);
+  const tightBracket_UQ = tightLo_UQ < tightHi_UQ ? findFirstBracket_UQ(tightLo_UQ, tightHi_UQ) : null;
+  if (tightBracket_UQ) {
+    [Tlo_b_UQ, Thi_b_UQ] = tightBracket_UQ;
+  } else {
+    let T_low = Math.max(Tmin_UQ, Math.min(T1, T2) - 50);
+    let T_high = Math.min(Tmax_UQ, Math.max(T1, T2) + 50);
+    if (T_low >= T_high) { T_low = Tmin_UQ; T_high = Tmax_UQ; }
+    for (let expand = 0; expand < 20; expand++) {
+      const flo = objective(T_low), fhi = objective(T_high);
+      if (isFinite(flo) && isFinite(fhi) && flo * fhi <= 0) break;
+      if (T_low <= Tmin_UQ && T_high >= Tmax_UQ) return null;
+      T_low = Math.max(Tmin_UQ, T_low - 25);
+      T_high = Math.min(Tmax_UQ, T_high + 25);
+    }
+    const wideBracket_UQ = findFirstBracket_UQ(T_low, T_high);
+    if (!wideBracket_UQ) return null;
+    [Tlo_b_UQ, Thi_b_UQ] = wideBracket_UQ;
   }
 
   const T_bubble = _brentRoot(objective, Tlo_b_UQ, Thi_b_UQ, tol, maxIter);
-  if (T_bubble === null) return null;
+  if (T_bubble === null || T_bubble > T_bp_max_UQ + 10) return null;
 
   const Psat_f = [calculatePsat_Pa(comps[0].antoine, T_bubble), calculatePsat_Pa(comps[1].antoine, T_bubble)];
   const gamma_f = calculateUniquacGamma(comps, x, T_bubble, params);
@@ -1735,6 +1821,9 @@ export async function fetchUnifacInteractionParams(
   supabase: SupabaseClient,
   subgroupIds: number[]
 ): Promise<UnifacParameters> {
+  const cacheKey = subgroupIds.sort((a, b) => a - b).join(',');
+  if (unifacParamsCache.has(cacheKey)) return unifacParamsCache.get(cacheKey)!;
+
   const { data, error } = await supabase
     .from('UNIFAC - Rk and Qk')
     .select('"Subgroup #", "Main Group #", "Rk", "Qk"')
@@ -1763,7 +1852,9 @@ export async function fetchUnifacInteractionParams(
   intData?.forEach((row: any) => {
     a_mk.set(`${row.i}-${row.j}`, row["a(ij)"] ?? 0);
   });
-  return { Rk, Qk, mainGroupMap: mainMap, a_mk };
+  const result = { Rk, Qk, mainGroupMap: mainMap, a_mk };
+  unifacParamsCache.set(cacheKey, result);
+  return result;
 }
 
 // ─── Shared R_cal constant ───────────────────────────────────────────────────
@@ -1805,10 +1896,21 @@ export async function fetchNrtlParameters(
   if (!name1 || !name2) throw new Error('Component names required for NRTL');
   if (name1 === name2) return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
 
+  const key = getBinaryKey(name1, name2);
+  if (nrtlCache.has(key)) {
+    const cached = nrtlCache.get(key)!;
+    // Handle symmetric re-ordering if key names were swapped during getBinaryKey
+    if (name1.toUpperCase() !== name2.toUpperCase() && name1.toUpperCase() === key.split('|')[1]) {
+       return { ...cached, Aij: cached.Aji, Aji: cached.Aij, Bij: cached.Bji, Bji: cached.Bij, Eij: cached.Eji, Eji: cached.Eij, Fij: cached.Fji, Fji: cached.Fij };
+    }
+    return cached;
+  }
+
   // APV VLE-HOC first — NIST NRTL params use alpha=0.1 (non-standard) and were not regressed with
   // the same HOC vapour-phase model. APV VLE-HOC matches Aspen Plus default and gives the most
   // accurate combined liquid-γ + vapour-phase results (same rationale as Wilson, see below).
   const result = await fetchAspenBinaryRow(supabase, 'apv140_nrtl_wide', 'nistv140_nrtl_wide', name1, name2);
+  let params: NrtlInteractionParams;
   if (result) {
     const { row, isForward } = result;
     // Aspen NRTL: τ_ij = aij + bij/T  (aij dim'less, bij in K)
@@ -1820,20 +1922,33 @@ export async function fetchNrtlParameters(
          row.dij ?? 0, row.eij ?? 0, row.eji ?? 0, row.fij ?? 0, row.fji ?? 0]
       : [row.aji ?? 0, row.aij ?? 0, row.bji ?? 0, row.bij ?? 0, row.cij ?? 0.3,
          row.dij ?? 0, row.eji ?? 0, row.eij ?? 0, row.fji ?? 0, row.fij ?? 0]; // dij symmetric
-    return {
+    params = {
       Aij: bij * R_cal, Aji: bji * R_cal, Bij: aij * R_cal, Bji: aji * R_cal, alpha,
       dij_alpha,
       Eij: eij * R_cal, Eji: eji * R_cal, Fij: fij * R_cal, Fji: fji * R_cal,
       eta_cross: row.HOC_ETA_CROSS ?? 0,
     };
+  } else {
+    // Fallback to UNIFAC-based estimate
+    const est = await estimateNrtlFromUnifac(supabase, name1, name2);
+    if (est) {
+      (est as any)._usedUnifacFallback = true;
+      params = est;
+    } else {
+      params = { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
+    }
   }
-  // Fallback to UNIFAC-based estimate
-  const est = await estimateNrtlFromUnifac(supabase, name1, name2);
-  if (est) {
-    (est as any)._usedUnifacFallback = true;
-    return est;
+
+  // Always store in cache such that Aij refers to Row.Compound1 -> Row.Compound2
+  // But getBinaryKey sorts them. We need to store it normalized to getBinaryKey's order.
+  const [kN1, kN2] = key.split('|');
+  if (name1.toUpperCase() === kN1) {
+    nrtlCache.set(key, params);
+  } else {
+    const flipped = { ...params, Aij: params.Aji, Aji: params.Aij, Bij: params.Bji, Bji: params.Bij, Eij: params.Eji, Eji: params.Eij, Fij: params.Fji, Fji: params.Fij };
+    nrtlCache.set(key, flipped);
   }
-  return { Aij: 0, Aji: 0, Bij: 0, Bji: 0, alpha: 0.3 };
+  return params;
 }
 
 // --- Wilson ---
@@ -1878,15 +1993,22 @@ export async function fetchPrInteractionParams(
 ): Promise<PrInteractionParams> {
   if (!name1 || !name2 || name1 === name2) return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
 
+  const key = getBinaryKey(name1, name2);
+  if (prCache.has(key)) return prCache.get(key)!;
+
   const result = await fetchAspenBinaryRow(supabase, 'nistv140_prkbv_wide', 'apv140_prkbv_wide', name1, name2);
+  let params: PrInteractionParams;
   if (result && typeof result.row.kij1 === 'number') {
-    return {
+    params = {
       k_ij1: result.row.kij1,
       k_ij2: result.row.kij2 || 0,
       k_ij3: result.row.kij3 || 0,
     };
+  } else {
+    params = { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
   }
-  return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
+  prCache.set(key, params);
+  return params;
 }
 
 // --- SRK ---
@@ -1897,15 +2019,22 @@ export async function fetchSrkInteractionParams(
 ): Promise<SrkInteractionParams> {
   if (!name1 || !name2 || name1 === name2) return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
 
+  const key = getBinaryKey(name1, name2);
+  if (srkCache.has(key)) return srkCache.get(key)!;
+
   const result = await fetchAspenBinaryRow(supabase, 'nistv140_rkskbv_wide', 'apv140_rkskbv_wide', name1, name2);
+  let params: SrkInteractionParams;
   if (result && typeof result.row.kij1 === 'number') {
-    return {
+    params = {
       k_ij1: result.row.kij1,
       k_ij2: result.row.kij2 || 0,
       k_ij3: result.row.kij3 || 0,
     };
+  } else {
+    params = { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
   }
-  return { k_ij1: 0, k_ij2: 0, k_ij3: 0 };
+  srkCache.set(key, params);
+  return params;
 }
 
 // --- UNIQUAC ---

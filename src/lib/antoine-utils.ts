@@ -3,6 +3,10 @@ import type { AntoineParams, UnifacGroupComposition, UniquacPureComponentParams,
 
 // ─── Compound name helpers (compounds_master table) ────────────────────────────
 
+// Simple in-memory cache for resolved sim names and compound data
+const simNameCache = new Map<string, string | null>();
+const compoundDataCache = new Map<string, any>();
+
 /** An entry from the compounds_master table. */
 export interface CompoundAlias {
     fullName: string;
@@ -102,13 +106,20 @@ export async function resolveSimName(
 ): Promise<string | null> {
     if (!name) return null;
 
+    const normalized = name.trim().toUpperCase();
+    if (simNameCache.has(normalized)) return simNameCache.get(normalized)!;
+
     // 1. Try exact Name match in compounds_master (case-insensitive)
     const { data: byName } = await supabase
         .from('compounds_master')
         .select('"Name"')
         .ilike('Name', name.trim())
         .limit(1);
-    if (byName && byName.length > 0) return (byName[0] as any).Name as string;
+    if (byName && byName.length > 0) {
+        const result = (byName[0] as any).Name as string;
+        simNameCache.set(normalized, result);
+        return result;
+    }
 
     // 2. Try Alias match (e.g., user typed "MeOH", "CH3OH", a CAS number, etc.)
     const { data: byAlias } = await supabase
@@ -116,10 +127,16 @@ export async function resolveSimName(
         .select('"Name"')
         .ilike('Alias', name.trim())
         .limit(1);
-    if (byAlias && byAlias.length > 0) return (byAlias[0] as any).Name as string;
+    if (byAlias && byAlias.length > 0) {
+        const result = (byAlias[0] as any).Name as string;
+        simNameCache.set(normalized, result);
+        return result;
+    }
 
     // 3. Fall back – assume user typed the exact Aspen name already
-    return name.trim().toUpperCase();
+    const result = name.trim().toUpperCase();
+    simNameCache.set(normalized, result);
+    return result;
 }
 
 // ─── Core therm-data helpers ────────────────────────────────────────────────────
@@ -172,7 +189,7 @@ export async function fetchAndConvertThermData(
         .limit(1);
 
     if (pureError || !pureRows || pureRows.length === 0) {
-        console.error(`Error fetching Aspen pure comp data for "${compoundName}":`, pureError?.message);
+        console.error(`Error fetching Aspen pure comp data for "${compoundName}":`, pureError?.message ?? 'No matching rows found in apv140_pure_props_wide');
         throw new Error(`Compound "${compoundName}" not found in the database.`);
     }
     const pureData = pureRows[0];
@@ -256,7 +273,7 @@ export async function fetchAndConvertThermData(
         V_L_m3mol = (VC_m3kmol / 1000.0) * 0.3;
     }
 
-    // 4. Fetch UNIFAC groups (still from compound_properties legacy table)
+    // 4. Fetch UNIFAC groups from compound_properties
     let unifacGroups: UnifacGroupComposition | null = null;
     try {
         const { data: compoundRows, error: compoundError } = await supabase
@@ -325,9 +342,12 @@ export async function fetchCompoundDataFromHysys(
     supabase: SupabaseClient,
     compoundName: string
 ): Promise<CompoundData> {
+    const normalized = compoundName.trim().toUpperCase();
+    if (compoundDataCache.has(normalized)) return compoundDataCache.get(normalized);
+
     const therm = await fetchAndConvertThermData(supabase, compoundName);
 
-    return {
+    const result: CompoundData = {
         name: compoundName,
         cas_number: null,
         molecularWeight: therm.molecularWeight,
@@ -355,5 +375,8 @@ export async function fetchCompoundDataFromHysys(
         } : null,
         hocProps: therm.hocProps ?? null,
     };
+
+    compoundDataCache.set(normalized, result);
+    return result;
 }
 
