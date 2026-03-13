@@ -97,7 +97,7 @@ export default function AzeotropeFinderPage() {
   
   // Input States
   const [comp1Name, setComp1Name] = useState('Acetone'); // Default to acetone
-  const [comp2Name, setComp2Name] = useState('H2O');   // Default to water
+  const [comp2Name, setComp2Name] = useState('WATER');   // Default to water
   const [fluidPackage, setFluidPackage] = useState<FluidPackageTypeAzeotrope>('uniquac'); // Default to uniquac
   const [azeotropeScanType, setAzeotropeScanType] = useState<AzeotropeScanType>('vs_P_find_T'); // Default to Scan Pressure
   // const scanSteps = 50; // Always use 50 scan points, no UI to change this // REMOVED
@@ -133,6 +133,11 @@ export default function AzeotropeFinderPage() {
   const [displayedScanType, setDisplayedScanType] = useState<AzeotropeScanType | ''>('');
   // Concurrency guard so stale scans don't overwrite newer results
   const scanGenerationRef = useRef(0);
+  // Cached compound data + interaction params — avoids re-fetching on scan-type or mode changes
+  const [cachedComp1Data, setCachedComp1Data] = useState<CompoundData | null>(null);
+  const [cachedComp2Data, setCachedComp2Data] = useState<CompoundData | null>(null);
+  const [cachedInteractionParams, setCachedInteractionParams] = useState<any>(null);
+  const lastFetchKeyRef = useRef<string | null>(null);
   // Pre-fetched compound data used to determine which fluid packages have the
   // required parameters for the current compound pair.
   const [comp1PreData, setComp1PreData] = useState<CompoundData | null>(null);
@@ -284,6 +289,18 @@ export default function AzeotropeFinderPage() {
     setTimeout(() => handleAzeotropeScan(), 100);
   };
 
+  // --- Enter / Escape key handler for compound inputs ---
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>, inputTarget: 'comp1' | 'comp2') => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      setShowComp1Suggestions(false);
+      setShowComp2Suggestions(false);
+      handleAzeotropeScan();
+    } else if (event.key === 'Escape') {
+      if (inputTarget === 'comp1') setShowComp1Suggestions(false);
+      if (inputTarget === 'comp2') setShowComp2Suggestions(false);
+    }
+  };
 
   // --- CSV Export Function ---
   const handleExportToCSV = () => {
@@ -369,69 +386,125 @@ export default function AzeotropeFinderPage() {
         const [sim1, sim2] = await Promise.all([resolveSimName(supabase, comp1Name), resolveSimName(supabase, comp2Name)]);
         const resolvedComp1 = sim1 || comp1Name;
         const resolvedComp2 = sim2 || comp2Name;
-        const [data1, data2] = await Promise.all([fetchCompoundDataLocal(resolvedComp1), fetchCompoundDataLocal(resolvedComp2)]);
-        if (!data1 || !data2) { setLoading(false); return; } // Error set in fetchCompoundDataLocal
 
-        // Check for pure component system
-        if (data1.name.toLowerCase() === data2.name.toLowerCase()) {
-            setError("Cannot find an azeotrope for a pure component. Please select two different compounds.");
-            setLoading(false);
-            return;
-        }
+        // Use cache when compound names + fluid package haven't changed
+        const fetchKey = `${resolvedComp1}|${resolvedComp2}|${fluidPackage}`;
+        let data1 = cachedComp1Data;
+        let data2 = cachedComp2Data;
+        let activityParameters: any = cachedInteractionParams;
+        const needsFetch = !data1 || !data2 || !activityParameters || lastFetchKeyRef.current !== fetchKey;
 
-        // Validate required parameters based on fluidPackage
-        if (fluidPackage === 'unifac' && (!data1.unifacGroups || !data2.unifacGroups)) throw new Error("UNIFAC groups missing.");
-        if (fluidPackage === 'pr' && (!data1.prParams || !data2.prParams)) throw new Error("PR parameters missing.");
-        if (fluidPackage === 'srk' && (!data1.srkParams || !data2.srkParams)) throw new Error("SRK parameters missing.");
-        if (fluidPackage === 'uniquac' && (!data1.uniquacParams || !data2.uniquacParams)) throw new Error("UNIQUAC parameters missing.");
-        if (fluidPackage === 'wilson' && (!data1.wilsonParams || !data2.wilsonParams)) throw new Error("Wilson parameters missing.");
-        // NRTL params are fetched as interaction params, CAS numbers checked in fetchNrtlParameters
+        if (needsFetch) {
+            const [fetched1, fetched2] = await Promise.all([fetchCompoundDataLocal(resolvedComp1), fetchCompoundDataLocal(resolvedComp2)]);
+            if (!fetched1 || !fetched2) { setLoading(false); return; }
+            data1 = fetched1; data2 = fetched2;
 
-        const components: CompoundData[] = [data1, data2];
-        let activityParameters: any; // UnifacParameters | NrtlInteractionParams | etc.
-
-        // Fetch interaction parameters
-        if (fluidPackage === 'unifac') {
-            const allSubgroupIds = new Set<number>();
-            components.forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
-            activityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
-        } else if (fluidPackage === 'nrtl') {
-            activityParameters = await fetchNrtlParameters(supabase, data1.name, data2.name);
-            if ((activityParameters as any)?._usedUnifacFallback) {
-                setError(`NRTL parameters not found in database for ${data1.name}–${data2.name}. Using UNIFAC-based estimate.`);
+            // Check for pure component system
+            if (fetched1.name.toLowerCase() === fetched2.name.toLowerCase()) {
+                setError("Cannot find an azeotrope for a pure component. Please select two different compounds.");
+                setLoading(false);
+                return;
             }
-        } else if (fluidPackage === 'pr') {
-            activityParameters = await fetchPrInteractionParams(supabase, data1.name, data2.name);
-        } else if (fluidPackage === 'srk') {
-            activityParameters = await fetchSrkInteractionParams(supabase, data1.name, data2.name);
-        } else if (fluidPackage === 'uniquac') {
-            activityParameters = await fetchUniquacInteractionParams(supabase, data1.name, data2.name);
-            if ((activityParameters as any)?._usedUnifacFallback) {
-                setError(`UNIQUAC parameters not found in database for ${data1.name}–${data2.name}. Using UNIFAC-based estimate.`);
+
+            // Validate required parameters based on fluidPackage
+            if (fluidPackage === 'unifac' && (!fetched1.unifacGroups || !fetched2.unifacGroups)) throw new Error("UNIFAC groups missing.");
+            if (fluidPackage === 'pr' && (!fetched1.prParams || !fetched2.prParams)) throw new Error("PR parameters missing.");
+            if (fluidPackage === 'srk' && (!fetched1.srkParams || !fetched2.srkParams)) throw new Error("SRK parameters missing.");
+            if (fluidPackage === 'uniquac' && (!fetched1.uniquacParams || !fetched2.uniquacParams)) throw new Error("UNIQUAC parameters missing.");
+            if (fluidPackage === 'wilson' && (!fetched1.wilsonParams || !fetched2.wilsonParams)) throw new Error("Wilson parameters missing.");
+
+            // Fetch interaction parameters
+            if (fluidPackage === 'unifac') {
+                const allSubgroupIds = new Set<number>();
+                [fetched1, fetched2].forEach(comp => { if (comp.unifacGroups) Object.keys(comp.unifacGroups).forEach(id => allSubgroupIds.add(parseInt(id))); });
+                activityParameters = await fetchUnifacInteractionParams(supabase, Array.from(allSubgroupIds));
+            } else if (fluidPackage === 'nrtl') {
+                activityParameters = await fetchNrtlParameters(supabase, fetched1.name, fetched2.name);
+                if ((activityParameters as any)?._usedUnifacFallback) {
+                    setError(`NRTL parameters not found in database for ${fetched1.name}–${fetched2.name}. Using UNIFAC-based estimate.`);
+                }
+            } else if (fluidPackage === 'pr') {
+                activityParameters = await fetchPrInteractionParams(supabase, fetched1.name, fetched2.name);
+            } else if (fluidPackage === 'srk') {
+                activityParameters = await fetchSrkInteractionParams(supabase, fetched1.name, fetched2.name);
+            } else if (fluidPackage === 'uniquac') {
+                activityParameters = await fetchUniquacInteractionParams(supabase, fetched1.name, fetched2.name);
+                if ((activityParameters as any)?._usedUnifacFallback) {
+                    setError(`UNIQUAC parameters not found in database for ${fetched1.name}–${fetched2.name}. Using UNIFAC-based estimate.`);
+                }
+            } else if (fluidPackage === 'wilson') {
+                activityParameters = await fetchWilsonInteractionParams(supabase, fetched1.name, fetched2.name);
+            } else {
+                throw new Error(`Unsupported fluid package: ${fluidPackage}`);
             }
-        } else if (fluidPackage === 'wilson') {
-            activityParameters = await fetchWilsonInteractionParams(supabase, data1.name, data2.name);
+
+            // Update cache
+            setCachedComp1Data(fetched1);
+            setCachedComp2Data(fetched2);
+            setCachedInteractionParams(activityParameters);
+            lastFetchKeyRef.current = fetchKey;
+            // Also keep PreData in sync for fluid-package dropdown
+            setComp1PreData(fetched1);
+            setComp2PreData(fetched2);
         } else {
-            throw new Error(`Unsupported fluid package: ${fluidPackage}`);
+            // Still need to validate for pure component check when using cache
+            if (data1!.name.toLowerCase() === data2!.name.toLowerCase()) {
+                setError("Cannot find an azeotrope for a pure component.");
+                setLoading(false);
+                return;
+            }
         }
+
+        // data1 and data2 are guaranteed non-null after the cache/fetch block above
+        const d1 = data1!;
+        const d2 = data2!;
+        const components: CompoundData[] = [d1, d2];
 
         const scanResultsArray: { scanVal: number, x_az: number, dependentVal: number, branchIndex: number }[] = [];
         
+        // Derive scan bounds from Antoine parameters and critical properties
+        let scanPMinBar = 0.01, scanPMaxBar = 20;
+        let scanTMinK = 230, scanTMaxK = 550;
+        if (d1.antoine && d2.antoine) {
+            const Pc1 = d1.Pc_Pa ?? d1.prParams?.Pc_Pa ?? Infinity;
+            const Pc2 = d2.Pc_Pa ?? d2.prParams?.Pc_Pa ?? Infinity;
+            const Tc1 = d1.Tc_K ?? d1.prParams?.Tc_K ?? Infinity;
+            const Tc2 = d2.Tc_K ?? d2.prParams?.Tc_K ?? Infinity;
+            const Pmin1 = libCalculatePsat_Pa(d1.antoine, d1.antoine.Tmin_K);
+            const Pmin2 = libCalculatePsat_Pa(d2.antoine, d2.antoine.Tmin_K);
+            const Pmax1 = Math.min(libCalculatePsat_Pa(d1.antoine, d1.antoine.Tmax_K), isFinite(Pc1) ? Pc1 : Infinity);
+            const Pmax2 = Math.min(libCalculatePsat_Pa(d2.antoine, d2.antoine.Tmax_K), isFinite(Pc2) ? Pc2 : Infinity);
+            const computedPMin = Math.max(Pmin1, Pmin2) / 1e5;
+            const computedPMax = Math.min(isFinite(Pmax1) ? Pmax1 : 20e5, isFinite(Pmax2) ? Pmax2 : 20e5) / 1e5;
+            if (computedPMax > computedPMin) { scanPMinBar = Math.max(computedPMin, 0.01); scanPMaxBar = computedPMax; }
+
+            const computedTMin = Math.max(d1.antoine.Tmin_K, d2.antoine.Tmin_K);
+            const computedTMax = Math.min(
+                Math.min(d1.antoine.Tmax_K, isFinite(Tc1) ? Tc1 : Infinity),
+                Math.min(d2.antoine.Tmax_K, isFinite(Tc2) ? Tc2 : Infinity)
+            );
+            if (computedTMax > computedTMin) { scanTMinK = computedTMin; scanTMaxK = computedTMax; }
+        }
+
         let currentScanStartValue: number, currentScanEndValue: number, stepValue: number;
         if (azeotropeScanType === 'vs_P_find_T') {
-            currentScanStartValue = 0.1; // bar
-            currentScanEndValue = 20; // bar
+            currentScanStartValue = scanPMinBar;
+            currentScanEndValue = scanPMaxBar;
             stepValue = 0.1; // bar increment
         } else { // vs_T_find_P
-            currentScanStartValue = 230; // K
-            currentScanEndValue = 550; // K
+            currentScanStartValue = scanTMinK;
+            currentScanEndValue = scanTMaxK;
             stepValue = 1; // K increment
         }
-        // const stepValue = (currentScanEndValue - currentScanStartValue) / (scanSteps > 1 ? scanSteps - 1 : 1); // REMOVED
 
-        for (let currentScanVal = currentScanStartValue; currentScanVal <= currentScanEndValue + (stepValue * 0.5); currentScanVal += stepValue) {
-            // The `+ (stepValue * 0.5)` is to handle potential floating point inaccuracies for the loop's end condition
-            // const currentScanVal = currentScanStartValue + i * stepValue; // REPLACED by loop variable
+        // Use index-based loop to avoid floating-point accumulation in the loop variable
+        const totalSteps = Math.ceil((currentScanEndValue - currentScanStartValue) / stepValue);
+        const scanValues = Array.from({ length: totalSteps + 1 }, (_, i) =>
+            parseFloat((currentScanStartValue + i * stepValue).toPrecision(10))
+        ).filter(v => v <= currentScanEndValue + stepValue * 0.5);
+
+        for (const currentScanVal of scanValues) {
+            // (iterates clean rounded values with no FP drift)
 
             const objectiveFunction = (x1_guess: number): number | null => {
                 if (x1_guess <= 1e-5 || x1_guess >= 1.0 - 1e-5) return 1.0; // Avoid edges for stability
@@ -439,28 +512,25 @@ export default function AzeotropeFinderPage() {
                 let bubbleResult: BubbleDewResult | null = null;
                 if (azeotropeScanType === 'vs_P_find_T') {
                     const P_system_Pa = currentScanVal * 100000; // Convert bar to Pa
-                    const T_bp1_est = antoineBoilingPointSolverLocal(data1.antoine, P_system_Pa) || 350;
-                    const T_bp2_est = antoineBoilingPointSolverLocal(data2.antoine, P_system_Pa) || 350;
+                    const T_bp1_est = antoineBoilingPointSolverLocal(d1.antoine, P_system_Pa) || 350;
+                    const T_bp2_est = antoineBoilingPointSolverLocal(d2.antoine, P_system_Pa) || 350;
                     const initialTempGuess = x1_guess * T_bp1_est + (1 - x1_guess) * T_bp2_est;
 
                     if (fluidPackage === 'unifac') bubbleResult = calculateBubbleTemperatureUnifac(components, x1_guess, P_system_Pa, activityParameters, initialTempGuess);
                     else if (fluidPackage === 'nrtl') bubbleResult = calculateBubbleTemperatureNrtl(components, x1_guess, P_system_Pa, activityParameters, initialTempGuess);
-                    // ... other fluid packages for bubbleT
                     else if (fluidPackage === 'pr') bubbleResult = calculateBubbleTemperaturePr(components, x1_guess, P_system_Pa, activityParameters, initialTempGuess);
                     else if (fluidPackage === 'srk') bubbleResult = calculateBubbleTemperatureSrk(components, x1_guess, P_system_Pa, activityParameters, initialTempGuess);
                     else if (fluidPackage === 'uniquac') bubbleResult = calculateBubbleTemperatureUniquac(components, x1_guess, P_system_Pa, activityParameters, initialTempGuess);
                     else if (fluidPackage === 'wilson') bubbleResult = calculateBubbleTemperatureWilson(components, x1_guess, P_system_Pa, activityParameters, initialTempGuess);
 
-
                 } else { // vs_T_find_P
                     const T_system_K = currentScanVal;
-                    const P_sat1_est = libCalculatePsat_Pa(data1.antoine!, T_system_K);
-                    const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
+                    const P_sat1_est = libCalculatePsat_Pa(d1.antoine!, T_system_K);
+                    const P_sat2_est = libCalculatePsat_Pa(d2.antoine!, T_system_K);
                     const initialPressureGuess = (P_sat1_est && P_sat2_est) ? (x1_guess * P_sat1_est + (1 - x1_guess) * P_sat2_est) : 101325;
                     
                     if (fluidPackage === 'unifac') bubbleResult = calculateBubblePressureUnifac(components, x1_guess, T_system_K, activityParameters);
                     else if (fluidPackage === 'nrtl') bubbleResult = calculateBubblePressureNrtl(components, x1_guess, T_system_K, activityParameters);
-                    // ... other fluid packages for bubbleP
                     else if (fluidPackage === 'pr') bubbleResult = calculateBubblePressurePr(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
                     else if (fluidPackage === 'srk') bubbleResult = calculateBubblePressureSrk(components, x1_guess, T_system_K, activityParameters, initialPressureGuess);
                     else if (fluidPackage === 'uniquac') bubbleResult = calculateBubblePressureUniquac(components, x1_guess, T_system_K, activityParameters);
@@ -502,8 +572,8 @@ export default function AzeotropeFinderPage() {
 
                 if (azeotropeScanType === 'vs_P_find_T') {
                     const P_system_Pa = currentScanVal * 100000;
-                    const T_bp1_est = antoineBoilingPointSolverLocal(data1.antoine, P_system_Pa) || 350;
-                    const T_bp2_est = antoineBoilingPointSolverLocal(data2.antoine, P_system_Pa) || 350;
+                    const T_bp1_est = antoineBoilingPointSolverLocal(d1.antoine, P_system_Pa) || 350;
+                    const T_bp2_est = antoineBoilingPointSolverLocal(d2.antoine, P_system_Pa) || 350;
                     const initialTempGuess = x_az_found * T_bp1_est + (1 - x_az_found) * T_bp2_est;
 
                     if (fluidPackage === 'unifac') finalBubbleResult = calculateBubbleTemperatureUnifac(components, x_az_found, P_system_Pa, activityParameters, initialTempGuess);
@@ -518,8 +588,8 @@ export default function AzeotropeFinderPage() {
                     }
                 } else {
                     const T_system_K = currentScanVal;
-                    const P_sat1_est = libCalculatePsat_Pa(data1.antoine!, T_system_K);
-                    const P_sat2_est = libCalculatePsat_Pa(data2.antoine!, T_system_K);
+                    const P_sat1_est = libCalculatePsat_Pa(d1.antoine!, T_system_K);
+                    const P_sat2_est = libCalculatePsat_Pa(d2.antoine!, T_system_K);
                     const initialPressureGuess = (P_sat1_est && P_sat2_est) ? (x_az_found * P_sat1_est + (1 - x_az_found) * P_sat2_est) : 101325;
 
                     if (fluidPackage === 'unifac') finalBubbleResult = calculateBubblePressureUnifac(components, x_az_found, T_system_K, activityParameters);
@@ -608,7 +678,8 @@ export default function AzeotropeFinderPage() {
       title: { 
         text: titleText, 
         left: 'center', 
-        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' }, // Match McCabe-Thiele fontSize
+        top: '10',
+        textStyle: { color: textColor, fontSize: 18, fontFamily: 'Merriweather Sans' },
       },
       backgroundColor: 'transparent',
       tooltip: {
@@ -638,7 +709,7 @@ export default function AzeotropeFinderPage() {
                 else if (displayedScanType === 'vs_P_find_T') precision = 3; 
                 
                 const formattedValue = (displayedScanType === 'vs_P_find_T' && seriesName === dependentParamName)
-                    ? value.toFixed(1) 
+                    ? parseFloat(value.toFixed(1)).toString()
                     : formatNumberToPrecision(value, precision);
 
                 tooltipHtml += `<span style="color: ${param.color};"><b>${seriesName}: ${formattedValue}</b></span><br/>`;
@@ -647,20 +718,22 @@ export default function AzeotropeFinderPage() {
         }
       },
       legend: {
-        show: branchIndices.length > 1,
-        orient: 'vertical', right: '2%', top: 'center',
-        textStyle: { color: textColor, fontSize: 11, fontFamily: 'Merriweather Sans' },
-        itemWidth: 20, itemHeight: 2,
+        show: true,
+        orient: 'horizontal', bottom: '0', left: 'center',
+        textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
+        itemWidth: 25, itemHeight: 4,
       },
-      grid: { left: '8%', right: '10%', bottom: '8%', top: '8%', containLabel: true }, // Adjusted grid.bottom from 15% to 8%
+      grid: { left: '8%', right: '10%', bottom: '8%', top: '12%', containLabel: true },
       xAxis: {
         show: true, 
         type: 'value', name: scanParamName, nameLocation: 'middle', nameGap: 30,
-        axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
-        nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
-        axisLine: { lineStyle: { color: textColor, width: 2.5 } }, // Added width
-        splitLine: { show: false }, // Removed grid lines
-        scale: true      },
+        axisLabel: { color: textColor, fontFamily: 'Merriweather Sans', fontSize: 16 },
+        nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
+        axisLine: { lineStyle: { color: textColor, width: 2.5 } },
+        splitLine: { show: false },
+        min: azeotropeScanData.length > 0 ? parseFloat(Math.min(...azeotropeScanData.map(d => d.scanVal)).toPrecision(4)) : undefined,
+        max: azeotropeScanData.length > 0 ? parseFloat(Math.max(...azeotropeScanData.map(d => d.scanVal)).toPrecision(4)) : undefined,
+      },
       yAxis: [
         {
           show: true, 
@@ -668,7 +741,7 @@ export default function AzeotropeFinderPage() {
           position: 'left', 
           axisLabel: { color: textColor, formatter: (v: number) => formatNumberToPrecision(v,3), fontFamily: 'Merriweather Sans', fontSize: 16 }, // Changed color, Added fontSize
           nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
-          axisLine: { lineStyle: { color: '#22c55e', width: 2.5 } }, // Changed color to green for composition axis, added width
+          axisLine: { lineStyle: { color: textColor, width: 2.5 } },
           splitLine: { show: false }, // Removed grid lines
         },
         {
@@ -676,21 +749,19 @@ export default function AzeotropeFinderPage() {
           type: 'value', name: dependentParamName, nameLocation: 'middle', nameGap: 60, position: 'right',
           axisLabel: { 
             color: textColor, // Changed color
-            formatter: (v: number) => (displayedScanType === 'vs_P_find_T') ? v.toFixed(1) : formatNumberToPrecision(v, 3), 
+            formatter: (v: number) => (displayedScanType === 'vs_P_find_T') ? parseFloat(v.toFixed(1)).toString() : formatNumberToPrecision(v, 3), 
             fontFamily: 'Merriweather Sans',
             fontSize: 16 // Added fontSize
           },
           nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' }, // Added fontSize
-          axisLine: { lineStyle: { color: '#f59e0b', width: 2.5 } }, // Added width
+          axisLine: { lineStyle: { color: textColor, width: 2.5 } },
           splitLine: { show: false }, // Removed grid lines
           scale: true,
         }
       ],
       series: chartSeries,
-      // dataZoom removed
-      toolbox: {
-            show: false
-      },
+      animation: false,
+      toolbox: { show: false },
     };
     setEchartsOptions(options);
   }, [azeotropeScanData, displayedComp1, displayedComp2, displayedFluidPackage, displayedScanType, resolvedTheme]);
@@ -733,7 +804,8 @@ export default function AzeotropeFinderPage() {
                 <div className="flex items-center gap-2">
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp1NameAzeo">Component 1</Label> */}
-                        <Input ref={input1Ref} id="comp1NameAzeo" value={comp1DisplayName} onChange={handleComp1NameChange} 
+                        <Input ref={input1Ref} id="comp1NameAzeo" value={comp1DisplayName} onChange={handleComp1NameChange}
+                               onKeyDown={(e) => handleKeyDown(e, 'comp1')}
                                onFocus={() => { setActiveSuggestionInput('comp1'); if (comp1DisplayName.trim()) fetchSuggestions(comp1DisplayName, 'comp1');}}
                                placeholder="e.g., Ethanol" autoComplete="off" />
                         {showComp1Suggestions && comp1Suggestions.length > 0 && (
@@ -745,7 +817,8 @@ export default function AzeotropeFinderPage() {
                     <Button variant="ghost" size="icon" onClick={handleSwapComponents} title="Swap Components" className="self-end mb-1"><ArrowLeftRight className="h-4 w-4" /></Button>
                     <div className="relative flex-1">
                         {/* <Label htmlFor="comp2NameAzeo">Component 2</Label> */}
-                        <Input ref={input2Ref} id="comp2NameAzeo" value={comp2DisplayName} onChange={handleComp2NameChange} 
+                        <Input ref={input2Ref} id="comp2NameAzeo" value={comp2DisplayName} onChange={handleComp2NameChange}
+                               onKeyDown={(e) => handleKeyDown(e, 'comp2')}
                                onFocus={() => { setActiveSuggestionInput('comp2'); if (comp2DisplayName.trim()) fetchSuggestions(comp2DisplayName, 'comp2');}}
                                placeholder="e.g., Water" autoComplete="off" />
                         {showComp2Suggestions && comp2Suggestions.length > 0 && (
@@ -832,9 +905,6 @@ export default function AzeotropeFinderPage() {
                   )}
                   {Object.keys(echartsOptions).length > 0 && <button onClick={handleDownloadChart} className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors" title="Download chart as PNG"><Download className="h-4 w-4" /></button>}
                 </div>
-                 <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Note: Accuracy depends on database parameters and model limitations. Results are from a wide scan range.
-                </p>
               </CardContent>
             </Card>
           </div>

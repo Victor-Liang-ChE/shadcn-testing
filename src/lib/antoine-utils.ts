@@ -82,17 +82,33 @@ export async function fetchCompoundSuggestions(
         return [];
     }
 
-        const seen = new Set<string>();
-        const unique: CompoundAlias[] = [];
-        for (const row of data as any[]) {
-            const name = row.Name as string;
-            if (!seen.has(name)) {
-                seen.add(name);
-                unique.push({ fullName: name, simName: name });
-            }
-            if (unique.length >= limit) break;
+    const seen = new Set<string>();
+    const candidates: CompoundAlias[] = [];
+    for (const row of data as any[]) {
+        const name = row.Name as string;
+        if (!seen.has(name)) {
+            seen.add(name);
+            candidates.push({ fullName: name, simName: name });
         }
-        return unique;
+    }
+
+    // Filter out compounds not in apv140_pure_props_wide using ilike (case-insensitive),
+    // matching the same logic used when actually fetching compound data.
+    // Run checks in parallel to keep latency low.
+    const validationResults = await Promise.all(
+        candidates.map(c =>
+            supabase
+                .from('apv140_pure_props_wide')
+                .select('"CompoundName"')
+                .ilike('CompoundName', c.simName)
+                .limit(1)
+        )
+    );
+
+    const unique = candidates.filter((_, i) =>
+        validationResults[i].data && validationResults[i].data!.length > 0
+    );
+    return unique.slice(0, limit);
 }
 
 /**
