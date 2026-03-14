@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import Image from "next/legacy/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -29,7 +28,7 @@ import {
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
-import { ufcChampionsData, type Champion, type WeightClassData} from "@/data/ufcChampionsData";
+import { type Champion, type WeightClassData} from "@/data/ufcChampionsData";
 
 /* ------------------------------------------------------------------ */
 /*  TYPES                                                             */
@@ -260,6 +259,13 @@ const getReignColor = (days: number): { bg: string; text: string; hoverBg: strin
 /* ------------------------------------------------------------------ */
 /*  COMPONENT                                                         */
 /* ------------------------------------------------------------------ */
+// Canonical dropdown order: men heaviest→lightest, then women heaviest→lightest
+const DIVISION_ORDER = [
+  'heavyweight', 'lightheavyweight', 'middleweight', 'welterweight',
+  'lightweight', 'featherweight', 'bantamweight', 'flyweight',
+  'women_bantamweight', 'women_flyweight', 'women_strawweight',
+];
+
 const UfcChampionsDisplay: React.FC = () => {
   // --- STATE DECLARATIONS ---
   const [selected, setSelected] = useState("lightweight");
@@ -271,6 +277,8 @@ const UfcChampionsDisplay: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isTimelineView, setIsTimelineView] = useState(false);
+  const [lineageData, setLineageData] = useState<Record<string, WeightClassData>>({});
+  const [isLoadingLineage, setIsLoadingLineage] = useState(true);
   const [isTimelineCalculating, setIsTimelineCalculating] = useState(false);
   const [genderFilter, setGenderFilter] = useState<"all" | "men" | "women">("all");
   const dataCache = useRef<Record<string, { details: FighterDetails | null; images: UfcChampionImages | null; history: ProcessedFightResult[] }>>({});
@@ -290,8 +298,34 @@ const UfcChampionsDisplay: React.FC = () => {
   const timelineDidDragRef = useRef(false);
   // --- END STATE/REFS ---
 
-  const classes = ufcChampionsData;
+  // Fetch full historical lineage from the API on mount
+  useEffect(() => {
+    fetch('/api/ufc-champions/lineage')
+      .then(r => r.json())
+      .then(json => {
+        if (json.lineage) {
+          // Sort by canonical division order before storing
+          const raw = json.lineage as Record<string, WeightClassData>;
+          const sorted: Record<string, WeightClassData> = {};
+          for (const key of DIVISION_ORDER) {
+            if (raw[key]) sorted[key] = raw[key];
+          }
+          // Append any divisions not in DIVISION_ORDER
+          for (const key of Object.keys(raw)) {
+            if (!DIVISION_ORDER.includes(key)) sorted[key] = raw[key];
+          }
+          setLineageData(sorted);
+        }
+      })
+      .catch(e => console.warn('[ufc-champions] lineage fetch failed:', e))
+      .finally(() => setIsLoadingLineage(false));
+  }, []);
+
+  const classes = lineageData;
   const data = classes[selected];
+
+  // Lineage API is the single source of truth – use champions directly.
+  const cards = useMemo(() => data?.champions ?? [], [data?.champions]);
 
   const filteredClasses = useMemo(() => {
     if (genderFilter === 'all') return classes;
@@ -611,8 +645,10 @@ const UfcChampionsDisplay: React.FC = () => {
           <div className="overflow-y-auto">
             <CardContent className="space-y-6 pt-6">
                {/* selector */}
-               <Select value={selected} onValueChange={setSelected} disabled={showDetailsView}>
-                  <SelectTrigger className="w-full md:w-[300px] mx-auto"> <SelectValue placeholder="Select a Weight Class" /> </SelectTrigger>
+               <Select value={selected} onValueChange={setSelected} disabled={showDetailsView || isLoadingLineage}>
+                  <SelectTrigger className="w-full md:w-[300px] mx-auto">
+                    <SelectValue placeholder={isLoadingLineage ? "Loading divisions…" : "Select a Weight Class"} />
+                  </SelectTrigger>
                   <SelectContent> {Object.entries(classes).map(([key, val]) => ( <SelectItem key={key} value={key}> {val.displayName} </SelectItem> ))} </SelectContent>
                </Select>
 
@@ -637,13 +673,13 @@ const UfcChampionsDisplay: React.FC = () => {
                        onPointerUp={handlePointerUpOrLeave}
                        onPointerLeave={handlePointerUpOrLeave} // Handle leave while dragging
                      >
-                       <div className="flex space-x-3 items-stretch min-h-[200px]">
-                         {data.champions.map((c, i) => {
-                           const start = parseDate(c.reignStart)!;
+                       <div className="flex space-x-3 items-stretch min-h-[200px] mx-auto min-w-max">
+                         {cards.map((c, i) => {
+                            const start = parseDate(c.reignStart)!;
                            const end = parseDate(c.reignEnd)!;
                            const reignDays = diffInDays(start, end);
                            const duration = humanDuration(reignDays);
-                           const next = data.champions[i + 1];
+                           const next = cards[i + 1];
                            let vacancyBlock: React.ReactNode = null;
                             if (next) {
                               const gap = diffInDays(end, parseDate(next.reignStart) || new Date()) - 1;
@@ -670,18 +706,28 @@ const UfcChampionsDisplay: React.FC = () => {
                                  className="
                                    flex-shrink-0 w-52 p-3 bg-muted rounded-md shadow-sm
                                    relative z-0 hover:z-10 flex flex-col
-                                   overflow-hidden {/* Keep overflow-hidden */}
-                                   select-none cursor-pointer group" // Added cursor-pointer back
+                                   overflow-hidden
+                                   select-none cursor-pointer group"
                                  whileHover={{ scale: 1.05, zIndex: 10 }}
                                  transition={{ duration: 0.2 }}
                                >
-                                 {/* ---- Add draggable=false ONLY to the container div ---- */}
                                  <div
-                                   draggable={false} // Keep this on the container div
-                                   className="relative h-24 w-full mb-2 bg-gradient-to-b from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 rounded flex items-center justify-center"
+                                   draggable={false}
+                                   className="relative w-full mb-2 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden flex items-center justify-center"
+                                   style={{ aspectRatio: '3/4' }}
                                  >
-                                   {/* ---- REMOVE draggable={false} from User ---- */}
-                                   <User className="h-12 w-12 text-gray-500 dark:text-gray-400" />
+                                   {/* Fallback icon only shown when no image */}
+                                   {!c.imageUrl && <User className="h-12 w-12 text-gray-500 dark:text-gray-400" />}
+                                   {c.imageUrl && (
+                                     // eslint-disable-next-line @next/next/no-img-element
+                                     <img
+                                       src={c.imageUrl}
+                                       alt={c.name}
+                                       draggable={false}
+                                       className="absolute inset-0 h-full w-full object-contain select-none"
+                                       onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; (e.currentTarget.parentElement?.querySelector('.fallback-icon') as HTMLElement | null)?.style.setProperty('display', 'flex') }}
+                                     />
+                                   )}
                                  </div>
                                  {/* --- Text Block (Should be visible now) --- */}
                                  <div className="mt-1"> {/* <<<--- Added small top margin */}
@@ -700,7 +746,7 @@ const UfcChampionsDisplay: React.FC = () => {
                    </div>
                  )}
 
-             <p className="text-xs text-center text-muted-foreground mt-8"> Missing UFC 294 and 308 Events. </p>
+             
             </CardContent>
           </div>
         </Card>)
@@ -854,8 +900,16 @@ const UfcChampionsDisplay: React.FC = () => {
                     <>
                       {/* Left Panel: Stats */}
                       <div className="w-1/3 border-r border-border p-4 md:p-6 overflow-y-auto flex flex-col items-center">
-                         <div className="relative h-40 w-40 mb-4 bg-gradient-to-b from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 rounded-full flex items-center justify-center overflow-hidden">
-                            {fighterImages?.HEADSHOT ? ( <Image src={fighterImages.HEADSHOT} alt={selectedFighter.name} layout="fill" objectFit="cover" /> ) : ( <User className="h-24 w-24 text-gray-500 dark:text-gray-400" /> )}
+                         <div className="relative w-full max-w-[220px] mb-4 bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center overflow-hidden" style={{ aspectRatio: '3/4' }}>
+                            {(selectedFighter?.imageUrl || fighterImages?.MAINSHOT) ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={selectedFighter?.imageUrl || fighterImages?.MAINSHOT || ''}
+                                alt={selectedFighter.name}
+                                className="absolute inset-0 h-full w-full object-contain"
+                                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+                              />
+                            ) : ( <User className="h-24 w-24 text-gray-500 dark:text-gray-400" /> )}
                          </div>
                          <h2 className="text-2xl font-bold mb-4 text-center">{fighterDetails?.FIGHTER || selectedFighter.name}</h2>
                          {fighterDetails ? (

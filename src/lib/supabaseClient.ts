@@ -54,6 +54,12 @@ export const supabase = new Proxy(realSupabase, {
             queryParams.single = true;
             return builder;
           },
+          maybeSingle: () => {
+            // Like single() but returns null instead of error when no rows found.
+            // The proxy already returns null for empty arrays, so same logic applies.
+            queryParams.single = true;
+            return builder;
+          },
           // The terminal "then" allows this to be awaited like a real query
           then: async (onfulfilled: any, onrejected: any) => {
             try {
