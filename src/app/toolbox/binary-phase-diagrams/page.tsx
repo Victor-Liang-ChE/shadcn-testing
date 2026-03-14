@@ -1170,22 +1170,6 @@ export default function VleDiagramPage() {
                 return results
             }
 
-            // Interpolate a curve in the forward direction: given cursorX, return the y-value
-            // on the curve (using the curve's x-axis as the independent variable).
-            // Returns null if cursorX is outside the curve's domain.
-            const interpForward = (xTarget: number, data: [number, number][]): number | null => {
-                for (let i = 0; i < data.length - 1; i++) {
-                    const [x1, y1] = data[i]
-                    const [x2, y2] = data[i + 1]
-                    const lo = Math.min(x1, x2), hi = Math.max(x1, x2)
-                    if (xTarget >= lo - 1e-9 && xTarget <= hi + 1e-9) {
-                        if (Math.abs(x2 - x1) < 1e-12) return (y1 + y2) / 2
-                        return y1 + (y2 - y1) * (xTarget - x1) / (x2 - x1)
-                    }
-                }
-                return null
-            }
-
             const bubbleCrossings = interpInverseAll(cursorY, bubble)
             const dewCrossings = interpInverseAll(cursorY, dew)
 
@@ -1212,40 +1196,9 @@ export default function VleDiagramPage() {
             }
 
             // The active pair is the unique valid pair whose span brackets cursorX.
-            let activePair = validPairs.find(p =>
+            const activePair = validPairs.find(p =>
                 cursorX >= Math.min(p.bubbleX, p.dewX) && cursorX <= Math.max(p.bubbleX, p.dewX)
             )
-
-            // Guard against false positives when curves have hump shapes (e.g. benzene-water
-            // heterogeneous azeotrope). Even if the horizontal scan found a (bubble, dew) pair
-            // that brackets cursorX, the cursor may be in the pure-liquid or pure-vapor region.
-            //
-            // Strategy: forward-interpolate BOTH curves at cursorX to get the local phase
-            // boundaries. The two-phase region is always the interval between the two curves,
-            // i.e. [min(bub,dew), max(bub,dew)]. We use min/max rather than assuming a fixed
-            // ordering, because on the benzene-rich side of benzene-water the dew curve dips
-            // BELOW the bubble curve (inverted/retrograde topology), yet the two-phase region
-            // is still perfectly physical between them.
-            //   Outside envelope: cursorY < min(bub,dew)  OR  cursorY > max(bub,dew)
-            // The same logic applies to both Txy and Pxy — only the axis meaning differs.
-            if (activePair !== undefined) {
-                const bubbleCurveY = interpForward(cursorX, bubble)
-                const dewCurveY    = interpForward(cursorX, dew)
-                if (bubbleCurveY !== null && dewCurveY !== null) {
-                    const envLo = Math.min(bubbleCurveY, dewCurveY)
-                    const envHi = Math.max(bubbleCurveY, dewCurveY)
-                    const outsideEnvelope = cursorY < envLo - 1e-9 || cursorY > envHi + 1e-9
-                    if (outsideEnvelope) activePair = undefined
-                } else if (bubbleCurveY !== null) {
-                    // Fallback: only bubble curve available — use original single-curve heuristic
-                    const outsideEnvelope =
-                        diagramType === 'pxy'
-                            ? cursorY > bubbleCurveY + 1e-9   // above bubble → pure liquid
-                            : cursorY < bubbleCurveY - 1e-9   // below bubble → pure liquid (Txy)
-                    if (outsideEnvelope) activePair = undefined
-                }
-            }
-
             const bubbleX = activePair?.bubbleX ?? null
             const dewX = activePair?.dewX ?? null
             const yAxisMin = yMinRef.current ?? 0

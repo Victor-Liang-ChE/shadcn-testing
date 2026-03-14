@@ -974,19 +974,6 @@ export default function McCabeThielePage() {
             nameLocation: 'middle', nameGap: 30, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
             axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
-            axisPointer: {
-                show: true,
-                type: 'line',
-                lineStyle: { color: 'transparent' },
-                label: {
-                    show: true,
-                    backgroundColor: isDark ? '#1a1a2e' : '#ffffff',
-                    color: textColor,
-                    borderColor: isDark ? '#55aaff' : '#d1d5db',
-                    fontFamily: 'Merriweather Sans',
-                    formatter: (params: any) => `x: ${formatNumberToPrecision(Number(params.value), 3)}`
-                }
-            }
         },
         yAxis: {
             type: 'value', min: 0, max: 1, interval: 0.1,
@@ -994,19 +981,6 @@ export default function McCabeThielePage() {
             nameLocation: 'middle', nameGap: 40, nameTextStyle: { color: textColor, fontSize: 15, fontFamily: 'Merriweather Sans' },
             axisLine: { lineStyle: { color: textColor } }, axisTick: { lineStyle: { color: textColor }, length: 5, inside: false },
             axisLabel: { color: textColor, fontSize: 16, fontFamily: 'Merriweather Sans', formatter: '{value}' }, splitLine: { show: false },
-            axisPointer: {
-                show: true,
-                type: 'line',
-                lineStyle: { color: 'transparent' },
-                label: {
-                    show: true,
-                    backgroundColor: isDark ? '#1a1a2e' : '#ffffff',
-                    color: textColor,
-                    borderColor: isDark ? '#55aaff' : '#d1d5db',
-                    fontFamily: 'Merriweather Sans',
-                    formatter: (params: any) => `y: ${formatNumberToPrecision(Number(params.value), 3)}`
-                }
-            }
         },
         legend: {
             orient: 'vertical', right: '2%', top: 'center',
@@ -1024,7 +998,7 @@ export default function McCabeThielePage() {
             textStyle: { color: textColor, fontSize: 12, fontFamily: 'Merriweather Sans' },
             itemWidth: 25, itemHeight: 2,
         },        tooltip: {
-            show: false,
+            show: true,
             trigger: 'axis',
             triggerOn: 'mousemove',
             backgroundColor: isDark ? '#1a1a2e' : '#ffffff',
@@ -1039,8 +1013,9 @@ export default function McCabeThielePage() {
             axisPointer: {
                 type: 'line',
                 lineStyle: {
-                    color: 'transparent',
-                    width: 0,
+                    color: isDark ? '#55aaff' : '#999',
+                    type: 'dashed',
+                    width: 1,
                 }
             },
             formatter: function (params: any) {
