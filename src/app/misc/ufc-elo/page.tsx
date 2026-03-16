@@ -808,7 +808,7 @@ export default function UfcEloPage() {
               `<div style="font-weight:700;margin-bottom:6px;border-bottom:1px solid ${isDark ? '#374151' : '#e5e7eb'};padding-bottom:4px">${date}</div>`
             : `<div style="font-weight:700;margin-bottom:6px;border-bottom:1px solid ${isDark ? '#374151' : '#e5e7eb'};padding-bottom:4px">${date}</div>`;
           return (
-            `<div style="padding:4px;font-size:11px;min-width:190px;max-height:420px;overflow-y:auto;font-family:'Merriweather Sans',sans-serif">` +
+            `<div style="padding:4px;font-size:11px;min-width:190px;font-family:'Merriweather Sans',sans-serif">` +
             headerHtml +
             lines.join('') +
             `</div>`
