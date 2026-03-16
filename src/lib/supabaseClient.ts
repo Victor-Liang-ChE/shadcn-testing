@@ -6,7 +6,17 @@ import { createClient } from '@supabase/supabase-js'
 // has the correct shape for the Proxy wrapper below.
 const realSupabase = createClient(
   'https://placeholder.supabase.co',
-  'placeholder-anon-key'
+  'placeholder-anon-key',
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    // Intercept every fetch so the placeholder client never makes a real network call.
+    // The Proxy wrapper below routes all actual queries through /api/supabase-proxy.
+    global: { fetch: () => Promise.resolve(new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })) },
+  }
 )
 
 /**

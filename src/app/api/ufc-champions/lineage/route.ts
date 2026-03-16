@@ -26,6 +26,7 @@ interface ChampEntry {
   reignEnd: string | null                  // ISO date, "Present", or null (= "Present")
   notes?: string
   imageUrl?: string
+  headshotUrl?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -287,19 +288,25 @@ export async function GET() {
     // Attach fighter image URLs from ufc_champion_images
     const { data: allImages } = await supabase
       .from('ufc_champion_images')
-      .select('FIRST, LAST, MAINSHOT')
+      .select('FIRST, LAST, MAINSHOT, HEADSHOT')
 
-    const imageMap = new Map<string, string>()
+    const mainshotMap = new Map<string, string>()
+    const headshotMap = new Map<string, string>()
     for (const img of allImages ?? []) {
-      if (img.FIRST && img.LAST && img.MAINSHOT) {
-        imageMap.set(norm(`${img.FIRST} ${img.LAST}`), img.MAINSHOT as string)
+      const key = norm(`${img.FIRST} ${img.LAST}`)
+      if (img.FIRST && img.LAST) {
+        if (img.MAINSHOT) mainshotMap.set(key, img.MAINSHOT as string)
+        if (img.HEADSHOT) headshotMap.set(key, img.HEADSHOT as string)
       }
     }
 
     for (const divData of Object.values(lineage)) {
       for (const champ of divData.champions) {
-        const url = imageMap.get(norm(champ.name))
-        if (url) champ.imageUrl = url
+        const key = norm(champ.name)
+        const mainshot = mainshotMap.get(key)
+        const headshot = headshotMap.get(key)
+        if (mainshot) champ.imageUrl = mainshot
+        if (headshot) champ.headshotUrl = headshot
       }
     }
 

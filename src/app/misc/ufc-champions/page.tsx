@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -24,11 +24,20 @@ import {
   User,
   ShieldCheck, // ✅ successful defence
   ShieldOff,  // ❌ broken defence
+  Info,
 } from "lucide-react"; // Updated imports
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Skeleton } from "@/components/ui/skeleton"; // Import Skeleton
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { type Champion, type WeightClassData} from "@/data/ufcChampionsData";
+import { FighterDetailsModal, type ChampionEntry } from "@/components/FighterDetailsModal";
+import { wcBadgeStyle } from "@/lib/wc-colors";
 
 /* ------------------------------------------------------------------ */
 /*  TYPES                                                             */
@@ -205,10 +214,32 @@ const abbreviateWeightClass = (key: string): string => {
     const abbreviations: Record<string, string> = {
         heavyweight: "HW", lightheavyweight: "LHW", middleweight: "MW",
         welterweight: "WW", lightweight: "LW", featherweight: "FeW",
-        bantamweight: "BW", flyweight: "FlW", women_strawweight: "WSW",
-        women_flyweight: "WFlW", women_bantamweight: "WBW",
+        bantamweight: "BW", flyweight: "FlW", women_strawweight: "W-SW",
+        women_flyweight: "W-FLW", women_bantamweight: "W-BW",
+        catchweight: "CW",
     };
-    return abbreviations[key.toLowerCase()] || key.toUpperCase();
+    // Remove all spaces for matching (e.g., "light heavyweight" -> "lightheavyweight")
+    const cleanKey = key.toLowerCase().replace(/\s+/g, "");
+    return abbreviations[cleanKey] || key.toUpperCase();
+};
+
+const getWeightClassName = (key: string): string => {
+    const names: Record<string, string> = {
+        heavyweight: "Heavyweight",
+        lightheavyweight: "Light Heavyweight",
+        middleweight: "Middleweight",
+        welterweight: "Welterweight",
+        lightweight: "Lightweight",
+        featherweight: "Featherweight",
+        bantamweight: "Bantamweight",
+        flyweight: "Flyweight",
+        women_strawweight: "Women's Strawweight",
+        women_flyweight: "Women's Flyweight",
+        women_bantamweight: "Women's Bantamweight",
+        catchweight: "Catchweight",
+    };
+    const cleanKey = key.toLowerCase().replace(/\s+/g, "");
+    return names[cleanKey] || key;
 };
 
  /**
@@ -269,19 +300,36 @@ const DIVISION_ORDER = [
 const UfcChampionsDisplay: React.FC = () => {
   // --- STATE DECLARATIONS ---
   const [selected, setSelected] = useState("lightweight");
-  const [showDetailsView, setShowDetailsView] = useState(false);
-  const [selectedFighter, setSelectedFighter] = useState<Champion | null>(null);
-  const [fighterDetails, setFighterDetails] = useState<FighterDetails | null>(null);
-  const [fighterImages, setFighterImages] = useState<UfcChampionImages | null>(null);
-  const [fighterHistory, setFighterHistory] = useState<ProcessedFightResult[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [selectedChampionForModal, setSelectedChampionForModal] = useState<ChampionEntry | null>(null);
   const [isTimelineView, setIsTimelineView] = useState(false);
   const [lineageData, setLineageData] = useState<Record<string, WeightClassData>>({});
   const [isLoadingLineage, setIsLoadingLineage] = useState(true);
   const [isTimelineCalculating, setIsTimelineCalculating] = useState(false);
   const [genderFilter, setGenderFilter] = useState<"all" | "men" | "women">("all");
-  const dataCache = useRef<Record<string, { details: FighterDetails | null; images: UfcChampionImages | null; history: ProcessedFightResult[] }>>({});
+
+  // Elo lookup — fetched in background so modals can show Elo ratings
+  const eloMapRef = useRef<Map<string, Array<{ date: string; elo: number; event: string }>>>(new Map());
+  useEffect(() => {
+    fetch('/api/ufc-elo')
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { candidatePool?: any[]; byWeightClass?: Record<string, any[]> } | null) => {
+        if (!data) return;
+        const map = eloMapRef.current;
+        const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[.'\u2011]/g, '').toLowerCase().trim();
+        const add = (f: { name: string; history: Array<{ date: string; elo: number; event: string }> }) => {
+          const key = norm(f.name);
+          if (!map.has(key)) map.set(key, f.history);
+        };
+        (data.candidatePool || []).forEach(add);
+        Object.values(data.byWeightClass || {}).flat().forEach((f: any) => add(f));
+      })
+      .catch(() => {}); // silently fail — Elo is optional
+  }, []);
+  const eloLookup = useCallback((name: string) => {
+    const key = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[.'\u2011]/g, '').toLowerCase().trim();
+    return eloMapRef.current.get(key);
+  }, []);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const timelineScrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -340,16 +388,17 @@ const UfcChampionsDisplay: React.FC = () => {
       }, {} as Record<string, WeightClassData>);
   }, [classes, genderFilter]);
 
-  // Effect for card view scroll to end - ONLY runs when 'selected' changes
+  // Effect for card view scroll to end - runs when selection changes or switching from timeline view
   useEffect(() => {
-    // Check if the card view is actually active and not dragging
-    if (scrollContainerRef.current && data && !isTimelineView && !showDetailsView && !isDraggingRef.current) {
-      // Scroll to the end when a new weight class is selected
-      console.log("Scrolling to end due to selection change:", selected);
-      scrollContainerRef.current.scrollLeft = scrollContainerRef.current.scrollWidth;
+    if (scrollContainerRef.current && data && !isTimelineView && !isDraggingRef.current) {
+      const timer = setTimeout(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollLeft = scrollContainerRef.current.scrollWidth;
+        }
+      }, 50);
+      return () => clearTimeout(timer);
     }
-    // Depend ONLY on 'selected' and 'data' to trigger this scroll-to-end
-  }, [selected, data]); // <<<--- Changed Dependency Array
+  }, [selected, data, isTimelineView]); 
 
   // Effect for timeline view scroll to end
   useEffect(() => {
@@ -357,120 +406,6 @@ const UfcChampionsDisplay: React.FC = () => {
       timelineScrollContainerRef.current.scrollLeft = timelineScrollContainerRef.current.scrollWidth;
     }
   }, [isTimelineView]);
-
-  /* ================================================================== */
-  /*  FETCH DATA                                                        */
-  /* ================================================================== */
-  const fetchFighterData = async (fighter: Champion) => {
-    if (!fighter) return;
-    const original = fighter.name.replace(/ /g, " ").trim();
-    const normName = normalizeName(original);
-    console.log(`Fetching data for: ${original} (Normalized: ${normName})`);
-
-    if (dataCache.current[normName]) {
-      console.log("Cache hit for:", normName);
-      const cached = dataCache.current[normName];
-      setFighterDetails(cached.details);
-      setFighterImages(cached.images);
-      setFighterHistory(cached.history);
-      setSelectedFighter(fighter);
-      setShowDetailsView(true);
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
-    console.log("Cache miss for:", normName);
-
-    setIsLoading(true);
-    setError(null);
-    setFighterDetails(null);
-    setFighterImages(null);
-    setFighterHistory([]);
-    setSelectedFighter(fighter);
-    setShowDetailsView(true);
-
-    try {
-      const { firstName, lastName } = parseFighterName(original);
-      console.log(`Querying images with FIRST: %${firstName}%, LAST: %${lastName}%`);
-
-      const [detailsRes, imagesRes, fightsRes] = await Promise.all([
-        supabase.from("ufc_fighter_tott").select("*").ilike("FIGHTER", `%${normName}%`).limit(1).maybeSingle(),
-        supabase.from("ufc_champion_images").select("*").ilike("FIRST", `%${firstName}%`).ilike("LAST", `%${lastName}%`).limit(1).maybeSingle(),
-        supabase.from("ufc_fight_results").select("*").ilike("BOUT", `%${normName}%`).order("id", { ascending: true }),
-      ]);
-
-      if (detailsRes.error) console.error("Supabase details fetch error:", detailsRes.error);
-      const fighterDetailsFetched = detailsRes.data as FighterDetails | null;
-      console.log("Fetched Details:", fighterDetailsFetched);
-
-      if (imagesRes.error) console.error("Supabase images fetch error:", imagesRes.error);
-      const fighterImagesFetched = imagesRes.data as UfcChampionImages | null;
-      console.log("Fetched Images:", fighterImagesFetched);
-
-      if (fightsRes.error) throw fightsRes.error;
-      const fights = (fightsRes.data || []) as FightResult[];
-      console.log("Fetched Raw Fight Results (Sorted):", fights);
-
-      const processed: ProcessedFightResult[] = [];
-      const championStatus: Record<string, boolean> = {};
-
-      for (let idx = fights.length - 1; idx >= 0; idx--) {
-        const fight = fights[idx];
-        const resultForFighter = getResultForFighter(fight, normName);
-        const div = normalizeWeightClass(fight.WEIGHTCLASS);
-        const isTitle = fight.WEIGHTCLASS?.toLowerCase().includes("title") ?? false;
-        let defenseOutcome: "success" | "fail" | null = null;
-
-        if (isTitle && div) {
-          if (championStatus[div]) {
-            if (resultForFighter === "loss") {
-              defenseOutcome = "fail"; championStatus[div] = false;
-            } else if (resultForFighter === "win") {
-              defenseOutcome = "success";
-            }
-          } else {
-            if (resultForFighter === "win") championStatus[div] = true;
-          }
-        }
-
-        let decisionDetails: string | undefined;
-        let finishDetails: string | undefined;
-        if (fight.METHOD?.toLowerCase().includes("decision")) {
-          decisionDetails = extractDecisionDetails(fight.DETAILS);
-        } else if (fight.DETAILS?.trim()) {
-          if (!/\d{1,2}\s*-\s*\d{1,2}/.test(fight.DETAILS)) finishDetails = fight.DETAILS.trim();
-          else decisionDetails = extractDecisionDetails(fight.DETAILS);
-        }
-
-        processed.unshift({
-          ...fight,
-          OPPONENT: extractOpponent(fight.BOUT, normName),
-          resultForFighter, decisionDetails, DETAILS: finishDetails, defenseOutcome,
-        });
-      }
-      console.log("Processed History:", processed);
-
-      dataCache.current[normName] = { details: fighterDetailsFetched, images: fighterImagesFetched, history: processed };
-      setFighterDetails(fighterDetailsFetched);
-      setFighterImages(fighterImagesFetched);
-      setFighterHistory(processed);
-    } catch (err: any) {
-      console.error("Error fetching fighter data:", err);
-      setError(err.message ?? "Unknown error");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleCloseDetails = () => {
-    setShowDetailsView(false);
-    setError(null);
-  };
-
-  const getLayoutId = (champion: Champion | null) => {
-      if (!champion) return undefined;
-      return `champion-card-${normalizeName(champion.name)}-${champion.reignStart}`;
-  }
 
   /* ================================================================== */
   /*  TIMELINE CALCULATIONS                                             */
@@ -524,7 +459,7 @@ const UfcChampionsDisplay: React.FC = () => {
   /* ================================================================== */
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Only act if card view is active and ref exists
-    if (isTimelineView || showDetailsView || !scrollContainerRef.current) return;
+    if (isTimelineView || selectedChampionForModal || !scrollContainerRef.current) return;
     if (e.button !== 0) return; // Only main button
     e.preventDefault(); // Prevent text selection etc.
     (e.target as Element).setPointerCapture(e.pointerId); // Capture pointer
@@ -538,7 +473,7 @@ const UfcChampionsDisplay: React.FC = () => {
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isDraggingRef.current || isTimelineView || showDetailsView || !scrollContainerRef.current) return;
+    if (!isDraggingRef.current || isTimelineView || selectedChampionForModal || !scrollContainerRef.current) return;
     e.preventDefault();
 
     const x = e.pageX - scrollContainerRef.current.offsetLeft;
@@ -571,7 +506,7 @@ const UfcChampionsDisplay: React.FC = () => {
   /* ================================================================== */
   const handleTimelinePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Only act if timeline view is active and ref exists
-    if (!isTimelineView || showDetailsView || !timelineScrollContainerRef.current) return;
+    if (!isTimelineView || selectedChampionForModal || !timelineScrollContainerRef.current) return;
     if (e.button !== 0) return; // Only main button
     e.preventDefault();
     (e.target as Element).setPointerCapture(e.pointerId); // Capture pointer
@@ -585,7 +520,7 @@ const UfcChampionsDisplay: React.FC = () => {
   };
 
   const handleTimelinePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isTimelineDraggingRef.current || !isTimelineView || showDetailsView || !timelineScrollContainerRef.current) return;
+    if (!isTimelineDraggingRef.current || !isTimelineView || selectedChampionForModal || !timelineScrollContainerRef.current) return;
     e.preventDefault();
 
     const x = e.pageX - timelineScrollContainerRef.current.offsetLeft;
@@ -609,18 +544,33 @@ const UfcChampionsDisplay: React.FC = () => {
     timelineScrollContainerRef.current.style.userSelect = ''; // Re-allow selection
   };
 
+  /* ================================================================== */
+  /*  WHEEL → HORIZONTAL SCROLL HANDLERS                               */
+  /* ================================================================== */
+  const handleCardWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!scrollContainerRef.current) return;
+    e.preventDefault();
+    scrollContainerRef.current.scrollLeft += e.deltaY + e.deltaX;
+  };
+
+  const handleTimelineWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!timelineScrollContainerRef.current) return;
+    e.preventDefault();
+    timelineScrollContainerRef.current.scrollLeft += e.deltaY + e.deltaX;
+  };
+
 
   /* ------------------------------------------------------------------ */
   /*  UI                                                                */
   /* ------------------------------------------------------------------ */
   return (
-    <main className="relative pt-8 md:pt-6 px-4 md:px-6 pb-20 w-full flex flex-col h-screen">
+    <main className="relative pt-8 md:pt-6 px-4 md:px-6 w-full flex flex-col h-full overflow-hidden">
       {/* --- View Toggle and Gender Filter --- */}
       <div className="w-full max-w-screen-2xl mx-auto flex justify-between items-start mb-4 px-0 md:px-0 min-h-[40px]">
         <div className="flex-1">
           {isTimelineView && (
             <div className="flex items-center space-x-2">
-              <Select value={genderFilter} onValueChange={(value: "all" | "men" | "women") => setGenderFilter(value)} disabled={showDetailsView}>
+              <Select value={genderFilter} onValueChange={(value: "all" | "men" | "women") => setGenderFilter(value)} disabled={!!selectedChampionForModal}>
                 <SelectTrigger className="w-180px]">
                   <SelectValue placeholder="Filter Divisions" />
                 </SelectTrigger>
@@ -634,18 +584,18 @@ const UfcChampionsDisplay: React.FC = () => {
           )}
         </div>
         <div className="flex items-center space-x-2 pt-2">
-          <Checkbox id="timeline-view-toggle" checked={isTimelineView} onCheckedChange={(checked) => { const isChecked = Boolean(checked); setIsTimelineView(isChecked); setGenderFilter(isChecked ? "men" : "all"); }} disabled={showDetailsView} />
+          <Checkbox id="timeline-view-toggle" checked={isTimelineView} onCheckedChange={(checked) => { const isChecked = Boolean(checked); setIsTimelineView(isChecked); setGenderFilter(isChecked ? "men" : "all"); }} disabled={!!selectedChampionForModal} />
           <Label htmlFor="timeline-view-toggle" className="text-sm font-medium">Show Full Timeline View</Label>
         </div>
       </div>
       {/* --- Conditional Rendering: Card View or Timeline View --- */}
       {!isTimelineView ? (
         /* --- Main Content Card (Background) --- */
-        (<Card className={cn( "w-full max-w-screen-2xl mx-auto transition-opacity duration-300 flex flex-col mb-auto", showDetailsView ? "opacity-20 pointer-events-none" : "opacity-100" )}>
-          <div className="overflow-y-auto">
+        (<Card className={cn( "w-full max-w-screen-2xl mx-auto transition-opacity duration-300 flex flex-col mb-auto", selectedChampionForModal ? "opacity-20 pointer-events-none" : "opacity-100" )}>
+          <div>
             <CardContent className="space-y-6 pt-6">
                {/* selector */}
-               <Select value={selected} onValueChange={setSelected} disabled={showDetailsView || isLoadingLineage}>
+               <Select value={selected} onValueChange={setSelected} disabled={!!selectedChampionForModal || isLoadingLineage}>
                   <SelectTrigger className="w-full md:w-[300px] mx-auto">
                     <SelectValue placeholder={isLoadingLineage ? "Loading divisions…" : "Select a Weight Class"} />
                   </SelectTrigger>
@@ -656,7 +606,20 @@ const UfcChampionsDisplay: React.FC = () => {
                 {!data ? (
                    <div className="mt-6">
                      <div className="w-full overflow-x-auto pb-4">
-                       <div className="flex space-x-3 items-stretch min-h-[200px]"> {[...Array(5)].map((_, i) => ( <Skeleton key={i} className="flex-shrink-0 w-52 h-[180px] rounded-md" /> ))} </div>
+                       <div className="flex space-x-3 items-stretch min-w-max">
+                         {[...Array(8)].map((_, i) => (
+                           <div key={i} className="flex-shrink-0 w-52 p-3 bg-muted rounded-md flex flex-col">
+                             {/* image area skeleton — matches 3/4 aspect ratio */}
+                             <Skeleton className="w-full rounded mb-2" style={{ aspectRatio: '3/4' }} />
+                             {/* name line */}
+                             <Skeleton className="h-4 w-3/4 rounded mb-1" />
+                             {/* date line */}
+                             <Skeleton className="h-3 w-full rounded mb-1" />
+                             {/* duration line */}
+                             <Skeleton className="h-3 w-1/2 rounded" />
+                           </div>
+                         ))}
+                       </div>
                      </div>
                    </div>
                 ) : (
@@ -665,15 +628,16 @@ const UfcChampionsDisplay: React.FC = () => {
                      <div
                        ref={scrollContainerRef}
                        className={cn(
-                           "w-full overflow-x-auto pb-4",
-                           !isTimelineView && !showDetailsView && "cursor-grab" // Add grab cursor
+                           "w-full overflow-x-auto overflow-y-visible pb-4",
+                           !isTimelineView && !selectedChampionForModal && "cursor-grab"
                        )}
                        onPointerDown={handlePointerDown}
                        onPointerMove={handlePointerMove}
                        onPointerUp={handlePointerUpOrLeave}
-                       onPointerLeave={handlePointerUpOrLeave} // Handle leave while dragging
+                       onPointerLeave={handlePointerUpOrLeave}
+                       onWheel={handleCardWheel}
                      >
-                       <div className="flex space-x-3 items-stretch min-h-[200px] mx-auto min-w-max">
+                       <div className="flex space-x-3 items-stretch min-h-[200px] mx-auto min-w-max overflow-visible py-3 pr-6">
                          {cards.map((c, i) => {
                             const start = parseDate(c.reignStart)!;
                            const end = parseDate(c.reignEnd)!;
@@ -694,26 +658,22 @@ const UfcChampionsDisplay: React.FC = () => {
                              <React.Fragment key={`${c.name}-${i}`}>
                                {/* ---- Add draggable=false and select-none to the card div ---- */}
                                <motion.div
-                                 layoutId={getLayoutId(c)}
-                                 draggable={false} // Keep this on the motion.div
+                                 draggable={false}
                                  onClick={() => {
-                                   // <<<--- Check didDragRef before fetching
                                    if (!didDragRef.current) {
-                                       fetchFighterData(c);
+                                     setSelectedChampionForModal({ name: c.name, reignStart: c.reignStart, reignEnd: c.reignEnd, notes: c.notes, imageUrl: c.imageUrl, eloHistory: eloLookup(c.name) });
                                    }
-                                   // didDragRef will be reset on the *next* pointer down
                                  }}
                                  className="
-                                   flex-shrink-0 w-52 p-3 bg-muted rounded-md shadow-sm
+                                   flex-shrink-0 w-52 p-3 bg-muted shadow-sm rounded-xl
                                    relative z-0 hover:z-10 flex flex-col
-                                   overflow-hidden
                                    select-none cursor-pointer group"
                                  whileHover={{ scale: 1.05, zIndex: 10 }}
                                  transition={{ duration: 0.2 }}
                                >
                                  <div
                                    draggable={false}
-                                   className="relative w-full mb-2 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden flex items-center justify-center"
+                                   className="relative w-full mb-2 bg-transparent rounded overflow-hidden flex items-center justify-center"
                                    style={{ aspectRatio: '3/4' }}
                                  >
                                    {/* Fallback icon only shown when no image */}
@@ -755,14 +715,14 @@ const UfcChampionsDisplay: React.FC = () => {
         ((// Render actual timeline
       ((isTimelineCalculating || !timelineData) ? (<div className="w-full max-w-screen-2xl mx-auto border rounded-md bg-card p-4"> <div className="flex space-x-2"> <Skeleton className="h-[75vh] w-[2.5rem]" /> <div className="flex-1 space-y-2"> {[...Array(Object.keys(filteredClasses).length)].map((_, i) => ( <Skeleton key={i} className="h-[3.5rem] w-full" /> ))} <Skeleton className="h-[1.5rem] w-full mt-2" /> </div> </div> </div>) : (<div
           ref={timelineScrollContainerRef}
-          // Attach timeline-specific handlers
           onPointerDown={handleTimelinePointerDown}
           onPointerMove={handleTimelinePointerMove}
           onPointerUp={handleTimelinePointerUpOrLeave}
           onPointerLeave={handleTimelinePointerUpOrLeave}
-          className={cn( // Add conditional cursor style
-            "w-full max-w-screen-2xl mx-auto overflow-x-auto border rounded-md bg-card text-card-foreground flex-1 min-h-[70vh]",
-            isTimelineView && !showDetailsView && "cursor-grab" // Grab cursor for timeline
+          onWheel={handleTimelineWheel}
+          className={cn(
+            "w-full max-w-screen-2xl mx-auto overflow-x-auto border rounded-md bg-card text-card-foreground flex-1 overflow-y-hidden",
+            isTimelineView && !selectedChampionForModal && "cursor-grab"
           )}
         >
         {/* Container for scrolling content (inner div, no handlers needed here) */}
@@ -790,9 +750,21 @@ const UfcChampionsDisplay: React.FC = () => {
                   className="sticky left-0 bg-card z-30 flex items-center justify-center px-1 border-r border-b border-border/60 select-none"
                   style={{ gridRow: r + 2, gridColumn: 1, width: '2.5rem' }}
                 >
-                  <span className="text-[12px] font-bold uppercase text-center">
-                    {abbreviateWeightClass(key)}
-                  </span>
+                  <TooltipProvider>
+                    <Tooltip delayDuration={300}>
+                      <TooltipTrigger asChild>
+                        <span
+                          className="text-[12px] font-bold uppercase text-center cursor-help px-0.5 rounded"
+                          style={wcBadgeStyle(key, { bgOpacity: 0 })}
+                        >
+                          {abbreviateWeightClass(key)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">
+                        {getWeightClassName(key)}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 </div>
                 {/* champion bars container (no handlers needed here) */}
                 <div
@@ -820,25 +792,22 @@ const UfcChampionsDisplay: React.FC = () => {
                     return (
                       <motion.div
                         key={`${key}-${i}`}
-                        layoutId={getLayoutId(c)} // <<<--- ADD layoutId HERE
                         draggable={false}
-                        onClick={() => { if (!timelineDidDragRef.current) { fetchFighterData(c) } }}
-                        className="absolute top-[2px] bottom-[2px] rounded-sm flex items-center justify-center group cursor-pointer shadow-sm z-10 select-none"
-                        // <<<--- UPDATE style prop
+                        onClick={() => { if (!timelineDidDragRef.current) { setSelectedChampionForModal({ name: c.name, reignStart: c.reignStart, reignEnd: c.reignEnd, notes: c.notes, imageUrl: c.imageUrl, eloHistory: eloLookup(c.name) }); } }}
+                        className="absolute top-[2px] bottom-[2px] flex items-center justify-center group cursor-pointer shadow-sm z-10 select-none"
                         style={{
                           left:`${left}px`,
                           width:`${Math.max(width,2)}px`,
-                          backgroundColor: bg, // Use calculated background
-                          color: text,       // Use calculated text color
-                          borderRadius: '0.125rem'
+                          backgroundColor: bg,
+                          color: text,
+                          borderRadius: '0.375rem'
                         }}
                         initial={{ scale:1 }}
-                        // <<<--- UPDATE whileHover prop
                         whileHover={{
-                          backgroundColor: hoverBg, // Use calculated hover background
+                          backgroundColor: hoverBg,
                           zIndex:20,
                           scale: 1.03,
-                          borderRadius: '0.125rem'
+                          borderRadius: '0.375rem'
                         }}
                         transition={{ duration:0.15 }}
                       >
@@ -857,12 +826,11 @@ const UfcChampionsDisplay: React.FC = () => {
                         )}
                         {!isLongReign && (
                           <span
-                            className="absolute inset-0 flex items-center justify-center text-[15px] font-semibold px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100 delay-50 pointer-events-none select-none"
-                            // <<<--- UPDATE hover span style
+                            className="absolute inset-0 flex items-center justify-center text-center text-[15px] font-semibold px-1 opacity-0 group-hover:opacity-100 transition-opacity duration-100 delay-50 pointer-events-none select-none"
                             style={{
-                                background: hoverBg, // Use hover background
-                                color: text,        // Use base text color (should still contrast)
-                                borderRadius: '0.125rem',
+                                background: hoverBg,
+                                color: text,
+                                borderRadius: '0.375rem',
                                 zIndex: 21
                             }}
                           >
@@ -887,112 +855,15 @@ const UfcChampionsDisplay: React.FC = () => {
         </div> {/* End of scrollable content container */}
       </div>))) /* End of Timeline View */)
       )}
-      {/* --- Fighter Details Overlay --- */}
-      <AnimatePresence>
-        {showDetailsView && selectedFighter && (
-          <motion.div key="overlay-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }} className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 md:p-8" onClick={handleCloseDetails}>
-            <motion.div layoutId={getLayoutId(selectedFighter)} className="bg-card text-card-foreground rounded-md shadow-xl w-full max-w-6xl h-[90vh] max-h-[800px] flex flex-col relative overflow-hidden z-50" onClick={(e: any) => e.stopPropagation()}>
-              <motion.button initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1, transition: { delay: 0.2 } }} exit={{ opacity: 0 }} onClick={handleCloseDetails} className="absolute top-3 right-3 text-muted-foreground hover:text-foreground z-50 p-1 rounded-full bg-card hover:bg-muted" aria-label="Close details"> <X size={20} /> </motion.button>
-              <div className="flex flex-1 h-full overflow-hidden pt-10">
-                  {isLoading && ( <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-20"> <Loader2 className="h-8 w-8 animate-spin text-primary" /> </div> )}
-                  {error && !isLoading && ( <div className="absolute inset-0 flex flex-col items-center justify-center bg-card/80 z-20 p-4 text-center"> <p className="text-destructive font-semibold mb-2">Error</p> <p className="text-sm text-destructive">{error}</p> <button onClick={handleCloseDetails} className="mt-4 text-sm underline">Close</button> </div> )}
-                  {!isLoading && !error && (
-                    <>
-                      {/* Left Panel: Stats */}
-                      <div className="w-1/3 border-r border-border p-4 md:p-6 overflow-y-auto flex flex-col items-center">
-                         <div className="relative w-full max-w-[220px] mb-4 bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center justify-center overflow-hidden" style={{ aspectRatio: '3/4' }}>
-                            {(selectedFighter?.imageUrl || fighterImages?.MAINSHOT) ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                src={selectedFighter?.imageUrl || fighterImages?.MAINSHOT || ''}
-                                alt={selectedFighter.name}
-                                className="absolute inset-0 h-full w-full object-contain"
-                                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-                              />
-                            ) : ( <User className="h-24 w-24 text-gray-500 dark:text-gray-400" /> )}
-                         </div>
-                         <h2 className="text-2xl font-bold mb-4 text-center">{fighterDetails?.FIGHTER || selectedFighter.name}</h2>
-                         {fighterDetails ? (
-                           <div className="space-y-2 text-sm w-full text-center">
-                             {fighterDetails.HEIGHT && <p><strong>Height:</strong> {fighterDetails.HEIGHT}</p>} {fighterDetails.WEIGHT && <p><strong>Weight:</strong> {fighterDetails.WEIGHT}</p>} {fighterDetails.REACH && <p><strong>Reach:</strong> {fighterDetails.REACH}</p>} {fighterDetails.STANCE && <p><strong>Stance:</strong> {fighterDetails.STANCE}</p>}
-                             {fighterDetails.DOB && ( <p> <strong>Born:</strong> {new Date(fighterDetails.DOB).toLocaleDateString()} {calculateAge(fighterDetails.DOB) !== null && ` (Age: ${calculateAge(fighterDetails.DOB)})`} </p> )}
-                           </div>
-                         ) : ( <p className="text-sm text-muted-foreground mt-4">No detailed stats available.</p> )}
-                      </div>
-                      {/* Right Panel: Fight History */}
-                      <div className="w-2/3 p-4 md:p-6 overflow-y-auto">
-                        {fighterHistory.length > 0 ? (
-                          <ul className="space-y-1">
-                            {fighterHistory.map((fight) => {
-                              const isTitleFight = fight.WEIGHTCLASS?.toLowerCase().includes('title') ?? false;
-
-                              // <<<--- Calculate Weight Class Abbreviation ---<<<
-                              const normalizedKey = normalizeWeightClass(fight.WEIGHTCLASS);
-                              const abbreviation = normalizedKey ? abbreviateWeightClass(normalizedKey) : null;
-                              // <<<------------------------------------------<<<
-
-                              return (
-                                <li
-                                  key={fight.id}
-                                  // Make li relative to position the absolute span inside it
-                                  className={cn(
-                                    "relative text-sm border-b border-border p-2 rounded-lg transition-colors duration-150 overflow-visible mb-2",
-                                    (fight.resultForFighter === 'draw' || fight.resultForFighter === 'nc') && 'bg-gray-100 dark:bg-gray-800/30 border-gray-300 dark:border-gray-600',
-                                    fight.resultForFighter === 'win' && 'bg-green-100 dark:bg-green-900/30 border-green-300 dark:border-green-700',
-                                    fight.resultForFighter === 'loss' && 'bg-red-100 dark:bg-red-900/30 border-red-300 dark:border-red-700',
-                                    fight.resultForFighter === 'unknown' && 'bg-muted/50',
-                                    "hover:shadow-md cursor-pointer"
-                                  )}
-                                  onClick={() => { if (fight.URL) window.open(fight.URL, '_blank', 'noopener,noreferrer'); }}
-                                >
-                                  {/* Icons (Crown, ShieldCheck, ShieldOff) - Unchanged */
-                                  isTitleFight && !fight.defenseOutcome && ( <Crown size={16} className="absolute -top-1 -left-2 text-yellow-500 dark:text-yellow-400 opacity-70 -rotate-45 z-10" aria-label="Title Fight" /> )
-                                  }
-                                  {fight.defenseOutcome === 'success' && ( <ShieldCheck size={18} className="absolute -top-1 -left-2 text-blue-500 dark:text-blue-400 opacity-100 -rotate-45 z-10" aria-label="Successful Title Defence" /> )}
-                                  {fight.defenseOutcome === 'fail' && ( <ShieldOff size={18} className="absolute -top-1 -left-2 text-red-500 dark:text-red-400 opacity-100 -rotate-45 z-10" aria-label="Lost Title Defence" /> )}
-
-                                  {/* Result Badge and Opponent - Added mb-1 */}
-                                  <div className="flex justify-between items-center mb-1"> {/* Added mb-1 for spacing */}
-                                    <div>
-                                      <span className={cn( "font-semibold mr-2 px-1.5 py-0.5 rounded text-xs uppercase", fight.resultForFighter === 'win' && 'bg-green-600 text-white', fight.resultForFighter === 'loss' && 'bg-red-600 text-white', (fight.resultForFighter === 'draw' || fight.resultForFighter === 'nc') && 'bg-gray-500 text-white', fight.resultForFighter === 'unknown' && 'bg-gray-400 text-white' )}> {fight.resultForFighter === 'draw' ? 'DRAW' : fight.resultForFighter === 'nc' ? 'NC' : fight.resultForFighter} </span>
-                                      <span>vs. </span> <a href={createAthleteUrl(fight.OPPONENT || '')} target="_blank" rel="noopener noreferrer" className="font-bold hover:underline text-primary" onClick={(e) => e.stopPropagation()}> {fight.OPPONENT || 'Opponent Unknown'} </a>
-                                    </div>
-                                    <span className="text-xs text-muted-foreground">{fight.EVENT}</span>
-                                  </div>
-
-                                  {/* Method/Round/Time/Details - Added pr-8 */}
-                                   <div className="pr-8"> {/* Added right padding to prevent overlap */}
-                                    <p className="text-xs text-muted-foreground mt-0.5"> {fight.METHOD} {fight.ROUND && ` | Rd: ${fight.ROUND}`} {fight.TIME && ` | Time: ${fight.TIME}`} </p>
-                                    {fight.decisionDetails && ( <p className="text-xs text-muted-foreground italic mt-0.5"> {fight.decisionDetails} </p> )}
-                                    {fight.DETAILS && ( <p className="text-xs text-muted-foreground mt-0.5"> {fight.DETAILS} </p> )}
-                                  </div>
-
-                                  {/* <<<--- Add Weight Class Abbreviation Span ---<<< */}
-                                  {abbreviation && (
-                                    <span
-                                      className="absolute bottom-[3px] right-[5px] text-[10px] font-semibold uppercase text-muted-foreground/80 bg-primary/5 px-1 rounded-[3px]"
-                                      aria-label={`Weight Class: ${fight.WEIGHTCLASS || abbreviation}`} // More descriptive label
-                                    >
-                                      {abbreviation}
-                                    </span>
-                                  )}
-                                  {/* <<<------------------------------------------<<< */}
-
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        ) : (
-                          <p className="text-sm text-muted-foreground">No fight history found or data unavailable.</p>
-                        )}
-                      </div>
-                    </>
-                  )}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Fighter Details Modal */}
+      {selectedChampionForModal && (
+        <FighterDetailsModal
+          champion={selectedChampionForModal}
+          onClose={() => setSelectedChampionForModal(null)}
+          eloLookup={eloLookup}
+          hideElo={true}
+        />
+      )}
     </main>
   );
 };

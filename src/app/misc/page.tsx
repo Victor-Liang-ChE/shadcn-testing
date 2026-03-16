@@ -8,14 +8,15 @@ const pageDescription = "Just a collection of various side projects, tools, and 
 
 export default function Page() {
 const projects = [
+    { name: "UFC Elo Ratings", path: "/misc/ufc-elo" },
+    { name: "UFC Championship Lineage", path: "/misc/ufc-champions" },
     { name: "Drop Chance", path: "/misc/drop-chance" },
     { name: "Japanese Lyrics Analyzer", path: "/misc/japanese-lyrics" },
     { name: "Portola Menu", path: "/misc/portola-menu" },
     { name: "Chemical Engineering Economics", path: "/misc/cheme-econ" },
     { name: "LaTeX Constructor & Converter", path: "/misc/latex" },
     { name: "Chemistry Tools", path: "/misc/chemistry-tools" },
-    { name: "UFC Championship Lineage", path: "/misc/ufc-champions" },
-    { name: "Fast .csv Plotter", path: "/misc/csv-to-plot" }, // Added this line
+    { name: "Fast .csv Plotter", path: "/misc/csv-to-plot" },
   ];
 
   return (
