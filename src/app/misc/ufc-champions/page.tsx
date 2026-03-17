@@ -90,16 +90,25 @@ const normalizeName = (name: string) =>
 /* NEW → collapse every weight‑class string to its plain division name */
 const normalizeWeightClass = (raw?: string | null): string => {
   if (!raw) return "";
-  return normalizeName(raw) // Apply normalizeName first (handles accents etc.)
+  let normalized = normalizeName(raw)
     .toLowerCase()
-    .replace(
-      /(title|championship|bout|world|undisputed|interim)/g, // Remove keywords
-      ""
-    )
-    .replace(/^ufc\s*/, "") // <<<--- ADD THIS LINE: Remove leading "ufc " prefix
-    .replace(/\s+/g, " ") // Clean up multiple spaces
-    .trim(); // Trim final whitespace
-    // e.g., "UFC Welterweight title bout" → "ufc welterweight title bout" → "ufc welterweight " → "welterweight " → "welterweight " → "welterweight"
+    .replace(/(ultimate\s*fighter\s*\d*\s*)/g, "")
+    .replace(/(tournament\s*)/g, "")
+    .replace(/(title|championship|bout|world|undisputed|interim)/g, "")
+    .replace(/^ufc\s*/, "")
+    .trim();
+
+  // Keyword priority matching for standard classes
+  if (normalized.includes("lightheavyweight")) return "lightheavyweight";
+  if (normalized.includes("heavyweight")) return "heavyweight";
+  if (normalized.includes("middleweight")) return "middleweight";
+  if (normalized.includes("welterweight")) return "welterweight";
+  if (normalized.includes("lightweight")) return "lightweight";
+  if (normalized.includes("featherweight")) return "featherweight";
+  if (normalized.includes("bantamweight")) return "bantamweight";
+  if (normalized.includes("flyweight")) return "flyweight";
+
+  return normalized.replace(/\s+/g, "");
 };
 
 const parseFighterName = (full: string) => {
@@ -133,15 +142,24 @@ const extractDecisionDetails = (details: string | null | undefined): string | un
   return undefined;
 }
 
+// Fighters whose UFC.com slug differs from the normalised full-name slug.
+// Key = normalised full name (lower, accent-stripped, no dots), value = correct slug.
+const ATHLETE_SLUG_OVERRIDES: Record<string, string> = {
+  'ian machado garry': 'ian-garry',
+};
+
 const createAthleteUrl = (name: string): string => {
   if (!name) return '#';
-  let slug = name
+  const normalised = name
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\./g, "")
     .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-');
+    .toLowerCase();
+  if (ATHLETE_SLUG_OVERRIDES[normalised]) {
+    return `https://www.ufc.com/athlete/${ATHLETE_SLUG_OVERRIDES[normalised]}`;
+  }
+  let slug = normalised.replace(/\s+/g, '-');
   slug = slug.replace(/^b-?j-/, "bj-");
   return `https://www.ufc.com/athlete/${slug}`;
 };

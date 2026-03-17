@@ -54,12 +54,24 @@ function normalizeWeightClass(raw?: string | null): string {
   if (!raw) return '';
   let normalized = normalizeName(raw)
     .toLowerCase()
+    .replace(/(ultimate\s*fighter\s*\d*\s*)/g, '')
+    .replace(/(tournament\s*)/g, '')
     .replace(/(title|championship|bout|world|undisputed|interim)/g, '')
     .replace(/^ufc\s*/, '')
-    .replace(/\s+/g, ' ')
     .trim();
-  // Map "womens X" → "women_X" so it matches the KNOWN_DIVISIONS/WC_ORDER keys
-  normalized = normalized.replace(/^womens\s+/, 'women_');
+
+  // Keyword priority matching for standard classes
+  if (normalized.includes('lightheavyweight')) return 'lightheavyweight';
+  if (normalized.includes('heavyweight')) return 'heavyweight';
+  if (normalized.includes('middleweight')) return 'middleweight';
+  if (normalized.includes('welterweight')) return 'welterweight';
+  if (normalized.includes('lightweight')) return 'lightweight';
+  if (normalized.includes('featherweight')) return 'featherweight';
+  if (normalized.includes('bantamweight')) return 'bantamweight';
+  if (normalized.includes('flyweight')) return 'flyweight';
+
+  // Map "womens X" → "women_X"
+  normalized = normalized.replace(/^womens\s+/, 'women_').replace(/\s+/g, '');
   return normalized;
 }
 
@@ -204,9 +216,18 @@ function humanDuration(days: number): string {
     .filter(Boolean).join(' ') || '0 days';
 }
 
+// Fighters whose UFC.com slug differs from the normalised full-name slug.
+const ATHLETE_SLUG_OVERRIDES: Record<string, string> = {
+  'ian machado garry': 'ian-garry',
+};
+
 function createAthleteUrl(name: string): string {
   if (!name) return '#';
-  let slug = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\./g, '').trim().toLowerCase().replace(/\s+/g, '-');
+  const normalised = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\./g, '').trim().toLowerCase();
+  if (ATHLETE_SLUG_OVERRIDES[normalised]) {
+    return `https://www.ufc.com/athlete/${ATHLETE_SLUG_OVERRIDES[normalised]}`;
+  }
+  let slug = normalised.replace(/\s+/g, '-');
   slug = slug.replace(/^b-?j-/, 'bj-');
   return `https://www.ufc.com/athlete/${slug}`;
 }

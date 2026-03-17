@@ -1,11 +1,12 @@
-import { createClient } from '@supabase/supabase-js'
-import { NextResponse } from 'next/server'
+import { createClient } from "@supabase/supabase-js";
+import { NextResponse } from "next/server";
 
 function createServerSupabaseClient() {
-  const supabaseUrl = process.env.SUPABASE_URL
-  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY
-  if (!supabaseUrl || !supabaseAnonKey) throw new Error('Supabase environment variables are missing.')
-  return createClient(supabaseUrl, supabaseAnonKey)
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey)
+    throw new Error("Supabase environment variables are missing.");
+  return createClient(supabaseUrl, supabaseAnonKey);
 }
 
 /* ------------------------------------------------------------------ */
@@ -36,12 +37,10 @@ function roundFinishMultiplier(round: number | null): number {
  */
 function splitDecisionMultiplier(method: string): number {
   const lm = method.toLowerCase();
-  if (lm.includes('split')) return 0.82;
-  if (lm.includes('majority')) return 0.91;
+  if (lm.includes("split")) return 0.82;
+  if (lm.includes("majority")) return 0.91;
   return 1.0;
 }
-
-
 
 /**
  * For decision wins, parse scorecard details (e.g. "29-28 48-47 30-27") and
@@ -71,37 +70,82 @@ function expectedScore(ratingA: number, ratingB: number): number {
   return 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
 }
 
-function newRating(oldRating: number, k: number, expected: number, actual: number): number {
+function newRating(
+  oldRating: number,
+  k: number,
+  expected: number,
+  actual: number,
+): number {
   return Math.round(oldRating + k * (actual - expected));
+}
+
+/**
+ * Win/loss streak momentum: each consecutive win or loss adds +5% to K, capped at +25%.
+ * A fight in a streak of N → multiplier = min(1 + N*0.05, 1.25).
+ * Draws reset the counter to 0.
+ */
+function streakMultiplier(streak: number): number {
+  return Math.min(1 + Math.abs(streak) * 0.05, 1.25);
+}
+
+/**
+ * Ring-rust penalty: applied only when a fighter LOSES their first fight
+ * back after a long layoff (>18 months). Amplifies the Elo loss.
+ * 18 months → ×1.0 (no change); 36 months → ×1.75 (capped at ×2.0).
+ */
+const INACTIVITY_THRESHOLD_DAYS = 548; // ~18 months
+function inactivityDecayMultiplier(
+  lastDate: string,
+  currentDate: string,
+): number {
+  if (!lastDate || !currentDate) return 1.0;
+  const days =
+    (new Date(currentDate).getTime() - new Date(lastDate).getTime()) /
+    86_400_000;
+  if (days < INACTIVITY_THRESHOLD_DAYS) return 1.0;
+  return Math.min(1 + ((days - INACTIVITY_THRESHOLD_DAYS) / 548) * 0.75, 2.0);
 }
 
 /* ------------------------------------------------------------------ */
 /*  WEIGHT-CLASS NORMALISER (mirrors the page helper)                 */
 /* ------------------------------------------------------------------ */
 function normalizeWeightClass(raw: string | null): string {
-  if (!raw) return 'unknown';
-  return raw
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+  if (!raw) return "unknown";
+  let normalized = raw
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/(title|championship|bout|world|undisputed|interim)/g, '')
-    .replace(/^ufc\s*/, '')
-    .replace(/women'?s?\s*/g, 'women_')
-    .replace(/\s+/g, '')
-    .trim() || 'unknown';
+    .replace(/(ultimate\s*fighter\s*\d*\s*)/g, "")
+    .replace(/(tournament\s*)/g, "")
+    .replace(/(title|championship|bout|world|undisputed|interim)/g, "")
+    .replace(/^ufc\s*/, "")
+    .replace(/women'?s?\s*/g, "women_")
+    .trim();
+
+  // Simple keyword matching for standard classes
+  if (normalized.includes("lightheavyweight")) return "lightheavyweight";
+  if (normalized.includes("heavyweight")) return "heavyweight";
+  if (normalized.includes("middleweight")) return "middleweight";
+  if (normalized.includes("welterweight")) return "welterweight";
+  if (normalized.includes("lightweight")) return "lightweight";
+  if (normalized.includes("featherweight")) return "featherweight";
+  if (normalized.includes("bantamweight")) return "bantamweight";
+  if (normalized.includes("flyweight")) return "flyweight";
+
+  return normalized.replace(/\s+/g, "") || "unknown";
 }
 
 /* Map normalised key → display name */
 function displayWeightClass(key: string): string {
   const map: Record<string, string> = {
-    heavyweight: 'Heavyweight',
-    lightheavyweight: 'Light Heavyweight',
-    middleweight: 'Middleweight',
-    welterweight: 'Welterweight',
-    lightweight: 'Lightweight',
-    featherweight: 'Featherweight',
-    bantamweight: 'Bantamweight',
-    flyweight: 'Flyweight',
+    heavyweight: "Heavyweight",
+    lightheavyweight: "Light Heavyweight",
+    middleweight: "Middleweight",
+    welterweight: "Welterweight",
+    lightweight: "Lightweight",
+    featherweight: "Featherweight",
+    bantamweight: "Bantamweight",
+    flyweight: "Flyweight",
     women_strawweight: "Women's Strawweight",
     women_flyweight: "Women's Flyweight",
     women_bantamweight: "Women's Bantamweight",
@@ -115,7 +159,7 @@ function displayWeightClass(key: string): string {
 /* ------------------------------------------------------------------ */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const targetName = searchParams.get('name')?.trim() || null;
+  const targetName = searchParams.get("name")?.trim() || null;
   try {
     const supabase = createServerSupabaseClient();
 
@@ -126,9 +170,11 @@ export async function GET(request: Request) {
     const pageSize = 1000;
     while (true) {
       const { data, error } = await supabase
-        .from('ufc_fight_results')
-        .select('id, "BOUT", "OUTCOME", "WEIGHTCLASS", "METHOD", "EVENT", "DETAILS", "ROUND", "TIME"')
-        .order('id', { ascending: true })
+        .from("ufc_fight_results")
+        .select(
+          'id, "BOUT", "OUTCOME", "WEIGHTCLASS", "METHOD", "EVENT", "DETAILS", "ROUND", "TIME"',
+        )
+        .order("id", { ascending: true })
         .range(offset, offset + pageSize - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -142,7 +188,7 @@ export async function GET(request: Request) {
     offset = 0;
     while (true) {
       const { data, error } = await supabase
-        .from('ufc_event_details')
+        .from("ufc_event_details")
         .select('"EVENT", "DATE"')
         .range(offset, offset + pageSize - 1);
       if (error) throw error;
@@ -162,8 +208,11 @@ export async function GET(request: Request) {
 
     // Sort fights chronologically by event date (the id column is NOT chronological)
     const getEventDate = (fight: any): number => {
-      const eventName = fight.EVENT || '';
-      const dateStr = eventDateMap[eventName] || eventDateMap[eventName.toLowerCase().trim()] || '';
+      const eventName = fight.EVENT || "";
+      const dateStr =
+        eventDateMap[eventName] ||
+        eventDateMap[eventName.toLowerCase().trim()] ||
+        "";
       if (!dateStr) return 0;
       return new Date(dateStr).getTime();
     };
@@ -174,7 +223,7 @@ export async function GET(request: Request) {
     offset = 0;
     while (true) {
       const { data, error } = await supabase
-        .from('ufc_fight_details')
+        .from("ufc_fight_details")
         .select('"EVENT", "BOUT", "URL"')
         .range(offset, offset + pageSize - 1);
       if (error) throw error;
@@ -187,7 +236,9 @@ export async function GET(request: Request) {
     for (const fd of allFightDetails) {
       if (fd.EVENT && fd.BOUT && fd.URL) {
         fightUrlMap[`${fd.EVENT}||${fd.BOUT}`] = fd.URL;
-        fightUrlMap[`${fd.EVENT.toLowerCase().trim()}||${fd.BOUT.toLowerCase().trim()}`] = fd.URL;
+        fightUrlMap[
+          `${fd.EVENT.toLowerCase().trim()}||${fd.BOUT.toLowerCase().trim()}`
+        ] = fd.URL;
       }
     }
 
@@ -195,17 +246,24 @@ export async function GET(request: Request) {
     const ratings: Record<string, number> = {}; // fighter → current elo
     const fightCounts: Record<string, number> = {}; // fighter → number of fights processed so far
     const lastFightDates: Record<string, string> = {}; // fighter → ISO date of most recent fight
+    // positive = current win streak length, negative = current loss streak length, 0 = no streak
+    const streaks: Record<string, number> = {};
+    // Division tracker: current division and consecutive fight count for each fighter
+    const divTracker: Record<string, { wc: string; count: number }> = {};
     // Per-fighter history: array of { date, elo, event, opponent, result, weightClass, url }
-    const history: Record<string, Array<{
-      date: string;
-      elo: number;
-      eloBeforeFight?: number;
-      event: string;
-      opponent: string;
-      result: string;
-      weightClass: string;
-      url: string;
-    }>> = {};
+    const history: Record<
+      string,
+      Array<{
+        date: string;
+        elo: number;
+        eloBeforeFight?: number;
+        event: string;
+        opponent: string;
+        result: string;
+        weightClass: string;
+        url: string;
+      }>
+    > = {};
 
     for (const fight of allFights) {
       if (!fight.BOUT || !fight.OUTCOME) continue;
@@ -218,53 +276,96 @@ export async function GET(request: Request) {
       if (!fighterA || !fighterB) continue;
 
       // Determine outcomes
-      const outcomeParts = fight.OUTCOME.split('/');
+      const outcomeParts = fight.OUTCOME.split("/");
       let scoreA: number;
       let scoreB: number;
 
-      const method = (fight.METHOD || '').toLowerCase();
+      const method = (fight.METHOD || "").toLowerCase();
       const outcomeRaw = fight.OUTCOME.toLowerCase().trim();
 
-      if (method.includes('no contest') || method === 'nc' || outcomeRaw === 'nc' || outcomeRaw === 'nc/nc') {
+      if (
+        method.includes("no contest") ||
+        method === "nc" ||
+        outcomeRaw === "nc" ||
+        outcomeRaw === "nc/nc"
+      ) {
         continue; // Skip no contests
       }
 
-      if (outcomeRaw === 'd' || outcomeRaw === 'd/d' || outcomeRaw === 'draw') {
+      if (outcomeRaw === "d" || outcomeRaw === "d/d" || outcomeRaw === "draw") {
         scoreA = 0.5;
         scoreB = 0.5;
       } else if (outcomeParts.length === 2) {
         const oA = outcomeParts[0].trim().toLowerCase();
         const oB = outcomeParts[1].trim().toLowerCase();
-        if (oA === 'w' && oB === 'l') {
-          scoreA = 1; scoreB = 0;
-        } else if (oA === 'l' && oB === 'w') {
-          scoreA = 0; scoreB = 1;
+        if (oA === "w" && oB === "l") {
+          scoreA = 1;
+          scoreB = 0;
+        } else if (oA === "l" && oB === "w") {
+          scoreA = 0;
+          scoreB = 1;
         } else {
           continue; // ambiguous
         }
       } else if (outcomeParts.length === 1) {
         const o = outcomeParts[0].trim().toLowerCase();
-        if (o === 'w') { scoreA = 1; scoreB = 0; }
-        else if (o === 'l') { scoreA = 0; scoreB = 1; }
-        else continue;
+        if (o === "w") {
+          scoreA = 1;
+          scoreB = 0;
+        } else if (o === "l") {
+          scoreA = 0;
+          scoreB = 1;
+        } else continue;
       } else {
         continue;
       }
 
       // Initialise if new
-      if (!(fighterA in ratings)) { ratings[fighterA] = DEFAULT_ELO; fightCounts[fighterA] = 0; }
-      if (!(fighterB in ratings)) { ratings[fighterB] = DEFAULT_ELO; fightCounts[fighterB] = 0; }
+      if (!(fighterA in ratings)) {
+        ratings[fighterA] = DEFAULT_ELO;
+        fightCounts[fighterA] = 0;
+      }
+      if (!(fighterB in ratings)) {
+        ratings[fighterB] = DEFAULT_ELO;
+        fightCounts[fighterB] = 0;
+      }
 
-      const fightDate = eventDateMap[fight.EVENT || ''] || eventDateMap[(fight.EVENT || '').toLowerCase().trim()] || '';
+      const fightDate =
+        eventDateMap[fight.EVENT || ""] ||
+        eventDateMap[(fight.EVENT || "").toLowerCase().trim()] ||
+        "";
       const eloA = ratings[fighterA];
       const eloB = ratings[fighterB];
       const eloBeforeFightA = eloA; // pre-fight — used for accurate delta display
       const eloBeforeFightB = eloB;
+      const prevDateA = lastFightDates[fighterA] || ""; // last fight date before this one (for inactivity check)
+      const prevDateB = lastFightDates[fighterB] || "";
       const wc = normalizeWeightClass(fight.WEIGHTCLASS);
-      const isTitleFight = (fight.WEIGHTCLASS || '').toLowerCase().includes('title');
+      // Division-change detection: fighter has ≥3 fights in their current division and is now in a different one
+      const isDivChangeA = !!(
+        divTracker[fighterA] &&
+        divTracker[fighterA].wc !== wc &&
+        divTracker[fighterA].count >= 3
+      );
+      const isDivChangeB = !!(
+        divTracker[fighterB] &&
+        divTracker[fighterB].wc !== wc &&
+        divTracker[fighterB].count >= 3
+      );
+      const isTitleFight = (fight.WEIGHTCLASS || "")
+        .toLowerCase()
+        .includes("title");
       const titleMult = isTitleFight ? 1.5 : 1.0;
-      const kA = Math.round(getK(fightCounts[fighterA]) * titleMult);
-      const kB = Math.round(getK(fightCounts[fighterB]) * titleMult);
+      const kA = Math.round(
+        getK(fightCounts[fighterA]) *
+          titleMult *
+          streakMultiplier(streaks[fighterA] ?? 0),
+      );
+      const kB = Math.round(
+        getK(fightCounts[fighterB]) *
+          titleMult *
+          streakMultiplier(streaks[fighterB] ?? 0),
+      );
 
       const expectedA = expectedScore(eloA, eloB);
       const expectedB = expectedScore(eloB, eloA);
@@ -275,15 +376,24 @@ export async function GET(request: Request) {
       // Finish bonus: scaled by round (early finish more impressive) and time (late stop discount)
       const isFinish = /\b(ko|tko|submission)\b/i.test(method);
       if (isFinish) {
-        const finishBonus = Math.round(FINISH_BONUS * roundFinishMultiplier(fight.ROUND));
-        if (scoreA === 1) { newEloA += finishBonus; newEloB -= finishBonus; }
-        else if (scoreB === 1) { newEloB += finishBonus; newEloA -= finishBonus; }
+        const finishBonus = Math.round(
+          FINISH_BONUS * roundFinishMultiplier(fight.ROUND),
+        );
+        if (scoreA === 1) {
+          newEloA += finishBonus;
+          newEloB -= finishBonus;
+        } else if (scoreB === 1) {
+          newEloB += finishBonus;
+          newEloA -= finishBonus;
+        }
       }
 
       // Decision modifiers: margin-of-victory × split/majority discount
-      const isDecision = method.includes('decision');
+      const isDecision = method.includes("decision");
       if (isDecision && scoreA !== 0.5) {
-        const combinedMult = decisionMarginMultiplier(fight.DETAILS) * splitDecisionMultiplier(method);
+        const combinedMult =
+          decisionMarginMultiplier(fight.DETAILS) *
+          splitDecisionMultiplier(method);
         if (combinedMult !== 1.0) {
           const changeA = newEloA - eloA;
           const changeB = newEloB - eloB;
@@ -292,20 +402,67 @@ export async function GET(request: Request) {
         }
       }
 
+      // Ring-rust penalty: amplify Elo loss when a fighter loses their first fight
+      // back after an 18-month+ layoff. Only the loser is penalised; winner unchanged.
+      if (scoreA === 0 && fightDate && prevDateA) {
+        const inactMult = inactivityDecayMultiplier(prevDateA, fightDate);
+        if (inactMult > 1.0)
+          newEloA = Math.round(eloA + (newEloA - eloA) * inactMult);
+      }
+      if (scoreB === 0 && fightDate && prevDateB) {
+        const inactMult = inactivityDecayMultiplier(prevDateB, fightDate);
+        if (inactMult > 1.0)
+          newEloB = Math.round(eloB + (newEloB - eloB) * inactMult);
+      }
+
+      // Division-change protection: fighters established in a division (≥3 fights) lose
+      // 35% less Elo when moving to a different division and losing that fight.
+      const DIV_CHANGE_PROTECT = 0.65;
+      if (isDivChangeA && scoreA === 0)
+        newEloA = Math.round(eloA + (newEloA - eloA) * DIV_CHANGE_PROTECT);
+      if (isDivChangeB && scoreB === 0)
+        newEloB = Math.round(eloB + (newEloB - eloB) * DIV_CHANGE_PROTECT);
+
       ratings[fighterA] = newEloA;
       ratings[fighterB] = newEloB;
       fightCounts[fighterA] = (fightCounts[fighterA] || 0) + 1;
       fightCounts[fighterB] = (fightCounts[fighterB] || 0) + 1;
 
-      const eventName = fight.EVENT || '';
-      const date = fightDate || '';
+      // Update win/loss streaks (positive = win streak length, negative = loss streak length)
+      streaks[fighterA] =
+        scoreA === 1
+          ? Math.max(0, streaks[fighterA] ?? 0) + 1
+          : scoreA === 0
+            ? Math.min(0, streaks[fighterA] ?? 0) - 1
+            : 0; // draw resets streak
+      streaks[fighterB] =
+        scoreB === 1
+          ? Math.max(0, streaks[fighterB] ?? 0) + 1
+          : scoreB === 0
+            ? Math.min(0, streaks[fighterB] ?? 0) - 1
+            : 0;
+
+      // Update division tracker for each fighter
+      if (!divTracker[fighterA]) divTracker[fighterA] = { wc, count: 1 };
+      else if (divTracker[fighterA].wc === wc) divTracker[fighterA].count++;
+      else divTracker[fighterA] = { wc, count: 1 };
+
+      if (!divTracker[fighterB]) divTracker[fighterB] = { wc, count: 1 };
+      else if (divTracker[fighterB].wc === wc) divTracker[fighterB].count++;
+      else divTracker[fighterB] = { wc, count: 1 };
+
+      const eventName = fight.EVENT || "";
+      const date = fightDate || "";
       if (date) {
         lastFightDates[fighterA] = date;
         lastFightDates[fighterB] = date;
       }
-      const fightUrl = fightUrlMap[`${eventName}||${fight.BOUT}`]
-        || fightUrlMap[`${eventName.toLowerCase().trim()}||${fight.BOUT.toLowerCase().trim()}`]
-        || '';
+      const fightUrl =
+        fightUrlMap[`${eventName}||${fight.BOUT}`] ||
+        fightUrlMap[
+          `${eventName.toLowerCase().trim()}||${fight.BOUT.toLowerCase().trim()}`
+        ] ||
+        "";
 
       // Record history for both fighters
       if (!history[fighterA]) history[fighterA] = [];
@@ -315,7 +472,7 @@ export async function GET(request: Request) {
         eloBeforeFight: eloBeforeFightA,
         event: eventName,
         opponent: fighterB,
-        result: scoreA === 1 ? 'W' : scoreA === 0 ? 'L' : 'D',
+        result: scoreA === 1 ? "W" : scoreA === 0 ? "L" : "D",
         weightClass: wc,
         url: fightUrl,
       });
@@ -327,7 +484,7 @@ export async function GET(request: Request) {
         eloBeforeFight: eloBeforeFightB,
         event: eventName,
         opponent: fighterA,
-        result: scoreB === 1 ? 'W' : scoreB === 0 ? 'L' : 'D',
+        result: scoreB === 1 ? "W" : scoreB === 0 ? "L" : "D",
         weightClass: wc,
         url: fightUrl,
       });
@@ -335,9 +492,16 @@ export async function GET(request: Request) {
 
     // Per-fighter lookup: return just this fighter's data without full batch processing
     if (targetName) {
-      const norm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[.'\u2011]/g, '').toLowerCase().trim();
+      const norm = (s: string) =>
+        s
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[.'\u2011]/g, "")
+          .toLowerCase()
+          .trim();
       const tNorm = norm(targetName);
-      const canonName = Object.keys(ratings).find(n => norm(n) === tNorm) || targetName;
+      const canonName =
+        Object.keys(ratings).find((n) => norm(n) === tNorm) || targetName;
       return NextResponse.json({
         name: canonName,
         currentElo: ratings[canonName] ?? null,
@@ -354,14 +518,14 @@ export async function GET(request: Request) {
       fights: number;
       primaryWeightClass: string;
       lastFightDate: string;
-      history: typeof history[string];
+      history: (typeof history)[string];
     }> = [];
 
     for (const [name, hist] of Object.entries(history)) {
       if (hist.length < 5) continue; // Skip fighters with very few fights
 
       let peakElo = DEFAULT_ELO;
-      let peakDate = '';
+      let peakDate = "";
       const wcCounts: Record<string, number> = {};
 
       for (const h of hist) {
@@ -373,7 +537,9 @@ export async function GET(request: Request) {
       }
 
       // Primary weight class = most common
-      const primaryWC = Object.entries(wcCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'unknown';
+      const primaryWC =
+        Object.entries(wcCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ||
+        "unknown";
 
       fighterSummaries.push({
         name,
@@ -382,7 +548,7 @@ export async function GET(request: Request) {
         peakDate,
         fights: hist.length,
         primaryWeightClass: primaryWC,
-        lastFightDate: hist[hist.length - 1]?.date || '',
+        lastFightDate: hist[hist.length - 1]?.date || "",
         history: hist,
       });
     }
@@ -392,9 +558,18 @@ export async function GET(request: Request) {
 
     // Valid weight classes only (exclude openweight, superfight, catch-weight, etc.)
     const VALID_WEIGHT_CLASSES = new Set([
-      'heavyweight', 'lightheavyweight', 'middleweight', 'welterweight',
-      'lightweight', 'featherweight', 'bantamweight', 'flyweight',
-      'women_bantamweight', 'women_flyweight', 'women_strawweight', 'women_featherweight',
+      "heavyweight",
+      "lightheavyweight",
+      "middleweight",
+      "welterweight",
+      "lightweight",
+      "featherweight",
+      "bantamweight",
+      "flyweight",
+      "women_bantamweight",
+      "women_flyweight",
+      "women_strawweight",
+      "women_featherweight",
     ]);
 
     // 5. Build weight-class grouped top fighters (top 20 per valid class)
@@ -419,7 +594,7 @@ export async function GET(request: Request) {
       byWeightClass,
       wcDisplayNames,
       // All fighters (≥5 UFC fights) for distribution analytics
-      allFighters: fighterSummaries.map(f => ({
+      allFighters: fighterSummaries.map((f) => ({
         name: f.name,
         currentElo: f.currentElo,
         primaryWeightClass: f.primaryWeightClass,
@@ -427,7 +602,7 @@ export async function GET(request: Request) {
       })),
     });
   } catch (err: any) {
-    console.error('UFC Elo API Error:', err.message);
+    console.error("UFC Elo API Error:", err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

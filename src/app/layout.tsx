@@ -28,11 +28,9 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <div className="flex h-screen flex-col overflow-hidden">
-            <header className="flex-shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-              <Navbar />
-            </header>
-            <main className="flex-1 overflow-y-auto">
+          <div className="flex flex-col min-h-screen">
+            <Navbar />
+            <main className="flex-1">
               {children}
             </main>
           </div>

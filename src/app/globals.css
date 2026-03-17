@@ -80,6 +80,11 @@
   }
 }
 
+html,
+body {
+  overscroll-behavior: none;
+}
+
 /* Hide number input arrows */
 /* Chrome, Safari, Edge, Opera */
 input::-webkit-outer-spin-button,
