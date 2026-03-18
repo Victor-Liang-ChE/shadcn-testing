@@ -1,27 +1,41 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, ArrowLeft, Loader2, Crown, User, ShieldCheck, ShieldOff } from 'lucide-react';
-import { Skeleton } from '@/components/ui/skeleton';
+import React, { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  X,
+  ArrowLeft,
+  Loader2,
+  Crown,
+  User,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react";
+// Crown is used for full title fights; we reuse it with silver styling for interim fights.
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { supabase, FighterDetails, FightResult, UfcChampionImages } from '@/lib/supabaseClient';
-import { cn } from '@/lib/utils';
-import { wcBadgeStyle } from '@/lib/wc-colors';
+} from "@/components/ui/tooltip";
+import {
+  supabase,
+  FighterDetails,
+  FightResult,
+  UfcChampionImages,
+} from "@/lib/supabaseClient";
+import { cn } from "@/lib/utils";
+import { wcBadgeStyle } from "@/lib/wc-colors";
 
 /* ------------------------------------------------------------------ */
 /*  TYPES                                                             */
 /* ------------------------------------------------------------------ */
 interface ProcessedFightResult extends FightResult {
-  resultForFighter: 'win' | 'loss' | 'draw' | 'nc' | 'unknown';
+  resultForFighter: "win" | "loss" | "draw" | "nc" | "unknown";
   decisionDetails?: string;
   finishDetails?: string;
-  defenseOutcome?: 'success' | 'fail' | null;
+  defenseOutcome?: "success" | "fail" | null;
 }
 
 export interface ChampionEntry {
@@ -29,9 +43,14 @@ export interface ChampionEntry {
   reignStart?: string;
   reignEnd?: string | null;
   notes?: string;
-  imageUrl?: string;    // full-body MAINSHOT (for champion cards)
+  imageUrl?: string; // full-body MAINSHOT (for champion cards)
   headshotUrl?: string; // square HEADSHOT (for modal circle)
-  eloHistory?: Array<{ date: string; elo: number; event: string; eloBeforeFight?: number }>; // optional Elo data from UFC Elo page
+  eloHistory?: Array<{
+    date: string;
+    elo: number;
+    event: string;
+    eloBeforeFight?: number;
+  }>; // optional Elo data from UFC Elo page
 }
 
 /* ------------------------------------------------------------------ */
@@ -39,44 +58,62 @@ export interface ChampionEntry {
 /* ------------------------------------------------------------------ */
 function normalizeName(name: string): string {
   return name
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[.'‑]/g, '')
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.'‑]/g, "")
     .trim();
 }
 
-function parseFighterName(full: string): { firstName: string; lastName: string } {
+function parseFighterName(full: string): {
+  firstName: string;
+  lastName: string;
+} {
   const parts = full.trim().split(/\s+/);
-  return { firstName: parts.slice(0, -1).join(' '), lastName: parts.at(-1) || '' };
+  return {
+    firstName: parts.slice(0, -1).join(" "),
+    lastName: parts.at(-1) || "",
+  };
 }
 
 function normalizeWeightClass(raw?: string | null): string {
-  if (!raw) return '';
-  let normalized = normalizeName(raw)
+  if (!raw) return "";
+  const cleaned = normalizeName(raw)
     .toLowerCase()
-    .replace(/(ultimate\s*fighter\s*\d*\s*)/g, '')
-    .replace(/(tournament\s*)/g, '')
-    .replace(/(title|championship|bout|world|undisputed|interim)/g, '')
-    .replace(/^ufc\s*/, '')
+    .replace(/ultimate\s*fighter[\s\d]*/g, "")
+    .replace(/\btournament\b/g, "")
+    .replace(/\b(title|championship|bout|world|undisputed|interim)\b/g, "")
+    .replace(/^ufc\s*/, "")
     .trim();
 
-  // Keyword priority matching for standard classes
-  if (normalized.includes('lightheavyweight')) return 'lightheavyweight';
-  if (normalized.includes('heavyweight')) return 'heavyweight';
-  if (normalized.includes('middleweight')) return 'middleweight';
-  if (normalized.includes('welterweight')) return 'welterweight';
-  if (normalized.includes('lightweight')) return 'lightweight';
-  if (normalized.includes('featherweight')) return 'featherweight';
-  if (normalized.includes('bantamweight')) return 'bantamweight';
-  if (normalized.includes('flyweight')) return 'flyweight';
+  // Check women's classes FIRST — avoids "women's flyweight" matching the
+  // men's /fly/ check below. normalizeName strips apostrophes so "Women's" → "Womens".
+  if (/womens?|woman/.test(cleaned)) {
+    if (/bantam/.test(cleaned)) return "women_bantamweight";
+    if (/feather/.test(cleaned)) return "women_featherweight";
+    if (/fly/.test(cleaned)) return "women_flyweight";
+    if (/straw/.test(cleaned)) return "women_strawweight";
+  }
 
-  // Map "womens X" → "women_X"
-  normalized = normalized.replace(/^womens\s+/, 'women_').replace(/\s+/g, '');
-  return normalized;
+  // Men's — regex handles spaced forms like "light heavyweight".
+  // light heavyweight MUST come before heavyweight.
+  if (/light\s*heavy/.test(cleaned)) return "lightheavyweight";
+  if (/heavy/.test(cleaned)) return "heavyweight";
+  if (/middle/.test(cleaned)) return "middleweight";
+  if (/welter/.test(cleaned)) return "welterweight";
+  // lightweight after light heavyweight (already returned above).
+  if (/light/.test(cleaned)) return "lightweight";
+  if (/feather/.test(cleaned)) return "featherweight";
+  if (/bantam/.test(cleaned)) return "bantamweight";
+  if (/fly/.test(cleaned)) return "flyweight";
+
+  return cleaned.replace(/\s+/g, "") || "";
 }
 
-function extractOpponent(boutString: string, normalizedFighterName: string): string {
-  if (!boutString || !normalizedFighterName) return 'Opponent Unknown';
+function extractOpponent(
+  boutString: string,
+  normalizedFighterName: string,
+): string {
+  if (!boutString || !normalizedFighterName) return "Opponent Unknown";
   const parts = boutString.split(/\s+vs\.?\s+|\s+vs\s+/i);
   if (parts.length === 2) {
     const n1 = normalizeName(parts[0]).toLowerCase();
@@ -85,39 +122,51 @@ function extractOpponent(boutString: string, normalizedFighterName: string): str
     if (n1.includes(n) || n.includes(n1)) return parts[1].trim();
     if (n2.includes(n) || n.includes(n2)) return parts[0].trim();
   }
-  return 'Opponent Unknown';
+  return "Opponent Unknown";
 }
 
-function extractDecisionDetails(details: string | null | undefined): string | undefined {
+function extractDecisionDetails(
+  details: string | null | undefined,
+): string | undefined {
   if (!details) return undefined;
   const scores = details.match(/\d{1,2}\s*-\s*\d{1,2}/g);
-  if (scores && scores.length >= 3) return scores.join(', ');
+  if (scores && scores.length >= 3) return scores.join(", ");
   return undefined;
 }
 
-function getResultForFighter(fight: FightResult, normalizedFighterName: string): ProcessedFightResult['resultForFighter'] {
-  if (!fight.BOUT || !fight.OUTCOME) return 'unknown';
-  if (fight.DETAILS?.toLowerCase().includes('overturned')) return 'nc';
-  if (fight.METHOD?.toLowerCase().includes('no contest') || fight.METHOD?.toLowerCase() === 'nc') return 'nc';
+function getResultForFighter(
+  fight: FightResult,
+  normalizedFighterName: string,
+): ProcessedFightResult["resultForFighter"] {
+  if (!fight.BOUT || !fight.OUTCOME) return "unknown";
+  if (fight.DETAILS?.toLowerCase().includes("overturned")) return "nc";
+  if (
+    fight.METHOD?.toLowerCase().includes("no contest") ||
+    fight.METHOD?.toLowerCase() === "nc"
+  )
+    return "nc";
   const outcomeRaw = fight.OUTCOME.toLowerCase().trim();
-  if (outcomeRaw === 'nc' || outcomeRaw === 'nc/nc') return 'nc';
-  if (outcomeRaw === 'd' || outcomeRaw === 'd/d' || outcomeRaw === 'draw') return 'draw';
-  const outcomeParts = fight.OUTCOME.split('/');
+  if (outcomeRaw === "nc" || outcomeRaw === "nc/nc") return "nc";
+  if (outcomeRaw === "d" || outcomeRaw === "d/d" || outcomeRaw === "draw")
+    return "draw";
+  const outcomeParts = fight.OUTCOME.split("/");
   const fighters = fight.BOUT.split(/ vs\.? | vs /i);
-  if (fighters.length !== 2) return 'unknown';
+  if (fighters.length !== 2) return "unknown";
   const f1 = normalizeName(fighters[0].trim());
   const f2 = normalizeName(fighters[1].trim());
   const norm = normalizedFighterName.toLowerCase();
   if (f1.toLowerCase() === norm) {
-    if (outcomeParts[0]?.toLowerCase() === 'w') return 'win';
-    if (outcomeParts[0]?.toLowerCase() === 'l') return 'loss';
+    if (outcomeParts[0]?.toLowerCase() === "w") return "win";
+    if (outcomeParts[0]?.toLowerCase() === "l") return "loss";
   } else if (f2.toLowerCase() === norm) {
-    if (outcomeParts[1]?.toLowerCase() === 'w') return 'win';
-    if (outcomeParts[1]?.toLowerCase() === 'l') return 'loss';
-    if (outcomeParts.length === 1 && outcomeParts[0]?.toLowerCase() === 'w') return 'loss';
-    if (outcomeParts.length === 1 && outcomeParts[0]?.toLowerCase() === 'l') return 'win';
+    if (outcomeParts[1]?.toLowerCase() === "w") return "win";
+    if (outcomeParts[1]?.toLowerCase() === "l") return "loss";
+    if (outcomeParts.length === 1 && outcomeParts[0]?.toLowerCase() === "w")
+      return "loss";
+    if (outcomeParts.length === 1 && outcomeParts[0]?.toLowerCase() === "l")
+      return "win";
   }
-  return 'unknown';
+  return "unknown";
 }
 
 function calculateAge(dob: string | null | undefined): number | null {
@@ -129,71 +178,89 @@ function calculateAge(dob: string | null | undefined): number | null {
     const m = today.getMonth() - birth.getMonth();
     if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
     return age;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function wcLbsLabel(key: string): string {
   const labels: Record<string, string> = {
-    heavyweight: 'Heavyweight (265 lbs)',
-    lightheavyweight: 'Light Heavyweight (205 lbs)',
-    middleweight: 'Middleweight (185 lbs)',
-    welterweight: 'Welterweight (170 lbs)',
-    lightweight: 'Lightweight (155 lbs)',
-    featherweight: 'Featherweight (145 lbs)',
-    bantamweight: 'Bantamweight (135 lbs)',
-    flyweight: 'Flyweight (125 lbs)',
+    heavyweight: "Heavyweight (265 lbs)",
+    lightheavyweight: "Light Heavyweight (205 lbs)",
+    middleweight: "Middleweight (185 lbs)",
+    welterweight: "Welterweight (170 lbs)",
+    lightweight: "Lightweight (155 lbs)",
+    featherweight: "Featherweight (145 lbs)",
+    bantamweight: "Bantamweight (135 lbs)",
+    flyweight: "Flyweight (125 lbs)",
     women_strawweight: "Women's Strawweight (115 lbs)",
     women_flyweight: "Women's Flyweight (125 lbs)",
     women_bantamweight: "Women's Bantamweight (135 lbs)",
     women_featherweight: "Women's Featherweight (145 lbs)",
-    catchweight: 'Catchweight',
+    catchweight: "Catchweight",
   };
-  const k = key.toLowerCase().replace(/\s+/g, '');
+  const k = key.toLowerCase().replace(/\s+/g, "");
   return labels[k] || key;
 }
 
 function abbreviateWeightClass(key: string): string {
   const abbr: Record<string, string> = {
-    heavyweight: 'HW', lightheavyweight: 'LHW', middleweight: 'MW',
-    welterweight: 'WW', lightweight: 'LW', featherweight: 'FeW',
-    bantamweight: 'BW', flyweight: 'FLW', women_strawweight: 'W-SW',
-    women_flyweight: 'W-FLW', women_bantamweight: 'W-BW', women_featherweight: 'W-FEW', catchweight: 'CW',
+    heavyweight: "HW",
+    lightheavyweight: "LHW",
+    middleweight: "MW",
+    welterweight: "WW",
+    lightweight: "LW",
+    featherweight: "FeW",
+    bantamweight: "BW",
+    flyweight: "FLW",
+    women_strawweight: "W-SW",
+    women_flyweight: "W-FLW",
+    women_bantamweight: "W-BW",
+    women_featherweight: "W-FEW",
+    catchweight: "CW",
   };
-  return abbr[key.toLowerCase().replace(/\s+/g, '')] || key.toUpperCase();
+  return abbr[key.toLowerCase().replace(/\s+/g, "")] || key.toUpperCase();
 }
 
 // Canonical weight classes in order from lightest to heaviest.
 // Used to preserve consistent sorting in the UI.
 const WEIGHT_CLASS_ORDER = [
-  'women_strawweight',
-  'women_flyweight',
-  'women_bantamweight',
-  'women_featherweight',
-  'flyweight',
-  'bantamweight',
-  'featherweight',
-  'lightweight',
-  'welterweight',
-  'middleweight',
-  'lightheavyweight',
-  'heavyweight',
+  "women_strawweight",
+  "women_flyweight",
+  "women_bantamweight",
+  "women_featherweight",
+  "flyweight",
+  "bantamweight",
+  "featherweight",
+  "lightweight",
+  "welterweight",
+  "middleweight",
+  "lightheavyweight",
+  "heavyweight",
 ] as const;
 
 const KNOWN_DIVISIONS = new Set<string>(WEIGHT_CLASS_ORDER);
 function isKnownDivision(key: string): boolean {
-  return KNOWN_DIVISIONS.has(key.toLowerCase().replace(/\s+/g, ''));
+  return KNOWN_DIVISIONS.has(key.toLowerCase().replace(/\s+/g, ""));
 }
 
 function getWeightClassName(key: string): string {
   const names: Record<string, string> = {
-    heavyweight: 'Heavyweight', lightheavyweight: 'Light Heavyweight',
-    middleweight: 'Middleweight', welterweight: 'Welterweight',
-    lightweight: 'Lightweight', featherweight: 'Featherweight',
-    bantamweight: 'Bantamweight', flyweight: 'Flyweight',
-    women_strawweight: "Women's Strawweight", women_flyweight: "Women's Flyweight",
-    women_bantamweight: "Women's Bantamweight", women_featherweight: "Women's Featherweight", catchweight: 'Catchweight',
+    heavyweight: "Heavyweight",
+    lightheavyweight: "Light Heavyweight",
+    middleweight: "Middleweight",
+    welterweight: "Welterweight",
+    lightweight: "Lightweight",
+    featherweight: "Featherweight",
+    bantamweight: "Bantamweight",
+    flyweight: "Flyweight",
+    women_strawweight: "Women's Strawweight",
+    women_flyweight: "Women's Flyweight",
+    women_bantamweight: "Women's Bantamweight",
+    women_featherweight: "Women's Featherweight",
+    catchweight: "Catchweight",
   };
-  return names[key.toLowerCase().replace(/\s+/g, '')] || key;
+  return names[key.toLowerCase().replace(/\s+/g, "")] || key;
 }
 
 function parseLocalDate(dateStr: string): Date {
@@ -212,23 +279,35 @@ function humanDuration(days: number): string {
   const y = Math.floor(days / 365);
   const mo = Math.floor((days % 365) / 30);
   const d = days % 30;
-  return [y ? `${y} yr${y > 1 ? 's' : ''}` : '', mo ? `${mo} mo${mo > 1 ? 's' : ''}` : '', d ? `${d} day${d > 1 ? 's' : ''}` : '']
-    .filter(Boolean).join(' ') || '0 days';
+  return (
+    [
+      y ? `${y} yr${y > 1 ? "s" : ""}` : "",
+      mo ? `${mo} mo${mo > 1 ? "s" : ""}` : "",
+      d ? `${d} day${d > 1 ? "s" : ""}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ") || "0 days"
+  );
 }
 
 // Fighters whose UFC.com slug differs from the normalised full-name slug.
 const ATHLETE_SLUG_OVERRIDES: Record<string, string> = {
-  'ian machado garry': 'ian-garry',
+  "ian machado garry": "ian-garry",
 };
 
 function createAthleteUrl(name: string): string {
-  if (!name) return '#';
-  const normalised = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\./g, '').trim().toLowerCase();
+  if (!name) return "#";
+  const normalised = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\./g, "")
+    .trim()
+    .toLowerCase();
   if (ATHLETE_SLUG_OVERRIDES[normalised]) {
     return `https://www.ufc.com/athlete/${ATHLETE_SLUG_OVERRIDES[normalised]}`;
   }
-  let slug = normalised.replace(/\s+/g, '-');
-  slug = slug.replace(/^b-?j-/, 'bj-');
+  let slug = normalised.replace(/\s+/g, "-");
+  slug = slug.replace(/^b-?j-/, "bj-");
   return `https://www.ufc.com/athlete/${slug}`;
 }
 
@@ -239,44 +318,85 @@ interface FighterDetailsModalProps {
   champion: ChampionEntry;
   onClose: () => void;
   onBack?: () => void; // present when navigated from another fighter modal
-  eloLookup?: (name: string) => Array<{ date: string; elo: number; event: string }> | undefined;
+  eloLookup?: (
+    name: string,
+  ) => Array<{ date: string; elo: number; event: string }> | undefined;
   hideElo?: boolean;
 }
 
-export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hideElo }: FighterDetailsModalProps) {
+export function FighterDetailsModal({
+  champion,
+  onClose,
+  onBack,
+  eloLookup,
+  hideElo,
+}: FighterDetailsModalProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [fighterDetails, setFighterDetails] = useState<FighterDetails | null>(null);
-  const [fighterImages, setFighterImages] = useState<UfcChampionImages | null>(null);
-  const [fighterHistory, setFighterHistory] = useState<ProcessedFightResult[]>([]);
+  const [fighterDetails, setFighterDetails] = useState<FighterDetails | null>(
+    null,
+  );
+  const [fighterImages, setFighterImages] = useState<UfcChampionImages | null>(
+    null,
+  );
+  const [fighterHistory, setFighterHistory] = useState<ProcessedFightResult[]>(
+    [],
+  );
   const [eventDates, setEventDates] = useState<Record<string, string>>({});
   const [selectedOpponent, setSelectedOpponent] = useState<string | null>(null);
-  const [fetchedEloHistory, setFetchedEloHistory] = useState<Array<{ date: string; elo: number; event: string; eloBeforeFight?: number }> | undefined>(undefined);
+  const [fetchedEloHistory, setFetchedEloHistory] = useState<
+    | Array<{
+        date: string;
+        elo: number;
+        event: string;
+        eloBeforeFight?: number;
+      }>
+    | undefined
+  >(undefined);
   // Start true so spinner shows immediately when Elo isn't already provided
   const [fetchingElo, setFetchingElo] = useState<boolean>(
-    () => !champion.eloHistory || champion.eloHistory.length === 0
+    () => !champion.eloHistory || champion.eloHistory.length === 0,
   );
 
   useEffect(() => {
     const original = champion.name.trim();
     const normName = normalizeName(original);
     // Strip only accent marks (not other punctuation) for DB ilike queries which are accent-sensitive in PostgreSQL
-    const stripAccents = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const stripAccents = (s: string) =>
+      s
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim();
     const queryName = stripAccents(original);
     // Use first word and last word of the accent-stripped name so "Benoit Saint Denis" → FIRST=%Benoit%, LAST=%Denis%
     // This handles multi-word last/first names since DB FIRST/LAST ilike partial-matches
     const qParts = queryName.split(/\s+/);
-    const firstName = qParts[0] || '';
-    const lastName = qParts[qParts.length - 1] || '';
+    const firstName = qParts[0] || "";
+    const lastName = qParts[qParts.length - 1] || "";
 
     setIsLoading(true);
     setError(null);
 
     Promise.all([
-      supabase.from('ufc_fighter_tott').select('*').ilike('FIGHTER', `%${queryName}%`).limit(1).maybeSingle(),
-      supabase.from('ufc_champion_images').select('*').ilike('FIRST', `%${firstName}%`).ilike('LAST', `%${lastName}%`).limit(1).maybeSingle(),
-      supabase.from('ufc_fight_results').select('*').ilike('BOUT', `%${queryName}%`).order('id', { ascending: true }),
-      supabase.from('ufc_event_details').select('EVENT,DATE').limit(2000),
+      supabase
+        .from("ufc_fighter_tott")
+        .select("*")
+        .ilike("FIGHTER", `%${queryName}%`)
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("ufc_champion_images")
+        .select("*")
+        .ilike("FIRST", `%${firstName}%`)
+        .ilike("LAST", `%${lastName}%`)
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from("ufc_fight_results")
+        .select("*")
+        .ilike("BOUT", `%${queryName}%`)
+        .order("id", { ascending: true }),
+      supabase.from("ufc_event_details").select("EVENT,DATE").limit(2000),
     ])
       .then(([detailsRes, imagesRes, fightsRes, eventDatesRes]) => {
         setFighterDetails((detailsRes.data as FighterDetails | null) ?? null);
@@ -291,7 +411,7 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
           setFighterImages(dbImages);
         }
 
-        const fights = ((fightsRes.data as FightResult[]) || []);
+        const fights = (fightsRes.data as FightResult[]) || [];
         const championStatus: Record<string, boolean> = {};
         const processed: ProcessedFightResult[] = [];
 
@@ -299,24 +419,37 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
           const fight = fights[idx];
           const resultForFighter = getResultForFighter(fight, normName);
           const div = normalizeWeightClass(fight.WEIGHTCLASS);
-          const isTitle = fight.WEIGHTCLASS?.toLowerCase().includes('title') ?? false;
-          let defenseOutcome: 'success' | 'fail' | null = null;
+          const isTitle =
+            (fight.WEIGHTCLASS?.toLowerCase().startsWith("ufc ") &&
+              fight.WEIGHTCLASS?.toLowerCase().includes("title") &&
+              !fight.EVENT?.toLowerCase().includes("ultimate fighter")) ??
+            false;
+          let defenseOutcome: "success" | "fail" | null = null;
 
           if (isTitle && div) {
             if (championStatus[div]) {
-              if (resultForFighter === 'loss') { defenseOutcome = 'fail'; championStatus[div] = false; }
-              else if (resultForFighter === 'win') { defenseOutcome = 'success'; }
+              if (resultForFighter === "loss") {
+                defenseOutcome = "fail";
+                championStatus[div] = false;
+              } else if (
+                resultForFighter === "win" ||
+                resultForFighter === "draw" ||
+                resultForFighter === "nc"
+              ) {
+                defenseOutcome = "success";
+              }
             } else {
-              if (resultForFighter === 'win') championStatus[div] = true;
+              if (resultForFighter === "win") championStatus[div] = true;
             }
           }
 
           let decisionDetails: string | undefined;
           let finishDetails: string | undefined;
-          if (fight.METHOD?.toLowerCase().includes('decision')) {
+          if (fight.METHOD?.toLowerCase().includes("decision")) {
             decisionDetails = extractDecisionDetails(fight.DETAILS);
           } else if (fight.DETAILS?.trim()) {
-            if (!/\d{1,2}\s*-\s*\d{1,2}/.test(fight.DETAILS)) finishDetails = fight.DETAILS.trim();
+            if (!/\d{1,2}\s*-\s*\d{1,2}/.test(fight.DETAILS))
+              finishDetails = fight.DETAILS.trim();
             else decisionDetails = extractDecisionDetails(fight.DETAILS);
           }
 
@@ -333,7 +466,10 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
 
         const datesMap: Record<string, string> = {};
         if (!eventDatesRes.error && eventDatesRes.data) {
-          for (const row of eventDatesRes.data as { EVENT: string; DATE: string | null }[]) {
+          for (const row of eventDatesRes.data as {
+            EVENT: string;
+            DATE: string | null;
+          }[]) {
             if (row.EVENT && row.DATE) {
               datesMap[row.EVENT] = row.DATE;
               datesMap[row.EVENT.toLowerCase().trim()] = row.DATE;
@@ -342,7 +478,7 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
         }
         setEventDates(datesMap);
       })
-      .catch((err) => setError(err?.message ?? 'Unknown error'))
+      .catch((err) => setError(err?.message ?? "Unknown error"))
       .finally(() => setIsLoading(false));
   }, [champion]);
 
@@ -356,18 +492,25 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
     setFetchedEloHistory(undefined);
     setFetchingElo(true);
     const name = champion.name.trim();
-    if (!name) { setFetchingElo(false); return; }
+    if (!name) {
+      setFetchingElo(false);
+      return;
+    }
     let cancelled = false;
     fetch(`/api/ufc-elo?name=${encodeURIComponent(name)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
         if (!cancelled) {
           if (data?.history?.length > 0) setFetchedEloHistory(data.history);
           setFetchingElo(false);
         }
       })
-      .catch(() => { if (!cancelled) setFetchingElo(false); });
-    return () => { cancelled = true; };
+      .catch(() => {
+        if (!cancelled) setFetchingElo(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [champion.name, champion.eloHistory]);
 
   // When an opponent is selected, replace this modal — back arrow returns here, X closes all
@@ -375,7 +518,10 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
     return (
       <FighterDetailsModal
         key={selectedOpponent}
-        champion={{ name: selectedOpponent, eloHistory: eloLookup?.(selectedOpponent) }}
+        champion={{
+          name: selectedOpponent,
+          eloHistory: eloLookup?.(selectedOpponent),
+        }}
         onClose={onClose}
         onBack={() => setSelectedOpponent(null)}
         eloLookup={eloLookup}
@@ -384,9 +530,10 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
     );
   }
 
-  const activeEloHistory = (champion.eloHistory && champion.eloHistory.length > 0)
-    ? champion.eloHistory
-    : fetchedEloHistory;
+  const activeEloHistory =
+    champion.eloHistory && champion.eloHistory.length > 0
+      ? champion.eloHistory
+      : fetchedEloHistory;
 
   return (
     <AnimatePresence>
@@ -451,7 +598,9 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-card/80 z-20 p-4 text-center">
                 <p className="text-destructive font-semibold mb-2">Error</p>
                 <p className="text-sm text-destructive">{error}</p>
-                <button onClick={onClose} className="mt-4 text-sm underline">Close</button>
+                <button onClick={onClose} className="mt-4 text-sm underline">
+                  Close
+                </button>
               </div>
             )}
             {!isLoading && !error && (
@@ -459,20 +608,26 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                 {/* Left Panel: Stats */}
                 <div className="w-1/3 border-r border-border p-4 md:p-6 overflow-y-auto flex flex-col items-center">
                   <a
-                    href={createAthleteUrl(fighterDetails?.FIGHTER || champion.name)}
+                    href={createAthleteUrl(
+                      fighterDetails?.FIGHTER || champion.name,
+                    )}
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    <div
-                      className="relative w-40 h-40 mb-4 rounded-full overflow-hidden bg-card flex items-center justify-center flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer"
-                    >
-                      {(fighterImages?.HEADSHOT || champion.imageUrl) ? (
+                    <div className="relative w-40 h-40 mb-4 rounded-full overflow-hidden bg-card flex items-center justify-center flex-shrink-0 hover:opacity-80 transition-opacity cursor-pointer">
+                      {fighterImages?.HEADSHOT || champion.imageUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={fighterImages?.HEADSHOT || champion.imageUrl || ''}
+                          src={
+                            fighterImages?.HEADSHOT || champion.imageUrl || ""
+                          }
                           alt={champion.name}
                           className="absolute inset-0 h-full w-full object-cover object-top"
-                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                          onError={(e) => {
+                            (
+                              e.currentTarget as HTMLImageElement
+                            ).style.display = "none";
+                          }}
                         />
                       ) : (
                         <User className="h-16 w-16 text-gray-500 dark:text-gray-400" />
@@ -481,7 +636,9 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                   </a>
 
                   <a
-                    href={createAthleteUrl(fighterDetails?.FIGHTER || champion.name)}
+                    href={createAthleteUrl(
+                      fighterDetails?.FIGHTER || champion.name,
+                    )}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="hover:underline hover:text-primary transition-colors cursor-pointer"
@@ -492,36 +649,64 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                   </a>
 
                   {/* Current Elo — gold ring; fetched from batch or self-fetch fallback */}
-                  {!hideElo && (activeEloHistory && activeEloHistory.length > 0 ? (
-                    <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border border-yellow-400/60 bg-yellow-400/10 mb-3">
-                      <span className="text-xs text-foreground">Elo: <span className="font-bold text-sm">{activeEloHistory[activeEloHistory.length - 1].elo}</span></span>
-                    </div>
-                  ) : fetchingElo ? (
-                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border border-border bg-muted/30 mb-3">
-                      <span className="text-xs text-muted-foreground">Elo:</span>
-                      <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : null)}
+                  {!hideElo &&
+                    (activeEloHistory && activeEloHistory.length > 0 ? (
+                      <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border border-yellow-400/60 bg-yellow-400/10 mb-3">
+                        <span className="text-xs text-foreground">
+                          Elo:{" "}
+                          <span className="font-bold text-sm">
+                            {activeEloHistory[activeEloHistory.length - 1].elo}
+                          </span>
+                        </span>
+                      </div>
+                    ) : fetchingElo ? (
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border border-border bg-muted/30 mb-3">
+                        <span className="text-xs text-muted-foreground">
+                          Elo:
+                        </span>
+                        <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : null)}
 
                   {fighterDetails ? (
                     <div className="space-y-2 text-sm w-full text-center">
-                      {fighterDetails.HEIGHT && <p><strong>Height:</strong> {fighterDetails.HEIGHT}</p>}
-                      {fighterDetails.WEIGHT && <p><strong>Weight:</strong> {fighterDetails.WEIGHT}</p>}
-                      {fighterDetails.REACH && <p><strong>Reach:</strong> {fighterDetails.REACH}</p>}
-                      {fighterDetails.STANCE && <p><strong>Stance:</strong> {fighterDetails.STANCE}</p>}
+                      {fighterDetails.HEIGHT && (
+                        <p>
+                          <strong>Height:</strong> {fighterDetails.HEIGHT}
+                        </p>
+                      )}
+                      {fighterDetails.WEIGHT && (
+                        <p>
+                          <strong>Weight:</strong> {fighterDetails.WEIGHT}
+                        </p>
+                      )}
+                      {fighterDetails.REACH && (
+                        <p>
+                          <strong>Reach:</strong> {fighterDetails.REACH}
+                        </p>
+                      )}
+                      {fighterDetails.STANCE && (
+                        <p>
+                          <strong>Stance:</strong> {fighterDetails.STANCE}
+                        </p>
+                      )}
                       {fighterDetails.DOB && (
                         <p>
-                          <strong>Born:</strong> {new Date(fighterDetails.DOB).toLocaleDateString()}
-                          {calculateAge(fighterDetails.DOB) !== null && ` (Age: ${calculateAge(fighterDetails.DOB)})`}
+                          <strong>Born:</strong>{" "}
+                          {new Date(fighterDetails.DOB).toLocaleDateString()}
+                          {calculateAge(fighterDetails.DOB) !== null &&
+                            ` (Age: ${calculateAge(fighterDetails.DOB)})`}
                         </p>
                       )}
                       {/* Weight classes fought in (only known/named divisions) */}
                       {(() => {
-                        const wcs = Array.from(new Set(
-                          fighterHistory
-                            .map(f => normalizeWeightClass(f.WEIGHTCLASS))
-                            .filter(k => k && isKnownDivision(k))
-                        ));
+                        const wcs = Array.from(
+                          new Set(
+                            fighterHistory
+                              .map((f) => normalizeWeightClass(f.WEIGHTCLASS))
+                              .filter((k) => k && isKnownDivision(k)),
+                          ),
+                        );
 
                         // Sort by canonical weight-class order (lightest → heaviest)
                         wcs.sort((a, b) => {
@@ -534,7 +719,7 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                         if (!wcs.length) return null;
                         return (
                           <div className="flex flex-wrap justify-center gap-1 pt-1">
-                            {wcs.map(k => (
+                            {wcs.map((k) => (
                               <TooltipProvider key={k} delayDuration={200}>
                                 <Tooltip>
                                   <TooltipTrigger asChild>
@@ -546,7 +731,9 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                                       {abbreviateWeightClass(k)}
                                     </span>
                                   </TooltipTrigger>
-                                  <TooltipContent side="bottom">{wcLbsLabel(k)}</TooltipContent>
+                                  <TooltipContent side="bottom">
+                                    {wcLbsLabel(k)}
+                                  </TooltipContent>
                                 </Tooltip>
                               </TooltipProvider>
                             ))}
@@ -555,7 +742,9 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                       })()}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground mt-4">No detailed stats available.</p>
+                    <p className="text-sm text-muted-foreground mt-4">
+                      No detailed stats available.
+                    </p>
                   )}
                 </div>
 
@@ -564,97 +753,201 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                   {fighterHistory.length > 0 ? (
                     <ul className="space-y-1">
                       {fighterHistory.map((fight) => {
-                        const isTitleFight = fight.WEIGHTCLASS?.toLowerCase().includes('title') ?? false;
-                        const normalizedKey = normalizeWeightClass(fight.WEIGHTCLASS);
+                        const isTitleFight =
+                          (fight.WEIGHTCLASS?.toLowerCase().startsWith("ufc ") &&
+                            fight.WEIGHTCLASS?.toLowerCase().includes("title") &&
+                            !fight.EVENT?.toLowerCase().includes("ultimate fighter")) ??
+                          false;
+                        const isInterimTitle =
+                          fight.WEIGHTCLASS?.toLowerCase().includes(
+                            "interim",
+                          ) ?? false;
+                        const normalizedKey = normalizeWeightClass(
+                          fight.WEIGHTCLASS,
+                        );
                         const isNonStandard = !isKnownDivision(normalizedKey);
-                        const abbreviation = normalizedKey ? abbreviateWeightClass(normalizedKey) : null;
+                        const abbreviation = normalizedKey
+                          ? abbreviateWeightClass(normalizedKey)
+                          : null;
 
                         // Elo delta for this fight
-                        const eloEntryIdx = activeEloHistory?.findIndex(h => h.event === fight.EVENT) ?? -1;
-                        const eloEntry = eloEntryIdx >= 0 ? activeEloHistory![eloEntryIdx] : null;
-                        const prevElo = eloEntry?.eloBeforeFight !== undefined
-                          ? eloEntry.eloBeforeFight
-                          : (eloEntryIdx > 0 ? activeEloHistory![eloEntryIdx - 1].elo : 1500);
-                        const eloDelta = eloEntry ? eloEntry.elo - prevElo : null;
+                        const eloEntryIdx =
+                          activeEloHistory?.findIndex(
+                            (h) => h.event === fight.EVENT,
+                          ) ?? -1;
+                        const eloEntry =
+                          eloEntryIdx >= 0
+                            ? activeEloHistory![eloEntryIdx]
+                            : null;
+                        const prevElo =
+                          eloEntry?.eloBeforeFight !== undefined
+                            ? eloEntry.eloBeforeFight
+                            : eloEntryIdx > 0
+                              ? activeEloHistory![eloEntryIdx - 1].elo
+                              : 1500;
+                        const eloDelta = eloEntry
+                          ? eloEntry.elo - prevElo
+                          : null;
 
                         return (
                           <li
                             key={fight.id}
                             className={cn(
-                              'relative text-sm border-b border-border p-2 rounded-lg transition-colors duration-150 overflow-visible mb-2',
-                              (fight.resultForFighter === 'draw' || fight.resultForFighter === 'nc') &&
-                                'bg-gray-100 dark:bg-gray-800/30 border-gray-300 dark:border-gray-600',
-                              fight.resultForFighter === 'win' &&
-                                'bg-green-100 dark:bg-green-900/30 border-green-300 dark:border-green-700',
-                              fight.resultForFighter === 'loss' &&
-                                'bg-red-100 dark:bg-red-900/30 border-red-300 dark:border-red-700',
-                              fight.resultForFighter === 'unknown' && 'bg-muted/50',
-                              'hover:shadow-md cursor-pointer',
+                              "relative text-sm border-b border-border p-2 rounded-lg transition-colors duration-150 overflow-visible mb-2",
+                              (fight.resultForFighter === "draw" ||
+                                fight.resultForFighter === "nc") &&
+                                "bg-gray-100 dark:bg-gray-800/30 border-gray-300 dark:border-gray-600",
+                              fight.resultForFighter === "win" &&
+                                "bg-green-100 dark:bg-green-900/30 border-green-300 dark:border-green-700",
+                              fight.resultForFighter === "loss" &&
+                                "bg-red-100 dark:bg-red-900/30 border-red-300 dark:border-red-700",
+                              fight.resultForFighter === "unknown" &&
+                                "bg-muted/50",
+                              "hover:shadow-md cursor-pointer",
                             )}
-                            onClick={() => { if (fight.URL) window.open(fight.URL, '_blank', 'noopener,noreferrer'); }}
+                            onClick={() => {
+                              if (fight.URL)
+                                window.open(
+                                  fight.URL,
+                                  "_blank",
+                                  "noopener,noreferrer",
+                                );
+                            }}
                           >
                             <TooltipProvider>
-                              {isTitleFight && !fight.defenseOutcome && (
+                              {isTitleFight &&
+                                !fight.defenseOutcome &&
+                                !isInterimTitle && (
+                                  <Tooltip delayDuration={300}>
+                                    <TooltipTrigger asChild>
+                                      <Crown
+                                        size={16}
+                                        className="absolute -top-1 -left-2 text-yellow-500 dark:text-yellow-400 opacity-70 -rotate-45 z-10 cursor-help"
+                                      />
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      Title Fight
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              {isTitleFight &&
+                                !fight.defenseOutcome &&
+                                isInterimTitle && (
+                                  <Tooltip delayDuration={300}>
+                                    <TooltipTrigger asChild>
+                                      <Crown
+                                        size={16}
+                                        className="absolute -top-1 -left-2 text-slate-400 dark:text-slate-300 opacity-80 -rotate-45 z-10 cursor-help"
+                                      />
+                                    </TooltipTrigger>
+                                    <TooltipContent side="top">
+                                      Interim Title Fight
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                              {fight.defenseOutcome === "success" && (
                                 <Tooltip delayDuration={300}>
                                   <TooltipTrigger asChild>
-                                    <Crown size={16} className="absolute -top-1 -left-2 text-yellow-500 dark:text-yellow-400 opacity-70 -rotate-45 z-10 cursor-help" />
+                                    <ShieldCheck
+                                      size={18}
+                                      className="absolute -top-1 -left-2 text-blue-500 dark:text-blue-400 opacity-100 -rotate-45 z-10 cursor-help"
+                                    />
                                   </TooltipTrigger>
-                                  <TooltipContent side="top">Title Fight</TooltipContent>
+                                  <TooltipContent side="top">
+                                    Successful Title Defense
+                                  </TooltipContent>
                                 </Tooltip>
                               )}
-                              {fight.defenseOutcome === 'success' && (
+                              {fight.defenseOutcome === "fail" && (
                                 <Tooltip delayDuration={300}>
                                   <TooltipTrigger asChild>
-                                    <ShieldCheck size={18} className="absolute -top-1 -left-2 text-blue-500 dark:text-blue-400 opacity-100 -rotate-45 z-10 cursor-help" />
+                                    <ShieldOff
+                                      size={18}
+                                      className="absolute -top-1 -left-2 text-red-500 dark:text-red-400 opacity-100 -rotate-45 z-10 cursor-help"
+                                    />
                                   </TooltipTrigger>
-                                  <TooltipContent side="top">Successful Title Defense</TooltipContent>
-                                </Tooltip>
-                              )}
-                              {fight.defenseOutcome === 'fail' && (
-                                <Tooltip delayDuration={300}>
-                                  <TooltipTrigger asChild>
-                                    <ShieldOff size={18} className="absolute -top-1 -left-2 text-red-500 dark:text-red-400 opacity-100 -rotate-45 z-10 cursor-help" />
-                                  </TooltipTrigger>
-                                  <TooltipContent side="top">Lost Title Defense</TooltipContent>
+                                  <TooltipContent side="top">
+                                    Lost Title Defense
+                                  </TooltipContent>
                                 </Tooltip>
                               )}
                             </TooltipProvider>
 
                             <div className="flex justify-between items-center mb-1 pr-1">
                               <div className="flex items-center">
-                                <span className={cn(
-                                  'font-semibold mr-2 px-1.5 py-0.5 rounded text-xs uppercase',
-                                  fight.resultForFighter === 'win' && 'bg-green-600 text-white',
-                                  fight.resultForFighter === 'loss' && 'bg-red-600 text-white',
-                                  (fight.resultForFighter === 'draw' || fight.resultForFighter === 'nc') && 'bg-gray-500 text-white',
-                                  fight.resultForFighter === 'unknown' && 'bg-gray-400 text-white',
-                                )}>
-                                  {fight.resultForFighter === 'draw' ? 'DRAW' : fight.resultForFighter === 'nc' ? 'NC' : fight.resultForFighter}
+                                <span
+                                  className={cn(
+                                    "font-semibold mr-2 px-1.5 py-0.5 rounded text-xs uppercase",
+                                    fight.resultForFighter === "win" &&
+                                      "bg-green-600 text-white",
+                                    fight.resultForFighter === "loss" &&
+                                      "bg-red-600 text-white",
+                                    (fight.resultForFighter === "draw" ||
+                                      fight.resultForFighter === "nc") &&
+                                      "bg-gray-500 text-white",
+                                    fight.resultForFighter === "unknown" &&
+                                      "bg-gray-400 text-white",
+                                  )}
+                                >
+                                  {fight.resultForFighter === "draw"
+                                    ? "DRAW"
+                                    : fight.resultForFighter === "nc"
+                                      ? "NC"
+                                      : fight.resultForFighter}
                                 </span>
                                 <span>vs. </span>
                                 <button
                                   className="font-bold hover:underline text-primary ml-1 cursor-pointer"
-                                  onClick={(e) => { e.stopPropagation(); setSelectedOpponent(fight.OPPONENT || ''); }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedOpponent(fight.OPPONENT || "");
+                                  }}
                                 >
-                                  {fight.OPPONENT || 'Opponent Unknown'}
+                                  {fight.OPPONENT || "Opponent Unknown"}
                                 </button>
                                 {eloDelta !== null ? (
-                                  <span className="inline-flex items-center ml-2 gap-1" style={{ minWidth: '2rem' }}>
-                                    <span className={`text-xs font-semibold ${eloDelta >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                                      {eloDelta >= 0 ? `+${eloDelta}` : String(eloDelta)}
+                                  <span
+                                    className="inline-flex items-center ml-2 gap-1"
+                                    style={{ minWidth: "2rem" }}
+                                  >
+                                    <span
+                                      className={`text-xs font-semibold ${eloDelta >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}
+                                    >
+                                      {eloDelta >= 0
+                                        ? `+${eloDelta}`
+                                        : String(eloDelta)}
                                     </span>
-                                    <span className="text-[10px] text-muted-foreground">({eloEntry!.elo})</span>
+                                    <span className="text-[10px] text-muted-foreground">
+                                      ({eloEntry!.elo})
+                                    </span>
                                   </span>
                                 ) : !hideElo && fetchingElo ? (
-                                  <span className="inline-flex items-center gap-0.5 ml-2 text-xs" style={{ minWidth: '2rem' }}>
-                                    <span className={fight.resultForFighter === 'win' ? 'text-green-600 dark:text-green-400' : fight.resultForFighter === 'loss' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}>
-                                      {fight.resultForFighter === 'win' ? '+' : fight.resultForFighter === 'loss' ? '−' : ''}
+                                  <span
+                                    className="inline-flex items-center gap-0.5 ml-2 text-xs"
+                                    style={{ minWidth: "2rem" }}
+                                  >
+                                    <span
+                                      className={
+                                        fight.resultForFighter === "win"
+                                          ? "text-green-600 dark:text-green-400"
+                                          : fight.resultForFighter === "loss"
+                                            ? "text-red-600 dark:text-red-400"
+                                            : "text-muted-foreground"
+                                      }
+                                    >
+                                      {fight.resultForFighter === "win"
+                                        ? "+"
+                                        : fight.resultForFighter === "loss"
+                                          ? "−"
+                                          : ""}
                                     </span>
                                     <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground" />
                                   </span>
                                 ) : null}
                               </div>
-                              <span className="text-xs text-muted-foreground text-right max-w-[45%] leading-tight">{fight.EVENT}</span>
+                              <span className="text-xs text-muted-foreground text-right max-w-[45%] leading-tight">
+                                {fight.EVENT}
+                              </span>
                             </div>
 
                             <div className="flex justify-between items-baseline pr-1 mt-0.5">
@@ -663,32 +956,51 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                                 {fight.ROUND && ` | Rd: ${fight.ROUND}`}
                                 {fight.TIME && ` | Time: ${fight.TIME}`}
                               </p>
-                              {fight.EVENT && (eventDates[fight.EVENT] || eventDates[fight.EVENT.toLowerCase().trim()]) && (
-                                <TooltipProvider>
-                                  <Tooltip delayDuration={300}>
-                                    <TooltipTrigger asChild>
-                                      <span className="text-xs text-muted-foreground/60 text-right leading-tight flex-shrink-0 ml-2 cursor-help">
-                                        {eventDates[fight.EVENT] || eventDates[fight.EVENT.toLowerCase().trim()]}
-                                      </span>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="left">
-                                      {humanDuration(diffInDays(
-                                        parseLocalDate(eventDates[fight.EVENT] || eventDates[fight.EVENT.toLowerCase().trim()]),
-                                        new Date()
-                                      ))} ago
-                                    </TooltipContent>
-                                  </Tooltip>
-                                </TooltipProvider>
-                              )}
+                              {fight.EVENT &&
+                                (eventDates[fight.EVENT] ||
+                                  eventDates[
+                                    fight.EVENT.toLowerCase().trim()
+                                  ]) && (
+                                  <TooltipProvider>
+                                    <Tooltip delayDuration={300}>
+                                      <TooltipTrigger asChild>
+                                        <span className="text-xs text-muted-foreground/60 text-right leading-tight flex-shrink-0 ml-2 cursor-help">
+                                          {eventDates[fight.EVENT] ||
+                                            eventDates[
+                                              fight.EVENT.toLowerCase().trim()
+                                            ]}
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="left">
+                                        {humanDuration(
+                                          diffInDays(
+                                            parseLocalDate(
+                                              eventDates[fight.EVENT] ||
+                                                eventDates[
+                                                  fight.EVENT.toLowerCase().trim()
+                                                ],
+                                            ),
+                                            new Date(),
+                                          ),
+                                        )}{" "}
+                                        ago
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                )}
                             </div>
 
                             <div className="flex justify-between items-baseline pr-1">
                               <div className="flex-1">
                                 {fight.decisionDetails && (
-                                  <p className="text-xs text-muted-foreground italic mt-0.5">{fight.decisionDetails}</p>
+                                  <p className="text-xs text-muted-foreground italic mt-0.5">
+                                    {fight.decisionDetails}
+                                  </p>
                                 )}
                                 {fight.DETAILS && (
-                                  <p className="text-xs text-muted-foreground mt-0.5">{fight.DETAILS}</p>
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    {fight.DETAILS}
+                                  </p>
                                 )}
                               </div>
                               {abbreviation && (
@@ -696,12 +1008,18 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                                   <Tooltip delayDuration={300}>
                                     <TooltipTrigger asChild>
                                       <span
-                                      className={cn(
-                                        "text-[10px] font-semibold uppercase px-1 rounded-[3px] cursor-help mt-0.5 flex-shrink-0 ml-2",
-                                        isNonStandard ? "bg-muted text-muted-foreground border border-border" : ""
-                                      )}
-                                      style={!isNonStandard ? wcBadgeStyle(normalizedKey) : {}}
-                                    >
+                                        className={cn(
+                                          "text-[10px] font-semibold uppercase px-1 rounded-[3px] cursor-help mt-0.5 flex-shrink-0 ml-2",
+                                          isNonStandard
+                                            ? "bg-muted text-muted-foreground border border-border"
+                                            : "",
+                                        )}
+                                        style={
+                                          !isNonStandard
+                                            ? wcBadgeStyle(normalizedKey)
+                                            : {}
+                                        }
+                                      >
                                         {abbreviation}
                                       </span>
                                     </TooltipTrigger>
@@ -717,7 +1035,9 @@ export function FighterDetailsModal({ champion, onClose, onBack, eloLookup, hide
                       })}
                     </ul>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No fight history found or data unavailable.</p>
+                    <p className="text-sm text-muted-foreground">
+                      No fight history found or data unavailable.
+                    </p>
                   )}
                 </div>
               </>

@@ -111,28 +111,39 @@ function inactivityDecayMultiplier(
 /* ------------------------------------------------------------------ */
 function normalizeWeightClass(raw: string | null): string {
   if (!raw) return "unknown";
-  let normalized = raw
+  const cleaned = raw
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/(ultimate\s*fighter\s*\d*\s*)/g, "")
-    .replace(/(tournament\s*)/g, "")
-    .replace(/(title|championship|bout|world|undisputed|interim)/g, "")
+    .replace(/ultimate\s*fighter[\s\d]*/g, "")
+    .replace(/\btournament\b/g, "")
+    .replace(/\b(title|championship|bout|world|undisputed|interim)\b/g, "")
     .replace(/^ufc\s*/, "")
-    .replace(/women'?s?\s*/g, "women_")
     .trim();
 
-  // Simple keyword matching for standard classes
-  if (normalized.includes("lightheavyweight")) return "lightheavyweight";
-  if (normalized.includes("heavyweight")) return "heavyweight";
-  if (normalized.includes("middleweight")) return "middleweight";
-  if (normalized.includes("welterweight")) return "welterweight";
-  if (normalized.includes("lightweight")) return "lightweight";
-  if (normalized.includes("featherweight")) return "featherweight";
-  if (normalized.includes("bantamweight")) return "bantamweight";
-  if (normalized.includes("flyweight")) return "flyweight";
+  // Check women's classes FIRST — must happen before any men's class check
+  // to avoid "women's flyweight" matching the "flyweight" keyword below.
+  if (/womens?|woman/.test(cleaned)) {
+    if (/bantam/.test(cleaned)) return "women_bantamweight";
+    if (/feather/.test(cleaned)) return "women_featherweight";
+    if (/fly/.test(cleaned)) return "women_flyweight";
+    if (/straw/.test(cleaned)) return "women_strawweight";
+  }
 
-  return normalized.replace(/\s+/g, "") || "unknown";
+  // Men's classes — use regex to handle spaced forms like "light heavyweight".
+  // light heavyweight MUST come before heavyweight.
+  if (/light\s*heavy/.test(cleaned)) return "lightheavyweight";
+  if (/heavy/.test(cleaned)) return "heavyweight";
+  if (/middle/.test(cleaned)) return "middleweight";
+  if (/welter/.test(cleaned)) return "welterweight";
+  // lightweight MUST come after light heavyweight (already returned above).
+  if (/light/.test(cleaned)) return "lightweight";
+  if (/feather/.test(cleaned)) return "featherweight";
+  if (/bantam/.test(cleaned)) return "bantamweight";
+  if (/fly/.test(cleaned)) return "flyweight";
+
+  // Fallback: collapse all spaces
+  return cleaned.replace(/\s+/g, "") || "unknown";
 }
 
 /* Map normalised key → display name */
@@ -352,9 +363,10 @@ export async function GET(request: Request) {
         divTracker[fighterB].wc !== wc &&
         divTracker[fighterB].count >= 3
       );
-      const isTitleFight = (fight.WEIGHTCLASS || "")
-        .toLowerCase()
-        .includes("title");
+      const isTitleFight =
+        (fight.WEIGHTCLASS || "").toLowerCase().startsWith("ufc ") &&
+        (fight.WEIGHTCLASS || "").toLowerCase().includes("title") &&
+        !(fight.EVENT || "").toLowerCase().includes("ultimate fighter");
       const titleMult = isTitleFight ? 1.5 : 1.0;
       const kA = Math.round(
         getK(fightCounts[fighterA]) *

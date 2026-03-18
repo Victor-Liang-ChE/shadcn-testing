@@ -30,6 +30,7 @@ import {
   User,
   Loader2,
   Activity,
+  Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabaseClient";
@@ -328,6 +329,7 @@ export default function UfcEloPage() {
 
   // Refs for baseline-hover cursor tracking
   const chartRef = useRef<ReactECharts>(null);
+  const distChartRef = useRef<ReactECharts>(null);
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const cursorDataYRef = useRef<number | null>(null);
 
@@ -461,25 +463,12 @@ export default function UfcEloPage() {
   // Lock page scroll in single-view modes
   useEffect(() => {
     if (viewMode !== "both") {
-      document.documentElement.style.overflow = "hidden";
       document.body.style.overflow = "hidden";
-      // Also lock the layout's scrollable main container
-      const layoutMain =
-        document.querySelector<HTMLElement>("body > div > main");
-      if (layoutMain) layoutMain.style.overflow = "hidden";
     } else {
-      document.documentElement.style.overflow = "";
       document.body.style.overflow = "";
-      const layoutMain =
-        document.querySelector<HTMLElement>("body > div > main");
-      if (layoutMain) layoutMain.style.overflow = "";
     }
     return () => {
-      document.documentElement.style.overflow = "";
       document.body.style.overflow = "";
-      const layoutMain =
-        document.querySelector<HTMLElement>("body > div > main");
-      if (layoutMain) layoutMain.style.overflow = "";
     };
   }, [viewMode]);
 
@@ -850,6 +839,34 @@ export default function UfcEloPage() {
     return () => ro.disconnect();
   }, [viewMode, displayFighters.length]);
 
+  const handleDownloadChart = useCallback(() => {
+    const chart = chartRef.current?.getEchartsInstance?.();
+    if (!chart) return;
+    const url = chart.getDataURL({
+      type: "png",
+      pixelRatio: 2,
+      backgroundColor: isDark ? "#0f172a" : "#ffffff",
+    });
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "ufc-elo-chart.png";
+    a.click();
+  }, [isDark]);
+
+  const handleDownloadDistChart = useCallback(() => {
+    const chart = distChartRef.current?.getEchartsInstance?.();
+    if (!chart) return;
+    const url = chart.getDataURL({
+      type: "png",
+      pixelRatio: 2,
+      backgroundColor: isDark ? "#0f172a" : "#ffffff",
+    });
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "ufc-elo-distribution.png";
+    a.click();
+  }, [isDark]);
+
   const handleSort = (col: SortCol) => {
     if (sortCol === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
     else {
@@ -1164,14 +1181,22 @@ export default function UfcEloPage() {
         },
       },
       grid: {
-        top: 8,
-        bottom: viewMode === "chart" ? 50 : 28,
-        left: "4%",
-        right: "40px",
-        containLabel: true,
+        top: 35,
+        bottom: 45,
+        left: 80,
+        right: 45,
+        containLabel: false,
       },
       xAxis: {
         type: "time",
+        name: "Time",
+        nameLocation: "middle",
+        nameGap: 30,
+        nameTextStyle: {
+          color: textColor,
+          fontSize: 12,
+          fontFamily: "Merriweather Sans",
+        },
         axisLine: { show: true, lineStyle: { color: textColor } },
         axisTick: {
           show: true,
@@ -1188,6 +1213,14 @@ export default function UfcEloPage() {
       },
       yAxis: {
         type: "value",
+        name: "Elo Rating",
+        nameLocation: "middle",
+        nameGap: 65,
+        nameTextStyle: {
+          color: textColor,
+          fontSize: 12,
+          fontFamily: "Merriweather Sans",
+        },
         axisLine: { show: true, lineStyle: { color: textColor } },
         axisTick: {
           show: true,
@@ -1197,11 +1230,18 @@ export default function UfcEloPage() {
         },
         axisLabel: {
           color: textColor,
-          fontSize: 11,
+          fontSize: 14,
           fontFamily: "Merriweather Sans",
+          margin: 16,
         },
-        splitLine: { show: false },
+        splitLine: {
+          show: true,
+          lineStyle: {
+            color: isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)",
+          },
+        },
         min: yMin,
+        minInterval: 50,
       },
       color: PALETTE,
       series: [...series, baselineSeries] as any[],
@@ -1278,7 +1318,7 @@ export default function UfcEloPage() {
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: { top: 52, bottom: 60, left: 58, right: 24 },
+      grid: { top: 40, bottom: 65, left: 85, right: 40, containLabel: false },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
@@ -1325,13 +1365,14 @@ export default function UfcEloPage() {
         nameGap: 32,
         nameTextStyle: {
           color: textColor,
-          fontSize: 12,
+          fontSize: 14,
           fontFamily: "Merriweather Sans",
         },
         axisLabel: {
           color: textColor,
-          fontSize: 11,
+          fontSize: 14,
           fontFamily: "Merriweather Sans",
+          margin: 16,
         },
         axisLine: {
           show: true,
@@ -1344,6 +1385,8 @@ export default function UfcEloPage() {
       yAxis: {
         type: "value",
         name: "Fighters",
+        nameLocation: "middle",
+        nameGap: 50,
         nameTextStyle: {
           color: textColor,
           fontSize: 12,
@@ -1362,6 +1405,7 @@ export default function UfcEloPage() {
           lineStyle: { color: isDark ? "#374151" : "#f3f4f6", type: "dashed" },
         },
         max: Math.ceil(maxY * 1.15),
+        minInterval: 1,
       },
       series: [
         {
@@ -1534,9 +1578,7 @@ export default function UfcEloPage() {
                     )}
                     {tott?.height && (
                       <div>
-                        <span className="font-medium text-[10px]">
-                          Height:
-                        </span>{" "}
+                        <span className="font-medium text-[10px]">Height:</span>{" "}
                         {tott.height}
                       </div>
                     )}
@@ -1631,13 +1673,13 @@ export default function UfcEloPage() {
       className={`flex flex-col px-4 md:px-12 w-full max-w-screen-2xl mx-auto ${
         viewMode === "both" && !searchQuery
           ? "pt-3 pb-12 items-center"
-          : "h-full overflow-hidden pt-3 pb-0"
+          : "h-[calc(100vh-80px)] pt-3 pb-0"
       }`}
     >
       {/* Top header row: view buttons LEFT (‘Both’ first), division pills (table), search RIGHT */}
-      <div className="w-full flex items-center gap-2 mb-2 flex-shrink-0">
+      <div className="w-full flex items-center mb-2 flex-shrink-0 relative h-10">
         <TooltipProvider delayDuration={0}>
-          <div className="flex gap-1 flex-shrink-0">
+          <div className="flex gap-1 flex-shrink-0 z-10">
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -1688,7 +1730,7 @@ export default function UfcEloPage() {
         {/* Division pills — all modes, hidden when searching */}
         {!searchQuery && (
           <div
-            className="flex-1 flex gap-1 justify-center overflow-x-auto min-w-0"
+            className="absolute left-1/2 -translate-x-1/2 flex gap-1 justify-center overflow-x-auto max-w-[calc(100%-400px)] pointer-events-auto"
             style={{ scrollbarWidth: "none" }}
           >
             <button
@@ -1722,7 +1764,7 @@ export default function UfcEloPage() {
         {searchQuery && <div className="flex-1" />}
 
         {/* Active toggle + Search bar — RIGHT */}
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="ml-auto flex items-center gap-1 flex-shrink-0 z-10">
           <button
             onClick={() => setActiveOnly((prev) => !prev)}
             className={cn(
@@ -1768,10 +1810,10 @@ export default function UfcEloPage() {
           {/* Chart Card */}
           {(viewMode === "chart" || viewMode === "both") && (
             <Card
-              className={`w-full ${viewMode === "both" ? "mb-6" : ""} ${viewMode === "chart" ? "flex-1 min-h-0 flex flex-col overflow-hidden" : ""}`}
+              className={`w-full ${viewMode === "both" ? "mb-6" : "h-full"}`}
             >
               <CardContent
-                className={`p-1.5 md:p-1 ${viewMode === "chart" ? "flex-1 min-h-0 flex flex-col overflow-hidden" : ""}`}
+                className={`p-1.5 md:p-1 ${viewMode !== "both" ? "h-full flex flex-col" : ""}`}
               >
                 {/* Title */}
                 <div className="flex items-center justify-center mb-1">
@@ -1808,7 +1850,7 @@ export default function UfcEloPage() {
                 {/* Chart */}
                 <div
                   ref={chartContainerRef}
-                  className={`flex justify-center w-full${viewMode === "chart" ? " flex-1 min-h-0" : ""}`}
+                  className={`relative flex justify-center w-full${viewMode === "chart" ? " flex-1 min-h-0" : ""}`}
                   onMouseMove={handleChartMouseMove}
                   onMouseLeave={handleChartMouseLeave}
                 >
@@ -1817,19 +1859,28 @@ export default function UfcEloPage() {
                     option={chartOption}
                     style={{
                       width: "100%",
-                      height: viewMode === "chart" ? "100%" : "480px",
+                      height:
+                        viewMode !== "both" ? "calc(100% - 20px)" : "520px",
                     }}
                     notMerge
                     lazyUpdate
                     onEvents={chartEvents}
                     onChartReady={handleChartReady}
                   />
+                  {displayFighters.length > 0 && (
+                    <button
+                      onClick={handleDownloadChart}
+                      className="absolute bottom-1 right-1 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download chart as PNG"
+                    >
+                      <Download className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
 
-                {/* HTML legend — hidden in chart-only mode */}
-                {viewMode !== "chart" && (
-                  <div className="flex flex-wrap justify-center gap-x-4 gap-y-1.5 pt-2 pb-1">
-                    {displayFighters.map((f, i) => {
+                {/* HTML legend */}
+                <div className="flex flex-wrap justify-center gap-x-4 gap-y-1.5 pt-2 pb-1 overflow-y-auto max-h-[120px] flex-shrink-0">
+                  {displayFighters.map((f, i) => {
                       const isActive =
                         lockedFighter === null || lockedFighter === f.name;
                       const lgKey = f.name
@@ -1974,7 +2025,6 @@ export default function UfcEloPage() {
                       );
                     })}
                   </div>
-                )}
               </CardContent>
             </Card>
           )}
@@ -2310,21 +2360,34 @@ export default function UfcEloPage() {
 
           {/* Elo Distribution view */}
           {viewMode === "distribution" && (
-            <Card className="w-full flex-1 min-h-0 flex flex-col overflow-hidden">
-              <CardContent className="p-3 md:p-4 flex-1 min-h-0 flex flex-col gap-2 overflow-y-auto">
+            <Card className="w-full h-full">
+              <CardContent className="p-3 md:p-4 h-full flex flex-col gap-2">
                 {/* Title */}
                 <div className="flex items-center justify-center">
                   <span className="font-bold text-base">Elo Distribution</span>
                 </div>
 
                 {/* Histogram chart */}
-                <div className="flex-1 min-h-0" style={{ minHeight: 240 }}>
+                <div
+                  className="relative"
+                  style={{ height: "calc(100% - 140px)" }}
+                >
                   <ReactECharts
+                    ref={distChartRef}
                     option={distChartOption}
                     style={{ width: "100%", height: "100%" }}
                     notMerge
                     onEvents={distChartEvents}
                   />
+                  {distStats && (
+                    <button
+                      onClick={handleDownloadDistChart}
+                      className="absolute bottom-2 right-2 z-10 p-1.5 rounded bg-background/80 hover:bg-background border border-border text-muted-foreground hover:text-foreground transition-colors"
+                      title="Download chart as PNG"
+                    >
+                      <Download className="h-4 w-4" />
+                    </button>
+                  )}
                 </div>
 
                 {/* Legend */}
