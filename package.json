@@ -97,19 +97,20 @@
   "overrides": {
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
-    "tar": "7.5.10",
+    "tar": "7.5.11",
     "fast-xml-parser": "5.3.6",
     "immutable": "5.1.5",
-    "undici": "7.18.2"
+    "undici": "7.24.0"
   },
   "pnpm": {
     "overrides": {
       "@types/react": "19.2.7",
       "@types/react-dom": "19.2.3",
-      "tar": "7.5.10",
+      "tar": "7.5.11",
       "fast-xml-parser": "5.3.6",
       "immutable": "5.1.5",
-      "rollup": "4.59.0"
+      "rollup": "4.59.0",
+      "undici": "7.24.0"
     }
   }
 }
