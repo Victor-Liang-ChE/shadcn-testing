@@ -1265,6 +1265,20 @@ export default function UfcEloPage() {
     );
   }, [data, selectedDivision, activeOnly]);
 
+  const globalEloLimits = useMemo(() => {
+    if (!data?.allFighters) return { min: 1200, max: 2000 };
+    let pool = data.allFighters;
+    if (activeOnly) {
+      const cutoff = Date.now() - TWO_YEARS_MS;
+      pool = pool.filter(
+        (f) => f.lastFightDate && new Date(f.lastFightDate).getTime() >= cutoff,
+      );
+    }
+    if (pool.length === 0) return { min: 1200, max: 2000 };
+    const elos = pool.map((f) => f.currentElo);
+    return { min: Math.min(...elos), max: Math.max(...elos) };
+  }, [data, activeOnly]);
+
   const distStats = useMemo(() => {
     if (allFightersForDist.length === 0) return null;
     const elos = [...allFightersForDist.map((f) => f.currentElo)].sort(
@@ -1297,8 +1311,8 @@ export default function UfcEloPage() {
     if (!distStats) return {};
     const BIN = DIST_BIN;
     const { elos, mean, median, std } = distStats;
-    const start = Math.floor(elos[0] / BIN) * BIN;
-    const end = Math.ceil((elos[elos.length - 1] + 1) / BIN) * BIN;
+    const start = Math.floor(globalEloLimits.min / BIN) * BIN;
+    const end = Math.ceil((globalEloLimits.max + 1) / BIN) * BIN;
     const barXs: number[] = [];
     const barYs: number[] = [];
     for (let lo = start; lo < end; lo += BIN) {
@@ -1362,7 +1376,7 @@ export default function UfcEloPage() {
         type: "value",
         name: "Elo Rating",
         nameLocation: "middle",
-        nameGap: 32,
+        nameGap: 45,
         nameTextStyle: {
           color: textColor,
           fontSize: 14,
@@ -1372,7 +1386,9 @@ export default function UfcEloPage() {
           color: textColor,
           fontSize: 14,
           fontFamily: "Merriweather Sans",
-          margin: 16,
+          margin: 24,
+          showMinLabel: false,
+          showMaxLabel: false,
         },
         axisLine: {
           show: true,
@@ -2364,14 +2380,13 @@ export default function UfcEloPage() {
               <CardContent className="p-3 md:p-4 h-full flex flex-col gap-2">
                 {/* Title */}
                 <div className="flex items-center justify-center">
-                  <span className="font-bold text-base">Elo Distribution</span>
+                  <span className="font-bold text-base">
+                    {divisionLabel} Elo Distribution
+                  </span>
                 </div>
 
                 {/* Histogram chart */}
-                <div
-                  className="relative"
-                  style={{ height: "calc(100% - 140px)" }}
-                >
+                <div className="relative flex-1 min-h-0">
                   <ReactECharts
                     ref={distChartRef}
                     option={distChartOption}

@@ -109,6 +109,9 @@ function Navbar() {
       case "/misc/ufc-elo":
           return "UFC Elo Ratings";
 
+      case "/misc/ufc-predictions":
+          return "UFC Predictions";
+
       case "/misc/csv-to-plot":
           return "Fast .csv Plotter";
 

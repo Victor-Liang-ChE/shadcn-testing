@@ -8,6 +8,7 @@ const pageDescription = "Just a collection of various side projects, tools, and 
 
 export default function Page() {
 const projects = [
+    { name: "UFC Predictions", path: "/misc/ufc-predictions" },
     { name: "UFC Elo Ratings", path: "/misc/ufc-elo" },
     { name: "UFC Championship Lineage", path: "/misc/ufc-champions" },
     { name: "Drop Chance", path: "/misc/drop-chance" },
