@@ -8,15 +8,9 @@ import {
   type EventPrediction,
 } from '@/lib/ufc-model'
 
-// Bundled model JSONs — used as fallback if Supabase Storage is unavailable
-import cbModelBundle from '@/data/ufc-model-catboost.json'
-import lgModelBundle from '@/data/ufc-model-lightgbm.json'
-import modelMetaBundle from '@/data/ufc-model-meta.json'
-
-// ─── Supabase Storage model cache ───
-// Models are fetched from the 'ufc-models' bucket, cached in memory for 1 hour.
-// If the bucket doesn’t exist yet, falls back to the bundled JSON files.
-const MODEL_CACHE_TTL_MS = 60 * 60 * 1000  // 1 hour
+// ─── Constants ───
+const BUCKET = 'ufc-models'
+const MODEL_CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
 
 interface ModelMeta {
   features: string[]
@@ -24,11 +18,12 @@ interface ModelMeta {
   training_rows: number
 }
 
+// ─── Global Cache ───
 let modelCache: {
-  cb: Parameters<typeof predictFight>[0]
-  lg: Parameters<typeof predictFight>[1]
+  cb: any
+  lg: any
   meta: ModelMeta
-  source: 'storage' | 'bundle'
+  source: 'storage'
   expiresAt: number
 } | null = null
 
@@ -38,42 +33,36 @@ async function loadModels(
   if (modelCache && Date.now() < modelCache.expiresAt) return modelCache
 
   try {
-    const bucket = 'ufc-models'
+    // Attempt download from Supabase Storage — no local JSON files anymore
     const [cbRes, lgRes, metaRes] = await Promise.all([
-      supabase.storage.from(bucket).download('model_catboost.json'),
-      supabase.storage.from(bucket).download('model_lightgbm.json'),
-      supabase.storage.from(bucket).download('model_meta.json'),
+      supabase.storage.from(BUCKET).download('ufc-model-catboost.json'),
+      supabase.storage.from(BUCKET).download('ufc-model-lightgbm.json'),
+      supabase.storage.from(BUCKET).download('ufc-model-meta.json'),
     ])
 
     if (cbRes.error || !cbRes.data || lgRes.error || !lgRes.data || metaRes.error || !metaRes.data) {
-      throw new Error('storage unavailable')
+      console.error('Model download failed:', { cb: cbRes.error, lg: lgRes.error, meta: metaRes.error })
+      throw new Error('Supabase Storage models unavailable')
     }
 
-    const [cb, lg, meta] = (await Promise.all([
-      cbRes.data.text(),
-      lgRes.data.text(),
-      metaRes.data.text(),
-    ])).map((t) => JSON.parse(t))
+    const [cb, lg, meta] = await Promise.all([
+      cbRes.data.text().then(JSON.parse),
+      lgRes.data.text().then(JSON.parse),
+      metaRes.data.text().then(JSON.parse),
+    ])
 
     modelCache = {
-      cb: cb as Parameters<typeof predictFight>[0],
-      lg: lg as Parameters<typeof predictFight>[1],
-      meta: meta as ModelMeta,
-      source: 'storage',
+      cb,
+      lg,
+      meta,
+      source: 'storage', // Always 'storage' now that we removed local bundles
       expiresAt: Date.now() + MODEL_CACHE_TTL_MS,
     }
-  } catch {
-    // Fall back to bundled files — still works before bucket is created
-    modelCache = {
-      cb: cbModelBundle as unknown as Parameters<typeof predictFight>[0],
-      lg: lgModelBundle as unknown as Parameters<typeof predictFight>[1],
-      meta: modelMetaBundle as ModelMeta,
-      source: 'bundle',
-      expiresAt: Date.now() + MODEL_CACHE_TTL_MS,
-    }
+    return modelCache
+  } catch (err) {
+    console.error('Error loading models:', err)
+    throw err // Re-throw so the API returns a 500 until storage is fixed
   }
-
-  return modelCache
 }
 
 /** Paginated fetch from Supabase (1000 rows per page) */
