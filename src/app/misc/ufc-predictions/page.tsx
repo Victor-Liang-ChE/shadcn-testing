@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Tooltip,
@@ -288,6 +288,10 @@ function Sparkline({
   const maxVal = Math.max(...americans)
   const range = maxVal - minVal || 1
 
+  const minTime = points[0].timestamp
+  const maxTime = points[points.length - 1].timestamp
+  const timeRange = maxTime - minTime || 1
+
   const lp = showAxes ? 36 : 2
   const rp = 2
   const tp = showAxes ? 8 : 2
@@ -295,8 +299,8 @@ function Sparkline({
   const cW = W - lp - rp
   const cH = height - tp - bp
 
-  const pts = points.map((p, i) => ({
-    x: lp + (i / (points.length - 1)) * cW,
+  const pts = points.map((p) => ({
+    x: lp + ((p.timestamp - minTime) / timeRange) * cW,
     y: tp + (1 - (p.american - minVal) / range) * cH,
     ...p,
   }))
@@ -308,16 +312,26 @@ function Sparkline({
   const yFormatter = formatY ?? formatOdds
 
   const handleMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
-    if (!svgRef.current) return
+    if (!svgRef.current || pts.length < 2) return
     const ctm = svgRef.current.getScreenCTM()
     if (!ctm) return
     const svgX = (e.clientX - ctm.e) / ctm.a
     const clampedX = Math.max(lp, Math.min(lp + cW, svgX))
-    const frac = Math.max(0, Math.min(1, (clampedX - lp) / cW))
-    const idx = Math.round(frac * (pts.length - 1))
-    setHoverState({ idx, x: clampedX })
-    onHoverChange?.(points[idx])
-  }, [pts.length, cW, lp, onHoverChange, points])
+    
+    // Find closest point by x coordinate (since points are now non-linearly spaced index-wise)
+    let closestIdx = 0
+    let minIdxDist = Infinity
+    for (let i = 0; i < pts.length; i++) {
+      const dist = Math.abs(pts[i].x - clampedX)
+      if (dist < minIdxDist) {
+        minIdxDist = dist
+        closestIdx = i
+      }
+    }
+
+    setHoverState({ idx: closestIdx, x: pts[closestIdx].x })
+    onHoverChange?.(points[closestIdx])
+  }, [pts, cW, lp, onHoverChange, points])
 
   const hPt = hoverState !== null ? pts[hoverState.idx] : null
 
@@ -380,11 +394,19 @@ function PerBookOdds({
   const rAvgOdds = rVals.length > 0 ? Math.round(rVals.reduce((a, b) => a + b) / rVals.length) : null
   const bAvgOdds = bVals.length > 0 ? Math.round(bVals.reduce((a, b) => a + b) / bVals.length) : null
 
+  // DB stores compact { t, d, a } — normalise to the full OddsPoint shape used by the UI
+  const normalise = (raw: any[]): OddsPoint[] =>
+    raw.map((p) => ({
+      timestamp: p.timestamp ?? p.t,
+      decimal: p.decimal ?? p.d,
+      american: p.american ?? p.a,
+    }))
+
   const getPoints = (book: string, side: 'r' | 'b'): OddsPoint[] | null => {
     const evo = side === 'r' ? rEvolution : bEvolution
     if (!evo) return null
-    if (book === '__avg__') return (evo.mean?.length ?? 0) > 0 ? evo.mean : null
-    return (evo.per_book[book]?.length ?? 0) > 0 ? evo.per_book[book] : null
+    if (book === '__avg__') return (evo.mean?.length ?? 0) > 0 ? normalise(evo.mean) : null
+    return (evo.per_book[book]?.length ?? 0) > 0 ? normalise(evo.per_book[book]) : null
   }
 
   const rLast = rFighter.split(' ').pop() ?? rFighter
@@ -1322,12 +1344,50 @@ function StatCard({
 function LoadingSkeleton() {
   return (
     <div className="space-y-6">
-      {Array.from({ length: 3 }).map((_, i) => (
-        <div key={i} className="space-y-2">
-          <Skeleton className="h-10 rounded-lg" />
-          {Array.from({ length: 4 }).map((_, j) => (
-            <Skeleton key={j} className="h-16 rounded-lg" />
-          ))}
+      {Array.from({ length: 2 }).map((_, i) => (
+        <div key={i} className="rounded-xl overflow-hidden border border-border bg-card">
+          {/* Event Header Skeleton */}
+          <div className="px-4 py-4 border-b border-border/50 bg-card/50 flex justify-between items-center">
+            <div className="space-y-2">
+              <Skeleton className="h-6 w-64 md:w-96 rounded" />
+              <div className="flex gap-2">
+                <Skeleton className="h-4 w-16 rounded" />
+                <Skeleton className="h-4 w-20 rounded" />
+              </div>
+            </div>
+            <Skeleton className="h-8 w-20 rounded-full" />
+          </div>
+
+          {/* Fights Skeleton */}
+          <div className="divide-y divide-border/60">
+            {Array.from({ length: 5 }).map((_, j) => (
+              <div key={j} className="px-4 py-6">
+                <div className="grid grid-cols-[1fr_auto_1fr] gap-x-3 items-center">
+                  {/* Left Fighter */}
+                  <div className="flex flex-col items-center gap-2">
+                    <Skeleton className="w-12 h-12 rounded-full" />
+                    <Skeleton className="h-6 w-24 md:w-32 rounded" />
+                    <Skeleton className="h-4 w-16 rounded" />
+                    <Skeleton className="h-6 w-12 rounded" />
+                  </div>
+
+                  {/* VS Middle */}
+                  <div className="flex flex-col items-center justify-center gap-2 min-w-[60px]">
+                    <div className="text-sm font-bold text-muted-foreground/30">VS</div>
+                    <Skeleton className="h-5 w-10 rounded" />
+                  </div>
+
+                  {/* Right Fighter */}
+                  <div className="flex flex-col items-center gap-2">
+                    <Skeleton className="w-12 h-12 rounded-full" />
+                    <Skeleton className="h-6 w-24 md:w-32 rounded" />
+                    <Skeleton className="h-4 w-16 rounded" />
+                    <Skeleton className="h-6 w-12 rounded" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       ))}
     </div>
@@ -1405,6 +1465,22 @@ export default function UfcPredictionsPage() {
     }).catch(() => { /* non-critical */ })
   }, [data])
 
+  // Build a name-keyed map of lightweight fighter info from the predictions card
+  // so the FighterDetailsModal opponent hover popup can show record, streak, weightClass
+  const fighterInfoMap = useMemo(() => {
+    if (!data) return new Map<string, any>()
+    const map = new Map<string, any>()
+    for (const event of data.events) {
+      for (const fight of event.fights) {
+        const rk = normKey(fight.rFighter)
+        const bk = normKey(fight.bFighter)
+        if (!map.has(rk)) map.set(rk, { primaryWeightClass: fight.weightClass, record: fight.rRecord, streak: fight.rStreak })
+        if (!map.has(bk)) map.set(bk, { primaryWeightClass: fight.weightClass, record: fight.bRecord, streak: fight.bStreak })
+      }
+    }
+    return map
+  }, [data])
+
   const handleNameClick = useCallback((name: string) => {
     setSelectedFighter({ name } as ChampionEntry)
   }, [])
@@ -1464,6 +1540,9 @@ export default function UfcPredictionsPage() {
             champion={selectedFighter}
             onClose={() => setSelectedFighter(null)}
             hideElo={false}
+            candidateHeadshots={headshots}
+            candidateTott={totts}
+            allFightersMap={fighterInfoMap}
           />
         )}
       </AnimatePresence>

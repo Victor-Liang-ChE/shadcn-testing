@@ -283,6 +283,20 @@ function formatDob(dob: string): string {
 /* ------------------------------------------------------------------ */
 export default function UfcEloPage() {
   const [data, setData] = useState<EloData | null>(null);
+  const allFightersMap = useMemo(() => {
+    const map = new Map<string, any>();
+    if (!data?.allFighters) return map;
+    data.allFighters.forEach((f) => {
+      const key = f.name
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[.'\u2011]/g, "")
+        .toLowerCase()
+        .trim();
+      map.set(key, f);
+    });
+    return map;
+  }, [data]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDivision, setSelectedDivision] = useState<string>("overall");
@@ -604,17 +618,38 @@ export default function UfcEloPage() {
         const scored = allData.map((f) => {
           const normName = normKey(f.FIGHTER);
           const words = normName.split(" ");
+          const info = allFightersMap.get(normName);
+          const isInactive =
+            !!info?.lastFightDate &&
+            Date.now() - new Date(info.lastFightDate).getTime() > TWO_YEARS_MS;
+          const isActive = !!info && !isInactive;
+
           let score = 0;
           if (normName.startsWith(normQ)) score = 300;
           else if (words[0]?.startsWith(normQ)) score = 200;
           else if (words.some((w: string) => w.startsWith(normQ))) score = 100;
           else score = 10;
-          return { ...f, _score: score };
+
+          return {
+            ...f,
+            _score: score,
+            _isActive: isActive ? 1 : 0,
+            _fights: info?.fights || 0,
+            _elo: info?.currentElo || 0,
+          };
         });
-        scored.sort(
-          (a: any, b: any) =>
-            b._score - a._score || a.FIGHTER.localeCompare(b.FIGHTER),
-        );
+        scored.sort((a, b) => {
+          // 1. Text match score
+          if (b._score !== a._score) return b._score - a._score;
+          // 2. Active status priority
+          if (b._isActive !== a._isActive) return b._isActive - a._isActive;
+          // 3. Fight count priority
+          if (b._fights !== a._fights) return b._fights - a._fights;
+          // 4. Elo priority
+          if (b._elo !== a._elo) return b._elo - a._elo;
+          // 5. Alphabetical fallback
+          return a.FIGHTER.localeCompare(b.FIGHTER);
+        });
         const fightersData = scored.slice(0, 14);
 
         // Fetch headshots for matched fighters — include accent-stripped variants of first words
@@ -2624,6 +2659,10 @@ export default function UfcEloPage() {
             champion={selectedChampion}
             onClose={() => setSelectedChampion(null)}
             eloLookup={eloLookup}
+            championMap={championMap}
+            candidateHeadshots={candidateHeadshots}
+            candidateTott={candidateTott}
+            allFightersMap={allFightersMap}
           />
         )}
       </AnimatePresence>

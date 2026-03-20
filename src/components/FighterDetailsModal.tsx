@@ -239,6 +239,21 @@ const WEIGHT_CLASS_ORDER = [
   "heavyweight",
 ] as const;
 
+const WC_ABBREV_MAP: Record<string, string> = {
+  heavyweight: "HW",
+  lightheavyweight: "LHW",
+  middleweight: "MW",
+  welterweight: "WW",
+  lightweight: "LW",
+  featherweight: "FEW",
+  bantamweight: "BW",
+  flyweight: "FLW",
+  women_bantamweight: "W-BW",
+  women_featherweight: "W-FEW",
+  women_flyweight: "W-FLW",
+  women_strawweight: "W-SW",
+};
+
 const KNOWN_DIVISIONS = new Set<string>(WEIGHT_CLASS_ORDER);
 function isKnownDivision(key: string): boolean {
   return KNOWN_DIVISIONS.has(key.toLowerCase().replace(/\s+/g, ""));
@@ -268,6 +283,16 @@ function parseLocalDate(dateStr: string): Date {
   const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]));
   return new Date(dateStr);
+}
+
+function formatDob(dob: string): string {
+  if (!dob) return "";
+  const date = parseLocalDate(dob);
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function diffInDays(a: Date, b: Date): number {
@@ -322,6 +347,19 @@ interface FighterDetailsModalProps {
     name: string,
   ) => Array<{ date: string; elo: number; event: string }> | undefined;
   hideElo?: boolean;
+  championMap?: Map<string, ChampionEntry>;
+  candidateHeadshots?: Map<string, string>;
+  candidateTott?: Map<
+    string,
+    {
+      height?: string | null;
+      weight?: string | null;
+      reach?: string | null;
+      stance?: string | null;
+      dob?: string | null;
+    }
+  >;
+  allFightersMap?: Map<string, any>;
 }
 
 export function FighterDetailsModal({
@@ -330,6 +368,10 @@ export function FighterDetailsModal({
   onBack,
   eloLookup,
   hideElo,
+  championMap,
+  candidateHeadshots,
+  candidateTott,
+  allFightersMap,
 }: FighterDetailsModalProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -526,6 +568,10 @@ export function FighterDetailsModal({
         onBack={() => setSelectedOpponent(null)}
         eloLookup={eloLookup}
         hideElo={hideElo}
+        championMap={championMap}
+        candidateHeadshots={candidateHeadshots}
+        candidateTott={candidateTott}
+        allFightersMap={allFightersMap}
       />
     );
   }
@@ -896,15 +942,180 @@ export function FighterDetailsModal({
                                       : fight.resultForFighter}
                                 </span>
                                 <span>vs. </span>
-                                <button
-                                  className="font-bold hover:underline text-primary ml-1 cursor-pointer"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedOpponent(fight.OPPONENT || "");
-                                  }}
-                                >
-                                  {fight.OPPONENT || "Opponent Unknown"}
-                                </button>
+                                <TooltipProvider delayDuration={300}>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <button
+                                        className="font-bold hover:underline text-primary ml-1 cursor-pointer"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedOpponent(
+                                            fight.OPPONENT || "",
+                                          );
+                                        }}
+                                      >
+                                        {fight.OPPONENT || "Opponent Unknown"}
+                                      </button>
+                                    </TooltipTrigger>
+                                    {fight.OPPONENT &&
+                                      (championMap ||
+                                        candidateHeadshots ||
+                                        candidateTott) && (
+                                        <TooltipContent
+                                          side="right"
+                                          className="p-0 overflow-hidden bg-card text-card-foreground border border-border shadow-lg"
+                                        >
+                                          {(() => {
+                                            const normKey =
+                                              normalizeName(fight.OPPONENT)
+                                                .toLowerCase()
+                                                .trim();
+                                            const champEntry =
+                                              championMap?.get(normKey);
+                                            const headshotUrl =
+                                              champEntry?.headshotUrl ??
+                                              candidateHeadshots?.get(normKey);
+                                            const tott =
+                                              candidateTott?.get(normKey);
+                                            const allInfo =
+                                              allFightersMap?.get(normKey);
+
+                                            const isInactive =
+                                              !!allInfo?.lastFightDate &&
+                                              Date.now() -
+                                                new Date(
+                                                  allInfo.lastFightDate,
+                                                ).getTime() >
+                                                2 *
+                                                  365.25 *
+                                                  24 *
+                                                  60 *
+                                                  60 *
+                                                  1000;
+
+                                            // Attempt to find elo from eloLookup or eloHistory if available
+                                            const history = eloLookup?.(
+                                              fight.OPPONENT,
+                                            );
+                                            const currentElo =
+                                              allInfo?.currentElo ??
+                                              (history && history.length > 0
+                                                ? history[history.length - 1]
+                                                    .elo
+                                                : undefined);
+                                            const peakElo =
+                                              history && history.length > 0
+                                                ? Math.max(
+                                                    ...history.map((h) => h.elo),
+                                                  )
+                                                : undefined;
+
+                                            return (
+                                              <div className="flex gap-3 p-3 min-w-[200px] max-w-[240px]">
+                                                <div className="w-14 h-14 rounded-full overflow-hidden bg-muted flex items-center justify-center flex-shrink-0 border border-border">
+                                                  {headshotUrl ? (
+                                                    <img
+                                                      src={headshotUrl}
+                                                      alt={fight.OPPONENT}
+                                                      className="w-full h-full object-cover object-top"
+                                                    />
+                                                  ) : (
+                                                    <User className="w-6 h-6 text-muted-foreground" />
+                                                  )}
+                                                </div>
+                                                <div className="flex flex-col gap-0.5 text-xs min-w-0 justify-center text-left">
+                                                  <div className="font-bold text-sm truncate leading-tight">
+                                                    {fight.OPPONENT}
+                                                  </div>
+                                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                                    {allInfo?.primaryWeightClass &&
+                                                      WC_ABBREV_MAP[
+                                                        allInfo.primaryWeightClass
+                                                      ] && (
+                                                        <span
+                                                          className="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border w-fit"
+                                                          style={wcBadgeStyle(
+                                                            allInfo.primaryWeightClass,
+                                                          )}
+                                                        >
+                                                          {
+                                                            WC_ABBREV_MAP[
+                                                              allInfo.primaryWeightClass
+                                                            ]
+                                                          }
+                                                        </span>
+                                                      )}
+                                                    {isInactive && (
+                                                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-gray-400/40 bg-gray-400/10 text-gray-500 dark:text-gray-400 flex-shrink-0">
+                                                        Inactive
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  {allInfo?.record && (
+                                                    <div className="text-muted-foreground text-xs">
+                                                      UFC {allInfo.record}
+                                                    </div>
+                                                  )}
+                                                  {!!allInfo?.streak && (
+                                                    <div className={`text-xs font-medium ${allInfo.streak > 0 ? "text-emerald-500" : "text-red-400"}`}>
+                                                      {allInfo.streak > 0 ? `W${allInfo.streak}` : `L${Math.abs(allInfo.streak)}`} streak
+                                                    </div>
+                                                  )}
+                                                  {currentElo !== undefined && (
+                                                    <div className="flex items-center gap-1 my-0.5">
+                                                      <span className="text-[10px] text-foreground/70">
+                                                        Elo:
+                                                      </span>
+                                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full border border-yellow-400/60 bg-yellow-400/10 font-bold text-xs text-yellow-500 dark:text-yellow-400">
+                                                        {currentElo}
+                                                      </span>
+                                                      {peakElo !== undefined && (
+                                                        <span className="text-[10px] text-foreground/50">
+                                                          / {peakElo}
+                                                        </span>
+                                                      )}
+                                                    </div>
+                                                  )}
+                                                  {tott?.height && (
+                                                    <div>
+                                                      <span className="font-medium text-[10px]">
+                                                        Height:
+                                                      </span>{" "}
+                                                      {tott.height}
+                                                    </div>
+                                                  )}
+                                                  {tott?.reach && (
+                                                    <div>
+                                                      <span className="font-medium text-[10px]">
+                                                        Reach:
+                                                      </span>{" "}
+                                                      {tott.reach}
+                                                    </div>
+                                                  )}
+                                                  {tott?.stance && (
+                                                    <div>
+                                                      <span className="font-medium text-[10px]">
+                                                        Stance:
+                                                      </span>{" "}
+                                                      {tott.stance}
+                                                    </div>
+                                                  )}
+                                                  {tott?.dob && (
+                                                    <div>
+                                                      <span className="font-medium text-[10px]">
+                                                        Born:
+                                                      </span>{" "}
+                                                      {formatDob(tott.dob)}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          })()}
+                                        </TooltipContent>
+                                      )}
+                                  </Tooltip>
+                                </TooltipProvider>
                                 {eloDelta !== null ? (
                                   <span
                                     className="inline-flex items-center ml-2 gap-1"
