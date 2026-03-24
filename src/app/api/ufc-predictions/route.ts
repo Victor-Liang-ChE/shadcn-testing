@@ -312,8 +312,11 @@ export async function GET() {
     }
 
     // Run predictions for main fights only (props don't have fighter stats)
+    const todayStr = new Date().toISOString().slice(0, 10) // e.g. "2026-03-24"
     const events: (EventPrediction & { props: PropRow[]; date?: string })[] = []
     for (const [, event] of eventMap) {
+      // Skip events that have already passed
+      if (event.date && event.date < todayStr) continue
       const predictions = event.fights.map((fight) =>
         predictFight(cbModel, lgModel, fight, fighterDb)
       )
