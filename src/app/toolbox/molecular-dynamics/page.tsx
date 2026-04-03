@@ -37,7 +37,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
-import 'katex/dist/katex.min.css'
 import { BlockMath } from 'react-katex'
 import { 
   Play, 
