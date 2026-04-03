@@ -82,6 +82,9 @@ function Navbar() {
       case "/toolbox/FUG":
         return "FUG";
 
+      case "/toolbox/reaction-thermochemistry":
+        return "Reaction Thermochemistry";
+
       case "/misc":
           return "Miscellaneous Projects";
   

@@ -47,6 +47,10 @@ export const supabase = new Proxy(realSupabase, {
             queryParams.filters.push({ type: 'in', column, value: values });
             return builder;
           },
+          not: (column: string, operator: string, value: any) => {
+            queryParams.filters.push({ type: 'not', column, operator, value });
+            return builder;
+          },
           or: (condition: string) => {
             queryParams.filters.push({ type: 'or', value: condition });
             return builder;

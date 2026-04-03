@@ -164,6 +164,14 @@ function ToolboxContent() {
       thumbnailPath: fugThumbnailPath,
       thumbnailLightPath: fugThumbnailLightPath,
       category: "cheme"
+    },
+    {
+      name: "Reaction Thermochemistry",
+      path: "/toolbox/reaction-thermochemistry",
+      description: "Perform energy balances with Hess's Law and Kirchhoff's Law. Includes sensible and latent heat effects for non-isothermal reactions.",
+      thumbnailPath: "",
+      thumbnailLightPath: "",
+      category: "cheme"
     }
   ], []);
 
@@ -229,6 +237,10 @@ function ToolboxContent() {
                         className="w-full h-full"
                         isDark={mounted ? resolvedTheme !== 'light' : true}
                       />
+                    ) : simulation.name === "Reaction Thermochemistry" ? (
+                      <div className="w-full h-full flex items-center justify-center bg-muted text-muted-foreground text-center p-4 italic text-sm">
+                        Reaction Thermochemistry<br/>Thumbnail Placeholder
+                      </div>
                     ) : (
                       <Image
                         src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
