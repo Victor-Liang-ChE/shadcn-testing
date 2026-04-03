@@ -33,6 +33,8 @@ export async function POST(request: Request) {
           query = query.in(f.column, f.value)
         } else if (f.type === 'or') {
           query = query.or(f.value)
+        } else if (f.type === 'not') {
+          query = query.not(f.column, f.operator, f.value)
         }
       }
     }

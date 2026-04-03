@@ -201,11 +201,13 @@ function normKey(name: string): string {
     .trim()
 }
 
-function americanToImplied(odds: number): number {
-  return odds < 0 ? Math.abs(odds) / (Math.abs(odds) + 100) * 100 : 100 / (odds + 100) * 100
+function formatEventDate(dateStr: string): string {
+  // Handle ISO dates like "2026-04-04" or descriptive dates
+  const d = new Date(dateStr + 'T00:00:00')
+  if (isNaN(d.getTime())) return dateStr
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-// Odds display that visually centers around the number only (sign floats outside)
 function OddsDisplay({ odds, isFav, implied, showAsImplied, className }: { odds: number | null; isFav: boolean; implied?: number; showAsImplied?: boolean; className?: string }) {
   if (odds == null) return <span className={className}>—</span>
   if (showAsImplied && implied != null) {
@@ -261,7 +263,10 @@ function formatDob(dob: string): string {
   return `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()} (Age ${age})`
 }
 
-// ─── Sparkline Component (interactive + theme-aware) ───
+function americanToImplied(odds: number): number {
+  if (odds < 0) return (-odds) / (-odds + 100)
+  return 100 / (odds + 100)
+}
 
 function Sparkline({
   points,
@@ -276,17 +281,20 @@ function Sparkline({
   color?: string
   showAxes?: boolean
   onHoverChange?: (pt: OddsPoint | null) => void
-  formatY?: (value: number) => string
+  formatY?: (odds: number) => string
 }) {
   const [hoverState, setHoverState] = useState<{ idx: number; x: number } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
 
   const W = 460
   if (!points || points.length < 2) return null
-  const americans = points.map((p) => p.american)
-  const minVal = Math.min(...americans)
-  const maxVal = Math.max(...americans)
-  const range = maxVal - minVal || 1
+
+  // Convert american odds → implied probability for Y-axis.
+  // This ensures the graph goes UP as a fighter becomes more favoured.
+  const probs = points.map((p) => americanToImplied(p.american))
+  const minProb = Math.min(...probs)
+  const maxProb = Math.max(...probs)
+  const probRange = maxProb - minProb || 0.01
 
   const minTime = points[0].timestamp
   const maxTime = points[points.length - 1].timestamp
@@ -294,22 +302,19 @@ function Sparkline({
 
   const lp = showAxes ? 36 : 2
   const rp = 2
-  const tp = showAxes ? 8 : 2
-  const bp = showAxes ? 18 : 2
+  const tp = showAxes ? 12 : 2
+  const bp = showAxes ? 22 : 2
   const cW = W - lp - rp
   const cH = height - tp - bp
 
-  const pts = points.map((p) => ({
+  const pts = points.map((p, i) => ({
     x: lp + ((p.timestamp - minTime) / timeRange) * cW,
-    y: tp + (1 - (p.american - minVal) / range) * cH,
+    y: tp + (1 - (probs[i] - minProb) / probRange) * cH,
     ...p,
   }))
 
   const pathD = pts.map((pt, i) => `${i === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`).join(' ')
-  const first = americans[0]
-  const last = americans[americans.length - 1]
   const endColor = color
-  const yFormatter = formatY ?? formatOdds
 
   const handleMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     if (!svgRef.current || pts.length < 2) return
@@ -318,15 +323,11 @@ function Sparkline({
     const svgX = (e.clientX - ctm.e) / ctm.a
     const clampedX = Math.max(lp, Math.min(lp + cW, svgX))
     
-    // Find closest point by x coordinate (since points are now non-linearly spaced index-wise)
     let closestIdx = 0
-    let minIdxDist = Infinity
+    let minDist = Infinity
     for (let i = 0; i < pts.length; i++) {
       const dist = Math.abs(pts[i].x - clampedX)
-      if (dist < minIdxDist) {
-        minIdxDist = dist
-        closestIdx = i
-      }
+      if (dist < minDist) { minDist = dist; closestIdx = i }
     }
 
     setHoverState({ idx: closestIdx, x: pts[closestIdx].x })
@@ -336,29 +337,44 @@ function Sparkline({
   const hPt = hoverState !== null ? pts[hoverState.idx] : null
 
   return (
-    <svg ref={svgRef} width="100%" height={height} viewBox={`0 0 ${W} ${height}`} className="overflow-visible" style={{ cursor: 'crosshair' }} onMouseMove={handleMouseMove} onMouseLeave={() => { setHoverState(null); onHoverChange?.(null) }}>
-      {showAxes && (
-        <>
-          <text x={lp - 3} y={tp + 5} textAnchor="end" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{yFormatter(maxVal)}</text>
-          <text x={lp - 3} y={tp + cH} textAnchor="end" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{yFormatter(minVal)}</text>
-          <text x={lp} y={height - 1} textAnchor="start" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{formatTimestamp(points[0].timestamp)}</text>
-          <text x={lp + cW} y={height - 1} textAnchor="end" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{formatTimestamp(points[points.length - 1].timestamp)}</text>
-          <line x1={lp} y1={tp + cH} x2={lp + cW} y2={tp + cH} style={{ stroke: 'var(--border)', strokeWidth: 0.5 }} />
-          <line x1={lp} y1={tp} x2={lp} y2={tp + cH} style={{ stroke: 'var(--border)', strokeWidth: 0.5 }} />
-        </>
-      )}
-      <path d={pathD} fill="none" stroke={color} strokeWidth={1.5} />
-      <circle cx={pts[0].x} cy={pts[0].y} r={2} fill={color} />
-      <circle cx={pts[pts.length - 1].x} cy={pts[pts.length - 1].y} r={2.5} fill={endColor} />
-      {/* Invisible full-area hit zone for hover */}
-      <rect x={0} y={0} width={W} height={height} fill="transparent" />
-      {/* Hover crosshair */}
-      {hPt && hoverState && (
-        <>
+    <div className="relative">
+      <svg ref={svgRef} width="100%" height={height} viewBox={`0 0 ${W} ${height}`} className="overflow-visible" style={{ cursor: 'crosshair' }} onMouseMove={handleMouseMove} onMouseLeave={() => { setHoverState(null); onHoverChange?.(null) }}>
+        {showAxes && (
+          <>
+            {/* Y-axis: show implied % at top and bottom */}
+            <text x={lp - 3} y={tp + 5} textAnchor="end" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{`${Math.round(maxProb * 100)}%`}</text>
+            <text x={lp - 3} y={tp + cH} textAnchor="end" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{`${Math.round(minProb * 100)}%`}</text>
+            <text x={lp} y={height - 1} textAnchor="start" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{formatTimestamp(points[0].timestamp)}</text>
+            <text x={lp + cW} y={height - 1} textAnchor="end" style={{ fontSize: 8, fill: 'var(--muted-foreground)' }}>{formatTimestamp(points[points.length - 1].timestamp)}</text>
+            <line x1={lp} y1={tp + cH} x2={lp + cW} y2={tp + cH} style={{ stroke: 'var(--border)', strokeWidth: 0.5 }} />
+            <line x1={lp} y1={tp} x2={lp} y2={tp + cH} style={{ stroke: 'var(--border)', strokeWidth: 0.5 }} />
+          </>
+        )}
+        <path d={pathD} fill="none" stroke={color} strokeWidth={1.5} />
+        <circle cx={pts[0].x} cy={pts[0].y} r={2} fill={color} />
+        <circle cx={pts[pts.length - 1].x} cy={pts[pts.length - 1].y} r={2.5} fill={endColor} />
+        {/* Invisible full-area hit zone for hover */}
+        <rect x={0} y={0} width={W} height={height} fill="transparent" />
+        {hPt && hoverState && (
           <circle cx={hPt.x} cy={hPt.y} r={3.5} fill={color} style={{ stroke: 'var(--background)', strokeWidth: 1.5 }} />
-        </>
+        )}
+      </svg>
+      {hoverState && (
+        <div
+          className="absolute z-50 pointer-events-none bg-popover/95 border border-border px-2 py-1 rounded shadow-xl text-[10px] whitespace-nowrap"
+          style={{
+            left: `${(hoverState.x / W) * 100}%`,
+            top: '-2.5rem',
+            transform: 'translateX(-50%)',
+          }}
+        >
+          <div className="font-bold">
+            {formatY ? formatY(points[hoverState.idx].american) : formatOdds(points[hoverState.idx].american)}
+          </div>
+          <div className="text-muted-foreground">{formatTimestamp(points[hoverState.idx].timestamp)}</div>
+        </div>
       )}
-    </svg>
+    </div>
   )
 }
 
@@ -694,7 +710,6 @@ function MarketToggle({
   onChange: (m: MarketMode) => void
 }) {
   const [hoveredMode, setHoveredMode] = useState<MarketMode | null>(null)
-  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null)
 
   const bookHints: Record<MarketMode, string> = {
     sportsbook: 'FanDuel · DraftKings · BetMGM · Caesars',
@@ -711,43 +726,35 @@ function MarketToggle({
         {(['sportsbook', 'exchange'] as MarketMode[]).map((m) => {
           const active = mode === m
           return (
-            <button
-              key={m}
-              onClick={() => onChange(m)}
-              onMouseEnter={(e) => { setHoveredMode(m); setAnchorRect(e.currentTarget.getBoundingClientRect()) }}
-              onMouseLeave={() => { setHoveredMode(null); setAnchorRect(null) }}
-              className={cn(
-                'flex-1 py-2 px-3 text-sm font-medium rounded-md transition-all',
-                active
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
+            <div key={m} className="flex-1 relative">
+              <button
+                onClick={() => onChange(m)}
+                onMouseEnter={() => setHoveredMode(m)}
+                onMouseLeave={() => setHoveredMode(null)}
+                className={cn(
+                  'w-full py-2 px-3 text-sm font-medium rounded-md transition-all',
+                  active
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {labels[m]}
+              </button>
+              {hoveredMode === m && (
+                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 z-50 pointer-events-none">
+                  <div className="relative bg-popover border border-border rounded-md px-3 py-1.5 text-xs text-muted-foreground shadow-md whitespace-nowrap">
+                    <span className="absolute -top-[5px] left-1/2 -translate-x-1/2 w-0 h-0"
+                      style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--border)' }} />
+                    <span className="absolute -top-[4px] left-1/2 -translate-x-1/2 w-0 h-0"
+                      style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--popover)' }} />
+                    {bookHints[m]}
+                  </div>
+                </div>
               )}
-            >
-              {labels[m]}
-            </button>
+            </div>
           )
         })}
       </div>
-      {/* Speech-bubble tooltip — absolutely positioned, no layout shift */}
-      {hoveredMode && anchorRect && (
-        <div
-          className="fixed z-50 pointer-events-none"
-          style={{
-            left: anchorRect.left + anchorRect.width / 2,
-            top: anchorRect.bottom + 6,
-            transform: 'translateX(-50%)',
-          }}
-        >
-          <div className="relative bg-popover border border-border rounded-md px-3 py-1.5 text-xs text-muted-foreground shadow-md whitespace-nowrap">
-            {/* Arrow up */}
-            <span className="absolute -top-[5px] left-1/2 -translate-x-1/2 w-0 h-0"
-              style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--border)' }} />
-            <span className="absolute -top-[4px] left-1/2 -translate-x-1/2 w-0 h-0"
-              style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--popover)' }} />
-            {bookHints[hoveredMode]}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -1130,7 +1137,7 @@ function PropRow({ prop }: { prop: PropBet }) {
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full px-4 py-2.5 grid gap-3 items-center text-left"
-        style={{ gridTemplateColumns: '1fr auto auto auto' }}
+        style={{ gridTemplateColumns: '1fr auto auto' }}
       >
         <div className="min-w-0">
           <div className="text-sm text-foreground truncate">{prop.rName}</div>
@@ -1140,7 +1147,6 @@ function PropRow({ prop }: { prop: PropBet }) {
           <div className={cn(prop.rOdds != null && prop.rOdds > 0 ? 'text-blue-400' : 'text-amber-400')}>{formatOdds(prop.rOdds)}</div>
           <div className={cn('mt-0.5', prop.bOdds != null && prop.bOdds > 0 ? 'text-blue-400' : 'text-amber-400')}>{formatOdds(prop.bOdds)}</div>
         </div>
-        <div className="text-[11px] text-muted-foreground/60 w-9 text-center">{books.length > 0 ? `${books.length}bk` : ''}</div>
         <ChevronDown className={cn('w-3.5 h-3.5 text-muted-foreground transition-transform', expanded && 'rotate-180')} />
       </button>
       {expanded && (
@@ -1216,7 +1222,7 @@ function EventSection({
               >
                 {event.name}
                 {event.date && (
-                  <span className="text-muted-foreground text-sm font-normal mx-2">{event.date}</span>
+                  <span className="text-muted-foreground text-sm font-normal mx-2">{formatEventDate(event.date)}</span>
                 )}
                 <span className="text-muted-foreground/50 text-xs">↗</span>
               </a>
@@ -1224,7 +1230,7 @@ function EventSection({
               <>
                 {event.name}
                 {event.date && (
-                  <span className="text-muted-foreground text-sm font-normal">{event.date}</span>
+                  <span className="text-muted-foreground text-sm font-normal">{formatEventDate(event.date)}</span>
                 )}
               </>
             )}
@@ -1252,26 +1258,23 @@ function EventSection({
 
       {!collapsed && (
         <>
-          {/* Tabs: Fights / Props (perfectly aligned with columns below) */}
+          {/* Tabs: Fights / Props */}
           <div className="border-b border-border/50 bg-muted/20 px-4">
             {event.props.length > 0 ? (
-              <div className="grid grid-cols-[1fr_auto_1fr] gap-x-3 items-center">
+              <div className="flex items-center">
                 <button
                   onClick={() => setTab('fights')}
                   className={cn(
-                    'py-2 text-xs font-medium transition-colors',
+                    'py-2 px-4 text-xs font-medium transition-colors',
                     tab === 'fights' ? 'text-foreground bg-background/50 border-b-2 border-b-foreground' : 'text-muted-foreground hover:text-foreground'
                   )}
                 >
                   Fights ({event.fights.length})
                 </button>
-                <div className="flex justify-center min-w-[52px]">
-                  <div className="w-px h-4 bg-border/30" />
-                </div>
                 <button
                   onClick={() => setTab('props')}
                   className={cn(
-                    'py-2 text-xs font-medium transition-colors',
+                    'py-2 px-4 text-xs font-medium transition-colors',
                     tab === 'props' ? 'text-foreground bg-background/50 border-b-2 border-b-foreground' : 'text-muted-foreground hover:text-foreground'
                   )}
                 >
@@ -1279,12 +1282,10 @@ function EventSection({
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-[1fr_auto_1fr] gap-x-3 items-center">
-                <div className="py-2 text-xs font-medium text-foreground bg-background/50 border-b-2 border-b-foreground text-center">
+              <div className="flex items-center">
+                <div className="py-2 px-4 text-xs font-medium text-foreground bg-background/50 border-b-2 border-b-foreground">
                   Fights ({event.fights.length})
                 </div>
-                <div className="min-w-[52px]" />
-                <div />
               </div>
             )}
           </div>

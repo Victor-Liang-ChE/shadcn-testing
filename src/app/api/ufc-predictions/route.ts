@@ -260,8 +260,41 @@ export async function GET() {
     const { data: oddsRows, error } = oddsResult
     if (error) throw new Error(`Supabase error: ${error.message}`)
 
+    // Scrape event dates from BFO homepage for events missing dates
+    let bfoDates: Record<string, string> = {}
+    try {
+      const bfoRes = await fetch('https://www.bestfightodds.com/', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+      })
+      if (bfoRes.ok) {
+        const bfoHtml = await bfoRes.text()
+        // Match event names followed by their dates in table headers
+        // Pattern: <h1>EVENT NAME</h1>...table-header-date">DATE</span>
+        const headerRe = /<h1>([^<]+)<\/h1>[^]*?class="table-header-date"[^>]*>\s*([^<]+)\s*<\/span>/g
+        let m: RegExpExecArray | null
+        while ((m = headerRe.exec(bfoHtml)) !== null) {
+          const name = m[1].trim()
+          const rawDate = m[2].trim() // e.g. "April 4th"
+          // Parse "Month Dayth" into YYYY-MM-DD (assumes current/next year)
+          const cleaned = rawDate.replace(/(st|nd|rd|th)/i, '')
+          const now = new Date()
+          const parsed = new Date(`${cleaned}, ${now.getFullYear()}`)
+          if (!isNaN(parsed.getTime())) {
+            // If parsed date is more than 30 days in the past, assume next year
+            if (parsed.getTime() < now.getTime() - 30 * 86400000) {
+              parsed.setFullYear(parsed.getFullYear() + 1)
+            }
+            bfoDates[name.toLowerCase()] = parsed.toISOString().slice(0, 10)
+          }
+        }
+      }
+    } catch { /* non-critical — dates just won't appear */ }
+
     // Detect prop bets by name — fallback for rows that predate the is_prop column
-    const PROP_RE = /\d|\bover\b|\bunder\b|\bdecision\b|ko\/tko|\btko\b|\bsubmission\b|\brds?\b|\bdistance\b|\binside\b|\bfinish\b|\bstarts?\b|\bwon'?t\b|\bdoesn'?t\b|\bgoes?\b|\bdraw\b|\bscorecards?\b|\baction\b|\bfight\b|\bno action\b/i
+    const PROP_RE = /\bover\b|\bunder\b|\bdecision\b|ko\/tko|\btko\b|\bsubmission\b|\brds?\b|\bdistance\b|\binside\b|\bfinish\b|\bstarts?\b|\bwon'?t\b|\bdoesn'?t\b|\bgoes?\b|\bdraw\b|\bscorecards?\b|\baction\b|\bno action\b/i
+    /** Strip leading digits (matchup ID) from fighter names in prop rows */
+    const stripLeadingDigits = (name: string) => name.replace(/^\d+/, '')
+
     const isRowProp = (row: Record<string, unknown>) =>
       row.is_prop === true ||
       PROP_RE.test(row.r_fighter as string) ||
@@ -276,21 +309,28 @@ export async function GET() {
 
     for (const row of oddsRows ?? []) {
       const key = row.event_name as string
+      // Skip BJJ events entirely
+      if (/\bBJJ\b/i.test(key)) continue
+
       if (!eventMap.has(key)) {
         const rawDate = row.event_date as string | undefined
         const lookupDate = eventDates[(row.event_name as string || '').toLowerCase().trim()]
+        const bfoDate = bfoDates[(row.event_name as string || '').toLowerCase().trim()]
         eventMap.set(key, {
           name: row.event_name as string,
           url: row.event_url as string | undefined,
-          date: rawDate || lookupDate,
+          date: rawDate || lookupDate || bfoDate,
           fights: [],
           props: [],
         })
       }
       if (isRowProp(row)) {
+        // Strip leading digits (matchup IDs) from fighter names
+        const rName = stripLeadingDigits(row.r_fighter as string)
+        const bName = stripLeadingDigits(row.b_fighter as string)
         eventMap.get(key)!.props.push({
-          rName: row.r_fighter as string,
-          bName: row.b_fighter as string,
+          rName,
+          bName,
           rOdds: row.r_odds as number | null,
           bOdds: row.b_odds as number | null,
           rPerBook: (row.r_per_book as Record<string, number>) ?? {},
@@ -311,12 +351,29 @@ export async function GET() {
       }
     }
 
+    // Deduplicate props: remove prop rows whose cleaned names match existing fight rows
+    for (const [, event] of eventMap) {
+      const fightKeys = new Set(
+        event.fights.map((f) =>
+          `${normalizeName(f.rFighter)}|${normalizeName(f.bFighter)}`
+        )
+      )
+      event.props = event.props.filter((p) => {
+        const key = `${normalizeName(p.rName)}|${normalizeName(p.bName)}`
+        return !fightKeys.has(key)
+      })
+    }
+
     // Run predictions for main fights only (props don't have fighter stats)
     const todayStr = new Date().toISOString().slice(0, 10) // e.g. "2026-03-24"
     const events: (EventPrediction & { props: PropRow[]; date?: string })[] = []
     for (const [, event] of eventMap) {
       // Skip events that have already passed
       if (event.date && event.date < todayStr) continue
+      // Skip events not found on BFO (no longer upcoming)
+      const bfoKey = event.name.toLowerCase().trim()
+      if (!event.date && !bfoDates[bfoKey]) continue
+
       const predictions = event.fights.map((fight) =>
         predictFight(cbModel, lgModel, fight, fighterDb)
       )
@@ -329,6 +386,13 @@ export async function GET() {
         props: event.props,
       })
     }
+
+    // Sort events by date: soonest (nearest to today) first
+    events.sort((a, b) => {
+      const da = a.date ? new Date(a.date).getTime() : Infinity
+      const db = b.date ? new Date(b.date).getTime() : Infinity
+      return da - db
+    })
 
     const totalBets = events.reduce((sum, e) => sum + e.activeBets, 0)
     const totalFights = events.reduce((sum, e) => sum + e.fights.length, 0)
