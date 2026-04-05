@@ -24,7 +24,6 @@ import {
 
 import CSTRVisualization from "@/components/CSTRVisualization";
 import MolecularDynamicsThumbnail from "@/components/MolecularDynamicsThumbnail";
-
 // Replace external URLs with local paths from public folder
 // now add one for pytorch logo
 const pytorchLogoPath = "/logos/pytorch.svg";
@@ -71,6 +70,8 @@ const molecularDynamicsThumbnailPath = "/thumbnails/molecular-dynamics-thumbnail
 const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thumbnail-light.png";
 const fugThumbnailPath = "/thumbnails/FUG-thumbnail.png";
 const fugThumbnailLightPath = "/thumbnails/FUG-thumbnail-light.png";
+const reactionThermochemistryThumbnailPath = "/thumbnails/reaction-thermochemistry-thumbnail.png";
+const reactionThermochemistryThumbnailLightPath = "/thumbnails/reaction-thermochemistry-thumbnail-light.png";
 
 
 
@@ -195,6 +196,13 @@ export default function Home() {
       description: "Multicomponent flash and distillation design using Fenske, Underwood, and Gilliland relations.",
       thumbnailPath: fugThumbnailPath,
       thumbnailLightPath: fugThumbnailLightPath
+    },
+    {
+      name: "Reaction Thermochemistry",
+      path: "/toolbox/reaction-thermochemistry",
+      description: "Perform energy balances with Hess's Law and Kirchhoff's Law. Includes sensible and latent heat effects for non-isothermal reactions.",
+      thumbnailPath: reactionThermochemistryThumbnailPath,
+      thumbnailLightPath: reactionThermochemistryThumbnailLightPath
     }
   ];
 
@@ -565,7 +573,7 @@ export default function Home() {
                           src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
                           alt={`${simulation.name} Thumbnail`}
                           layout="fill"
-                          objectFit={simulation.name === "Residue Curve Map" ? "cover" : "contain"}
+                          objectFit="contain"
                         />
                       )}
                     </div>

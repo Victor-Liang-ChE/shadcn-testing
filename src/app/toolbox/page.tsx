@@ -40,6 +40,8 @@ const molecularDynamicsThumbnailPath = "/thumbnails/molecular-dynamics-thumbnail
 const molecularDynamicsThumbnailLightPath = "/thumbnails/molecular-dynamics-thumbnail-light.png";
 const fugThumbnailPath = "/thumbnails/FUG-thumbnail.png";
 const fugThumbnailLightPath = "/thumbnails/FUG-thumbnail-light.png";
+const reactionThermochemistryThumbnailPath = "/thumbnails/reaction-thermochemistry-thumbnail.png";
+const reactionThermochemistryThumbnailLightPath = "/thumbnails/reaction-thermochemistry-thumbnail-light.png";
 
 function ToolboxContent() {
   const { resolvedTheme } = useTheme();
@@ -169,8 +171,8 @@ function ToolboxContent() {
       name: "Reaction Thermochemistry",
       path: "/toolbox/reaction-thermochemistry",
       description: "Perform energy balances with Hess's Law and Kirchhoff's Law. Includes sensible and latent heat effects for non-isothermal reactions.",
-      thumbnailPath: "",
-      thumbnailLightPath: "",
+      thumbnailPath: reactionThermochemistryThumbnailPath,
+      thumbnailLightPath: reactionThermochemistryThumbnailLightPath,
       category: "cheme"
     }
   ], []);
@@ -232,15 +234,12 @@ function ToolboxContent() {
                   <div className="aspect-square w-64 h-64 rounded-3xl overflow-hidden relative">
                     {simulation.name === "Reactor Design" ? (
                       <CSTRVisualization className="w-full h-full" showLabel={true} />
-                    ) : simulation.name === "Molecular Dynamics" ? (
+    ) : simulation.name === "Molecular Dynamics" ? (
                       <MolecularDynamicsThumbnail
                         className="w-full h-full"
                         isDark={mounted ? resolvedTheme !== 'light' : true}
                       />
-                    ) : simulation.name === "Reaction Thermochemistry" ? (
-                      <div className="w-full h-full flex items-center justify-center bg-muted text-muted-foreground text-center p-4 italic text-sm">
-                        Reaction Thermochemistry<br/>Thumbnail Placeholder
-                      </div>
+
                     ) : (
                       <Image
                         src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
