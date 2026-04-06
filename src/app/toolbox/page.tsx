@@ -245,7 +245,7 @@ function ToolboxContent() {
                         src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
                         alt={`${simulation.name} Thumbnail`}
                         layout="fill"
-                        objectFit={simulation.name === "Residue Curve Map" ? "cover" : "contain"}
+                        objectFit={simulation.name === "Residue Curve Map" || simulation.name === "Reaction Thermochemistry" ? "cover" : "contain"}
                       />
                     )}
                   </div>
