@@ -159,12 +159,63 @@ function makeSpecies(): SpeciesRow {
 }
 
 function fmtNum(val: number): string {
+  if (val === 0) return '0';
   const abs = Math.abs(val);
-  if (abs === 0) return '0.000';
-  if (abs < 0.001) return val.toExponential(3);
-  if (abs >= 100000) return Math.round(val).toString(); // ≥6 digits: no decimals
-  if (abs < 1) return val.toFixed(4);
-  return val.toFixed(3);
+  if (abs < 1e-4) return val.toExponential(3);
+  return parseFloat(val.toPrecision(4)).toString();
+}
+
+// ─── Formula Rendering ────────────────────────────────────────────────────────
+const ELEMENTS_2 = new Set(['He','Li','Be','Ne','Na','Mg','Al','Si','Cl','Ar','Ca','Sc','Ti','Cr','Mn','Fe','Co','Ni','Cu','Zn','Ga','Ge','As','Se','Br','Kr','Rb','Sr','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd','In','Sn','Sb','Te','Xe','Cs','Ba','La','Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu','Hf','Ta','Re','Os','Ir','Pt','Au','Hg','Tl','Pb','Bi','Po','At','Rn','Fr','Ra','Ac','Th','Pa','Np','Pu','Am','Cm','Bk','Cf','Es','Fm','Md','No','Lr']);
+// Single-char element symbols — used to detect ambiguous pairs like "CO" (C then O, not Co cobalt)
+const ALL_ELEMENTS_1 = new Set(['H','B','C','N','O','F','P','S','K','V','W','Y','I','U']);
+/**
+ * Normalise a chemical formula string:
+ *  - Strip NIST artifact suffixes like "-N3" at the end.
+ *  - Fix capitalisation (e.g. "HBR" → "HBr").
+ *  - Never merge two consecutive uppercase letters into a 2-char element when the
+ *    second character is a valid single-letter element (e.g. "CO2" stays "CO2",
+ *    not "Co2"), because C and O are both valid 1-letter elements.
+ */
+function normalizeFormula(raw: string): string {
+  const trimmed = raw.replace(/-[A-Z][a-z]?\d*$/, '');
+  let out = ''; let i = 0;
+  while (i < trimmed.length) {
+    const ch = trimmed[i];
+    if (/[A-Za-z]/.test(ch)) {
+      const up = ch.toUpperCase();
+      if (i + 1 < trimmed.length && /[A-Za-z]/.test(trimmed[i+1])) {
+        const two = up + trimmed[i+1].toLowerCase();
+        // Use 2-char element only when it is a known symbol AND either:
+        //   (a) the second char is already lowercase (properly written, e.g. "Fe"), or
+        //   (b) the second char alone is NOT a 1-letter element (e.g. "BR" → Br, since R is not an element)
+        if (ELEMENTS_2.has(two) && (!ALL_ELEMENTS_1.has(trimmed[i+1].toUpperCase()) || /[a-z]/.test(trimmed[i+1]))) {
+          out += two; i += 2; continue;
+        }
+      }
+      out += up; i += 1;
+    } else { out += ch; i += 1; }
+  }
+  return out;
+}
+/** Render a formula string as React nodes with <sub> for numbers */
+function renderFormula(raw: string): React.ReactNode {
+  const f = normalizeFormula(raw);
+  const parts: React.ReactNode[] = []; let i = 0, k = 0;
+  while (i < f.length) {
+    if (/\d/.test(f[i])) {
+      let n = ''; while (i < f.length && /\d/.test(f[i])) n += f[i++];
+      parts.push(<sub key={k++} style={{ fontSize: '0.78em', lineHeight: 1 }}>{n}</sub>);
+    } else {
+      let s = ''; while (i < f.length && !/\d/.test(f[i])) s += f[i++];
+      parts.push(<span key={k++}>{s}</span>);
+    }
+  }
+  return <>{parts}</>;
+}
+/** ECharts axis label with rich-text subscript marker so digits render in the same font */
+function echartsFormulaRich(raw: string): string {
+  return normalizeFormula(raw).replace(/(\d+)/g, n => `{sub|${n}}`);
 }
 
 function toKelvin(val: number, unit: 'C' | 'K'): number {
@@ -201,10 +252,11 @@ function dipprCpDeltaH(sh: ShomateRow, T1_K: number, T2_K: number): number {
   } else if (eqno === 16 && sh.f != null) {
     // Liquid Cp with singular term near Tc: Cp = A+BT+CT^2+DT^3 + E/(Tc-T)^g
     const Tc = sh.f;
-    const gv = sh.g ?? 3; // exponent (integer ≥ 2)
+    const gv = sh.g ?? 3; // exponent (integer ≥ 1)
     const polyH = (T: number) => a*T + b*T**2/2 + c*T**3/3 + d*T**4/4;
     const singH = (T: number) => {
       const dT = Tc - T;
+      if (gv === 1) return -e * Math.log(Math.abs(Math.max(dT, 0.2))); // ∫e/(Tc-T)dT = -e·ln|Tc-T|
       if (Math.abs(dT) < 0.2) return e / ((gv - 1) * (0.2 ** (gv - 1)));
       return e / ((gv - 1) * (dT ** (gv - 1)));
     };
@@ -433,13 +485,15 @@ export default function ReactionThermochemistryPage() {
     const score = (c: NistCompound): number => {
       const nn = normKey(c.name);
       const nf = normKey(c.formula);
-      if (nf === normQ || nn === normQ) return 300;
-      if (nf.startsWith(normQ) || nn.startsWith(normQ)) return 200;
+      if (nf === normQ) return 400;             // exact formula match — highest priority
+      if (nn === normQ) return 300;             // exact name match
+      if (nf.startsWith(normQ)) return 250 - nf.length; // formula prefix: shorter wins
+      if (nn.startsWith(normQ)) return 200;
       const words = nn.split(/[\s,()[\]\-]+/);
       if (words.some(w => w.startsWith(normQ))) return 100;
       return 10;
     };
-    const sorted = all.sort((a, b) => score(b) - score(a) || a.name.length - b.name.length).slice(0, 12);
+    const sorted = all.sort((a, b) => score(b) - score(a) || a.formula.length - b.formula.length || a.name.length - b.name.length).slice(0, 12);
     patchRow(side, id, { suggestions: sorted, showSuggestions: true });
   }, [patchRow]);
 
@@ -475,8 +529,17 @@ export default function ReactionThermochemistryPage() {
 
   const calculate = useCallback(async () => {
     setCalcError(null);
-    const validReactants = reactants.filter(r => r.selected);
-    const validProducts  = products.filter(p => p.selected);
+    // Auto-select first suggestion for rows that have suggestions but no selection
+    const applyAutoSelect = (rows: SpeciesRow[]): SpeciesRow[] =>
+      rows.map(r => (!r.selected && r.suggestions.length > 0)
+        ? { ...r, selected: r.suggestions[0], query: formatCompoundName(r.suggestions[0].name), suggestions: [], showSuggestions: false }
+        : r);
+    const resolvedReactants = applyAutoSelect(reactants);
+    const resolvedProducts  = applyAutoSelect(products);
+    if (resolvedReactants !== reactants) setReactants(resolvedReactants);
+    if (resolvedProducts  !== products)  setProducts(resolvedProducts);
+    const validReactants = resolvedReactants.filter(r => r.selected);
+    const validProducts  = resolvedProducts.filter(p => p.selected);
 
     if (validReactants.length === 0 || validProducts.length === 0) {
       setCalcError('Please select at least one reactant and one product from the autocomplete dropdown.');
@@ -675,7 +738,13 @@ export default function ReactionThermochemistryPage() {
         }).join(' + ');
 
       const equation = `${fmtEq(validReactants)} \u2192 ${fmtEq(validProducts)}`;
-      const displayDH = wantSensible ? dH_total_kjmol : dH_rxn_kjmol;
+      // Correct total: reactant cooling (step 1) scales with ALL processed (no cf),
+      // reaction + product heating scale with cf fraction, excess already has (1-cf) in coefficient.
+      const _cf = wantSensible ? (conversion / 100) : 1;
+      const _s1 = wantSensible ? sensibleSegments.filter(s => s.side === 'reactant').reduce((acc, sp) => acc + sp.coefficient * sp.total_kjmol, 0) : 0;
+      const _s3 = wantSensible ? sensibleSegments.filter(s => s.side === 'product').reduce((acc, sp) => acc + sp.coefficient * sp.total_kjmol, 0) : 0;
+      const _ex = wantSensible ? excessSegments.reduce((acc, sp) => acc + sp.excessCoefficient * sp.total_kjmol, 0) : 0;
+      const displayDH = wantSensible ? (_cf * dH_rxn_kjmol + _s1 + _cf * _s3 + _ex) : dH_rxn_kjmol;
 
       // Compute limiting reactant (only when quantities provided)
       const calcLimiting = (): string | null => {
@@ -712,10 +781,23 @@ export default function ReactionThermochemistryPage() {
     if (reactants.some(r => r.selected) && products.some(p => p.selected)) calculate();
   }, [reactants, products, calculate]);
 
-  // Enter key in any input on the left side triggers calculate
+  // Enter key in any input on the left side triggers calculate.
+  // If the user typed something but didn't click a suggestion, auto-select the top suggestion.
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') { e.preventDefault(); tryCalc(); }
-  }, [tryCalc]);
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // Auto-select first suggestion for any rows that have suggestions but no selection
+      const autoSelect = (rows: SpeciesRow[], set: React.Dispatch<React.SetStateAction<SpeciesRow[]>>) => {
+        set(prev => prev.map(r => (!r.selected && r.suggestions.length > 0)
+          ? { ...r, selected: r.suggestions[0], query: formatCompoundName(r.suggestions[0].name), suggestions: [], showSuggestions: false }
+          : r));
+      };
+      autoSelect(reactants, setReactants);
+      autoSelect(products, setProducts);
+      // tryCalc will re-read state after the above setStates; defer one tick
+      setTimeout(() => tryCalc(), 0);
+    }
+  }, [tryCalc, reactants, products]);
 
   useEffect(() => {
     if (autoCalcDone.current) return;
@@ -736,6 +818,15 @@ export default function ReactionThermochemistryPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversion, result]);
+
+  // When enableTemp changes (user toggles temp switch), re-run calc so the right side
+  // updates immediately without needing to press Calculate.
+  const enableTempMounted = useRef(false);
+  useEffect(() => {
+    if (!enableTempMounted.current) { enableTempMounted.current = true; return; }
+    if (autoCalcDone.current) tryCalc();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableTemp]);
 
   // ─── ECharts — combined chart below ────────────────────────────────────────
 
@@ -789,10 +880,37 @@ export default function ReactionThermochemistryPage() {
         const sensRow = result.sensibleSegments.find(s => s.formula === ex.formula && s.side === 'reactant');
         newCoeff = sensRow ? Math.max(0, sensRow.coefficient * (1 - cf)) : 0;
       }
-      if (newCoeff > 0) map.set(ex.formula, newCoeff);
+      map.set(ex.formula, Math.max(0, newCoeff)); // always set — including 0, so fallback ?? sp.excessCoefficient never uses stale value
     }
     return map;
   }, [result, conversion, reactants, perMoleMode, heatUnit, absQtyScale, committedQtys]);
+
+  // Fixed y-axis bounds: computed at CF=1 so the axis doesn't move as conversion changes.
+  const yAxisBounds = useMemo(() => {
+    if (!result || result.contributions.length === 0) return null;
+    const map = perMoleMode ? (heatUnit === 'kJ/kg' ? UNIT_CONVERSIONS_KG : UNIT_CONVERSIONS) : UNIT_CONVERSIONS_ABS;
+    const conv = map[unit] ?? { factor: 1, label: 'kJ' };
+    const pkf = (perMoleMode && heatUnit === 'kJ/kg')
+      ? (() => { const r = reactants.find(row => row.selected?.mol_weight); return r?.selected?.mol_weight ? 1000 / r.selected.mol_weight : 1; })()
+      : 1;
+    const db = conv.factor * pkf * absQtyScale; // dfBase at CF=1
+    const vals: number[] = [0, result.dH_rxn_kjmol * db]; // use reaction enthalpy at CF=1 for stable axis bounds
+    for (const c of result.contributions) vals.push(c.contribution_kjmol * db);
+    if (enableTemp && result.hasSensibleHeat) {
+      for (const s of result.sensibleSegments) {
+        vals.push(s.coefficient * s.total_kjmol * db);
+        // at CF=0 all of this reactant is excess — use sensible segment as upper bound
+        if (s.side === 'reactant') {
+          const ex = result.excessSegments.find(e => e.formula === s.formula);
+          if (ex) vals.push(s.coefficient * ex.total_kjmol * db);
+        }
+      }
+      for (const ex of result.excessSegments) vals.push(ex.excessCoefficient * ex.total_kjmol * db);
+    }
+    const hi = Math.max(...vals, 0); const lo = Math.min(...vals, 0);
+    const pad = (hi - lo || 1) * 0.18;
+    return { min: lo - pad, max: hi + pad };
+  }, [result, perMoleMode, heatUnit, unit, absQtyScale, enableTemp, reactants]);
 
   // ─── Combined Enthalpy Chart ──────────────────────────────────────────────
   // One chart: grouped bars — "ΔH°f contribution" (Hess) and "Sensible/latent" per species.
@@ -901,20 +1019,20 @@ export default function ReactionThermochemistryPage() {
     const latentColor = '#f472b6';
 
     const mutedGroupColor = isDark ? '#94a3b8' : '#64748b';
-    const xLabels = entries.map(e => `{formula|${e.formula}}`);
+    const xLabels = entries.map(e => echartsFormulaRich(e.formula));
 
     const markAreas: any[] = [];
     if (rContribs.length > 0) markAreas.push([
       { xAxis: 0,
         itemStyle: { color: 'rgba(167,139,250,0.06)' },
-        label: { show: true, position: 'insideBottom', formatter: '\u2014 Reactants \u2014',
+        label: { show: true, position: 'insideTop', formatter: '\u2014 Reactants \u2014',
           color: mutedGroupColor, fontSize: 8, fontFamily: ff, align: 'center' } },
       { xAxis: rContribs.length - 1 },
     ]);
     if (pContribs.length > 0) markAreas.push([
       { xAxis: rContribs.length,
         itemStyle: { color: 'rgba(45,212,191,0.06)' },
-        label: { show: true, position: 'insideBottom', formatter: '\u2014 Products \u2014',
+        label: { show: true, position: 'insideTop', formatter: '\u2014 Products \u2014',
           color: mutedGroupColor, fontSize: 8, fontFamily: ff, align: 'center' } },
       { xAxis: rContribs.length + pContribs.length - 1 },
     ]);
@@ -963,10 +1081,8 @@ export default function ReactionThermochemistryPage() {
         type: 'category',
         data: xLabels,
         axisLabel: {
-          color: lc, interval: 0, fontSize: 9, fontFamily: ff, lineHeight: 14,
-          rich: {
-            formula: { color: lc, fontSize: 10, fontFamily: ff, fontWeight: 'bold' as const },
-          },
+          color: lc, interval: 0, fontSize: 10, fontFamily: ff, lineHeight: 14,
+          rich: { sub: { fontSize: 7.5, fontFamily: ff, verticalAlign: 'bottom', lineHeight: 14 } },
           formatter: (v: string) => v,
         },
         axisLine: { lineStyle: { color: ac } },
@@ -976,23 +1092,36 @@ export default function ReactionThermochemistryPage() {
         type: 'value',
         name: `\u0394H (${convC.label})`,
         nameLocation: 'middle', nameRotate: 90,
-        nameGap: Math.max(48, yFmt(-maxAbs).length * 7 + 24),
+        nameGap: Math.max(48, yFmt(-(yAxisBounds?.min ?? maxAbs)).length * 7 + 24),
         nameTextStyle: { color: lc, fontSize: 10, fontFamily: ff },
-        axisLabel: { color: lc, fontSize: 10, fontFamily: ff, formatter: yFmt },
+        axisLabel: { color: (value: number) => value > 0 ? '#fb923c' : value < 0 ? '#38bdf8' : lc, fontSize: 10, fontFamily: ff, formatter: yFmt },
         axisLine: { show: true, lineStyle: { color: ac } },
         splitLine: { lineStyle: { color: sc } },
+        min: yAxisBounds?.min,
+        max: yAxisBounds?.max,
       },
       series: [
         {
           name: '\u0394H\u00b0f (R)',
           ...mkBar(hessRSeries, rPurple),
           markArea: { silent: true, data: markAreas as any },
-          markLine: result.dH_total_kjmol !== 0 ? {
+          markLine: {
             symbol: ['none','none'], silent: true,
-            lineStyle: { type: 'dashed' as any, color: isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)', width: 1.5 },
-            label: { show: true, formatter: `\u0394H\u00b0tot = ${fmtNum(result.dH_total_kjmol*dfv)} ${convC.label}`, position: 'insideStartTop' as any, color: lc, fontSize: 9, fontFamily: ff },
-            data: [{ yAxis: result.dH_total_kjmol*dfv }],
-          } : undefined,
+            // Correct total for markLine: step 1 scales with dfBase; reaction + step 3 scale with dfv; excess with dfBase
+            ...((() => {
+              const mS1 = result.hasSensibleHeat ? result.sensibleSegments.filter(s => s.side === 'reactant').reduce((a, sp) => a + sp.coefficient * sp.total_kjmol, 0) : 0;
+              const mS3 = result.hasSensibleHeat ? result.sensibleSegments.filter(s => s.side === 'product').reduce((a, sp) => a + sp.coefficient * sp.total_kjmol, 0) : 0;
+              const mEx = result.hasSensibleHeat ? result.excessSegments.reduce((a, sp) => a + (reactiveExcessCoeffs.get(sp.formula) ?? sp.excessCoefficient) * sp.total_kjmol, 0) : 0;
+              const mTot = result.hasSensibleHeat ? mS1 * dfBase + result.dH_rxn_kjmol * dfv + mS3 * dfv + mEx * dfBase : result.dH_rxn_kjmol * dfv;
+              const mColor = mTot < 0 ? '#fb923c' : mTot > 0 ? '#38bdf8' : lc;
+              const mLineColor = mTot < 0 ? 'rgba(251,146,60,0.55)' : mTot > 0 ? 'rgba(56,189,248,0.55)' : (isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)');
+              return {
+                lineStyle: { type: 'dashed' as any, color: mLineColor, width: 1.5 },
+                label: { show: true, formatter: `\u0394H\u00b0tot = ${fmtNum(mTot)} ${convC.label}`, position: 'insideStartTop' as any, color: mColor, fontSize: 9, fontFamily: ff },
+                data: [{ yAxis: mTot }],
+              };
+            })()),
+          },
         } as any,
         { name: '\u0394H\u00b0f (P)', ...mkBar(hessPSeries, pTeal) },
         ...(hasSensR   ? [{ name: 'Sensible (R)',       ...mkBar(sensRSeries,   rPurpleL, 'thermalR') }] : []),
@@ -1009,7 +1138,7 @@ export default function ReactionThermochemistryPage() {
         formatter: tooltipFn,
       },
     } as EChartsOption;
-  }, [result, isDark, unit, heatUnit, reactants, conversion, enableTemp, perMoleMode, absQtyScale, reactiveExcessCoeffs, committedQtys]);
+  }, [result, isDark, unit, heatUnit, reactants, conversion, enableTemp, perMoleMode, absQtyScale, reactiveExcessCoeffs, committedQtys, yAxisBounds]);
 
   // ─── Species Row Renderer ─────────────────────────────────────────────────
 
@@ -1034,7 +1163,7 @@ export default function ReactionThermochemistryPage() {
               onChange={e => patchRow(side, row.id, { coefficient: e.target.value })}
               onKeyDown={handleKeyDown} />
             <div className="relative flex-1">
-              <Input className="h-9" placeholder="Name or formula\u2026" value={row.query}
+              <Input className="h-9" placeholder="Name or formula" value={row.query}
                 onChange={e => handleQueryChange(side, row.id, e.target.value)}
                 onKeyDown={handleKeyDown}
                 onFocus={() => { if (row.suggestions.length > 0) patchRow(side, row.id, { showSuggestions: true }); }} />
@@ -1045,11 +1174,13 @@ export default function ReactionThermochemistryPage() {
                       onMouseDown={e => { e.preventDefault(); handleSelect(side, row.id, s); }}>
                       <p className="text-sm font-medium leading-tight">{formatCompoundName(s.name)}</p>
                       <div className="flex justify-between text-xs text-muted-foreground mt-0.5 gap-2">
-                        <span className="font-mono">{s.formula}</span>
+                        <span className="font-mono">{renderFormula(s.formula)}</span>
                         <span className="flex gap-2 items-center">
-                            {s.hf_gas_298_kjmol !== null && (
-                            <span>&#x394;H&#xb0;<sub>f</sub> = {s.hf_gas_298_kjmol.toFixed(1)} kJ/mol</span>
-                          )}
+                            {s.hf_gas_298_kjmol !== null && (() => {
+                            // ΔHf is always molar — convert with /mol units; fallback to kJ/mol if user is in /kg mode
+                            const molConv = UNIT_CONVERSIONS[unit] ?? { factor: 1, label: 'kJ/mol' };
+                            return <span>&#x394;H&#xb0;<sub>f</sub> = {fmtNum(s.hf_gas_298_kjmol * molConv.factor)} {molConv.label}</span>;
+                          })()}
 
                         </span>
                       </div>
@@ -1091,9 +1222,19 @@ export default function ReactionThermochemistryPage() {
   const perKgFactor2 = (perMoleMode && heatUnit === 'kJ/kg') ? perKgFactor : 1;
   const df  = conv.factor * perKgFactor2 * absQtyScale;
   const dfc = conv.factor * perKgFactor2 * conversionFactor * absQtyScale;
+  // Correct display total: step 1 (reactant cooling) uses df — ALL reactants pass through regardless of conversion;
+  // step 2 (reaction) and step 3 (product heating) use dfc — only cf fraction reacts/forms;
+  // excess coefficient already encodes (1-cf) so it uses df.
+  const _dStep1 = result?.hasSensibleHeat ? result.sensibleSegments.filter(s => s.side === 'reactant').reduce((s, sp) => s + sp.coefficient * sp.total_kjmol, 0) : 0;
+  const _dStep3 = result?.hasSensibleHeat ? result.sensibleSegments.filter(s => s.side === 'product').reduce((s, sp) => s + sp.coefficient * sp.total_kjmol, 0) : 0;
+  const _dExcess = result?.hasSensibleHeat ? result.excessSegments.reduce((s, sp) => s + (reactiveExcessCoeffs.get(sp.formula) ?? sp.excessCoefficient) * sp.total_kjmol, 0) : 0;
   const displayDH = result
-    ? (result.hasSensibleHeat ? result.dH_total_kjmol : result.dH_rxn_kjmol) * dfc
+    ? (result.hasSensibleHeat
+        ? _dStep1 * df + result.dH_rxn_kjmol * dfc + _dStep3 * dfc + _dExcess * df
+        : result.dH_rxn_kjmol * dfc)
     : 0;
+  // Derived live from displayDH so the card updates as the conversion slider moves
+  const liveIsExothermic = result ? displayDH < 0 : false;
   const fmtT = (T_K: number) =>
     tempUnit === 'C' ? `${(T_K - 273.15).toFixed(1)} \u00b0C` : `${T_K.toFixed(0)} K`;
 
@@ -1269,11 +1410,11 @@ export default function ReactionThermochemistryPage() {
           <div className="lg:col-span-2 space-y-4">
             {result ? (
               <div className={`space-y-4 ${loading ? 'opacity-60 pointer-events-none transition-opacity duration-200' : 'transition-opacity duration-200'}`}>
-                <Card className={`border-2 transition-colors ${result.isExothermic ? 'border-orange-400/50' : 'border-sky-400/50'}`}>
+                <Card className={`border-2 transition-colors ${liveIsExothermic ? 'border-orange-400/50' : 'border-sky-400/50'}`}>
                   <CardContent className="pt-5 pb-5">
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center justify-between gap-4">
                       <div className="flex-1 min-w-0 text-center">
-                        <p className="text-xl font-mono font-semibold leading-snug break-words mb-3">
+                        <p className="text-2xl font-mono font-semibold leading-snug break-words mb-3">
                           {result.contributions.filter(c => c.side === 'reactant').map((c, i) => (
                             <React.Fragment key={i}>
                               {i > 0 && <span className="mx-1.5 opacity-50">+</span>}
@@ -1281,11 +1422,11 @@ export default function ReactionThermochemistryPage() {
                               {result.limitingFormula === c.formula ? (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <span className="text-yellow-400 underline underline-offset-2 cursor-default">{c.formula}</span>
+                                    <span className="text-yellow-400 underline underline-offset-2 cursor-default">{renderFormula(c.formula)}</span>
                                   </TooltipTrigger>
                                   <TooltipContent side="top">Limiting Reactant</TooltipContent>
                                 </Tooltip>
-                              ) : <span>{c.formula}</span>}
+                              ) : <span>{renderFormula(c.formula)}</span>}
                             </React.Fragment>
                           ))}
                           <span className="mx-2.5 opacity-50">&rarr;</span>
@@ -1293,26 +1434,22 @@ export default function ReactionThermochemistryPage() {
                             <React.Fragment key={i}>
                               {i > 0 && <span className="mx-1.5 opacity-50">+</span>}
                               {c.coefficient !== 1 && <span>{c.coefficient} </span>}
-                              {c.formula}
+                              {renderFormula(c.formula)}
                             </React.Fragment>
                           ))}
                         </p>
                         <div className="flex items-baseline gap-2 justify-center">
-                          <span className="text-4xl font-bold tabular-nums tracking-tight">
+                          <span className="text-xl text-muted-foreground font-mono">&Delta;H&deg;<sub className="text-[0.65em] leading-none">tot</sub> =</span>
+                          <span className="text-2xl font-bold tabular-nums tracking-tight">
                             {displayDH >= 0 ? '+' : ''}{fmtNum(displayDH)}
                           </span>
                           <span className="text-xl text-muted-foreground">{conv.label}</span>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-1.5">
-                          {result.hasSensibleHeat
-                            ? <><span className="inline-flex items-baseline">&Delta;H&deg;<sub className="text-[0.65em] leading-none">tot</sub></span>: {fmtT(result.T1_K!)} &rarr; {fmtT(result.T2_K!)}</>
-                            : <><span className="inline-flex items-baseline">&Delta;H&deg;<sub className="text-[0.65em] leading-none">rxn</sub></span> at 298.15 K</>}
-                        </p>
                       </div>
-                      <div className={`flex flex-col items-center justify-center rounded-xl px-6 py-4 shrink-0 ${result.isExothermic ? 'bg-orange-400/10 text-orange-400' : 'bg-sky-400/10 text-sky-400'}`}>
-                        {result.isExothermic ? <Flame className="h-9 w-9 mb-1" /> : <Snowflake className="h-9 w-9 mb-1" />}
-                        <span className="font-semibold text-sm">{result.isExothermic ? 'Exothermic' : 'Endothermic'}</span>
-                        <span className="text-xs opacity-70 mt-0.5">{result.isExothermic ? 'Releases heat' : 'Absorbs heat'}</span>
+                      <div className={`flex flex-col items-center justify-center rounded-xl px-6 py-4 shrink-0 ${liveIsExothermic ? 'bg-orange-400/10 text-orange-400' : 'bg-sky-400/10 text-sky-400'}`}>
+                        {liveIsExothermic ? <Flame className="h-9 w-9 mb-1" /> : <Snowflake className="h-9 w-9 mb-1" />}
+                        <span className="font-semibold text-sm">{liveIsExothermic ? 'Exothermic' : 'Endothermic'}</span>
+                        <span className="text-xs opacity-70 mt-0.5">{liveIsExothermic ? 'Releases heat' : 'Absorbs heat'}</span>
                       </div>
                     </div>
                     {result.missingHessData.length > 0 && (
@@ -1335,7 +1472,7 @@ export default function ReactionThermochemistryPage() {
                   <Card>
                     <CardHeader className="py-0 cursor-pointer select-none" onClick={() => setKirchhoffOpen(v => !v)}>
                       <div className="flex items-center justify-between">
-                        <CardTitle className="text-sm">Enthalpy Path &mdash; Kirchhoff + Hess&apos;s Law</CardTitle>
+                        <CardTitle className="text-sm">Thermochemical Enthalpy Pathway</CardTitle>
                         <span className="text-muted-foreground text-xs ml-2">{kirchhoffOpen ? '▲' : '▼'}</span>
                       </div>
                     </CardHeader>
@@ -1373,7 +1510,7 @@ export default function ReactionThermochemistryPage() {
                                     return visSegs.map((seg, si) => (
                                       <tr key={`${ri}-${si}`} className="border-b last:border-0 hover:bg-muted/20">
                                         <td className={`px-2 py-1.5 font-mono ${r.colorClass} whitespace-nowrap overflow-hidden text-ellipsis`}>
-                                            {r.formula}
+                                            {renderFormula(r.formula)}
                                             {r.missingData && <span className="ml-1 text-yellow-500" title="Missing data">&#x26A0;</span>}
                                           </td>
                                           <td className="px-2 py-1.5 text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">
@@ -1420,7 +1557,7 @@ export default function ReactionThermochemistryPage() {
                                   return (
                                     <div className="mt-1 flex justify-end text-xs">
                                       <span className={`tabular-nums font-bold ${total1 >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
-                                        {total1 >= 0 ? '+' : ''}{fmtNum(total1 * dfc)} {conv.label}
+                                        {total1 >= 0 ? '+' : ''}{fmtNum(total1 * df)} {conv.label}
                                       </span>
                                     </div>
                                   );
@@ -1473,7 +1610,7 @@ export default function ReactionThermochemistryPage() {
                                   return (
                                     <div className="mt-1 flex justify-end text-xs">
                                       <span className={`tabular-nums font-bold ${total1 >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
-                                        {total1 >= 0 ? '+' : ''}{fmtNum(total1 * dfc)} {conv.label}
+                                        {total1 >= 0 ? '+' : ''}{fmtNum(total1 * df)} {conv.label}
                                       </span>
                                     </div>
                                   );
@@ -1506,7 +1643,7 @@ export default function ReactionThermochemistryPage() {
                                   <tbody>
                                     {result.contributions.map((c, i) => (
                                       <tr key={i} className="border-b last:border-0 hover:bg-muted/20">
-                                        <td className={`px-2 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${c.side === 'reactant' ? 'text-violet-400' : 'text-teal-400'}`}>{c.formula}</td>
+                                        <td className={`px-2 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${c.side === 'reactant' ? 'text-violet-400' : 'text-teal-400'}`}>{renderFormula(c.formula)}</td>
                                         <td className="px-2 py-1.5 tabular-nums text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">{fmtNum(c.hof_kjmol * df)}</td>
                                         <td className="px-2 py-1.5 text-center tabular-nums text-muted-foreground">{c.side === 'reactant' ? '\u2212' : '+'}{c.coefficient}</td>
                                         <td className={`px-2 py-1.5 text-right tabular-nums font-medium whitespace-nowrap ${c.contribution_kjmol >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
@@ -1547,13 +1684,21 @@ export default function ReactionThermochemistryPage() {
                               })()}
                             </div>
 
-                            {/* Total */}
-                            <div className="border-t-2 mt-2 pt-3 flex items-center justify-between">
-                              <span className="text-xs font-bold"><span className="inline-flex items-baseline">&Delta;H&deg;<sub className="text-[0.65em] leading-none">tot</sub></span> ({fmtT(result.T1_K!)} &rarr; {fmtT(result.T2_K!)})</span>
-                              <span className={`tabular-nums font-bold text-sm whitespace-nowrap ${result.dH_total_kjmol >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
-                                {result.dH_total_kjmol >= 0 ? '+' : ''}{fmtNum(result.dH_total_kjmol * dfc)} {conv.label}
-                              </span>
-                            </div>
+                            {/* Total — use correctly weighted sum */}
+                            {(() => {
+                              const kT1 = rSegs.reduce((s, sp) => s + sp.coefficient * sp.total_kjmol, 0);
+                              const kT3 = pSegs.reduce((s, sp) => s + sp.coefficient * sp.total_kjmol, 0);
+                              const kEx = result.excessSegments.reduce((s, sp) => s + (reactiveExcessCoeffs.get(sp.formula) ?? 0) * sp.total_kjmol, 0);
+                              const kTot = kT1 * df + result.dH_rxn_kjmol * dfc + kT3 * dfc + kEx * df;
+                              return (
+                                <div className="border-t-2 mt-2 pt-3 flex items-center justify-between">
+                                  <span className="text-xs font-bold"><span className="inline-flex items-baseline">&Delta;H&deg;<sub className="text-[0.65em] leading-none">tot</sub></span> ({fmtT(result.T1_K!)} &rarr; {fmtT(result.T2_K!)})</span>
+                                  <span className={`tabular-nums font-bold text-sm whitespace-nowrap ${kTot >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
+                                    {kTot >= 0 ? '+' : ''}{fmtNum(kTot)} {conv.label}
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </>
                         );
                       })()}
@@ -1581,7 +1726,7 @@ export default function ReactionThermochemistryPage() {
                             {result.contributions.map((c, i) => (
                               <tr key={i} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
                                 <td className="px-4 py-2 text-xs max-w-[140px] truncate text-center" title={c.name}>{formatCompoundName(c.name)}</td>
-                                <td className="px-3 py-2 font-mono text-xs text-center">{c.formula}</td>
+                                <td className="px-3 py-2 font-mono text-xs text-center">{renderFormula(c.formula)}</td>
                                 <td className="px-3 py-2 text-center text-xs tabular-nums">{c.side === 'reactant' ? '\u2212' : '+'}{c.coefficient}</td>
                                 <td className="px-3 py-2 text-center tabular-nums text-xs">{fmtNum(c.hof_kjmol * df)}</td>
                                 <td className={`px-4 py-2 text-center tabular-nums text-xs font-medium ${c.contribution_kjmol >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
@@ -1604,7 +1749,7 @@ export default function ReactionThermochemistryPage() {
                 )}
 
                 <Card>
-                  <CardHeader className="pb-1"><CardTitle className="text-sm">Enthalpy Contributions</CardTitle></CardHeader>
+                  <CardHeader className="pb-1"><CardTitle className="text-sm">Enthalpy Component Breakdown</CardTitle></CardHeader>
                   <CardContent><ReactECharts option={combinedChartOption} style={{ height: 300 }} /></CardContent>
                 </Card>
               </div>
