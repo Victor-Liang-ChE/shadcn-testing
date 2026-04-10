@@ -295,10 +295,14 @@ export async function GET() {
     /** Strip leading digits (matchup ID) from fighter names in prop rows */
     const stripLeadingDigits = (name: string) => name.replace(/^\d+/, '')
 
-    const isRowProp = (row: Record<string, unknown>) =>
-      row.is_prop === true ||
-      PROP_RE.test(row.r_fighter as string) ||
-      PROP_RE.test(row.b_fighter as string)
+    // A row is a prop only when the CLEANED fighter names match prop keywords.
+    // Using is_prop alone is unreliable — BFO sometimes sets is_prop=true on real fights
+    // that have a leading matchup-ID prefix (e.g. "42751Charles Jourdain").
+    const isRowProp = (row: Record<string, unknown>) => {
+      const rClean = stripLeadingDigits(row.r_fighter as string)
+      const bClean = stripLeadingDigits(row.b_fighter as string)
+      return PROP_RE.test(rClean) || PROP_RE.test(bClean)
+    }
 
     // Group by event
     type PropRow = { rName: string; bName: string; rOdds: number | null; bOdds: number | null; rPerBook: Record<string, number>; bPerBook: Record<string, number> }
@@ -338,8 +342,8 @@ export async function GET() {
         })
       } else {
         eventMap.get(key)!.fights.push({
-          rFighter: row.r_fighter as string,
-          bFighter: row.b_fighter as string,
+          rFighter: stripLeadingDigits(row.r_fighter as string),
+          bFighter: stripLeadingDigits(row.b_fighter as string),
           rOdds: row.r_odds as number | null,
           bOdds: row.b_odds as number | null,
           rPerBook: (row.r_per_book as Record<string, number>) ?? {},
@@ -351,13 +355,18 @@ export async function GET() {
       }
     }
 
-    // Deduplicate props: remove prop rows whose cleaned names match existing fight rows
+    // Deduplicate fights and props
     for (const [, event] of eventMap) {
-      const fightKeys = new Set(
-        event.fights.map((f) =>
-          `${normalizeName(f.rFighter)}|${normalizeName(f.bFighter)}`
-        )
-      )
+      // Deduplicate fights: if duplicate name pair, keep first occurrence
+      const seenFights = new Map<string, FightInput>()
+      for (const fight of event.fights) {
+        const fk = `${normalizeName(fight.rFighter)}|${normalizeName(fight.bFighter)}`
+        if (!seenFights.has(fk)) seenFights.set(fk, fight)
+      }
+      event.fights = [...seenFights.values()]
+
+      // Deduplicate props: remove prop rows whose cleaned names match existing fight rows
+      const fightKeys = new Set(event.fights.map((f) => `${normalizeName(f.rFighter)}|${normalizeName(f.bFighter)}`))
       event.props = event.props.filter((p) => {
         const key = `${normalizeName(p.rName)}|${normalizeName(p.bName)}`
         return !fightKeys.has(key)

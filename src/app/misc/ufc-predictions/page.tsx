@@ -726,7 +726,7 @@ function MarketToggle({
         {(['sportsbook', 'exchange'] as MarketMode[]).map((m) => {
           const active = mode === m
           return (
-            <div key={m} className="flex-1 relative">
+            <div key={m} className="flex-1">
               <button
                 onClick={() => onChange(m)}
                 onMouseEnter={() => setHoveredMode(m)}
@@ -740,21 +740,27 @@ function MarketToggle({
               >
                 {labels[m]}
               </button>
-              {hoveredMode === m && (
-                <div className="absolute left-1/2 -translate-x-1/2 top-full mt-1.5 z-50 pointer-events-none">
-                  <div className="relative bg-popover border border-border rounded-md px-3 py-1.5 text-xs text-muted-foreground shadow-md whitespace-nowrap">
-                    <span className="absolute -top-[5px] left-1/2 -translate-x-1/2 w-0 h-0"
-                      style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--border)' }} />
-                    <span className="absolute -top-[4px] left-1/2 -translate-x-1/2 w-0 h-0"
-                      style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--popover)' }} />
-                    {bookHints[m]}
-                  </div>
-                </div>
-              )}
             </div>
           )
         })}
       </div>
+      {/* Tooltip rendered outside overflow:hidden so it isn’t clipped */}
+      {hoveredMode && (
+        <div
+          className={cn(
+            'absolute z-50 pointer-events-none top-full mt-1.5',
+            hoveredMode === 'sportsbook' ? 'left-1/4 -translate-x-1/2' : 'left-3/4 -translate-x-1/2'
+          )}
+        >
+          <div className="relative bg-popover border border-border rounded-md px-3 py-1.5 text-xs text-muted-foreground shadow-md whitespace-nowrap">
+            <span className="absolute -top-[5px] left-1/2 -translate-x-1/2 w-0 h-0"
+              style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--border)' }} />
+            <span className="absolute -top-[4px] left-1/2 -translate-x-1/2 w-0 h-0"
+              style={{ borderLeft: '5px solid transparent', borderRight: '5px solid transparent', borderBottom: '5px solid var(--popover)' }} />
+            {bookHints[hoveredMode]}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1445,14 +1451,20 @@ export default function UfcPredictionsPage() {
     Promise.all(uniqueFighters.map(name => {
       const parts = name.trim().split(/\s+/)
       const first = parts[0] ?? ''
-      const last = parts[parts.length - 1] ?? ''
+      const last  = parts[parts.length - 1] ?? ''
+      // Fetch by first name only (up to 10 results), then pick best match
+      // using normKey on LAST — this handles apostrophe mismatches like
+      // 'Omalley' (betting DB) vs "O'Malley" (images DB).
       return supabase
         .from('ufc_champion_images')
         .select('FIRST, LAST, HEADSHOT')
         .ilike('FIRST', `%${first}%`)
-        .ilike('LAST', `%${last}%`)
-        .limit(1)
-        .then(({ data: r }: { data: { FIRST: string; LAST: string; HEADSHOT?: string }[] | null }) => ({ name, row: r?.[0] ?? null }))
+        .limit(10)
+        .then(({ data: r }: { data: { FIRST: string; LAST: string; HEADSHOT?: string }[] | null }) => {
+          const lastNorm = normKey(last)
+          const match = (r ?? []).find(row => normKey(row.LAST) === lastNorm) ?? (r?.[0] ?? null)
+          return { name, row: match }
+        })
     })).then(results => {
       const map = new Map<string, string>()
       for (const { name, row } of results) {
