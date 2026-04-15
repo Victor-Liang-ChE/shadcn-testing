@@ -169,6 +169,10 @@ function Navbar() {
       </div>
       {/* Desktop Menu */}
       <div className="hidden md:flex items-center space-x-1"> {/* Reduced space for tighter fit with padding */}
+        <Link href="/canopy" className={`text-xl font-semibold ${linkHoverStyle}`}>
+          🌿 Canopy
+        </Link>
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className={`text-xl font-semibold flex items-center gap-1 ${linkHoverStyle}`}>
@@ -206,6 +210,16 @@ function Navbar() {
         style={{ backgroundColor: 'var(--navbar-background)' }}
       >
         <div className="p-4 flex flex-col space-y-2"> {/* Reduced space-y */}
+          <Link 
+            href="/canopy" 
+            className={`block text-xl font-semibold ${linkHoverStyle}`}
+            onClick={() => setIsMenuOpen(false)}
+          >
+            🌿 Canopy
+          </Link>
+
+          <div className="border-t border-border/50 my-1"></div>
+
           <div className="font-semibold px-3 py-1 text-sm text-muted-foreground uppercase tracking-wider">Toolbox</div>
           <Link 
             href="/toolbox?category=cheme" 

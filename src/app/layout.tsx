@@ -1,7 +1,7 @@
 import { Analytics } from "@vercel/analytics/next"
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
-import Navbar from "@/components/Navbar";
+import NavbarWrapper from "../components/NavbarWrapper";
 import Script from 'next/script';
 import 'leaflet/dist/leaflet.css';
 
@@ -29,7 +29,7 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <div className="flex flex-col min-h-screen">
-            <Navbar />
+            <NavbarWrapper />
             <main className="flex-1">
               {children}
             </main>

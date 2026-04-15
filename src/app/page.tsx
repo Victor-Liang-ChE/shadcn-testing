@@ -573,7 +573,7 @@ export default function Home() {
                           src={mounted && resolvedTheme === 'light' ? simulation.thumbnailLightPath : simulation.thumbnailPath}
                           alt={`${simulation.name} Thumbnail`}
                           layout="fill"
-                          objectFit={simulation.name === "Reaction Thermochemistry" ? "cover" : "contain"}
+                          objectFit={simulation.name === "Reaction Thermochemistry" || simulation.name === "Residue Curve Map" || simulation.name === "FUG" ? "cover" : "contain"}
                         />
                       )}
                     </div>
