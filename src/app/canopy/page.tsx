@@ -12,7 +12,7 @@ export default function CanopyPage() {
   // Auto-load the preset on first mount if no compounds selected
   useEffect(() => {
     if (compounds.length === 0) {
-      loadPreset('benzene-toluene');
+      loadPreset('cumene-production');
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
