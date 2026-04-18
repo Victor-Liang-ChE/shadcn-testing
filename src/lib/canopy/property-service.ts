@@ -229,6 +229,62 @@ export function buildCanopyCompoundFromRemoteRecords(
   const dielectricE3 = getNumericValue(properties?.DielectricConstantRefTemp, 298.15);
   const isElectrolyteSolvent = getBooleanValue(properties?.ElectrolyteSolvent, properties?.SolventFlag)
     ?? name.toUpperCase() === 'WATER';
+  const specificGravity = getNumericValue(
+    properties?.SpecificGravity,
+    properties?.SG,
+    properties?.SG60_60,
+    properties?.SGAIR,
+    pure.SG,
+    pure.SG60_60,
+  );
+  const flashPoint_K = getNumericValue(
+    properties?.FlashPoint,
+    properties?.FLASHPOINT,
+    properties?.FlashPointClosedCup,
+    properties?.ClosedCupFlashPoint,
+    pure.FLASHPOINT,
+  );
+  const autoignitionTemp_K = getNumericValue(
+    properties?.AIT,
+    properties?.AutoIgnitionTemperature,
+    properties?.AutoignitionTemperature,
+    properties?.AUTOIGNITIONTEMP,
+    pure.AIT,
+  );
+  const refractiveIndex = getNumericValue(
+    properties?.REFINDEX,
+    properties?.REFI,
+    properties?.RefractiveIndex,
+    properties?.NDEX,
+    pure.REFI,
+  );
+  const anilinePoint_K = getNumericValue(
+    properties?.ANILPT,
+    properties?.ANILINEPT,
+    properties?.AnilinePoint,
+    pure.ANILPT,
+  );
+  const cetaneNumber = getNumericValue(
+    properties?.CETANE,
+    properties?.CetaneNumber,
+    pure.CETANE,
+  );
+  const Hcomb_Jmol = getNumericValue(
+    properties?.HigherHeatingValue,
+    properties?.GrossHeatingValue,
+    properties?.HeatOfCombustion,
+    properties?.HHV,
+    properties?.GHV,
+    pure.HCOMB,
+  );
+  const hCombustion_Jpkmol = getNumericValue(
+    properties?.NetHeatingValue,
+    properties?.LowerHeatingValue,
+    properties?.HeatOfCombustionNet,
+    properties?.NHV,
+    properties?.LHV,
+    pure.NCOMB,
+  );
 
   return {
     name,
@@ -261,6 +317,14 @@ export function buildCanopyCompoundFromRemoteRecords(
     ...(chargeNumber !== undefined ? { chargeNumber } : {}),
     ...(dielectricE1 !== undefined ? { dielectricConst: { e1: dielectricE1, e2: dielectricE2 ?? 0, e3_K: dielectricE3 ?? 298.15 } } : {}),
     ...(isElectrolyteSolvent ? { isElectrolyteSolvent } : {}),
+    ...(specificGravity !== undefined ? { specificGravity } : {}),
+    ...(flashPoint_K !== undefined ? { flashPoint_K } : {}),
+    ...(autoignitionTemp_K !== undefined ? { autoignitionTemp_K } : {}),
+    ...(refractiveIndex !== undefined ? { refractiveIndex } : {}),
+    ...(anilinePoint_K !== undefined ? { anilinePoint_K } : {}),
+    ...(cetaneNumber !== undefined ? { cetaneNumber } : {}),
+    ...(Hcomb_Jmol !== undefined ? { Hcomb_Jmol } : {}),
+    ...(hCombustion_Jpkmol !== undefined ? { hCombustion_Jpkmol } : {}),
   } as CanopyCompound;
 }
 

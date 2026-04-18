@@ -4635,6 +4635,22 @@ export function solveAnalyzer(
             warnings: ['CETA could not be estimated because compound cetane-number metadata is unavailable for this stream.'],
           };
     }
+    case 'AIT':
+    case 'AUTOIGNITION':
+    case 'AUTOIGNITION_TEMP': {
+      const autoignition = weightedCompoundProperty(compounds, stream.moleFractions, compound => compound.autoignitionTemp_K);
+      return autoignition != null
+        ? {
+            signalValue: autoignition,
+            propertyLabel: 'Autoignition Temperature Approx. (K)',
+            warnings: ['AIT is estimated from component autoignition metadata and is not a full ASTM E659-style mixture prediction.'],
+          }
+        : {
+            signalValue: 0,
+            propertyLabel: 'Autoignition Temperature Approx. (K)',
+            warnings: ['AIT could not be estimated because compound autoignition metadata is unavailable.'],
+          };
+    }
     case 'VABP': {
       const vabp = weightedCompoundPropertyByVolume(compounds, stream.moleFractions, compound => compound.Tb_K);
       return vabp != null
@@ -4776,6 +4792,49 @@ export function solveAnalyzer(
             warnings: ['Water saturation could not be estimated because the stream has no WATER component metadata.'],
           };
     }
+    case 'GRS':
+    case 'QVAL':
+    case 'HHV': {
+      const grossHeatingValue = weightedCompoundProperty(compounds, stream.moleFractions, compound =>
+        compound.Hcomb_Jmol != null
+          ? Math.abs(compound.Hcomb_Jmol)
+          : compound.hCombustion_Jpkmol != null
+            ? Math.abs(compound.hCombustion_Jpkmol) / 1000
+            : undefined,
+      );
+      return grossHeatingValue != null
+        ? {
+            signalValue: grossHeatingValue,
+            propertyLabel: 'Gross Heating Value Approx. (J/mol)',
+            warnings: ['GRS/QVAL is estimated from component combustion metadata and is not a bomb-calorimetry mixture reconstruction.'],
+          }
+        : {
+            signalValue: 0,
+            propertyLabel: 'Gross Heating Value Approx. (J/mol)',
+            warnings: ['GRS/QVAL could not be estimated because combustion-heating metadata is unavailable.'],
+          };
+    }
+    case 'NET':
+    case 'LHV': {
+      const netHeatingValue = weightedCompoundProperty(compounds, stream.moleFractions, compound =>
+        compound.hCombustion_Jpkmol != null
+          ? Math.abs(compound.hCombustion_Jpkmol) / 1000
+          : compound.Hcomb_Jmol != null
+            ? Math.abs(compound.Hcomb_Jmol)
+            : undefined,
+      );
+      return netHeatingValue != null
+        ? {
+            signalValue: netHeatingValue,
+            propertyLabel: 'Net Heating Value Approx. (J/mol)',
+            warnings: ['NET is estimated from component lower-heating-value metadata where available, otherwise it falls back to gross combustion values.'],
+          }
+        : {
+            signalValue: 0,
+            propertyLabel: 'Net Heating Value Approx. (J/mol)',
+            warnings: ['NET could not be estimated because combustion-heating metadata is unavailable.'],
+          };
+    }
     case 'FLASHPOINT': {
       const flashPoint = weightedCompoundProperty(compounds, stream.moleFractions, compound => compound.flashPoint_K);
       return flashPoint != null
@@ -4790,6 +4849,7 @@ export function solveAnalyzer(
             warnings: ['Flash point could not be estimated because compound flash-point metadata is unavailable.'],
           };
     }
+    case 'ANILPT':
     case 'ANILINEPT':
     case 'ANILINE_POINT': {
       const anilinePoint = weightedCompoundProperty(compounds, stream.moleFractions, compound => compound.anilinePoint_K);
@@ -4805,6 +4865,7 @@ export function solveAnalyzer(
             warnings: ['Aniline point could not be estimated because compound petroleum-characterization metadata is unavailable.'],
           };
     }
+    case 'REID':
     case 'REIDVP': {
       const T_rvp = 310.95;
       let totalPressure = 0;

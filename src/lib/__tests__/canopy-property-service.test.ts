@@ -65,6 +65,14 @@ describe('canopy property-service', () => {
         HeatOfFormation: { value: '-241820000' },
         GibbsEnergyOfFormation: { value: '-228570000' },
         DielectricConstant: { value: '78.36' },
+        SpecificGravity: { value: '1.0' },
+        FlashPoint: { value: '400' },
+        AIT: { value: '860' },
+        RefractiveIndex: { value: '1.333' },
+        ANILPT: { value: '350' },
+        CETANE: { value: '5' },
+        HigherHeatingValue: { value: '-285830' },
+        NetHeatingValue: { value: '-241820000' },
         UnifacVLE: { group: [{ id: '16', count: '1' }] },
         LiquidViscosity: {
           A: { value: '-52.843' },
@@ -82,6 +90,14 @@ describe('canopy property-service', () => {
     expect(compound.isElectrolyteSolvent).toBe(true);
     expect(compound.unifacGroups).toEqual({ 16: 1 });
     expect(compound.Hf_298_Jmol).toBeCloseTo(-241820, 6);
+    expect(compound.specificGravity).toBeCloseTo(1, 6);
+    expect(compound.flashPoint_K).toBeCloseTo(400, 6);
+    expect(compound.autoignitionTemp_K).toBeCloseTo(860, 6);
+    expect(compound.refractiveIndex).toBeCloseTo(1.333, 6);
+    expect(compound.anilinePoint_K).toBeCloseTo(350, 6);
+    expect(compound.cetaneNumber).toBeCloseTo(5, 6);
+    expect(compound.Hcomb_Jmol).toBeCloseTo(-285830, 6);
+    expect(compound.hCombustion_Jpkmol).toBeCloseTo(-241820000, 6);
   });
 
   it('derives Electrolyte-NRTL parameters from remote NRTL rows and solvent metadata', async () => {

@@ -88,6 +88,22 @@ describe('canopy analyzer and charge-balance blocks', () => {
     expect(refractiveIndex.warnings).toEqual([]);
   });
 
+  it('computes autoignition and heating-value analyzer outputs from compound metadata', () => {
+    const compounds = [benzene, cumene];
+    const stream = makeStream(compounds, 12, [0.25, 0.75], 365, 150000);
+
+    const ait = solveAnalyzer(compounds, stream, { propertyCode: 'AIT' });
+    const gross = solveAnalyzer(compounds, stream, { propertyCode: 'GRS' });
+    const net = solveAnalyzer(compounds, stream, { propertyCode: 'NET' });
+
+    expect(ait.signalValue).toBeCloseTo(0.25 * benzene.autoignitionTemp_K! + 0.75 * cumene.autoignitionTemp_K!, 8);
+    expect(gross.signalValue).toBeCloseTo(0.25 * Math.abs(benzene.Hcomb_Jmol!) + 0.75 * Math.abs(cumene.Hcomb_Jmol!), 8);
+    expect(net.signalValue).toBeCloseTo(0.25 * Math.abs(benzene.hCombustion_Jpkmol!) / 1000 + 0.75 * Math.abs(cumene.hCombustion_Jpkmol!) / 1000, 8);
+    expect(ait.warnings[0]).toMatch(/metadata/i);
+    expect(gross.warnings[0]).toMatch(/combustion/i);
+    expect(net.warnings[0]).toMatch(/lower-heating-value/i);
+  });
+
   it('computes cetane-number analyzer output when component metadata exists', () => {
     const cetaneCompounds: CanopyCompound[] = [
       { ...benzene, name: 'PARAFFIN-A', displayName: 'Paraffin A', cetaneNumber: 55 },
@@ -108,14 +124,16 @@ describe('canopy analyzer and charge-balance blocks', () => {
     const d86 = solveAnalyzer(compounds, stream, { propertyCode: 'D86T' });
     const d1160 = solveAnalyzer(compounds, stream, { propertyCode: 'D1160T' });
     const d2887 = solveAnalyzer(compounds, stream, { propertyCode: 'D2887T' });
-    const reidvp = solveAnalyzer(compounds, stream, { propertyCode: 'REIDVP' });
+    const reidvp = solveAnalyzer(compounds, stream, { propertyCode: 'REID' });
     const ri = solveAnalyzer(compounds, stream, { propertyCode: 'RI' });
+    const aniline = solveAnalyzer(compounds, stream, { propertyCode: 'ANILPT' });
 
     expect(d86.signalValue).toBeGreaterThan(benzene.Tb_K!);
     expect(d1160.signalValue).toBeGreaterThan(d86.signalValue);
     expect(d2887.signalValue).toBeGreaterThan(d1160.signalValue);
     expect(reidvp.signalValue).toBeGreaterThan(0);
     expect(ri.signalValue).toBeGreaterThan(1);
+    expect(aniline.signalValue).toBeCloseTo(cumene.anilinePoint_K!, 8);
     expect(d86.warnings[0]).toMatch(/estimated/i);
     expect(d1160.warnings[0]).toMatch(/estimated/i);
     expect(d2887.warnings[0]).toMatch(/estimated/i);

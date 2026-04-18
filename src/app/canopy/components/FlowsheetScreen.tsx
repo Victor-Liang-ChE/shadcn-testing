@@ -1426,6 +1426,7 @@ const ANALYZER_PROPERTY_OPTIONS = [
   { value: 'TBPT', label: 'Average TBP' },
   { value: 'VABP', label: 'Volume Avg Boiling Point' },
   { value: 'CETA', label: 'Cetane Number' },
+  { value: 'AIT', label: 'Autoignition Temp' },
   { value: 'D86T', label: 'ASTM D86 Equivalent Temp' },
   { value: 'D1160T', label: 'ASTM D1160 Equivalent Temp' },
   { value: 'D2887T', label: 'ASTM D2887 Equivalent Temp' },
@@ -1439,8 +1440,10 @@ const ANALYZER_PROPERTY_OPTIONS = [
   { value: 'SMX', label: 'Mixture Entropy' },
   { value: 'WAT', label: 'Water Content' },
   { value: 'WATSAT', label: 'Water Saturation' },
+  { value: 'GRS', label: 'Gross Heating Value' },
+  { value: 'NET', label: 'Net Heating Value' },
   { value: 'FLASHPOINT', label: 'Flash Point' },
-  { value: 'ANILINEPT', label: 'Aniline Point' },
+  { value: 'ANILPT', label: 'Aniline Point' },
   { value: 'REIDVP', label: 'Reid Vapor Pressure' },
 ] as const;
 
