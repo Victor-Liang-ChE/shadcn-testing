@@ -1,13 +1,12 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 
 import { parseCanopyAuthCallback } from '@/lib/canopy/save-utils';
 
 export default function CanopyAuthCallbackPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const attemptedRef = useRef(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -16,7 +15,7 @@ export default function CanopyAuthCallbackPage() {
     attemptedRef.current = true;
 
     const { accessToken, errorMessage: callbackError, nextPath } = parseCanopyAuthCallback(
-      new URLSearchParams(searchParams.toString()),
+      new URLSearchParams(typeof window !== 'undefined' ? window.location.search : ''),
       typeof window !== 'undefined' ? window.location.hash : '',
     );
 
@@ -49,7 +48,7 @@ export default function CanopyAuthCallbackPage() {
       .catch((error: unknown) => {
         setErrorMessage(error instanceof Error ? error.message : 'OAuth callback failed.');
       });
-  }, [router, searchParams]);
+  }, [router]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-6">
